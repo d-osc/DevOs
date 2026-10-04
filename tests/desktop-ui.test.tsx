@@ -15,6 +15,8 @@ import {SettingsPages} from '../src/extensions/settings-pages.js';
 import {ExtensionStore} from '../src/extensions/store.js';
 import {StoreView} from '../extensions/org.devos.store/view.js';
 import {loadUserExtensions} from '../src/extensions/user.js';
+import {Updates} from '../src/updates/service.js';
+import {UpdatesView} from '../extensions/org.devos.updates/view.js';
 import {ExtensionManager} from '../src/extensions/manager.js';
 import {DEFAULTS, ROOT, validateConfig} from '../src/config.js';
 import icons, {installedIconThemes} from '../extensions/org.devos.icons/extension.js';
@@ -334,6 +336,29 @@ test('settings validates core drafts and generates extension forms', () => {
     Gio.File.new_for_path(`${temporary}/preferences/org.devos.icons.json`).delete(null);
     Gio.File.new_for_path(`${temporary}/preferences`).delete(null);
     Gio.File.new_for_path(temporary).delete(null);
+});
+asyncTest('Updates offers the installed version on reopening and requires confirmation before switching', async () => {
+    const temporary = GLib.dir_make_tmp('dev-os-updates-ui-XXXXXX'), key = '0.3.0-aaaaaaaaaaaa';
+    const root = `${temporary}/updates`, target = `${root}/releases/${key}`;
+    GLib.mkdir_with_parents(target, 0o700);
+    GLib.file_set_contents(`${target}/release.json`, JSON.stringify({format: 1, version: '0.3.0', platform: 'linux-x64'}));
+    GLib.file_set_contents(`${root}/history.json`, JSON.stringify({current: {key, version: '0.3.0', repository: 'd-osc/DevOs', platform: 'linux-x64'}, previous: null}));
+    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const updater = new Updates({repository: () => 'd-osc/DevOs', root, running: '0.2.0'});
+    const native = makeWindow(), container = new Gtk.Box(); native.add(container); const react = createRoot(container);
+    let switched = '';
+    const click = (id: string) => (widgets(native).find(widget => widget.name === id) as Gtk.Button).emit('clicked');
+    try {
+        react.render(<UpdatesView updater={updater} preferences={preferences} useVersion={async root => { switched = root; }} />); await idle();
+        assert(updater.canUseInstalled && updater.state.running === '0.2.0', 'Installed version is pending without claiming the old process was updated');
+        click('updates-use-version'); assert(!switched && widgets(native).some(widget => widget.name === 'updates-switch-warning'), 'First click shows save-work confirmation');
+        click('updates-cancel-switch'); assert(!switched, 'Cancel keeps this session running');
+        click('updates-use-version'); click('updates-use-version'); await idle();
+        assert(switched === target && !updater.state.busy, 'Confirm requests the selected immutable runtime');
+        assert(updater.state.running === '0.2.0', 'Running version changes only after a real shell restart');
+        await updater.useInstalled(async () => { throw new Error('Installed runtime failed dependency checks'); }); await idle();
+        assert(!updater.state.busy && updater.state.error.includes('dependency checks') && updater.state.running === '0.2.0', 'Failed preflight keeps the running version and displays an actionable error');
+    } finally { react.unmount(); native.destroy(); updater.dispose(); preferences.dispose(); removeFixture(Gio.File.new_for_path(temporary)); }
 });
 asyncTest('Store connects repository releases through React controls and reports errors without installing', async () => {
     const temporary = GLib.dir_make_tmp('dev-os-store-ui-XXXXXX');

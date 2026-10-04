@@ -7,6 +7,7 @@ import {UIRuntime} from './extensions/runtime.js';
 import type {UIContext, UICommand, UIExtension} from './extensions/runtime.js';
 import {Windows} from './windows.js';
 import {SettingsPages} from './extensions/settings-pages.js';
+import {requestSessionVersion} from './session-version.js';
 
 export const DesktopShell = GObject.registerClass(class ShellApplication extends Gtk.Application {
     // GObject calls _init inside super(). Emitting JS fields afterwards would
@@ -143,6 +144,10 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             saveCore: value => { saveConfig(value); },
             monitors: () => Array.from({length: this.display.get_n_monitors()}, (_, index) => this.display.get_monitor(index)!),
             runCommand: (command, directory) => this.runCommand(command, directory), reload: () => this.reloadConfig(), quit: () => this.quit(),
+            useInstalledVersion: async root => {
+                await requestSessionVersion(root);
+                GLib.idle_add(GLib.PRIORITY_DEFAULT, () => { this.quit(); return GLib.SOURCE_REMOVE; });
+            },
             invoke: (command, monitor) => this.invoke(command, monitor),
             registerCommand: (command, handler) => {
                 if (this.commands.has(command)) throw new Error(`Duplicate UI command ${command}`);

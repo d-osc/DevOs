@@ -4,12 +4,13 @@ import type {SettingsHost} from '../../src/extensions/types.js';
 import type {Updates} from '../../src/updates/service.js';
 import {repository} from '../../src/updates/protocol.js';
 
-export function UpdatesView({updater, preferences}: {updater: Updates; preferences: SettingsHost}) {
+export function UpdatesView({updater, preferences, useVersion}: {updater: Updates; preferences: SettingsHost; useVersion?: (root: string) => Promise<void>}) {
     const id = 'org.devos.updates';
     const [state, setState] = useState(updater.state);
     const [source, setSource] = useState(String(preferences.get(id).state.values.repository));
     const [checkOnOpen, setCheckOnOpen] = useState(preferences.get(id).state.values.checkOnOpen === true);
     const [sourceError, setSourceError] = useState('');
+    const [confirmSwitch, setConfirmSwitch] = useState(false);
     useEffect(() => updater.subscribe(() => setState(updater.state)), [updater]);
     useEffect(() => { if (preferences.get(id).state.values.checkOnOpen === true && updater.state.status === 'idle') void updater.check(); }, [updater, preferences]);
     const sourceDirty = source !== preferences.get(id).state.values.repository;
@@ -58,9 +59,19 @@ export function UpdatesView({updater, preferences}: {updater: Updates; preferenc
                         <Label xalign={0} wrap selectable maxWidthChars={75}>{state.release.notes || 'This release has no release notes.'}</Label>
                     </Box>
                 </Box>}
-                {(state.status === 'ready' || (state.managed && state.installed !== state.running)) && <Box className="settings-card updates-details" orientation="vertical" spacing={10}>
-                    <Label className="section-heading" xalign={0}>Ready for your next session</Label>
-                    <Label className="settings-description" xalign={0} wrap>Save your work, then start the updated desktop. Your current session and preferences stay available.</Label>
+                {updater.canUseInstalled && <Box className="settings-card updates-details" orientation="vertical" spacing={10}>
+                    <Label className="section-heading" xalign={0}>{`Ready to use Dev OS ${state.installed}`}</Label>
+                    <Label className="settings-description" xalign={0} wrap>Installation is complete. Switch the desktop to the installed version when you are ready.</Label>
+                    {useVersion && <Box orientation="vertical" spacing={10}>
+                        {confirmSwitch && <Label id="updates-switch-warning" className="settings-description" xalign={0} wrap>Save your work first. This closes built-in desktop apps and restarts the shell. Your preferences will be kept.</Label>}
+                        <Box spacing={8}>
+                            <Button id="updates-use-version" className="settings-primary" sensitive={!state.busy} onClicked={() => {
+                                if (!confirmSwitch) { setConfirmSwitch(true); return; }
+                                setConfirmSwitch(false); void updater.useInstalled(useVersion);
+                            }}>{confirmSwitch ? `Restart and use v${state.installed}` : 'Use latest version'}</Button>
+                            {confirmSwitch && <Button id="updates-cancel-switch" sensitive={!state.busy} onClicked={() => setConfirmSwitch(false)}>Cancel</Button>}
+                        </Box>
+                    </Box>}
                     <Label className="updates-command" selectable xalign={0}>dev-os-updated-session --nested</Label>
                     <Label className="settings-description" xalign={0}>Windows / WSL: .\dev.ps1 updated</Label>
                 </Box>}

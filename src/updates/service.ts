@@ -1,7 +1,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Soup from 'gi://Soup?version=3.0';
-import {VERSION} from '../config.js';
+import {VERSION, ROOT} from '../config.js';
 import {writeJson} from '../preferences.js';
 import {repository, version, parseRelease, newer, platform, validateArchive, type Release} from './protocol.js';
 
@@ -62,7 +62,7 @@ export class GitHubTransport implements UpdateTransport {
     }
 }
 function read<T>(path: string): T { return JSON.parse(new TextDecoder().decode(GLib.file_get_contents(path)[1])) as T; }
-function historyAt(root: string): History {
+export function historyAt(root: string): History {
     if (!GLib.file_test(`${root}/history.json`, GLib.FileTest.EXISTS)) return {current: null, previous: null};
     const history = read<History>(`${root}/history.json`);
     if (!history || !Object.hasOwn(history, 'current') || !Object.hasOwn(history, 'previous')) throw new Error('Invalid installed update history');
@@ -107,11 +107,28 @@ export class Updates {
         this.state = {status: 'idle', busy: false, error: '', message: 'Check for the latest stable release.', release: null,
             running, installed: this.history.current?.version ?? running, managed: Boolean(this.history.current), previous: this.history.previous?.version ?? null, checked: ''};
         if (historyError) this.fail(historyError);
+        else if (this.canUseInstalled) this.update({status: 'ready', message: `Dev OS ${this.state.installed} is installed. Use latest version to switch this session.`});
     }
     subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     get canInstall() {
         const release = this.state.release;
         return Boolean(release && (newer(release.version, this.state.installed) || (!this.state.managed && release.version === this.state.running)));
+    }
+    get selectedRoot(): string | null {
+        const current = this.history.current;
+        return current ? `${this.root}/releases/${current.key}` : null;
+    }
+    get canUseInstalled() { return Boolean(this.selectedRoot && (this.state.installed !== this.state.running || this.selectedRoot !== ROOT)); }
+    async useInstalled(restart: (root: string) => Promise<void>) {
+        if (this.state.busy || this.disposed) return;
+        this.update({busy: true, error: '', message: 'Preparing to switch to the installed version…'});
+        try {
+            this.history = historyAt(this.root);
+            const root = this.selectedRoot;
+            if (!root) throw new Error('Install a release before switching versions');
+            await restart(root);
+        } catch (error) { this.fail(error); }
+        finally { this.update({busy: false}); }
     }
     private update(next: Partial<UpdateState>) {
         if (this.disposed) return;
@@ -135,7 +152,7 @@ export class Updates {
                 if (response.status !== 200) throw new Error(response.status === 403 || response.status === 429 ? 'GitHub rate limit reached. Try again later.' : `GitHub returned HTTP ${response.status}`);
                 const release = parseRelease(response.body, repo, target);
                 const available = newer(release.version, this.state.installed) || (!this.state.managed && release.version === this.state.running);
-                this.update({release, status: available ? 'available' : 'current', message: available ? `Dev OS ${release.version} is available.` : 'You have the latest stable version.'});
+                this.update({release, status: available ? 'available' : this.canUseInstalled ? 'ready' : 'current', message: available ? `Dev OS ${release.version} is available.` : this.canUseInstalled ? `Dev OS ${this.state.installed} is installed. Use latest version to switch this session.` : 'You have the latest stable version.'});
             }
             this.update({checked: new Date().toISOString()});
         } catch (error) { this.fail(error); }
@@ -160,7 +177,7 @@ export class Updates {
         finally { try { if (GLib.file_test(temporary, GLib.FileTest.IS_SYMLINK)) Gio.File.new_for_path(temporary).delete(null); } catch { /* Selection already committed. */ } }
         this.history = {current: record, previous};
         this.update({status: 'ready', installed: record.version, managed: true, previous: previous?.version ?? null,
-            message: `Dev OS ${record.version} is installed. Start a new updated session to use it.`, error: ''});
+            message: `Dev OS ${record.version} is installed. Use latest version to switch this session.`, error: ''});
     }
     async install(): Promise<void> {
         const release = this.state.release;

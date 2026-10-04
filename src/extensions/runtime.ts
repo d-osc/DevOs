@@ -21,6 +21,7 @@ export interface UIContext {
     runCommand(command: Command, directory?: string): boolean;
     reload(): boolean;
     quit(): void;
+    useInstalledVersion?(root: string): Promise<void>;
     invoke(command: string, monitor?: Gdk.Monitor): void;
     registerCommand(command: string, handler: UICommand): Cleanup;
     onMessage(handler: (message: string) => void): Cleanup;

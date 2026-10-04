@@ -9,7 +9,14 @@
 ตัวเลือก **Check when opening Updates** เปิดการตรวจเมื่อเข้าหน้านี้ได้; ค่าเริ่มต้นปิด.
 การตรวจรุ่นไม่ดาวน์โหลดหรือติดตั้งแพ็กเกจอัตโนมัติ.
 
-เมื่อเสร็จแล้วให้บันทึกงานและปิด session เดิมตามปกติ จากนั้นเปิดรุ่นที่ติดตั้งไว้:
+เมื่อติดตั้งเสร็จแล้ว ให้สลับ session ไปใช้รุ่นที่ติดตั้งไว้:
+
+ตั้งแต่ session manager รุ่น 0.3.1 มีปุ่ม **Use latest version** หลังติดตั้งหรือเมื่อเปิด Updates กลับมา.
+กดปุ่มแล้วบันทึกงานก่อนยืนยัน **Restart and use v…**. ระบบตรวจ dependencies และ version ของ runtime
+ก่อนปิด shell เดิม แล้วเปิด shell/services ของรุ่นที่ติดตั้งไว้บน compositor เดิม.
+Terminal, Files, Editor และ native apps ที่เป็นของ shell จะปิดระหว่างสลับ; preferences ยังคงอยู่.
+เลข Running เปลี่ยนเมื่อ process ใหม่เริ่มทำงาน ไม่ถูกเปลี่ยนเพียงเพราะดาวน์โหลดเสร็จ.
+รุ่น 0.2.0/0.3.0 ที่เปิดอยู่ยังไม่มี protocol นี้ ให้ใช้คำสั่งด้านล่างเพื่อเปิด 0.3.1 ครั้งแรก.
 
 ```powershell
 # Windows / WSLg, จาก checkout นี้
@@ -31,7 +38,7 @@ Windows ยังใช้ private compositor และ optional VTE runtime ท
 Linux ต้องมี dependencies ของ desktop ตาม README รวมถึง Soup 3, `curl`, `tar` และ `sha256sum`.
 ไม่มี Node.js หรือ npm ในขั้นตอนติดตั้งและเปิด release.
 
-เลือก **Use previous version** เพื่อย้อนกลับ แล้วเริ่ม updated session ใหม่ด้วยคำสั่งเดิม.
+เลือก **Use previous version** เพื่อย้อนกลับ แล้วกดปุ่มสลับรุ่นหรือเริ่ม updated session ใหม่ด้วยคำสั่งเดิม.
 การติดตั้งและย้อนกลับไม่ปิดแอปหรือเปลี่ยน runtime ของ session ที่กำลังทำงาน.
 ระบบนี้อัปเดต Dev OS shell, แอปและ extensions ที่มาพร้อมแพ็กเกจ; package manager ของ Linux ยังใช้ตามปกติ.
 
@@ -124,8 +131,12 @@ rollback, checksum ผิด, การติดตั้ง release แรก�
 
 ```sh
 python3 tools/update-smoke.py --output build/update-live
+# ทดสอบสลับ shell ที่กำลังเปิดอยู่ไปใช้แพ็กเกจจาก GitHub บน compositor เดิม
+python3 tools/update-smoke.py --switch --output build/update-switch
 ```
 
 คำสั่งนี้ใช้ GitHub API และ HTTPS downloader ของระบบจริง ไม่มี network mock.
 ติดตั้งใน temporary user data แยกจากผู้ใช้ แล้วเปิด Wayland แบบ headless พร้อม Files, Monaco Editor และ Settings.
 เก็บ `report.json`, log และ screenshots ไว้ใน output และลบ temporary install หลังจบ.
+ตัวเลือก `--switch` ตรวจ preflight, การปิด shell เดิม, การเปิดรุ่นใหม่เพียงครั้งเดียว และ compositor ที่คงเดิม.
+ก่อนเผยแพร่ ใช้ `--package /absolute/path/dev-os-linux-x64.tar.gz` เพื่อทดสอบ artifact ในเครื่องแทน network.

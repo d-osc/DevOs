@@ -66,7 +66,8 @@ bin/dev-os-session --nested
 
 ระบบอัปเดตและขั้นตอนสร้าง release อยู่ใน [docs/updates.md](docs/updates.md).
 เปิด **Settings → Updates → Check for updates** เพื่อค้นหารุ่นใหม่จาก `d-osc/DevOs`.
-หลังติดตั้ง ใช้ `.\dev.ps1 updated` บน Windows หรือ `bin/dev-os-updated-session --nested` บน Linux
+หลังติดตั้ง กด **Use latest version** แล้วบันทึกงานก่อนยืนยันสลับ shell ไปใช้รุ่นใหม่.
+session รุ่นก่อน 0.3.1 ต้องเปิดแพ็กเกจใหม่ครั้งแรกด้วย `.\dev.ps1 updated` บน Windows หรือ `bin/dev-os-updated-session --nested` บน Linux
 เพื่อเริ่ม session ของรุ่นที่ติดตั้งไว้; `.\dev.ps1 run` ยังใช้ source ใน checkout สำหรับพัฒนา.
 
 บนเครื่องนี้เตรียม dependencies และ private compositor ไว้แล้ว เริ่มได้จาก PowerShell:

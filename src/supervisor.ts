@@ -4,6 +4,7 @@ import GLib from 'gi://GLib';
 import {addUnixSignal} from './signals.js';
 import System from 'system';
 import {loadConfig, expandHome} from './config.js';
+import {installedSessionRoot} from './session-version.js';
 
 const loop = new GLib.MainLoop(null, false);
 interface ManagedChild {process: Gio.Subprocess; pid: string | null; done: boolean;}
@@ -11,6 +12,10 @@ const children: ManagedChild[] = [];
 let closing = false;
 let resultCode = 0;
 let deadline = 0;
+let restartRoot = '';
+let finished = false;
+const requestPath = `${GLib.get_user_runtime_dir()}/dev-os-version-${GLib.uuid_string_random()}.json`;
+GLib.setenv('DEV_OS_VERSION_REQUEST', requestPath, true);
 
 function signalGroup(child: ManagedChild, signal: 'TERM' | 'KILL') {
     try {
@@ -21,8 +26,25 @@ function signalGroup(child: ManagedChild, signal: 'TERM' | 'KILL') {
 }
 
 function finishIfReady() {
-    if (!closing || children.some(child => !child.done)) return;
+    if (finished || !closing || children.some(child => !child.done)) return;
+    finished = true;
     if (deadline) { GLib.source_remove(deadline); deadline = 0; }
+    try { if (GLib.file_test(requestPath, GLib.FileTest.EXISTS)) Gio.File.new_for_path(requestPath).delete(null); } catch (error) { printerr(String(error)); }
+    if (restartRoot) {
+        try {
+            const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
+            const oldRoot = GLib.getenv('DEV_OS_ROOT');
+            const path = (GLib.getenv('PATH') ?? '/usr/bin:/bin').split(':').filter(path => path !== `${oldRoot}/bin`).join(':');
+            const data = (GLib.getenv('XDG_DATA_DIRS') ?? '/usr/local/share:/usr/share').split(':').filter(path => path !== `${oldRoot}/data`).join(':');
+            launcher.setenv('PATH', `${restartRoot}/bin:${path}`, true);
+            launcher.setenv('XDG_DATA_DIRS', `${restartRoot}/data:${data}`, true);
+            launcher.setenv('DEV_OS_ROOT', restartRoot, true);
+            launcher.setenv('DEV_OS_SHELL', `${restartRoot}/bin/dev-os-shell`, true);
+            launcher.spawnv(['setsid', `${restartRoot}/bin/dev-os-start`]);
+            print(`Dev OS: switching session runtime to ${restartRoot}`);
+            loop.quit(); return;
+        } catch (error) { resultCode = 1; printerr(`Dev OS version switch failed: ${String(error)}`); }
+    }
     const pid = GLib.getenv('LABWC_PID') ?? '';
     if (/^[1-9][0-9]*$/.test(pid)) {
         try { Gio.Subprocess.new(['kill', '-TERM', pid], Gio.SubprocessFlags.STDERR_SILENCE).wait(null); }
@@ -54,6 +76,13 @@ function spawn(command: readonly string[], isShell = false) {
             process.wait_finish(result); child.done = true;
             if (isShell) {
                 resultCode = process.get_if_exited() ? process.get_exit_status() : 1;
+                if (!closing && GLib.file_test(requestPath, GLib.FileTest.EXISTS)) {
+                    try {
+                        const request = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(requestPath)[1])) as {root: string};
+                        if (request.root !== installedSessionRoot()) throw new Error('Requested runtime is no longer the installed selection');
+                        restartRoot = request.root;
+                    } catch (error) { printerr(`Dev OS version request rejected: ${String(error)}`); }
+                }
                 shutdown();
             }
         } catch (error) { printerr((error instanceof Error ? error.message : String(error))); child.done = true; resultCode = 1; shutdown(); }
