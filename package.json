@@ -1,17 +1,18 @@
 {
   "name": "dev-os-de",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "A native Wayland desktop shell using GJS, GTK and labwc",
   "scripts": {
     "dev": "npm run build && sh bin/dev-os-session --nested",
-    "check": "npm run build && gjs -m dist/config-test.js && gjs -m dist/extensions-test.js && gjs -m dist/updates-test.js",
+    "check": "npm run build && gjs -m dist/config-test.js && gjs -m dist/extensions-test.js && gjs -m dist/updates-test.js && gjs -m dist/store-test.js",
     "doctor": "sh bin/dev-os-shell doctor",
     "smoke": "npm run build && python3 tools/smoke.py",
     "build": "node tools/build.ts",
     "watch": "node tools/build.ts --watch",
     "release:package": "node tools/release.ts",
+    "extension:package": "node tools/extension-release.ts",
     "demo": "gjs -m dist/react-demo.js",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.tools.json && tsc --project tsconfig.editor.json",
     "typecheck:watch": "tsc --noEmit --watch"

@@ -25,7 +25,7 @@ function uiEntries(): Record<string, string> {
         if (manifest.id !== directory.name) throw new Error('UI package folder must match manifest ID');
         const key = manifest.entry!.slice(0, -3);
         if (['react-gtk', 'panel-view', 'launcher-view', 'background-view', 'react-demo', 'renderer-test',
-            'desktop-ui-test', 'main', 'supervisor', 'config-test', 'extensions-test', 'updates-test', 'updates-live-test'].includes(key))
+            'desktop-ui-test', 'main', 'supervisor', 'config-test', 'extensions-test', 'updates-test', 'updates-live-test', 'store-test'].includes(key))
             throw new Error(`UI entry conflicts with base output ${manifest.entry}`);
         if (entries[key]) throw new Error(`Duplicate UI entry ${manifest.entry}`);
         const source = `extensions/${manifest.id}/extension`;
@@ -57,7 +57,7 @@ const options: BuildOptions = {
         'launcher-view': 'src/launcher-view.tsx', 'background-view': 'src/background-view.tsx',
         'renderer-test': 'tests/renderer.test.tsx', 'desktop-ui-test': 'tests/desktop-ui.test.tsx',
         main: 'src/main.ts', supervisor: 'src/supervisor.ts', 'config-test': 'tests/config.test.ts',
-        'extensions-test': 'tests/extensions.test.ts', 'updates-test': 'tests/updates.test.ts', 'updates-live-test': 'tests/updates-live.test.ts'},
+        'extensions-test': 'tests/extensions.test.ts', 'updates-test': 'tests/updates.test.ts', 'updates-live-test': 'tests/updates-live.test.ts', 'store-test': 'tests/store.test.ts'},
     // Desktop UI tests use the same external React runtime as every view.
     outdir: resolve(root, 'dist'), bundle: true, splitting: true, format: 'esm', platform: 'neutral',
     // Flat chunks preserve config.ts's import.meta.url fallback for ROOT.

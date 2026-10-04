@@ -30,7 +30,7 @@ function cleanup(path: Gio.File): void {
 try {
     test('system JSON manifests define UI entries and activation order', () => {
         const catalog = systemManifests();
-        assert(catalog.map(item => item.id).join(',') === 'org.devos.theme,org.devos.icons,org.devos.updates,org.devos.launcher,org.devos.settings,org.devos.files,org.devos.terminal,org.devos.editor,org.devos.background,org.devos.panel', 'Manifest order drives activation');
+        assert(catalog.map(item => item.id).join(',') === 'org.devos.theme,org.devos.icons,org.devos.updates,org.devos.store,org.devos.launcher,org.devos.settings,org.devos.files,org.devos.terminal,org.devos.editor,org.devos.background,org.devos.panel', 'Manifest order drives activation');
         const panel = catalog.find(item => item.id === 'org.devos.panel')!;
         assert(validateValues(panel, {}).spacing === 12, 'Panel defaults come from JSON');
         for (const entry of ['../main.js', '/tmp/code.js', 'https://example.com/code.js', 'module.ts']) fails(() => validateManifest({...panel, entry}));
@@ -40,7 +40,7 @@ try {
     });
     const definitions = await loadSystemExtensions();
     test('system loader imports compiled entries declared in JSON', () => {
-        assert(definitions.length === 10 && definitions.every(item => typeof item.activate === 'function'), 'Every JSON entry resolves to a UI extension');
+        assert(definitions.length === 11 && definitions.every(item => typeof item.activate === 'function'), 'Every JSON entry resolves to a UI extension');
     });
     test('system preferences persist while protecting base packages', () => {
         const panel = systemManifests().find(item => item.id === 'org.devos.panel')!;

@@ -46,6 +46,7 @@ const pageIcons: Record<string, string> = {
     'org.devos.settings': 'preferences-system-symbolic', 'org.devos.terminal': 'utilities-terminal-symbolic',
     'org.devos.theme': 'applications-graphics-symbolic',
     'org.devos.updates': 'software-update-available-symbolic',
+    'org.devos.store': 'application-x-addon-symbolic',
 };
 const sectionIcons: Record<string, string> = {
     appearance: 'applications-graphics-symbolic', panel: 'preferences-system-time-symbolic', session: 'system-run-symbolic',

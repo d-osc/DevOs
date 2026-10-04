@@ -29,7 +29,11 @@ async function main(args: string[]): Promise<number> {
         throw new Error('React bundle missing. Run npm ci and npm run build in the source tree.');
     const {DesktopShell} = await import('./shell.js');
     const {loadSystemExtensions} = await import('./extensions/system.js');
-    return await new DesktopShell({config: loadConfig(), uiDefinitions: await loadSystemExtensions()}).runAsync(['dev-os-shell', command, ...args.slice(1)]);
+    const {ExtensionManager} = await import('./extensions/manager.js');
+    const {loadUserExtensions} = await import('./extensions/user.js');
+    const preferences = new ExtensionManager();
+    const userDefinitions = await loadUserExtensions(preferences); preferences.dispose();
+    return await new DesktopShell({config: loadConfig(), uiDefinitions: await loadSystemExtensions(), userDefinitions}).runAsync(['dev-os-shell', command, ...args.slice(1)]);
 }
 
 try { System.exit(await main(ARGV)); }

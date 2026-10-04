@@ -1,0 +1,7 @@
+{
+  "id": "org.example.status", "name": "Workspace Status",
+  "description": "A small React Settings page installed from GitHub Releases.",
+  "version": "1.0.0", "apiVersion": 1, "kind": "ui", "system": false,
+  "entry": "org.example.status.js", "order": 100, "settingsVersion": 1,
+  "enabledByDefault": true, "settings": []
+}

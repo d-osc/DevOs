@@ -16,7 +16,7 @@ export interface UpdateTransport {
     get(url: string, cancel: Gio.Cancellable): Promise<{status: number; body: unknown}>;
     download(release: Release, path: string, cancel: Gio.Cancellable): Promise<void>;
 }
-function run(args: string[], cancel: Gio.Cancellable, timeoutSeconds = 60): Promise<string> {
+export function run(args: string[], cancel: Gio.Cancellable, timeoutSeconds = 60): Promise<string> {
     return new Promise((resolve, reject) => {
         let process: Gio.Subprocess;
         try { process = Gio.Subprocess.new(args, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE); }
@@ -39,7 +39,7 @@ function run(args: string[], cancel: Gio.Cancellable, timeoutSeconds = 60): Prom
         });
     });
 }
-class GitHubTransport implements UpdateTransport {
+export class GitHubTransport implements UpdateTransport {
     private session = new Soup.Session({timeout: 20, user_agent: 'DevOS-Updater'});
     get(url: string, cancel: Gio.Cancellable): Promise<{status: number; body: unknown}> {
         return new Promise((resolve, reject) => {
@@ -56,7 +56,7 @@ class GitHubTransport implements UpdateTransport {
             });
         });
     }
-    async download(release: Release, path: string, cancel: Gio.Cancellable) {
+    async download(release: Pick<Release, 'url' | 'size'>, path: string, cancel: Gio.Cancellable) {
         await run(['curl', '--fail', '--location', '--silent', '--show-error', '--proto', '=https', '--proto-redir', '=https',
             '--connect-timeout', '15', '--max-time', '300', '--max-filesize', String(release.size), '--output', path, release.url], cancel, 310);
     }
@@ -79,7 +79,7 @@ function historyAt(root: string): History {
     }
     return history;
 }
-function removeTree(path: string) {
+export function removeTree(path: string) {
     const file = Gio.File.new_for_path(path);
     if (!file.query_exists(null)) return;
     if (file.query_file_type(Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null) === Gio.FileType.DIRECTORY) {

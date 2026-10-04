@@ -13,6 +13,8 @@ UI ทั้งหมดของ shell อยู่ใน system extension pack
 | `org.devos.launcher` | React launcher และ logout confirmation |
 | `org.devos.settings` | React Settings และ generated extension forms |
 | `org.devos.files` | React file browser, async GIO และ filesystem operations |
+| `org.devos.updates` | อัปเดต desktop ผ่าน GitHub Releases |
+| `org.devos.store` | GitHub repository connections และ user extension releases |
 
 แต่ละ package มี `extension.json` เป็น manifest, `extension.ts` เป็น lifecycle source และ `index.ts` เป็น native window adapter
 และ `view.tsx` เป็น React UI (theme ใช้ `style.css`)
@@ -59,7 +61,9 @@ export default {
 Build ค้นหา UI manifests และสร้าง entry bundle ตามชื่อ `entry` ใน `dist/` ให้อัตโนมัติ
 ไม่ต้องเพิ่ม import หรือแก้ registry ใน base เมื่อเพิ่ม system UI package
 ตอน startup ตัวโหลดอ่าน JSON จาก bundled packages และ import compiled entry
-การวาง source code ใน user data directory อย่างเดียวจะไม่ activate โค้ดอัตโนมัติ
+User UI packages ที่เปิดใช้งานจะโหลดจาก `<package>/dist/<entry>` ตอนเริ่ม session.
+ใช้ [Extension Store](extension-store.md) เพื่อเชื่อม repo และติดตั้ง compiled packages จาก GitHub Releases.
+การวาง source code อย่างเดียวใน user data directory จะยังไม่ compile โค้ดให้อัตโนมัติ
 System UI เป็น base package set จึงไม่มี toggle ปิดจาก Settings ในรุ่นนี้
 
 ## JSON ของ UI extension

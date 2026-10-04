@@ -61,6 +61,7 @@ if ($Mode -eq 'updated') {
     & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/config-test.js"
     if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/extensions-test.js" }
     if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/updates-test.js" }
+    if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/store-test.js" }
 } elseif ($Mode -eq 'smoke') {
     & wsl -d Ubuntu -- env "PATH=$devPath" python3 "$linuxRoot/tools/smoke.py" --keyboard --screenshots "$linuxRoot/build/screenshots"
 } else {

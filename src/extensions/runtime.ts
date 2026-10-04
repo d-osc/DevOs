@@ -11,6 +11,7 @@ export interface UIContext {
     application: Gtk.Application;
     display: Gdk.Display;
     preferences: SettingsHost;
+    packageRoot?: string;
     windows?: WindowControls;
     settingsPages?: SettingsPages;
     registerSettingsPage?(id: string, page: ComponentType): Cleanup;

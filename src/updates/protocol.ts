@@ -27,21 +27,24 @@ export function platform(machine: string): UpdatePlatform {
     throw new Error(`No Dev OS release package is available for ${machine}`);
 }
 export function parseRelease(raw: unknown, repo: string, target: UpdatePlatform): Release {
+    return {...parseAsset(raw, repo, `dev-os-${target}.tar.gz`), platform: target};
+}
+export function parseAsset(raw: unknown, repo: string, assetName: string, maximum = MAX_PACKAGE_BYTES): Omit<Release, 'platform'> {
     repository(repo);
     if (!raw || typeof raw !== 'object') throw new Error('Invalid GitHub release response');
     const release = raw as Record<string, unknown>, tag = release.tag_name;
     const name = version(tag);
     if (release.draft === true || release.prerelease === true) throw new Error('This release is not on the stable channel');
     const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
-    const asset = assets.find(item => item.name === `dev-os-${target}.tar.gz` && item.state === 'uploaded');
-    if (!asset) throw new Error(`Release ${name} has no ${target} package`);
+    const asset = assets.find(item => item && item.name === assetName && item.state === 'uploaded');
+    if (!asset) throw new Error(`Release ${name} has no ${assetName} package`);
     const expected = `https://github.com/${repo}/releases/download/${tag}/${asset.name}`;
     if (asset.browser_download_url !== expected) throw new Error('Package URL does not belong to the selected GitHub release');
-    if (typeof asset.size !== 'number' || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > MAX_PACKAGE_BYTES)
+    if (typeof asset.size !== 'number' || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > maximum)
         throw new Error('Invalid or oversized update package');
     if (typeof asset.digest !== 'string' || !/^sha256:[a-f0-9]{64}$/i.test(asset.digest))
         throw new Error('This release has no SHA-256 digest. Re-upload its package to GitHub Releases.');
-    return {version: name, tag: String(tag), repository: repo, platform: target, url: expected, size: asset.size,
+    return {version: name, tag: String(tag), repository: repo, url: expected, size: asset.size,
         sha256: asset.digest.slice(7).toLowerCase(), notes: typeof release.body === 'string' ? release.body.slice(0, 12000) : '',
         published: typeof release.published_at === 'string' ? release.published_at : ''};
 }

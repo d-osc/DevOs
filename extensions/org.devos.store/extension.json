@@ -1,0 +1,7 @@
+{
+  "id": "org.devos.store", "name": "Extension Store",
+  "description": "Connect GitHub repositories, install release packages and manage extension updates.",
+  "version": "1.0.0", "apiVersion": 1, "kind": "ui", "system": true,
+  "entry": "org.devos.store.js", "order": 7, "settingsVersion": 1,
+  "enabledByDefault": true, "settings": []
+}

@@ -12,6 +12,9 @@ import type {UIContext} from '../src/extensions/runtime.js';
 import {mountBackground} from '../src/background-view.js';
 import {mountSettings} from '../src/settings-view.js';
 import {SettingsPages} from '../src/extensions/settings-pages.js';
+import {ExtensionStore} from '../src/extensions/store.js';
+import {StoreView} from '../extensions/org.devos.store/view.js';
+import {loadUserExtensions} from '../src/extensions/user.js';
 import {ExtensionManager} from '../src/extensions/manager.js';
 import {DEFAULTS, ROOT, validateConfig} from '../src/config.js';
 import icons, {installedIconThemes} from '../extensions/org.devos.icons/extension.js';
@@ -331,6 +334,69 @@ test('settings validates core drafts and generates extension forms', () => {
     Gio.File.new_for_path(`${temporary}/preferences/org.devos.icons.json`).delete(null);
     Gio.File.new_for_path(`${temporary}/preferences`).delete(null);
     Gio.File.new_for_path(temporary).delete(null);
+});
+asyncTest('Store connects repository releases through React controls and reports errors without installing', async () => {
+    const temporary = GLib.dir_make_tmp('dev-os-store-ui-XXXXXX');
+    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const manifest = {id: 'org.example.badge', name: 'Workspace Badge', description: 'A developer workspace badge', version: '1.0.0', apiVersion: 1,
+        settingsVersion: 1, enabledByDefault: true, settings: [{id: 'general', title: 'General', fields: [{key: 'label', title: 'Label', type: 'string', default: 'Dev'}]}]};
+    const assets = ['dev-os-extension.tar.gz', 'extension.json'].map(name => ({name, state: 'uploaded', size: 1024,
+        digest: `sha256:${'1'.repeat(64)}`, browser_download_url: `https://github.com/example/badge/releases/download/v1.0.0/${name}`}));
+    const store = new ExtensionStore(preferences, {root: `${temporary}/store`, packages: `${temporary}/packages`, transport: {
+        async get(url) { return {status: 200, body: url.endsWith('extension.json') ? manifest : {tag_name: 'v1.0.0', assets}}; },
+        async download() { throw new Error('UI discovery must not install automatically'); },
+    }});
+    const native = makeWindow(), container = new Gtk.Box(); native.add(container); const root = createRoot(container);
+    const children = () => widgets(native);
+    const byId = (id: string) => children().find(widget => widget.name === id)!;
+    const wait = async (condition: () => boolean) => { for (let index = 0; index < 500; index++) { await idle(); if (condition()) return; } throw new Error('Store UI condition not reached'); };
+    try {
+        root.render(<StoreView store={store} preferences={preferences} />); native.show(); await idle();
+        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Build your workspace'), 'Empty store renders its connection prompt');
+        (byId('store-source') as Gtk.Entry).set_text('https://github.com/example/badge');
+        (byId('store-connect') as Gtk.Button).emit('clicked');
+        await wait(() => !store.busy && Boolean(store.items[0]?.release));
+        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Workspace Badge'), 'Connected release displays its real metadata');
+        assert(children().some(widget => widget instanceof Gtk.Button && widget.get_label() === 'Install'), 'Available release gets an Install action');
+        assert(!store.items[0].installed, 'Discovery does not install');
+        (byId('store-source') as Gtk.Entry).set_text('https://example.invalid/badge'); (byId('store-connect') as Gtk.Button).emit('clicked'); await idle();
+        assert(store.error.includes('owner/repo') && children().some(widget => widget instanceof Gtk.Label && widget.get_text() === store.error), 'Invalid repository error appears in React UI');
+        (byId('store-search') as Gtk.Entry).set_text('no-match');
+        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'No matching extensions'), 'Filtering supports empty results');
+        (byId('store-search') as Gtk.Entry).set_text('');
+        (children().find(widget => widget instanceof Gtk.Button && widget.get_label() === 'Disconnect') as Gtk.Button).emit('clicked');
+        assert(store.items.length === 0, 'Disconnect action removes the source');
+    } finally { root.unmount(); native.destroy(); store.dispose(); preferences.dispose(); removeFixture(Gio.File.new_for_path(temporary)); }
+});
+if (GLib.getenv('DEV_OS_STORE_TEST_PACKAGE')) asyncTest('packaged user TSX page shares React hooks with the native desktop renderer', async () => {
+    const temporary = GLib.dir_make_tmp('dev-os-sdk-ui-XXXXXX');
+    const packaged = GLib.getenv('DEV_OS_STORE_TEST_PACKAGE')!;
+    const run = (args: string[]) => {
+        const child = Gio.Subprocess.new(args, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        const [, output, error] = child.communicate_utf8(null, null); assert(child.get_successful(), error || 'Fixture command failed'); return output!.trim();
+    };
+    const manifest = JSON.parse(run(['tar', '-xOf', packaged, 'extension/extension.json']));
+    const sha = run(['sha256sum', '--', packaged]).split(/\s+/)[0];
+    const size = Gio.File.new_for_path(packaged).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
+    const assets = ['dev-os-extension.tar.gz', 'extension.json'].map(name => ({name, state: 'uploaded', size: name.endsWith('json') ? 2048 : size,
+        digest: `sha256:${sha}`, browser_download_url: `https://github.com/example/sdk/releases/download/v${manifest.version}/${name}`}));
+    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const store = new ExtensionStore(preferences, {root: `${temporary}/store`, packages: `${temporary}/packages`, transport: {
+        async get(url) { return {status: 200, body: url.endsWith('extension.json') ? manifest : {tag_name: `v${manifest.version}`, assets}}; },
+        async download(_release, target) { Gio.File.new_for_path(packaged).copy(Gio.File.new_for_path(target), Gio.FileCopyFlags.NONE, null, null); },
+    }});
+    const native = makeWindow(), pages = new SettingsPages(); let view: ReturnType<typeof mountSettings> | undefined;
+    try {
+        await store.connect('example/sdk'); await store.install('example/sdk');
+        assert(store.items[0].installed, store.error || 'SDK package installed'); GLib.setenv('DEV_OS_ROOT', ROOT, true);
+        const definition = (await loadUserExtensions(preferences)).find(def => def.id === manifest.id)!;
+        definition.activate({registerSettingsPage: (id: string, page: Parameters<SettingsPages['register']>[1]) => pages.register(id, page)} as unknown as UIContext);
+        view = mountSettings(native, {extensions: preferences, pages, getCore: () => DEFAULTS, saveCore() {}, applied() {}}); await idle();
+        (widgets(native).find(widget => widget.name === `settings-nav-${manifest.id}`) as Gtk.Button).emit('clicked'); await idle();
+        assert((widgets(native).find(widget => widget.name === 'status-counter') as Gtk.Label).get_text() === 'Count: 0', 'Installed TSX component rendered');
+        (widgets(native).find(widget => widget.name === 'status-increment') as Gtk.Button).emit('clicked'); await idle();
+        assert((widgets(native).find(widget => widget.name === 'status-counter') as Gtk.Label).get_text() === 'Count: 1', 'Shared React hook updates the native GTK widget');
+    } finally { view?.destroy(); native.destroy(); store.dispose(); preferences.dispose(); removeFixture(Gio.File.new_for_path(temporary)); }
 });
 test('extension settings pages render and fall back after contribution cleanup', () => {
     const temporary = GLib.dir_make_tmp('dev-os-settings-pages-XXXXXX');

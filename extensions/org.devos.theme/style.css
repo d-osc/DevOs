@@ -189,6 +189,7 @@ window#settings .app-titlebar { background: #171c24; border-bottom: 1px solid #3
 window#settings .app-titlebar label { font-size: 11px; }
 window#settings .app-titlebar button:hover { background: #303a48; }
 #settings .updates-summary { padding: 20px; }
+#settings .store-extension-icon { background: #2c3c38; color: @ACCENT@; border: 1px solid #405d52; border-radius: 10px; }
 #settings .updates-details { padding: 16px; }
 #settings .updates-command { background: #171d26; border: 1px solid #445066; border-radius: 7px; padding: 10px; font-family: monospace; font-size: 11px; color: @ACCENT@; }
 window#files { background: #181b21; color: #dfe3eb; }

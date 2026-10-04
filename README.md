@@ -22,6 +22,7 @@ UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, 
 - ตัวติดตั้งและ Wayland session entry สำหรับ display manager
 - Dependency doctor, config tests และ smoke test บน Wayland compositor จริง
 - Settings → Updates: ดาวน์โหลดรุ่น stable จาก GitHub Releases, ตรวจ SHA-256 และย้อนกลับรุ่นก่อนหน้าได้
+- Settings → Extension Store: เชื่อม GitHub repo แล้วติดตั้ง/อัปเดต user extensions จาก Releases ([วิธีเผยแพร่](docs/extension-store.md))
 
 นี่เป็นฐานเริ่มต้น ยังไม่มี taskbar รายการหน้าต่าง, system tray, notification daemon,
 polkit agent และ desktop portals ในตัว

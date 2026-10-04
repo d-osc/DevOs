@@ -25,13 +25,15 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     declare quitting: boolean;
     declare extensions: ExtensionManager;
     declare uiDefinitions: UIExtension[];
+    declare userDefinitions: UIExtension[];
+    declare userRuntimes: UIRuntime[];
     declare windows: Windows | undefined;
     declare settingsPages: SettingsPages;
-    constructor(options: {config: Config; uiDefinitions: UIExtension[]}) {
+    constructor(options: {config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]}) {
         super(options as unknown as Gtk.Application.ConstructorProps);
     }
 
-    _init({config, uiDefinitions}: {config: Config; uiDefinitions: UIExtension[]}) {
+    _init({config, uiDefinitions, userDefinitions = []}: {config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]}) {
         const display = GLib.getenv('WAYLAND_DISPLAY') ?? 'default';
         const runtime = GLib.getenv('XDG_RUNTIME_DIR') ?? '';
         const instance = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256,
@@ -40,6 +42,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             flags: Gio.ApplicationFlags.HANDLES_COMMAND_LINE});
         this.config = config;
         this.uiDefinitions = uiDefinitions;
+        this.userDefinitions = userDefinitions; this.userRuntimes = [];
         this.ui = new UIRuntime();
         this.commands = new Map();
         this.messages = new Set();
@@ -68,6 +71,11 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         this.windows = new Windows();
         try { this.ui.start(this.uiDefinitions, this.uiContext()); }
         catch (error) { this.windows.destroy(); this.startupError = `UI activation failed: ${String(error)}`; this.release(); return; }
+        for (const definition of this.userDefinitions) {
+            const runtime = new UIRuntime();
+            try { runtime.start([definition], this.uiContext()); this.userRuntimes.push(runtime); }
+            catch (error) { this.extensions.diagnostics.push(`${definition.id}: ${String(error)}`); printerr(`User extension activation failed: ${definition.id}: ${String(error)}`); }
+        }
         for (const event of ['monitor-added', 'monitor-removed'] as const) {
             this.displaySignals.push(this.display.connect(event, () => GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE,
                 () => this.reconcileMonitors())));
@@ -209,6 +217,8 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         if (this.messageSource) GLib.source_remove(this.messageSource);
         this.signalSources.forEach(source => GLib.source_remove(source));
         this.displaySignals.forEach(id => this.display.disconnect(id));
+        for (const runtime of this.userRuntimes.reverse()) runtime.stop();
+        this.userRuntimes = [];
         this.ui.stop();
         this.windows?.destroy();
         this.extensions.dispose();

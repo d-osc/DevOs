@@ -28,6 +28,8 @@ jobs:
       - run: npm run build
       - name: Test update protocol and installation
         run: gjs -m dist/updates-test.js
+      - name: Test Extension Store
+        run: gjs -m dist/store-test.js
       - run: node tools/release.ts
       - name: Publish verified runtime package
         env:

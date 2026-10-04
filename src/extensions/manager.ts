@@ -7,6 +7,7 @@ import type {ExtensionInfo, SettingsHost, SettingsValues} from './types.js';
 
 export class ExtensionManager implements SettingsHost {
     private extensions = new Map<string, ExtensionInfo>();
+    private locations = new Map<string, string>();
     private listeners = new Set<() => void>();
     diagnostics: string[] = [];
     constructor(private paths = {
@@ -17,6 +18,7 @@ export class ExtensionManager implements SettingsHost {
     private file(id: string): string { return `${this.paths.preferences}/${validateExtensionId(id)}.json`; }
     reload(): void {
         const next = new Map<string, ExtensionInfo>();
+        const locations = new Map<string, string>();
         this.diagnostics = [];
         for (const origin of ['bundled', 'user'] as const) {
             const directory = Gio.File.new_for_path(this.paths[origin]);
@@ -40,13 +42,14 @@ export class ExtensionManager implements SettingsHost {
                             catch (reason) { error = reason instanceof Error ? reason.message : String(reason); state.enabled = manifest.system === true; }
                         }
                         next.set(manifest.id, {manifest, origin, state, error});
+                        locations.set(manifest.id, `${this.paths[origin]}/${entry.get_name()}`);
                         if (error) this.diagnostics.push(`${manifest.id}: ${error}`);
                     } catch (reason) { this.diagnostics.push(`${entry.get_name()}: ${reason instanceof Error ? reason.message : String(reason)}`); }
                 }
             } catch (reason) { this.diagnostics.push(`${origin}: ${reason instanceof Error ? reason.message : String(reason)}`); }
             finally { enumerator.close(null); }
         }
-        this.extensions = next; this.changed();
+        this.extensions = next; this.locations = locations; this.changed();
     }
     list(): ExtensionInfo[] {
         return [...this.extensions.values()].sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
@@ -56,6 +59,12 @@ export class ExtensionManager implements SettingsHost {
         const info = this.extensions.get(validateExtensionId(id));
         if (!info) throw new Error(`Unknown extension ${id}`);
         return JSON.parse(JSON.stringify(info)) as ExtensionInfo;
+    }
+    packagePath(id: string): string {
+        const path = this.locations.get(validateExtensionId(id));
+        if (!path) throw new Error(`Unknown extension ${id}`);
+        const target = Gio.File.new_for_path(path).query_info('standard::symlink-target', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null).get_symlink_target();
+        return target ? GLib.canonicalize_filename(target, Gio.File.new_for_path(path).get_parent()!.get_path()!) : path;
     }
     update(id: string, enabled: boolean, values: SettingsValues): void {
         const info = this.get(id);

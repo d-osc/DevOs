@@ -1,0 +1,39 @@
+name: Publish extension
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: extension
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: d-osc/DevOs
+          ref: main
+          path: toolkit
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Build toolkit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin
+          cd toolkit
+          npm ci
+          npm run build
+      - name: Package extension
+        env:
+          DEV_OS_RELEASE_VERSION: ${{ github.ref_name }}
+        run: node toolkit/tools/extension-release.ts extension output
+      - name: Publish release assets
+        working-directory: extension
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" ../output/extension.json ../output/dev-os-extension.tar.gz ../output/SHA256SUMS --verify-tag --generate-notes
