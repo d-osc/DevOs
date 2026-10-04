@@ -14,5 +14,7 @@
     {"key": "fontSize", "title": "Font size", "type": "number", "default": 14, "min": 10, "max": 28, "integer": true},
     {"key": "tabSize", "title": "Tab size", "type": "number", "default": 4, "min": 1, "max": 8, "integer": true},
     {"key": "minimap", "title": "Show minimap", "type": "boolean", "default": true}
+  ]}, {"id": "files", "title": "Open files with Editor", "description": "Choose which files open in Dev OS Editor from Files and Quick Open.", "fields": [
+    {"key": "fileAssociations", "title": "File extensions and names", "description": "Separate with commas: .ts, .tsx, .js, .json, .md, Dockerfile. Supports *.ts. Leave empty to use system defaults.", "type": "string", "default": ".ts, .tsx, .js, .jsx, .mjs, .json, .jsonc, .md, .txt, .html, .css, .scss, .py, .rs, .go, .c, .h, .cpp, .hpp, .sh, .yaml, .yml, .toml, .ini, .xml, .sql, .lua, .java, Dockerfile, Makefile"}
   ]}]
 }

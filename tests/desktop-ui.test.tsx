@@ -552,7 +552,8 @@ asyncTest('Files tabs preserve independent folders and history, close safely and
     GLib.mkdir_with_parents(`${fixture}/A/Child`, 0o700); GLib.mkdir_with_parents(`${fixture}/B`, 0o700);
     const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     preferences.update('org.devos.files', true, {homeDirectory: `${fixture}/A`});
-    const context: UIContext = {application, display, preferences, config: () => DEFAULTS,
+    let editorPath = '';
+    const context: UIContext = {application, display, preferences, config: () => DEFAULTS, openEditor: path => { editorPath = path; return true; },
         saveCore() {}, monitors: () => [display.get_monitor(0)!], runCommand: () => true, reload: () => true, quit() {}, invoke() {},
         registerCommand: () => () => {}, onMessage: () => () => {}, onMonitors: () => () => {}, onReload: () => () => {}};
     let closed = 0;
@@ -564,6 +565,14 @@ asyncTest('Files tabs preserve independent folders and history, close safely and
     const tabButton = (id: string) => widgets(files.window.get_titlebar()!).find(widget => widget.name === id) as Gtk.Button;
     try {
         const first = files.model; await ready(first, `${fixture}/A`);
+        const codePath = `${fixture}/A/example.custom`;
+        GLib.file_set_contents(codePath, 'Hello Editor');
+        preferences.update('org.devos.editor', true, {fileAssociations: '.custom'});
+        assert(await first.openPath(codePath) && editorPath === codePath, 'Configured files open in the built-in Editor from Files/Quick Open');
+        preferences.update('org.devos.editor', true, {fileAssociations: '.other'});
+        editorPath = '';
+        const otherPath = `${fixture}/A/example.other`; GLib.file_set_contents(otherPath, 'Updated association');
+        assert(await first.openPath(otherPath) && editorPath === otherPath, 'Association changes apply without restarting Files');
         await new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => { resolve(); return GLib.SOURCE_REMOVE; }));
         const initialWidth = files.window.get_allocated_width();
         await first.navigate(`${fixture}/A/Child`);

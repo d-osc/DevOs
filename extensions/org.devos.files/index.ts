@@ -1,6 +1,7 @@
 import {Gtk, Gdk, Gio, GLib} from '../../src/gtk.js';
 import type {UIContext} from '../../src/extensions/runtime.js';
 import {FileBrowser} from './model.js';
+import {opensInEditor} from '../org.devos.editor/associations.js';
 import {mountFiles} from './view.js';
 import {mountTabbedHeader, type TabDragHost} from '../../src/window-tabs.js';
 
@@ -70,6 +71,11 @@ export class Files implements TabDragHost {
         if (this.disposed) return;
         const id = this.nextId++, page = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
         const model = new FileBrowser((uri, cancel) => new Promise<void>((resolve, reject) => {
+            const path = Gio.File.new_for_uri(uri).get_path();
+            const associations = this.context.preferences.get('org.devos.editor').state.values.fileAssociations;
+            if (path && typeof associations === 'string' && opensInEditor(path, associations) && this.context.openEditor?.(path)) {
+                resolve(); return;
+            }
             Gio.AppInfo.launch_default_for_uri_async(uri, this.context.display.get_app_launch_context(), cancel, (_source, result) => {
                 try { Gio.AppInfo.launch_default_for_uri_finish(result); resolve(); } catch (error) { reject(error); }
             });

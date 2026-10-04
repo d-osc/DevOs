@@ -4,6 +4,7 @@ import {ROOT, readText, saveConfig, loadConfig} from '../src/config.js';
 import {ExtensionManager} from '../src/extensions/manager.js';
 import {validateManifest, validateState, validateValues, validateExtensionId} from '../src/extensions/schema.js';
 import {clockFormat} from '../src/extensions/clock.js';
+import {opensInEditor} from '../extensions/org.devos.editor/associations.js';
 import {UIRuntime} from '../src/extensions/runtime.js';
 import type {UIContext, UICommand} from '../src/extensions/runtime.js';
 import {systemManifests, loadSystemExtensions} from '../src/extensions/system.js';
@@ -173,5 +174,12 @@ try {
         } finally { own.dispose(); }
     });
     manager.dispose();
+    test('editor file associations match extensions and filenames without matching other files', () => {
+        for (const path of ['/work/view.TSX', '/work/a.ts', '/work/.env', '/work/Dockerfile', '/work/archive.tar.gz'])
+            assert(opensInEditor(path, '*.ts, .tsx, .env, Dockerfile, .tar.gz'), `Matches ${path}`);
+        for (const path of ['/work/a.ts.bak', '/work/photo.png', '/work/myDockerfile'])
+            assert(!opensInEditor(path, '.ts, Dockerfile'), `Does not match ${path}`);
+        assert(!opensInEditor('/work/a.ts', ''), 'Empty associations use default applications');
+    });
 } finally { cleanup(Gio.File.new_for_path(temporary)); }
 print(`${passed} extension tests passed`);

@@ -22,6 +22,9 @@ breadcrumbs, ปุ่ม Open/Save/Find/Replace แบบไอคอน, minim
 เปิด minimap เป็นค่าเริ่มต้นและรองรับ JSX ในไฟล์ `.tsx` / `.jsx`.
 
 ตั้งค่า font size, tab size และ minimap ที่ Settings → Editor.
+หัวข้อ **Open files with Editor** ระบุชนิดไฟล์ที่เปิดด้วย Editor จาก Files และ Quick Open.
+ช่อง **File extensions and names** รับรายการคั่นด้วย comma เช่น `.ts, .tsx, .json, .md, Dockerfile` หรือ `*.py`.
+กด Apply แล้วมีผลทันที; เว้นช่องว่างเพื่อใช้แอปเริ่มต้นของระบบ. การตั้งค่านี้ใช้ภายใน Dev OS Files.
 กดปุ่มรูปเฟืองใน toolbar ของ Editor หรือ **Open settings JSON** ใน Settings เพื่อเปิดไฟล์ตั้งค่าในแท็บ Editor.
 ไฟล์ของ Editor อยู่ที่ `~/.config/dev-os/extensions/org.devos.editor.json` (หรือใต้ `XDG_CONFIG_HOME`).
 ระบบสร้างไฟล์จากค่าปัจจุบันเมื่อยังไม่มีไฟล์ และไม่เขียนทับไฟล์ที่มีอยู่.
