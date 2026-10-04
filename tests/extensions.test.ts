@@ -5,6 +5,7 @@ import {ExtensionManager} from '../src/extensions/manager.js';
 import {validateManifest, validateState, validateValues, validateExtensionId} from '../src/extensions/schema.js';
 import {clockFormat} from '../src/extensions/clock.js';
 import {opensInEditor} from '../extensions/org.devos.editor/associations.js';
+import {materialIcon, setMaterialIcons} from '../extensions/org.devos.icons/material.js';
 import {UIRuntime} from '../src/extensions/runtime.js';
 import type {UIContext, UICommand} from '../src/extensions/runtime.js';
 import {systemManifests, loadSystemExtensions} from '../src/extensions/system.js';
@@ -174,6 +175,20 @@ try {
         } finally { own.dispose(); }
     });
     manager.dispose();
+    test('Material icons distinguish filenames, compound extensions, folders and safe fallbacks', () => {
+        setMaterialIcons(true);
+        assert(materialIcon('/work/view.tsx') === 'dev-os-material-react_ts', 'React TypeScript icon');
+        assert(materialIcon('/work/a.TS') === 'dev-os-material-typescript', 'Case-insensitive extension');
+        assert(materialIcon('/work/a.d.ts') !== materialIcon('/work/a.ts'), 'Compound extension takes priority');
+        assert(materialIcon('/work/package.json') !== materialIcon('/work/random.json'), 'Exact filename takes priority');
+        assert(materialIcon('/work/src', true) === 'dev-os-material-folder-src', 'Specific folder icon');
+        assert(materialIcon('/work/constructor') === 'dev-os-material-file' && materialIcon('/work/constructor', true) === 'dev-os-material-folder', 'Unknown names never resolve inherited object keys');
+        const mapping = JSON.parse(readText(`${ROOT}/extensions/org.devos.icons/material/mapping.json`));
+        for (const icon of new Set<string>(Object.values<string>({...mapping.names, ...mapping.extensions, ...mapping.folders})))
+            assert(GLib.file_test(`${ROOT}/data/icons/hicolor/scalable/apps/${icon}.svg`, GLib.FileTest.IS_REGULAR), `Asset exists for ${icon}`);
+        setMaterialIcons(false); assert(materialIcon('/work/view.tsx') === undefined, 'Material toggle falls back to GTK icons');
+        setMaterialIcons(true);
+    });
     test('editor file associations match extensions and filenames without matching other files', () => {
         for (const path of ['/work/view.TSX', '/work/a.ts', '/work/.env', '/work/Dockerfile', '/work/archive.tar.gz'])
             assert(opensInEditor(path, '*.ts, .tsx, .env, Dockerfile, .tar.gz'), `Matches ${path}`);

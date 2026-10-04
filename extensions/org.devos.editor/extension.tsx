@@ -116,7 +116,7 @@ export class EditorWindow implements TabDragHost {
         tab.surface?.configure({...(content ? {content: tab.document.content} : {}), path: tab.document.path, language: tab.document.language,
             readOnly: tab.document.loading, fontSize: Number(values.fontSize), tabSize: Number(values.tabSize), minimap: values.minimap === true});
     }
-    applyPreferences() { this.tabs.forEach(tab => this.configure(tab)); }
+    applyPreferences() { this.tabs.forEach(tab => this.configure(tab)); this.renderTabs(); }
     receive(tab: EditorTab, message: EditorMessage) {
         if (this.disposed || !this.tabs.includes(tab)) return;
         if (message.type === 'change' && typeof message.content === 'string') tab.document.edit(message.content);

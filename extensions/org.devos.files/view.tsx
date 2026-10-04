@@ -4,11 +4,16 @@ import {React, Box, Label, Button, Image, Entry, CheckButton, ScrolledWindow,
 import type {FileBrowser} from './model.js';
 import {fileKind, modifiedLabel, compactPath} from './presentation.js';
 import {FileSearch, DEFAULT_SEARCH_EXCLUDES} from './search.js';
+import {materialIcon} from '../org.devos.icons/material.js';
 import {QuickOpen} from './search-view.js';
 import type {QuickOpenHandle} from './search-view.js';
 
-export interface BrowserOptions {gridView: boolean; showHidden: boolean; searchExcludedDirectories?: string;}
+export interface BrowserOptions {gridView: boolean; showHidden: boolean; searchExcludedDirectories?: string; materialIcons?: boolean;}
 interface ViewHandle {focusAddress(): void; toggleHidden(): void; submitName(): void; setGrid(value: boolean): void; quickOpen(): void; searchKey(key: number, shift: boolean): boolean;}
+function entryIcon(entry: {path: string; directory: boolean; icon: Gio.Icon | null}) {
+    const material = materialIcon(entry.path, entry.directory);
+    return material ? Gio.ThemedIcon.new(material) : entry.icon ?? Gio.ThemedIcon.new(entry.directory ? 'folder' : 'text-x-generic');
+}
 function FilesView({model, search, options, handle, copyPath}: {model: FileBrowser; search: FileSearch; options: BrowserOptions; handle: React.Ref<ViewHandle>; copyPath(path: string): void}) {
     const [state, update] = useState(model.state);
     const [grid, setGrid] = useState(options.gridView), [hidden, setHidden] = useState(options.showHidden);
@@ -55,7 +60,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                 </Button>)}
                 <Label className="eyebrow" xalign={0} marginTop={22} marginBottom={4}>FOLDERS HERE</Label>
                 {folders.map(entry => <Button key={entry.path} className="folder-shortcut" tooltip={entry.path} onClicked={() => { void model.navigate(entry.path); }}>
-                    <Box spacing={8}><Image iconName="folder-symbolic" pixelSize={14} /><Label className="mono" xalign={0} ellipsize={Pango.EllipsizeMode.END} maxWidthChars={19} expand>{entry.name}</Label></Box>
+                    <Box spacing={8}><Image iconName={materialIcon(entry.path, true) ?? 'folder-symbolic'} pixelSize={14} /><Label className="mono" xalign={0} ellipsize={Pango.EllipsizeMode.END} maxWidthChars={19} expand>{entry.name}</Label></Box>
                 </Button>)}
                 {!folders.length && <Label className="subtle" xalign={0}>No subfolders</Label>}
                 <Box orientation="vertical" expand />
@@ -113,7 +118,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                         onSelectedChildrenChanged={box => model.select(entries[box.get_selected_children()[0]?.get_index()]?.path ?? null)}>
                         {entries.map(entry => <FlowBoxChild key={entry.path} tooltip={entry.path} className={state.selected === entry.path ? 'selected-file' : ''}>
                             <Box className="file-card" orientation="vertical" spacing={10} borderWidth={14} widthRequest={126}>
-                                <Box spacing={12}><Image gicon={entry.icon ?? Gio.ThemedIcon.new(entry.directory ? 'folder' : 'text-x-generic')} pixelSize={36} expand />
+                                <Box spacing={12}><Image gicon={entryIcon(entry)} pixelSize={36} expand />
                                     <Label className={`type-badge kind-${fileKind(entry).color}`} valign="start">{fileKind(entry).tag}</Label></Box>
                                 <Label className="file-name mono" xalign={0} maxWidthChars={19} ellipsize={Pango.EllipsizeMode.MIDDLE}>{entry.label}</Label>
                                 <Label className="subtle" xalign={0}>{entry.directory ? fileKind(entry).label : GLib.format_size(entry.size)}</Label>
@@ -124,7 +129,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                         onRowActivated={(_list, row) => open(row.get_index())}>
                         {entries.map(entry => <ListBoxRow key={entry.path} tooltip={entry.label} className={state.selected === entry.path ? 'selected-file' : ''}>
                             <Box spacing={12} borderWidth={8}>
-                                <Image gicon={entry.icon ?? Gio.ThemedIcon.new('text-x-generic')} pixelSize={20} />
+                                <Image gicon={entryIcon(entry)} pixelSize={20} />
                                 <Label className="file-name mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE} maxWidthChars={38} expand>{entry.label}</Label>
                                 <Label className={`file-type kind-${fileKind(entry).color}`} xalign={0} widthRequest={106}>{fileKind(entry).label}</Label>
                                 <Label className="subtle mono" xalign={1} widthRequest={72}>{entry.directory ? '—' : GLib.format_size(entry.size)}</Label>

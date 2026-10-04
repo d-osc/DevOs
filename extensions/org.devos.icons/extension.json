@@ -1,7 +1,7 @@
 {
   "id": "org.devos.icons",
   "name": "Theme icons",
-  "description": "Choose the GTK icon theme used by the desktop shell. Installed icon themes are read from the GTK icon search paths.",
+  "description": "Material file and folder icons with a configurable GTK icon theme for desktop controls.",
   "version": "1.0.0",
   "apiVersion": 1,
   "kind": "ui",
@@ -15,7 +15,8 @@
     "title": "Icon appearance",
     "fields": [
       {"key": "themeName", "title": "Icon theme name", "type": "string", "default": "Adwaita", "description": "Installed theme directory name, for example Adwaita. Missing themes fall back to the session icon theme."},
-      {"key": "useSystemTheme", "title": "Use the session icon theme", "type": "boolean", "default": false, "description": "Use the icon theme that was active before this extension started."}
+      {"key": "useSystemTheme", "title": "Use the session icon theme", "type": "boolean", "default": false, "description": "Use the icon theme that was active before this extension started."},
+      {"key": "materialFiles", "title": "Material file and folder icons", "type": "boolean", "default": true, "description": "Use bundled Material Icon Theme icons in Files, Quick Open and Editor tabs."}
     ]
   }]
 }

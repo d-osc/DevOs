@@ -2,6 +2,7 @@ import {Gtk, Gdk, Gio, GLib} from '../../src/gtk.js';
 import type {UIContext} from '../../src/extensions/runtime.js';
 import {FileBrowser} from './model.js';
 import {opensInEditor} from '../org.devos.editor/associations.js';
+import {materialIcon} from '../org.devos.icons/material.js';
 import {mountFiles} from './view.js';
 import {mountTabbedHeader, type TabDragHost} from '../../src/window-tabs.js';
 
@@ -59,12 +60,12 @@ export class Files implements TabDragHost {
     }
     private options() {
         const values = this.context.preferences.get('org.devos.files').state.values;
-        return {gridView: values.gridView === true, showHidden: values.showHidden === true, searchExcludedDirectories: typeof values.searchExcludedDirectories === 'string' ? values.searchExcludedDirectories : undefined};
+        return {gridView: values.gridView === true, showHidden: values.showHidden === true, materialIcons: this.context.preferences.get('org.devos.icons').state.values.materialFiles !== false, searchExcludedDirectories: typeof values.searchExcludedDirectories === 'string' ? values.searchExcludedDirectories : undefined};
     }
     private renderTabs() {
         this.header.update({tabs: this.tabs.map(tab => ({id: tab.id,
             label: tab.model.state.directory === GLib.get_home_dir() ? 'Home' : GLib.path_get_basename(tab.model.state.directory) || 'Files',
-            tooltip: tab.model.state.directory, iconName: 'folder-symbolic'})), active: this.active,
+            tooltip: tab.model.state.directory, iconName: materialIcon(tab.model.state.directory, true) ?? 'folder-symbolic'})), active: this.active,
             select: id => this.selectTab(id), close: id => this.closeTab(id), add: () => this.addTab(), drag: this});
     }
     addTab(directory = this.tabs.length ? this.model.state.directory : '~') {
@@ -132,7 +133,7 @@ export class Files implements TabDragHost {
         tab.unsubscribe(); tab.model.dispose(); tab.view.destroy(); this.stack.remove(tab.page); tab.page.destroy();
         if (this.active === id) this.selectTab(this.tabs[Math.min(index, this.tabs.length - 1)].id); else this.renderTabs();
     }
-    update() { for (const tab of this.tabs) tab.view.update(this.options()); }
+    update() { for (const tab of this.tabs) tab.view.update(this.options()); this.renderTabs(); }
     show() { this.window.show(); this.window.present(); }
     destroy() {
         if (this.disposed) return; this.disposed = true;

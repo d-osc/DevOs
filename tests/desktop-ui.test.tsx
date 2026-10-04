@@ -20,6 +20,7 @@ import {UpdatesView} from '../extensions/org.devos.updates/view.js';
 import {ExtensionManager} from '../src/extensions/manager.js';
 import {DEFAULTS, ROOT, validateConfig} from '../src/config.js';
 import icons, {installedIconThemes} from '../extensions/org.devos.icons/extension.js';
+import {materialIcon} from '../extensions/org.devos.icons/material.js';
 import {FileBrowser} from '../extensions/org.devos.files/model.js';
 import {mountFiles} from '../extensions/org.devos.files/view.js';
 import {Files} from '../extensions/org.devos.files/index.js';
@@ -457,6 +458,14 @@ test('icon theme changes live, falls back and restores settings on cleanup', () 
     assert(installedIconThemes(theme).includes('Adwaita'), 'Default theme is installed');
     const cleanup = icons.activate({display, preferences: extensions, onReload: () => () => {}});
     assert(settings.gtk_icon_theme_name === 'Adwaita', 'Manifest default applies at activation');
+    for (const [path, directory] of [['view.tsx', false], ['package.json', false], ['src', true], ['unknown.bin', false]] as const) {
+        const name = materialIcon(path, directory)!;
+        const resolved = theme.lookup_icon(name, 32, Gtk.IconLookupFlags.FORCE_SIZE);
+        assert(resolved && resolved.get_filename()?.includes('/data/icons/'), `Material SVG resolves from bundled assets: ${name}`);
+        assert(resolved!.load_icon().get_width() === 32, `Material SVG renders at requested size: ${name}`);
+    }
+    extensions.update('org.devos.icons', true, {materialFiles: false});
+    assert(materialIcon('view.tsx') === undefined, 'Material settings toggle restores GTK file icons');
     extensions.update('org.devos.icons', true, {themeName: testTheme, useSystemTheme: false});
     assert(settings.gtk_icon_theme_name === testTheme, 'Preferences notification changes GTK theme');
     assert(theme.lookup_icon('folder-symbolic', 24, Gtk.IconLookupFlags.FORCE_SYMBOLIC) !== null, 'Symbolic shell icons still resolve');

@@ -3,6 +3,7 @@ import {React, Box, Label, Button, Image, SearchEntry, ScrolledWindow, ListBox, 
     useState, useLayoutEffect, useRef, useImperativeHandle} from '@dev-os/react-gtk';
 import type {FileSearch, SearchFile} from './search.js';
 import {compactPath} from './presentation.js';
+import {materialIcon} from '../org.devos.icons/material.js';
 
 export interface QuickOpenHandle {key(key: number, shift: boolean): boolean; focus(): void;}
 export function QuickOpen({search, handle, close, accept}: {
@@ -54,7 +55,7 @@ export function QuickOpen({search, handle, close, accept}: {
                 onRowActivated={(_list, row) => { const file = state.results[row.get_index()]; if (file && !search.state.pending) accept(file, false); }}>
                 {state.results.map(file => <ListBoxRow key={file.path} tooltip={file.path}>
                     <Box spacing={12} borderWidth={10}>
-                        <Image iconName="text-x-generic-symbolic" pixelSize={20} />
+                        <Image iconName={materialIcon(file.path) ?? 'text-x-generic-symbolic'} pixelSize={20} />
                         <Box orientation="vertical" spacing={4} expand>
                             <Label className="file-name mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE}>{file.name}</Label>
                             <Label className="subtle mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE}>{file.relative}</Label>
