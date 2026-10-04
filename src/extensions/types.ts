@@ -44,4 +44,6 @@ export interface SettingsHost {
     get(id: string): ExtensionInfo;
     update(id: string, enabled: boolean, values: SettingsValues): void;
     subscribe(listener: () => void): () => void;
+    settingsFile?(id: string): string;
+    reloadSettingsFile?(path: string): void;
 }

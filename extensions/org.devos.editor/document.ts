@@ -29,6 +29,7 @@ export class EditorDocument {
     get title() { return this.path ? GLib.path_get_basename(this.path) : 'Untitled'; }
     subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     private publish() { if (!this.disposed) this.listeners.forEach(listener => listener()); }
+    reportError(message: string) { this.error = message; this.publish(); }
     edit(content: string) { if (!this.disposed && !this.loading) { this.content = content; this.error = ''; this.publish(); } }
     async load(path: string): Promise<boolean> {
         if (this.disposed || this.loading || this.saving) return false;

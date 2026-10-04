@@ -7,6 +7,7 @@ import {EditorAssets} from './assets.js';
 import {MonacoSurface} from './surface.js';
 import type {EditorMessage, EditorAction} from './protocol.js';
 import {editorFileIcon} from './file-icons.js';
+import {configPath} from '../../src/config.js';
 
 interface EditorTab {
     id: number; owner: EditorWindow; document: EditorDocument; page: Gtk.Box; root: Root;
@@ -43,6 +44,7 @@ function EditorPage({tab, assets}: {tab: EditorTab; assets: Promise<EditorAssets
             <Button id="editor-save-as" tooltip="Save as · Ctrl + Shift + S" sensitive={!document.loading && !document.saving} onClicked={() => { void tab.owner.saveTab(tab, true); }}><Image iconName="document-save-as-symbolic" pixelSize={14} /></Button>
             <Button id="editor-find" tooltip="Find · Ctrl + F" sensitive={tab.surface?.ready === true} onClicked={() => find()}><Image iconName="edit-find-symbolic" pixelSize={14} /></Button>
             <Button id="editor-replace" tooltip="Replace · Ctrl + H" sensitive={tab.surface?.ready === true} onClicked={() => find(true)}><Image iconName="edit-find-replace-symbolic" pixelSize={14} /></Button>
+            <Button id="editor-settings" tooltip="Open editor settings JSON" onClicked={() => { void tab.owner.openSettings(); }}><Image iconName="preferences-system-symbolic" pixelSize={14} /></Button>
         </Box>
         <Box id="editor-monaco" ref={host} expand hexpand vexpand />
         <Box className="editor-status" spacing={14}>
@@ -180,6 +182,13 @@ export class EditorWindow implements TabDragHost {
         finally { this.dialogs.delete(dialog); dialog.destroy(); }
     }
     async chooseOpen() { const path = await this.chooseFile(false); if (path) await this.openFile(path); }
+    async openSettings(): Promise<boolean> {
+        try {
+            const path = this.context.preferences.settingsFile?.('org.devos.editor');
+            if (!path) throw new Error('Settings files are unavailable');
+            return await this.openFile(path);
+        } catch (error) { this.current?.document.reportError(String(error)); return false; }
+    }
     async saveTab(tab = this.current, saveAs = false): Promise<boolean> {
         if (!tab || this.disposed || tab.document.saving || tab.document.loading) return false;
         // Read the live model before saving, including a keystroke queued on the bridge.
@@ -190,7 +199,15 @@ export class EditorWindow implements TabDragHost {
         const path = saveAs || !tab.document.path ? await this.chooseFile(true, tab) : tab.document.path;
         if (!path || this.disposed) return false;
         const saved = await tab.document.save(path);
-        if (saved) tab.owner.configure(tab); return saved;
+        if (saved) {
+            try {
+                this.context.preferences.reloadSettingsFile?.(path);
+                if (path === configPath() && !this.context.reload()) throw new Error('Could not reload desktop settings');
+            }
+            catch (error) { tab.document.reportError(`File saved, but settings were not applied: ${String(error)}`); }
+            tab.owner.configure(tab);
+        }
+        return saved;
     }
     private async canClose(tab: EditorTab): Promise<boolean> {
         if (tab.document.saving) return false;

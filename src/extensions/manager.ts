@@ -73,6 +73,18 @@ export class ExtensionManager implements SettingsHost {
         writeJson(this.file(id), state);
         this.extensions.set(id, {...info, state}); this.changed();
     }
+    settingsFile(id: string): string {
+        const info = this.get(id), path = this.file(id);
+        // Existing files, including invalid JSON, must remain available for repair.
+        if (!GLib.file_test(path, GLib.FileTest.EXISTS)) writeJson(path, info.state);
+        return path;
+    }
+    reloadSettingsFile(path: string): void {
+        const info = [...this.extensions.values()].find(info => this.file(info.manifest.id) === path);
+        if (!info) return;
+        const state = validateState(info.manifest, JSON.parse(readText(path)));
+        this.extensions.set(info.manifest.id, {...info, state, error: undefined}); this.changed();
+    }
     subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     private changed(): void {
         for (const listener of this.listeners) {

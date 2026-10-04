@@ -23,6 +23,7 @@ export interface UIContext {
     quit(): void;
     useInstalledVersion?(root: string): Promise<void>;
     invoke(command: string, monitor?: Gdk.Monitor): void;
+    openEditor?(path: string): boolean;
     registerCommand(command: string, handler: UICommand): Cleanup;
     onMessage(handler: (message: string) => void): Cleanup;
     onMonitors(handler: () => void): Cleanup;

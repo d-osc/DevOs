@@ -149,6 +149,11 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
                 GLib.idle_add(GLib.PRIORITY_DEFAULT, () => { this.quit(); return GLib.SOURCE_REMOVE; });
             },
             invoke: (command, monitor) => this.invoke(command, monitor),
+            openEditor: path => {
+                const handler = this.commands.get('editor');
+                if (!handler) return false;
+                handler(undefined, path); return true;
+            },
             registerCommand: (command, handler) => {
                 if (this.commands.has(command)) throw new Error(`Duplicate UI command ${command}`);
                 this.commands.set(command, handler);

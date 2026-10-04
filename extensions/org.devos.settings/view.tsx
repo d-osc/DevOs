@@ -12,6 +12,7 @@ export interface SettingsServices {
     getCore(): Config;
     saveCore(value: unknown): void;
     applied(): void;
+    openSettingsFile?(id: string): void;
 }
 type Draft = Record<string, string | boolean>;
 const commandKeys = ['terminal', 'files', 'lock', 'autostart'];
@@ -224,6 +225,11 @@ function SettingsView({services}: {services: SettingsServices}) {
                 <Image iconName="preferences-desktop-symbolic" pixelSize={15} />
                 <Label className="settings-description" xalign={0} expand ellipsize={Pango.EllipsizeMode.END}>{services.getCore().name}</Label>
             </Box>
+            {services.openSettingsFile && <Button id="settings-open-json" tooltip="Open this page's settings file in Editor" onClicked={() => {
+                try { services.openSettingsFile!(selected); setNotice('Settings file opened in Editor'); }
+                catch (error) { setNotice(String(error)); }
+            }}><Box spacing={8}><Image iconName="text-x-script-symbolic" pixelSize={15} /><Label>Open settings JSON</Label></Box></Button>}
+            {CustomPage && notice && <Label className="settings-description" xalign={0} wrap>{notice}</Label>}
         </Box>
         {CustomPage ? <CustomPage key={selected} /> : <Editor key={`${selected}/${revision}`} {...page} icon={pageIcons[selected] ?? 'application-x-addon-symbolic'} core={!info} notice={notice}
             apply={(enabled, values) => {

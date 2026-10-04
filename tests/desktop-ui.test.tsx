@@ -293,14 +293,20 @@ test('background canvas and updated draw handler', () => {
 test('settings validates core drafts and generates extension forms', () => {
     const temporary = GLib.dir_make_tmp('dev-os-ui-settings-XXXXXX');
     const extensions = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
-    let core = validateConfig(DEFAULTS), applied = 0;
+    let core = validateConfig(DEFAULTS), applied = 0, openedSettings = '';
     const settingsWindow = makeWindow();
     const settings = mountSettings(settingsWindow, {extensions, getCore: () => core,
-        saveCore: value => { core = validateConfig(value); }, applied: () => { applied++; }});
+        saveCore: value => { core = validateConfig(value); }, applied: () => { applied++; }, openSettingsFile: id => { openedSettings = id; }});
     const children = () => widgets(settingsWindow);
     const click = (label: string) => (children().find(widget => widget instanceof Gtk.Button && widget.get_label() === label) as Gtk.Button).emit('clicked');
     const field = (key: string) => children().find(widget => widget.name === `settings-field-${key}`) as Gtk.Entry;
     const navigate = (id: string) => (children().find(widget => widget.name === `settings-nav-${id}`) as Gtk.Button).emit('clicked');
+    (children().find(widget => widget.name === 'settings-open-json') as Gtk.Button).emit('clicked');
+    assert(openedSettings === 'core', 'Desktop JSON action opens the selected settings file');
+    navigate('org.devos.editor');
+    (children().find(widget => widget.name === 'settings-open-json') as Gtk.Button).emit('clicked');
+    assert(openedSettings === 'org.devos.editor', 'Editor JSON action opens editor preferences');
+    navigate('core');
     const entries = () => children().filter(widget => widget instanceof Gtk.Entry && !(widget instanceof Gtk.SearchEntry)) as Gtk.Entry[];
     field('panel_height').set_text('999'); click('Apply');
     assert(applied === 0 && core.panel_height === DEFAULTS.panel_height, 'Invalid core draft must not apply');
@@ -818,6 +824,24 @@ asyncTest('Monaco Editor edits, saves, transfers tabs without restarting and pro
         if (!(confirmation instanceof Gtk.MessageDialog)) throw new Error('Close confirmation is missing');
         confirmation.response(Gtk.ResponseType.CANCEL);
         assert(!await closing && editor.document === document && document.dirty, 'Cancel closing preserves unsaved work');
+        const settingsButton = widgets(editor.window).find(widget => widget.name === 'editor-settings') as Gtk.Button;
+        settingsButton.emit('clicked');
+        const settingsPath = `${fixture}/preferences/org.devos.editor.json`;
+        await waitFor(() => editor.document?.path === settingsPath && editor.surface?.ready === true);
+        assert(editor.document?.language === 'json' && document.dirty, 'Settings opens as JSON in another tab without losing unsaved work');
+        const settingsId = editor.activeTabId, settingsSurface = editor.surface!, settingsDocument = editor.document!;
+        assert(await editor.openSettings() && editor.activeTabId === settingsId, 'Opening settings again reuses the same tab');
+        const settings = JSON.parse(settingsDocument.content);
+        settings.values.fontSize = 16; settings.values.tabSize = 2; settings.values.minimap = false;
+        await settingsSurface.evaluate(`window.devOsEditor.setValue(${JSON.stringify(JSON.stringify(settings, null, 2))})`);
+        assert(await editor.saveTab(), 'Editor saves its own settings file');
+        assert(preferences.get('org.devos.editor').state.values.fontSize === 16 && editor.editorPreferences.tabSize === 2 && editor.editorPreferences.minimap === false, 'Saving settings applies validated editor preferences live');
+        settings.values.fontSize = 999;
+        await settingsSurface.evaluate(`window.devOsEditor.setValue(${JSON.stringify(JSON.stringify(settings))})`);
+        assert(await editor.saveTab() && settingsDocument.error.includes('not applied') && editor.editorPreferences.fontSize === 16, 'Invalid settings are saved for repair but do not replace active preferences');
+        settings.values.fontSize = 18;
+        await settingsSurface.evaluate(`window.devOsEditor.setValue(${JSON.stringify(JSON.stringify(settings))})`);
+        assert(await editor.saveTab() && !settingsDocument.error && editor.editorPreferences.fontSize === 18, 'Saving corrected settings clears the error and applies them');
     } finally {
         for (const window of [...opened]) window.destroy();
         (await assets).dispose(); preferences.dispose(); removeFixture(Gio.File.new_for_path(fixture));

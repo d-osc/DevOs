@@ -22,6 +22,12 @@ breadcrumbs, ปุ่ม Open/Save/Find/Replace แบบไอคอน, minim
 เปิด minimap เป็นค่าเริ่มต้นและรองรับ JSX ในไฟล์ `.tsx` / `.jsx`.
 
 ตั้งค่า font size, tab size และ minimap ที่ Settings → Editor.
+กดปุ่มรูปเฟืองใน toolbar ของ Editor หรือ **Open settings JSON** ใน Settings เพื่อเปิดไฟล์ตั้งค่าในแท็บ Editor.
+ไฟล์ของ Editor อยู่ที่ `~/.config/dev-os/extensions/org.devos.editor.json` (หรือใต้ `XDG_CONFIG_HOME`).
+ระบบสร้างไฟล์จากค่าปัจจุบันเมื่อยังไม่มีไฟล์ และไม่เขียนทับไฟล์ที่มีอยู่.
+แก้ค่าใน `values` แล้วกด Ctrl+S เพื่อบันทึกและใช้ค่าทันที. หาก JSON หรือค่าไม่ถูกต้อง
+Editor จะแสดง error และคงค่าที่กำลังใช้อยู่ไว้ ให้แก้ไขแล้วบันทึกอีกครั้ง.
+Settings ยังเปิด JSON ของ Desktop และ extension ที่เลือกอยู่ได้ด้วยปุ่มเดียวกัน.
 ไฟล์รองรับ UTF-8 ขนาดไม่เกิน 8 MB; ปฏิเสธ binary และ encoding ที่ไม่ใช่ UTF-8.
 แสดงจุดเมื่อมีการแก้ไข เตือนก่อนปิด และตรวจ etag ก่อนบันทึกเพื่อป้องกันการเขียนทับไฟล์ที่เปลี่ยนจากภายนอก.
 การปิด session ยังคงใช้ขั้นตอน Log out ของ desktop; ควรบันทึกงานก่อนออกจากระบบ.

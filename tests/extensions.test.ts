@@ -154,6 +154,24 @@ try {
         assert(readText(path) === before && loadConfig(path).name === 'Extension test', 'Core save validates before persistence');
         assert(!Object.hasOwn(loadConfig(path), 'extensions'), 'Core config schema unchanged');
     });
+    test('editable settings files preserve existing content and validate before live application', () => {
+        const own = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/json-user`, preferences: `${temporary}/json-preferences`});
+        try {
+            const path = own.settingsFile('org.devos.editor');
+            const original = readText(path), state = JSON.parse(original);
+            assert(state.values.fontSize === 14 && state.enabled && state.version === 1, 'Missing file contains current typed defaults');
+            state.values.fontSize = 18; file(path, state); own.reloadSettingsFile(path);
+            assert(own.get('org.devos.editor').state.values.fontSize === 18, 'Valid saved JSON updates active settings');
+            GLib.file_set_contents(path, '{ invalid JSON');
+            assert(own.settingsFile('org.devos.editor') === path && readText(path) === '{ invalid JSON', 'Opening invalid existing files never replaces their contents');
+            fails(() => own.reloadSettingsFile(path));
+            assert(own.get('org.devos.editor').state.values.fontSize === 18, 'Invalid JSON keeps the last applied values');
+            state.values.fontSize = 999; file(path, state); fails(() => own.reloadSettingsFile(path));
+            assert(own.get('org.devos.editor').state.values.fontSize === 18, 'Invalid field values are not applied');
+            state.values.fontSize = 16; file(path, state); own.reloadSettingsFile(path);
+            assert(own.get('org.devos.editor').state.values.fontSize === 16, 'Corrected file can be applied');
+        } finally { own.dispose(); }
+    });
     manager.dispose();
 } finally { cleanup(Gio.File.new_for_path(temporary)); }
 print(`${passed} extension tests passed`);
