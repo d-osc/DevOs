@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.theme",
+  "name": "Theme",
+  "description": "Base desktop styling.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.theme.js",
+  "order": 0,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

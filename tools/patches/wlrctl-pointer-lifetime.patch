@@ -1,0 +1,25 @@
+--- a/pointer.c
++++ b/pointer.c
+@@ -1,4 +1,6 @@
++#define _DEFAULT_SOURCE
+ #include <assert.h>
++#include <unistd.h>
+ #include <linux/input-event-codes.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -188,8 +190,15 @@
+ 	);
+ 	switch (cmd->action) {
+ 	case POINTER_ACTION_CLICK:
++		pointer_move(cmd->device, wl_fixed_from_int(1), 0);
++		wl_display_roundtrip(state->display);
++		usleep(100000);
+ 		pointer_press(cmd->device, cmd->button);
++		wl_display_roundtrip(state->display);
++		usleep(200000);
+ 		pointer_release(cmd->device, cmd->button);
++		wl_display_roundtrip(state->display);
++		usleep(200000);
+ 		break;
+ 	case POINTER_ACTION_MOTION:
+ 		pointer_move(cmd->device, cmd->dx, cmd->dy);

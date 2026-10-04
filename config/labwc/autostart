@@ -1,0 +1,4 @@
+#!/bin/sh
+# The dev-os-session supervisor starts the shell through labwc --startup.
+# Keep services in ~/.config/dev-os/config.json for managed shutdown.
+

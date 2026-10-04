@@ -1,0 +1,69 @@
+diff --git a/include/view.h b/include/view.h
+index c24fa3d..36fc843 100644
+--- a/include/view.h
++++ b/include/view.h
+@@ -250,6 +250,7 @@ struct xdg_toplevel_view {
+ 
+ 	/* Events unique to xdg-toplevel views */
+ 	struct wl_listener set_app_id;
++	struct wl_listener request_show_window_menu;
+ 	struct wl_listener new_popup;
+ };
+ 
+diff --git a/src/xdg.c b/src/xdg.c
+index dc9acc9..5d667d0 100644
+--- a/src/xdg.c
++++ b/src/xdg.c
+@@ -7,6 +7,7 @@
+ #include "common/mem.h"
+ #include "decorations.h"
+ #include "labwc.h"
++#include "menu/menu.h"
+ #include "node.h"
+ #include "view.h"
+ #include "view-impl-common.h"
+@@ -219,6 +220,7 @@ handle_destroy(struct wl_listener *listener, void *data)
+ 
+ 	/* Remove xdg-shell view specific listeners */
+ 	wl_list_remove(&xdg_toplevel_view->set_app_id.link);
++	wl_list_remove(&xdg_toplevel_view->request_show_window_menu.link);
+ 	wl_list_remove(&xdg_toplevel_view->new_popup.link);
+ 
+ 	if (view->pending_configure_timeout) {
+@@ -245,6 +247,28 @@ handle_request_move(struct wl_listener *listener, void *data)
+ 	interactive_begin(view, LAB_INPUT_STATE_MOVE, 0);
+ }
+ 
++static void
++handle_request_show_window_menu(struct wl_listener *listener, void *data)
++{
++	struct xdg_toplevel_view *xdg_view = wl_container_of(listener,
++		xdg_view, request_show_window_menu);
++	struct view *view = &xdg_view->base;
++	struct server *server = view->server;
++	struct wlr_xdg_toplevel_show_window_menu_event *event = data;
++	if (!view->mapped || event->seat->seat != server->seat.seat
++			|| !wlr_seat_validate_pointer_grab_serial(server->seat.seat,
++				xdg_view->xdg_surface->surface, event->serial)
++			|| (server->input_mode != LAB_INPUT_STATE_PASSTHROUGH
++				&& server->input_mode != LAB_INPUT_STATE_MENU)) {
++		return;
++	}
++	struct menu *menu = menu_get_by_id(server, "client-menu");
++	if (menu) {
++		menu->triggered_by_view = view;
++		menu_open(menu, server->seat.cursor->x, server->seat.cursor->y);
++	}
++}
++
+ static void
+ handle_request_resize(struct wl_listener *listener, void *data)
+ {
+@@ -787,6 +811,7 @@ xdg_surface_new(struct wl_listener *listener, void *data)
+ 
+ 	/* Events specific to XDG toplevel views */
+ 	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, set_app_id);
++	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, request_show_window_menu);
+ 	CONNECT_SIGNAL(xdg_surface, xdg_toplevel_view, new_popup);
+ 
+ 	wl_list_insert(&server->views, &view->link);

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dev OS Terminal
+Comment=Native terminal with the Dev OS window header
+Exec=dev-os-shell terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;console;command;

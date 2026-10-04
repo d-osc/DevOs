@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<labwc_config>
+  <core><gap>12</gap></core>
+  <theme>
+    <name>DevOS</name>
+    <cornerRadius>8</cornerRadius>
+    <font place="ActiveWindow"><name>Sans</name><size>10</size></font>
+  </theme>
+  <focus><followMouse>no</followMouse><raiseOnFocus>yes</raiseOnFocus></focus>
+  <desktops number="4"><popupTime>700</popupTime></desktops>
+  <keyboard>
+    <default />
+    <keybind key="W-Return"><action name="Execute" command="dev-os-shell terminal" /></keybind>
+    <keybind key="W-space"><action name="Execute" command="dev-os-shell launcher" /></keybind>
+    <keybind key="W-e"><action name="Execute" command="dev-os-shell files" /></keybind>
+    <keybind key="W-l"><action name="Execute" command="dev-os-shell lock" /></keybind>
+    <keybind key="W-S-r"><action name="Execute" command="dev-os-shell reload" /></keybind>
+    <keybind key="W-1"><action name="GoToDesktop" to="1" /></keybind>
+    <keybind key="W-2"><action name="GoToDesktop" to="2" /></keybind>
+    <keybind key="W-3"><action name="GoToDesktop" to="3" /></keybind>
+    <keybind key="W-4"><action name="GoToDesktop" to="4" /></keybind>
+    <keybind key="W-S-1"><action name="SendToDesktop" to="1" /></keybind>
+    <keybind key="W-S-2"><action name="SendToDesktop" to="2" /></keybind>
+    <keybind key="W-S-3"><action name="SendToDesktop" to="3" /></keybind>
+    <keybind key="W-S-4"><action name="SendToDesktop" to="4" /></keybind>
+    <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
+    <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
+    <keybind key="W-Up"><action name="ToggleMaximize" /></keybind>
+  </keyboard>
+  <mouse><default /></mouse>
+  <libinput><device category="touchpad"><tap>yes</tap><naturalScroll>yes</naturalScroll></device></libinput>
+</labwc_config>
+

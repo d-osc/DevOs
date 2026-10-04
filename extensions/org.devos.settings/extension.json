@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.settings",
+  "name": "Settings",
+  "description": "Base settings window and extension preferences.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.settings.js",
+  "order": 20,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

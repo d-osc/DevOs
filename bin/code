@@ -1,0 +1,12 @@
+#!/bin/sh
+# Open the Linux editor inside the Dev OS session, including on WSL.
+set -eu
+if [ ! -x /usr/bin/code ]; then
+    printf '%s\n' 'Install the Linux Visual Studio Code package first.' >&2
+    exit 1
+fi
+export DONT_PROMPT_WSL_INSTALL=1
+if [ "${XDG_SESSION_TYPE:-}" = wayland ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    set -- --ozone-platform=wayland "$@"
+fi
+exec /usr/bin/code "$@"

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Dev OS
+Comment=A minimal Wayland desktop environment
+Exec=dev-os-session
+TryExec=dev-os-session
+Type=Application
+

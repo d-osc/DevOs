@@ -1,0 +1,18 @@
+{
+  "id": "org.devos.editor",
+  "name": "Editor",
+  "description": "Monaco code editor with native draggable tabs and local file editing.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.editor.js",
+  "order": 27,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": [{"id": "editor", "title": "Editor", "fields": [
+    {"key": "fontSize", "title": "Font size", "type": "number", "default": 14, "min": 10, "max": 28, "integer": true},
+    {"key": "tabSize", "title": "Tab size", "type": "number", "default": 4, "min": 1, "max": 8, "integer": true},
+    {"key": "minimap", "title": "Show minimap", "type": "boolean", "default": true}
+  ]}]
+}

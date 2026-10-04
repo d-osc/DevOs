@@ -1,0 +1,46 @@
+{
+  "name": "dev-os-de",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "A native Wayland desktop shell using GJS, GTK and labwc",
+  "scripts": {
+    "dev": "npm run build && sh bin/dev-os-session --nested",
+    "check": "npm run build && gjs -m dist/config-test.js && gjs -m dist/extensions-test.js && gjs -m dist/updates-test.js",
+    "doctor": "sh bin/dev-os-shell doctor",
+    "smoke": "npm run build && python3 tools/smoke.py",
+    "build": "node tools/build.ts",
+    "watch": "node tools/build.ts --watch",
+    "release:package": "node tools/release.ts",
+    "demo": "gjs -m dist/react-demo.js",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.tools.json && tsc --project tsconfig.editor.json",
+    "typecheck:watch": "tsc --noEmit --watch"
+  },
+  "dependencies": {
+    "monaco-editor": "0.57.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-reconciler": "0.33.0"
+  },
+  "devDependencies": {
+    "@girs/gio-2.0": "5.5.0",
+    "@girs/gjs": "5.5.0",
+    "@girs/glib-2.0": "5.5.0",
+    "@girs/glibunix-2.0": "5.5.0",
+    "@girs/gtk-3.0": "5.5.0",
+    "@girs/gtklayershell-0.1": "5.5.0",
+    "@girs/pango-1.0": "5.5.0",
+    "@girs/soup-3.0": "5.5.0",
+    "@girs/vte-2.91": "^5.5.0",
+    "@girs/webkit2-4.1": "5.5.0",
+    "@types/node": "22.18.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@types/react-reconciler": "0.33.1",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  }
+}

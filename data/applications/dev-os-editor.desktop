@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Editor
+Comment=Monaco code editor with native tabs
+Exec=dev-os-editor %F
+Icon=dev-os-editor
+Type=Application
+Terminal=false
+Categories=Development;TextEditor;Utility;
+MimeType=text/plain;text/x-source;text/javascript;application/json;
+Keywords=editor;code;monaco;typescript;

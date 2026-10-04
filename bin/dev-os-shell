@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; else root="$base/share/dev-os"; fi
+export DEV_OS_ROOT="$root"
+if [ -d "$root/build/wsl/vte/usr/lib/x86_64-linux-gnu/girepository-1.0" ]; then
+    export LD_LIBRARY_PATH="$root/build/wsl/vte/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export GI_TYPELIB_PATH="$root/build/wsl/vte/usr/lib/x86_64-linux-gnu/girepository-1.0${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+fi
+export GDK_BACKEND=wayland
+if [ ! -f "$root/dist/main.js" ]; then
+    printf '%s\n' 'TypeScript build missing. Run npm ci and npm run build.' >&2
+    exit 1
+fi
+exec gjs -m "$root/dist/main.js" "$@"
+

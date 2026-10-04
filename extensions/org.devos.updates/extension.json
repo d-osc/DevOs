@@ -1,0 +1,10 @@
+{
+  "id": "org.devos.updates", "name": "Updates",
+  "description": "Stable Dev OS releases, verified installation and rollback.",
+  "version": "1.0.0", "apiVersion": 1, "kind": "ui", "system": true,
+  "entry": "org.devos.updates.js", "order": 6, "settingsVersion": 1, "enabledByDefault": true,
+  "settings": [{"id": "source", "title": "Update source", "fields": [
+    {"key": "repository", "title": "GitHub repository", "type": "string", "default": "d-osc/DevOs"},
+    {"key": "checkOnOpen", "title": "Check when opening Updates", "type": "boolean", "default": false}
+  ]}]
+}

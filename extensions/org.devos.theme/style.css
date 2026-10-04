@@ -1,0 +1,314 @@
+* {
+  font-family: "Inter", "Noto Sans", sans-serif;
+  font-size: 13px;
+}
+window#panel {
+  background: rgba(24, 29, 39, 0.97); color: #e7ebf3;
+  border-top: 1px solid #3a4251;
+}
+#panel .panel-content { padding: 0; }
+#panel button {
+  color: #e0e7f1; background: transparent; border: 1px solid transparent;
+  box-shadow: none; text-shadow: none; padding: 1px 4px;
+  border-radius: 5px; min-height: 22px; min-width: 0;
+}
+#panel button:hover { background: #303744; border-color: #414a59; }
+#panel button:active { background: #3b4656; }
+#panel .panel-app { min-width: 18px; padding: 1px 4px; }
+#panel .panel-app image { -gtk-icon-transform: scale(0.85); }
+#panel .panel-task { padding: 1px 5px; }
+#panel .task-running { box-shadow: inset 0 -2px #8e9eaf; }
+#panel .task-active { background: #303c48; box-shadow: inset 0 -2px @ACCENT@; }
+#panel .task-minimized { box-shadow: inset 0 -2px #647386; }
+#panel .menu-button image { color: @ACCENT@; }
+#panel #panel-terminal image { color: #b5c7e8; }
+#panel #panel-files image { color: #efca77; }
+#panel .tray-button { padding: 1px 5px; }
+#panel .clock-button { padding: 0 5px; min-height: 0; }
+#panel .clock-time { font-size: 10px; color: #edf1f8; }
+#panel .clock-date { font-size: 9px; color: #b6c0d1; }
+#panel .alert-button { padding: 1px 4px; }
+#panel .has-alerts image { color: @ACCENT@; }
+#panel .alert-count { background: @ACCENT@; color: #15241f; border-radius: 9px; padding: 1px 5px; font-size: 10px; font-weight: bold; }
+.panel-popup, #panel .panel-popup { background: #222833; color: #e7ebf3; border: 1px solid #485161; border-radius: 14px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35); }
+.panel-popup label, #panel .panel-popup label { color: #e7ebf3; }
+.panel-popup .popup-title, #panel .panel-popup .popup-title { font-size: 15px; font-weight: bold; }
+.panel-popup .popup-muted, .panel-popup .tile-detail, #panel .panel-popup .popup-muted, #panel .panel-popup .tile-detail { color: #a4afc1; font-size: 11px; }
+.panel-popup .calendar-date, #panel .panel-popup .calendar-date { font-size: 20px; }
+.panel-popup button, #panel .panel-popup button { background: #303846; color: #e7ebf3; border: 1px solid #465164; border-radius: 7px; box-shadow: none; text-shadow: none; padding: 6px 10px; }
+.panel-popup button:hover, #panel .panel-popup button:hover { background: #3b4658; }
+.panel-popup button:disabled, #panel .panel-popup button:disabled { color: #788395; background: #272e3a; border-color: #343e4d; }
+.panel-popup .device-tile, #panel .panel-popup .device-tile { padding: 14px 8px; }
+.panel-popup .device-on, #panel .panel-popup .device-on { background: @ACCENT@; border-color: @ACCENT@; }
+.panel-popup .device-on label, .panel-popup .device-on image, #panel .panel-popup .device-on label, #panel .panel-popup .device-on image { color: #14221e; }
+.panel-popup .popup-icon, #panel .panel-popup .popup-icon { padding: 5px 7px; }
+.panel-popup .alert-card, #panel .panel-popup .alert-card { background: #2a3240; border-radius: 9px; }
+.panel-popup .alerts-empty image, #panel .panel-popup .alerts-empty image { color: #9baac0; }
+.panel-popup .error, #panel .panel-popup .error { color: #ffb5ac; }
+.panel-popup scale, #panel .panel-popup scale { padding: 8px 0; }
+.panel-popup scale trough, #panel .panel-popup scale trough { background: #4a5363; min-height: 5px; border-radius: 3px; border: none; }
+.panel-popup scale highlight, #panel .panel-popup scale highlight { background: @ACCENT@; border: none; border-radius: 3px; }
+.panel-popup scale slider, #panel .panel-popup scale slider { background: @ACCENT@; border: 3px solid #e7ebf3; min-width: 10px; min-height: 10px; border-radius: 9px; box-shadow: none; }
+.accent { color: @ACCENT@; font-size: 22px; }
+.muted { color: #93a5b2; font-size: 11px; }
+window#launcher {
+  background: #1c212b;
+  color: #edf1f7;
+  border: 1px solid #46505f;
+  border-radius: 18px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+#launcher label { color: #edf1f7; }
+#launcher .heading { font-size: 22px; font-weight: bold; }
+#launcher .launcher-eyebrow { color: #8995a9; font-size: 9px; font-weight: bold; letter-spacing: 2px; }
+#launcher .launcher-brand { background: #293c37; border: 1px solid #3e5b4c; border-radius: 11px; }
+#launcher .launcher-brand image { color: @ACCENT@; }
+#launcher .launcher-section { color: #9da9bc; font-size: 10px; font-weight: bold; letter-spacing: 1px; }
+#launcher .launcher-count { color: #aab6c8; background: #2b323f; border-radius: 8px; padding: 2px 8px; font-size: 10px; }
+#launcher entry {
+  background: #141820;
+  color: #edf1f7;
+  border: 1px solid #394353;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: none;
+  caret-color: @ACCENT@;
+}
+#launcher entry image { color: #91a0b4; }
+#launcher entry:focus { border-color: #6da78d; box-shadow: 0 0 0 1px rgba(109, 167, 141, 0.15); }
+#launcher list { background: transparent; }
+#launcher row { border: 1px solid transparent; border-radius: 10px; margin: 0 3px 4px 0; }
+#launcher row:hover { background: #2a3240; }
+#launcher row:selected { background: #293b37; border-color: #3e5a4c; }
+#launcher row:selected:hover { background: #30483f; }
+#launcher row:focus { outline-color: @ACCENT@; outline-offset: -2px; }
+#launcher .launcher-app-icon { background: #252c38; border-radius: 9px; }
+#launcher row:selected .launcher-app-icon { background: #334b40; }
+#launcher .launcher-app-name { font-weight: bold; font-size: 13px; }
+#launcher .launcher-app-description { color: #95a2b6; font-size: 11px; }
+#launcher .launcher-row-arrow { color: #647386; }
+#launcher row:selected .launcher-row-arrow { color: @ACCENT@; }
+#launcher button {
+  background: transparent;
+  color: #e0e7f1;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  text-shadow: none;
+  padding: 7px 10px;
+  min-height: 0;
+  min-width: 0;
+}
+#launcher button:hover { background: #303a48; border-color: #455267; }
+#launcher button:focus { border-color: @ACCENT@; }
+#launcher .launcher-icon-button { padding: 7px; }
+#launcher .launcher-icon-button image { color: #9ba8ba; }
+#launcher .launcher-shortcut { background: #262d39; border-color: #394352; padding: 12px 10px; border-radius: 10px; }
+#launcher .launcher-shortcut:hover { background: #303b4b; border-color: #55647a; }
+#launcher .shortcut-terminal image { color: #a9c1ed; }
+#launcher .shortcut-files image { color: #efca77; }
+#launcher .shortcut-title { font-size: 12px; font-weight: bold; }
+#launcher .shortcut-detail { font-size: 10px; color: #9ca9bd; }
+#launcher .launcher-hint { color: #7f8ca1; font-size: 10px; }
+#launcher .launcher-message { color: #f3c491; font-size: 11px; }
+#launcher .launcher-empty { padding: 30px 10px; }
+#launcher .launcher-empty image { color: #73859a; }
+#launcher .launcher-footer { background: #171c24; border-top: 1px solid #303947; border-radius: 0 0 18px 18px; padding: 12px 16px; }
+#launcher .launcher-footer image { color: #a5b2c7; }
+#launcher .launcher-footer label { font-size: 11px; }
+#launcher .launcher-logout { color: #acb8ca; border-color: #3a4556; }
+#launcher .logout-confirm { background: #4a3030; border-color: #93605a; }
+#launcher .logout-confirm label { color: #ffc6be; }
+#launcher scrollbar { background: transparent; }
+#launcher scrollbar slider { background: #465368; border-radius: 6px; min-width: 4px; }
+window#settings { background: #1c212b; color: #edf1f7; }
+#settings label { color: #e4eaf4; }
+#settings .heading { font-size: 25px; font-weight: bold; }
+#settings .section-heading { font-size: 14px; font-weight: bold; }
+#settings .settings-description { color: #95a2b6; font-size: 11px; }
+#settings .settings-eyebrow { color: #8795ac; font-size: 9px; font-weight: bold; letter-spacing: 1px; }
+#settings .settings-sidebar { background: #171c24; border-right: 1px solid #303947; padding: 16px; }
+#settings .settings-sidebar-title { font-size: 16px; font-weight: bold; }
+#settings .settings-brand { background: #293c37; border: 1px solid #3e5b4c; border-radius: 10px; }
+#settings .settings-brand image { color: @ACCENT@; }
+#settings .settings-sidebar-footer { border-top: 1px solid #303947; padding: 13px 4px 0; }
+#settings .settings-sidebar-footer image { color: #738298; }
+#settings button { background: #2b3341; color: #e4eaf4; border: 1px solid #455064; border-radius: 7px; padding: 8px 14px; min-height: 0; min-width: 0; box-shadow: none; text-shadow: none; }
+#settings button:hover { background: #354152; border-color: #61718a; }
+#settings button:focus { border-color: @ACCENT@; }
+#settings button:disabled { background: #242b36; border-color: #343e4e; }
+#settings button:disabled label { color: #67758a; }
+#settings .settings-nav { background: transparent; border: 1px solid transparent; padding: 9px 10px; border-radius: 8px; }
+#settings .settings-nav:hover { background: #252e3b; border-color: #384459; }
+#settings .settings-nav label { color: #afbdd1; font-size: 12px; }
+#settings .settings-nav image { color: #8191a8; }
+#settings .settings-nav-active { background: #293b37; border-color: #3e5a4c; }
+#settings .settings-nav-active:hover { background: #30483f; border-color: #547761; }
+#settings .settings-nav-active label, #settings .settings-nav-active image { color: @ACCENT@; }
+#settings .settings-nav label.settings-nav-state { font-size: 8px; font-weight: bold; color: #718096; }
+#settings .settings-nav label.nav-on { color: @ACCENT@; }
+#settings .settings-nav-count { color: #a5b2c7; background: #29313e; border-radius: 6px; padding: 1px 6px; font-size: 9px; }
+#settings .settings-page-header { border-bottom: 1px solid #303947; padding: 20px 24px; }
+#settings .settings-form { padding: 20px 24px; }
+#settings .settings-page-icon { background: #293c37; border: 1px solid #3e5b4c; border-radius: 12px; }
+#settings .settings-page-icon image { color: @ACCENT@; }
+#settings .settings-badge { border-radius: 6px; padding: 4px 8px; font-size: 9px; font-weight: bold; }
+#settings .badge-base, #settings .badge-off { background: #2b3341; color: #9aabc3; }
+#settings .badge-on { background: #293b37; color: @ACCENT@; }
+#settings .settings-card { background: #232a35; border: 1px solid #394352; border-radius: 12px; }
+#settings .settings-card-header { background: #272f3c; border-bottom: 1px solid #394352; border-radius: 12px 12px 0 0; padding: 14px 16px; }
+#settings .settings-card-header image { color: #a3b6d2; }
+#settings .settings-field-title { font-size: 12px; font-weight: bold; }
+#settings .settings-field { padding: 12px 16px; }
+#settings .field-divider { border-top: 1px solid #333d4c; }
+#settings .settings-input-hint { color: #798aa4; font-size: 9px; }
+#settings entry { background: #171d26; color: #e4eaf4; border: 1px solid #445066; border-radius: 7px; padding: 8px 10px; min-height: 0; box-shadow: none; caret-color: @ACCENT@; }
+#settings entry:focus { border-color: #6da78d; }
+#settings entry image { color: #889bb5; }
+#settings .settings-sidebar entry { padding: 8px; font-size: 11px; }
+#settings .settings-code-input { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px; }
+#settings switch { background: #414c5e; color: #98a8c0; border: 1px solid #52617a; border-radius: 13px; min-width: 40px; min-height: 22px; padding: 1px; }
+#settings switch:checked { background: @ACCENT@; border-color: @ACCENT@; color: #29483a; }
+#settings switch slider { background: #c4cedd; border: none; border-radius: 11px; min-width: 20px; min-height: 20px; box-shadow: none; }
+#settings switch:checked slider { background: #f0fff8; }
+#settings switch:focus { outline-color: @ACCENT@; outline-offset: 2px; }
+#settings .settings-action-bar { background: #171c24; border-top: 1px solid #303947; padding: 14px 24px; }
+#settings .settings-primary { background: @ACCENT@; border-color: @ACCENT@; padding: 8px 22px; }
+#settings .settings-primary label { color: #152b23; font-size: 12px; font-weight: bold; }
+#settings .settings-primary:hover { background: #a7ead3; border-color: #a7ead3; }
+#settings .settings-primary:disabled { background: #2e443d; border-color: #3b554c; }
+#settings .settings-primary:disabled label { color: #668f7f; }
+#settings .settings-saved { color: #81b9a0; }
+#settings .settings-pending { color: #e5bf88; }
+#settings .error { color: #ffa6a6; font-size: 11px; }
+#settings .settings-error-banner { color: #ffc1b9; background: #472d31; border: 1px solid #795053; padding: 12px; border-radius: 8px; }
+#settings .settings-empty image { color: #7c8fa9; }
+#settings scrollbar { background: transparent; }
+#settings scrollbar slider { background: #465368; border-radius: 6px; min-width: 4px; }
+window#settings .app-titlebar { background: #171c24; border-bottom: 1px solid #303947; padding: 3px 8px; min-height: 24px; }
+window#settings .app-titlebar label { font-size: 11px; }
+window#settings .app-titlebar button:hover { background: #303a48; }
+#settings .updates-summary { padding: 20px; }
+#settings .updates-details { padding: 16px; }
+#settings .updates-command { background: #171d26; border: 1px solid #445066; border-radius: 7px; padding: 10px; font-family: monospace; font-size: 11px; color: @ACCENT@; }
+window#files { background: #181b21; color: #dfe3eb; }
+.app-titlebar {
+  background: #192a35; color: #e8f0f4; border-bottom: 1px solid #426b67;
+  border-radius: 8px 8px 0 0; padding: 5px 8px; box-shadow: none; min-height: 24px;
+}
+#files .app-titlebar button, #settings .app-titlebar button, .app-titlebar button { background: transparent; border-color: transparent; padding: 4px 6px; }
+#files .app-titlebar button:hover, #settings .app-titlebar button:hover, .app-titlebar button:hover { background: #304650; }
+#files .app-titlebar image, #settings .app-titlebar image, .app-titlebar image { color: @ACCENT@; }
+#files label { color: #dfe3eb; }
+#files .mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+#files .subtle, #files .muted { color: #8993a5; font-size: 11px; }
+#files .eyebrow { color: #7f899c; font-size: 10px; font-weight: bold; }
+#files .app-title { font-size: 20px; font-weight: bold; }
+#files .folder-title { font-size: 23px; font-weight: bold; }
+#files .files-toolbar { background: #1c2028; border-bottom: 1px solid #303540; }
+#files .brand-mark { background: #263c37; border: 1px solid #37584b; border-radius: 10px; }
+#files .brand-glyph { color: @ACCENT@; font-family: monospace; font-size: 20px; font-weight: bold; }
+#files .files-sidebar { background: #14171d; border-right: 1px solid #2b303a; }
+#files button {
+  background: #252a34; color: #cbd3e0; border: 1px solid #353c49;
+  border-radius: 6px; padding: 7px 10px; box-shadow: none; text-shadow: none; min-height: 0; min-width: 0;
+}
+#files button:hover { background: #303745; border-color: #4d596c; }
+#files button:focus { border-color: @ACCENT@; }
+#files button:disabled { color: #697284; background: #1f232b; border-color: #2b313c; }
+#files button:disabled label { color: #697284; }
+#files .place-button, #files .folder-shortcut { background: transparent; border: 1px solid transparent; padding: 9px 10px; }
+#files .place-button:hover, #files .folder-shortcut:hover { background: #222832; }
+#files .place-active { background: #253830; border-color: #365245; }
+#files .place-active label { color: @ACCENT@; }
+#files .folder-shortcut { padding: 6px 10px; }
+#files .folder-shortcut label { color: #aab4c5; }
+#files .shortcut-note { border-top: 1px solid #2b303a; padding-top: 14px; }
+#files .terminal-action { background: #252e3b; border-color: #40516b; }
+#files .primary-action { background: #293f35; color: #b9efd4; border-color: #3a5b49; }
+#files .primary-action:hover { background: #355342; }
+#files .view-switch { color: #bcaaf0; }
+#files entry {
+  background: #12151b; color: #dfe3eb; border: 1px solid #353c49;
+  border-radius: 6px; padding: 8px 10px; box-shadow: none; caret-color: @ACCENT@; min-height: 20px;
+}
+#files .location-bar { background: transparent; border: none; padding: 0; }
+#files viewport { background: transparent; }
+#files entry:focus { border-color: @ACCENT@; }
+#files entry selection { background: #395748; color: #ffffff; }
+#files .local-badge { background: #253b32; color: #a6d9bb; border-radius: 5px; padding: 5px 9px; font-size: 10px; font-weight: bold; }
+#files .breadcrumbs button { background: transparent; border-color: transparent; color: #8993a5; padding: 3px 6px; font-size: 11px; }
+#files .breadcrumbs button:hover { background: #262d38; }
+#files .breadcrumbs .crumb-current { color: #b9efd4; background: #26382f; }
+#files .column-heading label { color: #7f899c; font-size: 10px; font-weight: bold; }
+#files list, #files flowbox { background: transparent; }
+#files row { border-radius: 6px; border: 1px solid transparent; margin-bottom: 2px; padding: 0; }
+#files row:hover { background: #222832; }
+#files row:selected, #files row.selected-file { background: #293b34; border-color: #3b5849; }
+#files flowboxchild { background: #20252e; border: 1px solid #303845; border-radius: 8px; }
+#files flowboxchild:hover { background: #282f3a; border-color: #4b5669; }
+#files flowboxchild:selected, #files flowboxchild.selected-file { background: #293b34; border-color: #658e75; }
+#files .file-name { color: #e3e7ef; }
+#files .file-type { font-size: 11px; }
+#files .type-badge { background: #161b23; border-radius: 4px; padding: 4px 6px; font-size: 9px; font-weight: bold; }
+#files .kind-mint { color: #8acfa7; }
+#files .kind-blue { color: #89b7f5; }
+#files .kind-yellow { color: #dec282; }
+#files .kind-purple { color: #bfa2ee; }
+#files .kind-orange { color: #e7a07b; }
+#files .kind-neutral { color: #9da8bb; }
+#files .error { color: #ef9b9b; }
+#files .edit-strip { background: #252d39; border: 1px solid #414e62; border-radius: 7px; }
+#files .empty-message { color: #8993a5; padding: 12px; }
+#files .files-statusbar { background: #15181e; border-top: 1px solid #303540; }
+#files .status-dot { color: @ACCENT@; font-size: 9px; }
+#files .status-message { color: #a6d9bb; font-size: 11px; }
+#files scrollbar { background: transparent; }
+#files scrollbar slider { background: #3d4655; border-radius: 6px; min-width: 5px; min-height: 5px; }
+#files checkbutton { color: #aab4c5; font-size: 12px; }
+#files .quick-open { background: #1b1f27; }
+#files .quick-open entry { padding: 12px; border-color: #57735f; }
+#files .quick-open row { border-bottom: 1px solid #2a303b; }
+
+window#terminal, #terminal .terminal-surface { background: #181b21; color: #dfe3eb; }
+
+/* Browser-style tabs share the native window controls and drag area. */
+.app-titlebar.tabbed-titlebar { background: #161b22; border-bottom-color: #303845; padding: 2px 6px 0; min-height: 29px; }
+.window-tabs { padding: 0 2px; }
+.window-tab { background: transparent; border-radius: 6px 6px 0 0; border: 1px solid transparent; }
+.window-tab-active { background: #242c36; border-color: #384550; border-bottom-color: #242c36; }
+.window-tab .tab-dragging { opacity: 0.45; }
+#files .app-titlebar.tabbed-titlebar button, #terminal .app-titlebar.tabbed-titlebar button, #editor .app-titlebar.tabbed-titlebar button {
+  background: transparent; background-image: none; box-shadow: none; text-shadow: none;
+  border: 1px solid transparent; min-height: 16px; min-width: 16px; padding: 3px 4px; margin: 0;
+}
+#files .app-titlebar.tabbed-titlebar image, #terminal .app-titlebar.tabbed-titlebar image, #editor .app-titlebar.tabbed-titlebar image { color: #a6b7c8; }
+#files .app-titlebar.tabbed-titlebar button:hover, #terminal .app-titlebar.tabbed-titlebar button:hover, #editor .app-titlebar.tabbed-titlebar button:hover { background: #303b49; }
+#files .app-titlebar .tab-select, #terminal .app-titlebar .tab-select, #editor .app-titlebar .tab-select { border: none; padding: 4px 8px; min-height: 16px; min-width: 0; border-radius: 5px 0 0 0; }
+#files .app-titlebar .tab-close, #terminal .app-titlebar .tab-close, #editor .app-titlebar .tab-close { border: none; padding: 3px; min-height: 12px; min-width: 12px; border-radius: 4px; margin: 2px; }
+#files .app-titlebar .tab-add, #terminal .app-titlebar .tab-add, #editor .app-titlebar .tab-add { border: none; padding: 3px; min-height: 18px; min-width: 18px; border-radius: 5px; }
+#files .window-tab label, #terminal .window-tab label, #editor .window-tab label { color: #9eabba; font-size: 11px; }
+#files .window-tab-active label, #terminal .window-tab-active label, #editor .window-tab-active label { color: #edf2f7; }
+#files .window-tab-active image, #terminal .window-tab-active image, #editor .window-tab-active image { color: @ACCENT@; }
+#files .app-titlebar.tabbed-titlebar .titlebutton.close:hover, #terminal .app-titlebar.tabbed-titlebar .titlebutton.close:hover, #editor .app-titlebar.tabbed-titlebar .titlebutton.close:hover { background: #ba4f5c; }
+#files .app-titlebar.tabbed-titlebar .titlebutton.close:hover image, #terminal .app-titlebar.tabbed-titlebar .titlebutton.close:hover image, #editor .app-titlebar.tabbed-titlebar .titlebutton.close:hover image { color: #ffffff; }
+
+window#editor, #editor .editor-body { background: #24292e; color: #e1e4e8; }
+#editor .app-titlebar.tabbed-titlebar { background: #1f2428; border-bottom: 1px solid #1b2024; padding: 0 6px; }
+#editor .window-tab { border-radius: 0; border: 0; border-right: 1px solid #191e22; }
+#editor .window-tab-active { background: #24292e; }
+#editor .window-tab label { color: #959da5; font-size: 12px; }
+#editor .window-tab-active label { color: #e1e4e8; font-style: italic; }
+#editor .app-titlebar .tab-select { padding: 5px 8px; border-radius: 0; }
+#editor .app-titlebar .tab-close { border-radius: 3px; }
+#editor .editor-toolbar { background: #24292e; padding: 2px 8px 2px 16px; }
+#editor .editor-toolbar button { background: transparent; background-image: none; box-shadow: none; color: #959da5; border: none; border-radius: 3px; padding: 3px; min-height: 16px; min-width: 16px; }
+#editor .editor-toolbar button:hover { background: #343b43; color: #e1e4e8; }
+#editor .editor-toolbar button:disabled { color: #697588; }
+#editor .breadcrumb { color: #959da5; font-size: 12px; }
+#editor .breadcrumb-file { color: #b1bac4; }
+#editor .editor-toolbar image { color: #959da5; }
+#editor .subtle { color: #959da5; font-size: 11px; }
+#editor .mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px; }
+#editor .editor-status { background: #1f2428; border-top: 1px solid #1b2024; padding: 3px 12px; }
+#editor .error { color: #f28b82; font-size: 11px; }

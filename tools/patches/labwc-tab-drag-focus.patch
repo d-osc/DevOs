@@ -1,0 +1,18 @@
+diff --git a/src/input/cursor.c b/src/input/cursor.c
+index b06a9ca..0dc4938 100644
+--- a/src/input/cursor.c
++++ b/src/input/cursor.c
+@@ -440,7 +440,12 @@ cursor_update_common(struct server *server, struct cursor_context *ctx,
+ 		 * cursor image will be set by request_cursor_notify()
+ 		 * in response to the enter event.
+ 		 */
+-		bool has_focus = (ctx->surface ==
++		/*
++		 * A data-device drag has its own focus, even when it stays on
++		 * the surface that already had pointer focus. Let the drag grab
++		 * receive enter; wlroots ignores repeated enters on that surface.
++		 */
++		bool has_focus = !seat->drag.active && (ctx->surface ==
+ 			wlr_seat->pointer_state.focused_surface);
+ 
+ 		if (!has_focus || seat->server_cursor != LAB_CURSOR_CLIENT) {

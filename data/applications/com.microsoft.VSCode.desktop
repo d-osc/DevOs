@@ -1,0 +1,19 @@
+[Desktop Entry]
+Name=Visual Studio Code
+Comment=Code Editing. Redefined.
+GenericName=Text Editor
+Exec=code %F
+TryExec=/usr/bin/code
+Icon=vscode
+Type=Application
+StartupNotify=false
+StartupWMClass=com.microsoft.VSCode
+Categories=TextEditor;Development;IDE;
+MimeType=application/x-code-workspace;
+Actions=new-empty-window;
+Keywords=vscode;code;
+
+[Desktop Action new-empty-window]
+Name=New Empty Window
+Exec=code --new-window %F
+Icon=vscode

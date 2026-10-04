@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.background",
+  "name": "Background",
+  "description": "Base wallpaper surfaces on every monitor.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.background.js",
+  "order": 30,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

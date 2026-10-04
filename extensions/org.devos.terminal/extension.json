@@ -1,0 +1,36 @@
+{
+  "id": "org.devos.terminal",
+  "name": "Terminal",
+  "description": "Native terminal with the shared application header and VTE shell.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.terminal.js",
+  "order": 26,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": [
+    {
+      "id": "terminal",
+      "title": "Terminal",
+      "fields": [
+        {
+          "key": "font",
+          "title": "Font",
+          "type": "string",
+          "default": "Monospace 11"
+        },
+        {
+          "key": "scrollback",
+          "title": "Scrollback lines",
+          "type": "number",
+          "default": 10000,
+          "min": 100,
+          "max": 100000,
+          "integer": true
+        }
+      ]
+    }
+  ]
+}

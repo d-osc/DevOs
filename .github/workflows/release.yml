@@ -1,0 +1,35 @@
+name: Publish Dev OS release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      DEV_OS_RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs gir1.2-soup-3.0 curl
+      - run: npm ci
+      - run: npm run build
+      - name: Test update protocol and installation
+        run: gjs -m dist/updates-test.js
+      - run: node tools/release.ts
+      - name: Publish verified runtime package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/release/dev-os-linux-x64.tar.gz build/release/SHA256SUMS --verify-tag --generate-notes --title "Dev OS $GITHUB_REF_NAME"

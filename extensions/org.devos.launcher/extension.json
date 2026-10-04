@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.launcher",
+  "name": "Launcher",
+  "description": "Base application launcher and session controls.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.launcher.js",
+  "order": 10,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

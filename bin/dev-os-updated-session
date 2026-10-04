@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+# Selection is committed atomically by the updater. Resolve an immutable release
+# before starting GJS so later updates cannot change a running session's modules.
+root=$(gjs -c 'const GLib = imports.gi.GLib; const base = GLib.get_user_data_dir() + "/dev-os-updates"; const raw = GLib.file_get_contents(base + "/history.json")[1]; const item = JSON.parse(new TextDecoder().decode(raw)).current; if (!item || !/^\d+\.\d+\.\d+-[a-f0-9]{12}$/.test(item.key)) throw new Error("No installed Dev OS release"); const path = base + "/releases/" + item.key; if (!GLib.file_test(path + "/release.json", GLib.FileTest.IS_REGULAR)) throw new Error("Installed release missing"); print(path);') || {
+    printf '%s\n' 'Install a release in Settings → Updates first.' >&2
+    exit 1
+}
+exec "$root/bin/dev-os-session" "$@"
