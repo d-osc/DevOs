@@ -18,6 +18,11 @@ Terminal, Files, Editor และ native apps ที่เป็นของ she
 เลข Running เปลี่ยนเมื่อ process ใหม่เริ่มทำงาน ไม่ถูกเปลี่ยนเพียงเพราะดาวน์โหลดเสร็จ.
 รุ่น 0.2.0/0.3.0 ที่เปิดอยู่ยังไม่มี protocol นี้ ให้ใช้คำสั่งด้านล่างเพื่อเปิด 0.3.1 ครั้งแรก.
 
+ตั้งแต่ 0.3.5 launcher เตรียม optional VTE runtime ให้ supervisor ก่อนเริ่ม GJS
+เพื่อส่งต่อ `GI_TYPELIB_PATH` และ `LD_LIBRARY_PATH` ไปยัง shell รุ่นใหม่ด้วย.
+รองรับการรับต่อจาก supervisor เก่าด้วยการหา VTE ข้าง private WSL tools ใน PATH.
+บน Linux ที่ติดตั้ง VTE ใน system paths อยู่แล้วจะไม่เพิ่ม dependency paths.
+
 ```powershell
 # Windows / WSLg, จาก checkout นี้
 .\dev.ps1 updated
@@ -139,4 +144,5 @@ python3 tools/update-smoke.py --switch --output build/update-switch
 ติดตั้งใน temporary user data แยกจากผู้ใช้ แล้วเปิด Wayland แบบ headless พร้อม Files, Monaco Editor และ Settings.
 เก็บ `report.json`, log และ screenshots ไว้ใน output และลบ temporary install หลังจบ.
 ตัวเลือก `--switch` ตรวจ preflight, การปิด shell เดิม, การเปิดรุ่นใหม่เพียงครั้งเดียว และ compositor ที่คงเดิม.
+ทดสอบเปิด Terminal และ PTY หลังสลับรุ่นด้วย โดยไม่ตั้งค่า VTE environment ล่วงหน้าให้ launcher.
 ก่อนเผยแพร่ ใช้ `--package /absolute/path/dev-os-linux-x64.tar.gz` เพื่อทดสอบ artifact ในเครื่องแทน network.

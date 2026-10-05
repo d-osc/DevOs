@@ -4,5 +4,6 @@ base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; else root="$base/share/dev-os"; fi
 export DEV_OS_ROOT="$root"
 export DEV_OS_SHELL="$base/bin/dev-os-shell"
+. "$base/bin/dev-os-runtime-env"
 exec gjs -m "$root/dist/supervisor.js"
 

@@ -30,6 +30,8 @@ jobs:
         run: gjs -m dist/updates-test.js
       - name: Test Extension Store
         run: gjs -m dist/store-test.js
+      - name: Test session dependency environment
+        run: python3 tests/runtime-env.test.py
       - run: node tools/release.ts
       - name: Publish verified runtime package
         env:

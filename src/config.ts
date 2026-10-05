@@ -8,7 +8,7 @@ export interface Config {
     clock_format: string; terminal: string[]; files: string[]; lock: string[]; autostart: string[][];
 }
 declare const __DEV_OS_VERSION__: string;
-export const VERSION = typeof __DEV_OS_VERSION__ === 'string' ? __DEV_OS_VERSION__ : '0.3.4';
+export const VERSION = typeof __DEV_OS_VERSION__ === 'string' ? __DEV_OS_VERSION__ : '0.3.5';
 export const ROOT = GLib.getenv('DEV_OS_ROOT') ??
     Gio.File.new_for_uri(import.meta.url).get_parent()!.get_parent()!.get_path()!;
 export const DEFAULTS: Readonly<Config> = Object.freeze({

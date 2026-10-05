@@ -49,7 +49,12 @@ def main():
         if args.package:
             env['DEV_OS_UPDATE_TEST_PACKAGE'] = str(args.package.resolve())
         vte = ROOT / 'build/wsl/vte/usr/lib/x86_64-linux-gnu'
-        if vte.exists():
+        if args.switch:
+            # Match dev.ps1 run: the session launcher must prepare optional VTE.
+            # Injecting it here previously masked loss at supervisor handoff.
+            for key in ('GI_TYPELIB_PATH', 'LD_LIBRARY_PATH', 'DEV_OS_VTE_RUNTIME'):
+                env.pop(key, None)
+        elif vte.exists():
             env |= {'GI_TYPELIB_PATH': str(vte / 'girepository-1.0'), 'LD_LIBRARY_PATH': str(vte)}
         subprocess.run(['gjs', '-m', str(ROOT / 'dist/updates-live-test.js'), str(base)], env=env, check=True, timeout=360)
         report = json.loads((base / 'result.json').read_text())
@@ -124,6 +129,11 @@ def main():
                     subprocess.run(['grim', str(output / f'{name}.png')], env=child_env, check=True, timeout=10)
 
                 screenshot('updated-desktop')
+                remote('terminal')
+                wait_for(lambda: 'Dev OS Terminal ready:' in log.read_text())
+                screenshot('updated-terminal')
+                report['terminal'] = 'passed'
+                print('PASS: Terminal imports VTE and starts a real PTY after the runtime switch', flush=True)
                 remote('files')
                 wait_for(lambda: 'Dev OS Files ready' in log.read_text())
                 screenshot('updated-files')
