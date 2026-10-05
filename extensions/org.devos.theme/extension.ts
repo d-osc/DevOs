@@ -1,6 +1,7 @@
-import {Gtk} from '../../src/gtk.js';
-import {ROOT, readText} from '../../src/config.js';
-import type {UIExtension} from '../../src/extensions/runtime.js';
+import {
+    Gtk, type UIExtension, readText
+} from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
 
 export default {id: 'org.devos.theme', activate(context) {
     let provider: Gtk.CssProvider | undefined;

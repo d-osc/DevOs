@@ -1,5 +1,7 @@
-import type {UIExtension} from '../../src/extensions/runtime.js';
-import {monitorUI} from '../../src/extensions/monitor-ui.js';
+import {
+    type UIExtension
+} from '@dev-os/core';
+import {monitorUI} from '@dev-os/extensions';
 import {Background} from './index.js';
 
 export default {id: 'org.devos.background', activate(context) {

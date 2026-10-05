@@ -4,7 +4,7 @@ PREFIX ?= $(HOME)/.local
 
 build:
 	npm run build
-	sh tools/bootstrap-window-tracker.sh
+	sh tools/setup/bootstrap-window-tracker.sh
 
 check: build
 	gjs -m dist/config-test.js
@@ -18,8 +18,8 @@ run: build
 	bin/dev-os-session --nested
 
 smoke: build
-	python3 tools/smoke.py
+	python3 tools/test/smoke.py
 
 install: build
-	python3 tools/install.py --prefix "$(PREFIX)"
+	python3 tools/maintenance/install.py --prefix "$(PREFIX)"
 

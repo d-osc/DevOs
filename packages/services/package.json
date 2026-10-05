@@ -1,0 +1,39 @@
+{
+  "name": "@dev-os/services",
+  "version": "0.3.6",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./apps": {
+      "types": "./dist/apps.d.ts",
+      "import": "./dist/apps.js"
+    },
+    "./layers": {
+      "types": "./dist/layers.d.ts",
+      "import": "./dist/layers.js"
+    },
+    "./signals": {
+      "types": "./dist/signals.d.ts",
+      "import": "./dist/signals.js"
+    },
+    "./window-tabs": {
+      "types": "./dist/window-tabs.d.ts",
+      "import": "./dist/window-tabs.js"
+    },
+    "./windows": {
+      "types": "./dist/windows.d.ts",
+      "import": "./dist/windows.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@dev-os/config": "0.3.6",
+    "@dev-os/core": "0.3.6"
+  }
+}

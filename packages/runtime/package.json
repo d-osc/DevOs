@@ -1,0 +1,32 @@
+{
+  "name": "@dev-os/runtime",
+  "version": "0.3.6",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./doctor": {
+      "types": "./dist/doctor.d.ts",
+      "import": "./dist/doctor.js"
+    },
+    "./remote": {
+      "types": "./dist/remote.d.ts",
+      "import": "./dist/remote.js"
+    },
+    "./session-version": {
+      "types": "./dist/session-version.d.ts",
+      "import": "./dist/session-version.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@dev-os/config": "0.3.6",
+    "@dev-os/core": "0.3.6",
+    "@dev-os/updates": "0.3.6"
+  }
+}

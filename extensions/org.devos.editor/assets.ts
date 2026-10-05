@@ -1,13 +1,14 @@
-import {Gio, GLib} from '../../src/gtk.js';
-import {ROOT} from '../../src/config.js';
-import type Soup from '@girs/soup-3.0';
+import {
+    Gio, GLib, type SoupTypes as Soup
+} from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
 
 // Serve only the bundled editor assets on loopback. Monaco's workers need an
 // HTTP origin; file:// pages cannot start the language workers reliably.
 export class EditorAssets {
     private constructor(private server: Soup.Server, readonly uri: string) {}
     static async create() {
-        const {default: Soup} = await import('gi://Soup?version=3.0');
+        const {default: Soup} = await import('@dev-os/core').then(({Soup}) => ({default: Soup}));
         const server = new Soup.Server(), token = GLib.uuid_string_random();
         const base = Gio.File.new_for_path(`${ROOT}/dist/editor`);
         if (!base.get_child('index.html').query_exists(null)) throw new Error('Build the Monaco assets with npm run build.');

@@ -1,4 +1,6 @@
-import type {UIExtension} from '../../src/extensions/runtime.js';
+import {
+    type UIExtension
+} from '@dev-os/core';
 import {Launcher} from './index.js';
 
 export default {id: 'org.devos.launcher', activate(context) {

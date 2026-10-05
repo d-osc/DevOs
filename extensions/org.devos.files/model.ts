@@ -1,10 +1,13 @@
-import {Gio, GLib} from '../../src/gtk.js';
-import {expandHome} from '../../src/config.js';
+import {
+    Listeners, Gio, GLib
+} from '@dev-os/core';
+import {expandHome} from '@dev-os/config';
 
 export interface FileEntry {name: string; label: string; path: string; directory: boolean; hidden: boolean; size: number; modified: number; icon: Gio.Icon | null;}
 export interface FileState {directory: string; entries: FileEntry[]; selected: string | null; loading: boolean; busy: boolean; error: string; status: string; back: boolean; forward: boolean;}
 const priority = GLib.PRIORITY_DEFAULT;
 const attributes = 'standard::name,standard::display-name,standard::type,standard::size,standard::icon,standard::is-hidden,time::modified';
+const compareFileNames = new Intl.Collator(undefined, {numeric: true}).compare;
 export function validName(name: string): string {
     if (!name.trim() || name === '.' || name === '..' || name.includes('/') || name.includes('\0')) throw new Error('Enter a file name without / or special path components.');
     return name;
@@ -34,20 +37,20 @@ export async function readDirectory(path: string, cancel: Gio.Cancellable): Prom
             try { enumerator.close_finish(result); resolve(); } catch (error) { reject(error); }
         }));
     }
-    return entries.sort((a, b) => Number(b.directory) - Number(a.directory) || a.label.localeCompare(b.label, undefined, {numeric: true}));
+    return entries.sort((a, b) => Number(b.directory) - Number(a.directory) || compareFileNames(a.label, b.label));
 }
 export class FileBrowser {
     state: FileState = {directory: GLib.get_home_dir(), entries: [], selected: null, loading: false,
         busy: false, error: '', status: '', back: false, forward: false};
-    private listeners = new Set<() => void>();
+    private listeners = new Listeners();
     private history: string[] = [];
     private index = -1;
     private read: Gio.Cancellable | null = null;
     private operation: Gio.Cancellable | null = null;
     private disposed = false;
     constructor(private openFile: (uri: string, cancel: Gio.Cancellable) => Promise<void>) {}
-    subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
-    private change(next: Partial<FileState>) { if (this.disposed) return; this.state = {...this.state, ...next}; for (const listener of this.listeners) listener(); }
+    subscribe(listener: () => void): () => void { return this.listeners.subscribe(listener); }
+    private change(next: Partial<FileState>) { if (this.disposed) return; this.state = {...this.state, ...next}; this.listeners.emit(); }
     async navigate(input: string, target?: number, replace = false): Promise<boolean> {
         if (this.disposed) return false;
         this.read?.cancel(); const cancel = new Gio.Cancellable(); this.read = cancel;

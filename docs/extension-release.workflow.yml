@@ -31,7 +31,7 @@ jobs:
       - name: Package extension
         env:
           DEV_OS_RELEASE_VERSION: ${{ github.ref_name }}
-        run: node toolkit/tools/extension-release.ts extension output
+        run: node toolkit/tools/build/extension-release.ts extension output
       - name: Publish release assets
         working-directory: extension
         env:

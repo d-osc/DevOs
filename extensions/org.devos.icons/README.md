@@ -13,7 +13,7 @@ SVG และ mapping มาจาก [Material Icon Theme](https://github.com/m
 ไฟล์ไม่รู้จักใช้ Material file icon และโฟลเดอร์ทั่วไปใช้ Material folder icon. ไอคอนปุ่มและแอปยังใช้ GTK theme.
 บันเดิล SVG ไว้ใน `data/icons/hicolor/scalable/apps` จึงใช้ได้ออฟไลน์และรวมอยู่ในแพ็กเกจอัปเดต.
 clone icons ใช้ SVG ของ base icon โดยไม่ปรับสี clone. ใช้ default Angular icon pack และ specific folder theme.
-นำเข้ารุ่นใหม่ด้วย `node tools/import-material-icons.ts /path/to/reviewed/upstream-checkout` แล้วทดสอบก่อนเผยแพร่;
+นำเข้ารุ่นใหม่ด้วย `node tools/maintenance/import-material-icons.ts /path/to/reviewed/upstream-checkout` แล้วทดสอบก่อนเผยแพร่;
 การ build และเปิด desktop ตามปกติไม่ดาวน์โหลดไอคอนจาก network.
 
 Manifest และ defaults อยู่ใน `extension.json`

@@ -1,8 +1,9 @@
-import {Gtk, Gdk, Gio} from '../../src/gtk.js';
-import type WebKit2 from '@girs/webkit2-4.1';
+import {
+    Gtk, Gdk, Gio, type WebKit2Types as WebKit2
+} from '@dev-os/core';
 import type {EditorConfig, EditorMessage} from './protocol.js';
 import {EditorAssets} from './assets.js';
-import {tabDetachTarget} from '../../src/window-tabs.js';
+import {tabDetachTarget} from '@dev-os/services/window-tabs';
 
 export class MonacoSurface {
     view?: WebKit2.WebView;
@@ -17,7 +18,7 @@ export class MonacoSurface {
         private message: (message: EditorMessage) => void, private changed: () => void) { void this.start(); }
     private async start() {
         try {
-            const [{default: WebKit}, assets] = await Promise.all([import('gi://WebKit2?version=4.1'), this.assets]);
+            const [{default: WebKit}, assets] = await Promise.all([import('@dev-os/core').then(({WebKit2}) => ({default: WebKit2})), this.assets]);
             if (this.disposed) return;
             const manager = this.manager = new WebKit.UserContentManager();
             this.messageSignal = manager.connect('script-message-received::editor', (_manager, result) => {

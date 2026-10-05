@@ -1,6 +1,9 @@
-import {Gtk, Gdk, Pango} from '../../src/gtk.js';
-import {React, Box, Label, Button, Image, SearchEntry, ScrolledWindow, ListBox, ListBoxRow,
-    useState, useLayoutEffect, useRef, useImperativeHandle} from '@dev-os/react-gtk';
+import {
+    Gtk, Gdk, Pango, React, Box,
+    Label, Button, Image, SearchEntry, ScrolledWindow,
+    ListBox, ListBoxRow, useState, useLayoutEffect, useRef,
+    useImperativeHandle
+} from '@dev-os/core';
 import type {FileSearch, SearchFile} from './search.js';
 import {compactPath} from './presentation.js';
 import {materialIcon} from '../org.devos.icons/material.js';

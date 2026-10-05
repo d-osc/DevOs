@@ -1,10 +1,10 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import Pango from 'gi://Pango';
-import {React, Box, Label, Button, Entry, SearchEntry, Switch, Image, DrawingArea, ScrolledWindow,
-    createRoot, mountWindowHeader, useState, useEffect} from '@dev-os/react-gtk';
-import type {Config} from '../../src/config.js';
-import type {SettingsHost, SettingsSection, SettingsValues} from '../../src/extensions/types.js';
-import type {SettingsPages} from '../../src/extensions/settings-pages.js';
+import {
+    Gtk, Pango, React, Box, Label,
+    Button, Entry, SearchEntry, Switch, Image,
+    DrawingArea, ScrolledWindow, createRoot, mountWindowHeader, useState,
+    useEffect, type Config, type SettingsHost, type SettingsSection, type SettingsValues,
+    type SettingsPages
+} from '@dev-os/core';
 
 export interface SettingsServices {
     extensions: SettingsHost;

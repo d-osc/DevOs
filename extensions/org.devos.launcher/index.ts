@@ -1,8 +1,9 @@
-import {Gtk, Gdk, GtkLayerShell} from '../../src/gtk.js';
-import {layerWindow} from '../../src/layers.js';
+import {
+    Gtk, Gdk, GtkLayerShell, type UIContext
+} from '@dev-os/core';
+import {layerWindow} from '@dev-os/services/layers';
 import {mountLauncher} from './view.js';
-import type {UIContext} from '../../src/extensions/runtime.js';
-import {installedApps, searchApps} from '../../src/apps.js';
+import {installedApps, searchApps} from '@dev-os/services/apps';
 import Cairo from 'cairo';
 
 // Native adapter: React owns the contents and interaction state.

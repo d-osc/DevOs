@@ -1,6 +1,7 @@
+import {
+    type GtkTypes as Gtk, React, DrawingArea, createRoot
+} from '@dev-os/core';
 import Cairo from 'cairo';
-import type Gtk from '@girs/gtk-3.0';
-import {React, DrawingArea, createRoot} from '@dev-os/react-gtk';
 
 export interface BackgroundConfig {name: string; background: string; accent: string;}
 function rgb(color: string): [number, number, number] {

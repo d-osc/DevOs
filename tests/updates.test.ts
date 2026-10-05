@@ -1,9 +1,10 @@
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
+import {
+    removeTree, Gio, GLib
+} from '@dev-os/core';
 import System from 'system';
-import {ROOT} from '../src/config.js';
-import {Updates, type UpdateTransport} from '../src/updates/service.js';
-import {newer, parseRelease, validateArchive, repository, type Release} from '../src/updates/protocol.js';
+import {ROOT} from '@dev-os/config';
+import {Updates, type UpdateTransport} from '@dev-os/updates';
+import {newer, parseRelease, validateArchive, repository, type Release} from '@dev-os/updates/protocol';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function fails(callback: () => unknown) { let failed = false; try { callback(); } catch { failed = true; } assert(failed, 'Expected rejection'); }
@@ -33,15 +34,7 @@ function fixture(base: string, releaseVersion: string): {archive: string; releas
             browser_download_url: `https://github.com/d-osc/DevOs/releases/download/v${releaseVersion}/dev-os-linux-x64.tar.gz`},
     ]}};
 }
-function clean(path: string) {
-    const file = Gio.File.new_for_path(path);
-    if (file.query_file_type(Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null) === Gio.FileType.DIRECTORY) {
-        const children = file.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-        try { for (let child = children.next_file(null); child; child = children.next_file(null)) clean(`${path}/${child.get_name()}`); }
-        finally { children.close(null); }
-    }
-    file.delete(null);
-}
+
 async function main() {
     assert(newer('0.10.0', '0.2.0') && !newer('0.2.0', '0.10.0') && !newer('0.2.0', '0.2.0'), 'Numeric semver comparison');
     fails(() => repository('d-osc/../../etc')); fails(() => newer('v1.2.3-beta', '0.2.0'));
@@ -127,7 +120,7 @@ async function main() {
                 print('PASS: release packager artifact installs and its real updated session passes the dependency doctor');
             } finally { actual.dispose(); }
         }
-    } finally { updater?.dispose(); clean(base); }
+    } finally { updater?.dispose(); removeTree(base); }
 }
 const loop = new GLib.MainLoop(null, false); let failed: unknown;
 void main().catch(error => { failed = error; }).finally(() => loop.quit());

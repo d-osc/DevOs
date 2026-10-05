@@ -291,8 +291,6 @@ window#terminal, #terminal .terminal-surface { background: #181b21; color: #dfe3
 #files .window-tab label, #terminal .window-tab label, #editor .window-tab label { color: #9eabba; font-size: 11px; }
 #files .window-tab-active label, #terminal .window-tab-active label, #editor .window-tab-active label { color: #edf2f7; }
 #files .window-tab-active image, #terminal .window-tab-active image, #editor .window-tab-active image { color: @ACCENT@; }
-#files .app-titlebar.tabbed-titlebar .titlebutton.close:hover, #terminal .app-titlebar.tabbed-titlebar .titlebutton.close:hover, #editor .app-titlebar.tabbed-titlebar .titlebutton.close:hover { background: #ba4f5c; }
-#files .app-titlebar.tabbed-titlebar .titlebutton.close:hover image, #terminal .app-titlebar.tabbed-titlebar .titlebutton.close:hover image, #editor .app-titlebar.tabbed-titlebar .titlebutton.close:hover image { color: #ffffff; }
 
 window#editor, #editor .editor-body { background: #24292e; color: #e1e4e8; }
 #editor .app-titlebar.tabbed-titlebar { background: #1f2428; border-bottom: 1px solid #1b2024; padding: 0 6px; }

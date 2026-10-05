@@ -111,9 +111,9 @@ workflow ปัจจุบัน build อัตโนมัติเฉพา�
 
 ## โครงสร้างสำหรับ extension
 
-`src/updates/service.ts` ดูแลการตรวจ ดาวน์โหลด ติดตั้ง และย้อนกลับ.
-`src/updates/protocol.ts` ตรวจข้อมูล release และ archive.
-`src/extensions/settings-pages.ts` เป็น registry ใน base สำหรับ Settings page contributions.
+`packages/updates/service.ts` ดูแลการตรวจ ดาวน์โหลด ติดตั้ง และย้อนกลับ.
+`packages/updates/protocol.ts` ตรวจข้อมูล release และ archive.
+`packages/extensions/settings-pages.ts` เป็น registry ใน base สำหรับ Settings page contributions.
 UI อยู่ใน `extensions/org.devos.updates/view.tsx` แบบ React + TypeScript; configuration อยู่ใน `extension.json`.
 extension เรียก `context.registerSettingsPage(id, Component)` เพื่อแทน generic JSON form ของ extension ตัวเอง.
 เมื่อ unregister จะกลับไปใช้ form ปกติ; runtime เก็บ cleanup ของ contribution ให้อัตโนมัติ.
@@ -124,7 +124,7 @@ extension เรียก `context.registerSettingsPage(id, Component)` เพ�
 npm run build
 gjs -m dist/updates-test.js
 gjs -m dist/extensions-test.js
-python3 tools/smoke.py
+python3 tools/test/smoke.py
 ```
 
 integration test ใช้ tar จริงใน temporary directories และ mock เฉพาะ network:
@@ -135,9 +135,9 @@ rollback, checksum ผิด, การติดตั้ง release แรก�
 หลังมี public release แล้ว ทดสอบ network และ session จริงด้วย:
 
 ```sh
-python3 tools/update-smoke.py --output build/update-live
+python3 tools/test/update-smoke.py --output build/update-live
 # ทดสอบสลับ shell ที่กำลังเปิดอยู่ไปใช้แพ็กเกจจาก GitHub บน compositor เดิม
-python3 tools/update-smoke.py --switch --output build/update-switch
+python3 tools/test/update-smoke.py --switch --output build/update-switch
 ```
 
 คำสั่งนี้ใช้ GitHub API และ HTTPS downloader ของระบบจริง ไม่มี network mock.

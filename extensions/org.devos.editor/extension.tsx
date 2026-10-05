@@ -1,13 +1,16 @@
-import {Gtk, Gdk, Gio, GLib, Pango} from '../../src/gtk.js';
-import {React, Box, Label, Button, Image, createRoot, useLayoutEffect, useRef, useState, type Root} from '@dev-os/react-gtk';
-import {mountTabbedHeader, type TabDragHost} from '../../src/window-tabs.js';
-import type {UIExtension, UIContext} from '../../src/extensions/runtime.js';
+import {
+    Gtk, Gdk, Gio, GLib, Pango,
+    React, Box, Label, Button, Image,
+    createRoot, useLayoutEffect, useRef, useState, type Root,
+    type UIExtension, type UIContext
+} from '@dev-os/core';
+import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs';
 import {EditorDocument} from './document.js';
 import {EditorAssets} from './assets.js';
 import {MonacoSurface} from './surface.js';
 import type {EditorMessage, EditorAction} from './protocol.js';
 import {editorFileIcon} from './file-icons.js';
-import {configPath} from '../../src/config.js';
+import {configPath} from '@dev-os/config';
 
 interface EditorTab {
     id: number; owner: EditorWindow; document: EditorDocument; page: Gtk.Box; root: Root;

@@ -1,7 +1,8 @@
-import {React} from '@dev-os/react-gtk';
-import {ExtensionStore} from '../../src/extensions/store.js';
-import {ExtensionManager} from '../../src/extensions/manager.js';
-import type {UIExtension} from '../../src/extensions/runtime.js';
+import {
+    React, type UIExtension
+} from '@dev-os/core';
+import {ExtensionStore, ExtensionManager} from '@dev-os/extensions';
+
 import {StoreView} from './view.js';
 
 export default {id: 'org.devos.store', activate(context) {

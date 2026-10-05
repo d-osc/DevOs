@@ -1,9 +1,10 @@
-import {Gtk, Gdk, Gio, GLib, Pango} from '../../src/gtk.js';
-import {React, Box, Label, createRoot, useLayoutEffect, useRef, type Root} from '@dev-os/react-gtk';
-import {mountTabbedHeader, type TabDragHost} from '../../src/window-tabs.js';
-import type {UIExtension, UIContext} from '../../src/extensions/runtime.js';
-import type Vte from '@girs/vte-2.91';
-import type {} from '@girs/vte-2.91';
+import {
+    moveTabItem, completeTabMove, Gtk, Gdk, Gio,
+    GLib, Pango, React, Box, Label,
+    createRoot, useLayoutEffect, useRef, type Root, type UIExtension,
+    type UIContext, type VteTypes as Vte
+} from '@dev-os/core';
+import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs';
 
 function TerminalSurface({terminal}: {terminal: Vte.Terminal}) {
     const host = useRef<Gtk.Box>(null);
@@ -27,7 +28,7 @@ export class TerminalWindow implements TabDragHost {
     private disposed = false;
     private header: ReturnType<typeof mountTabbedHeader>;
     private clipboardFormat?: Vte.Format;
-    private vte = import('gi://Vte?version=2.91');
+    private vte = import('@dev-os/core').then(({Vte}) => ({default: Vte}));
     constructor(private context: UIContext, directory: string | undefined, private closed: (terminal: TerminalWindow) => void,
         private lifecycle: {empty?: boolean; opened?(terminal: TerminalWindow): void} = {}) {
         // Keep a rejected import handled until a tab displays the dependency error.
@@ -118,22 +119,15 @@ export class TerminalWindow implements TabDragHost {
     }
     moveTab(id: number, destination: TabDragHost, before?: number) {
         if (!(destination instanceof TerminalWindow) || this.disposed || destination.disposed) return;
-        const index = this.tabs.findIndex(tab => tab.id === id); if (index < 0 || (destination === this && before === id)) return;
-        const [tab] = this.tabs.splice(index, 1);
-        if (destination !== this) {
+        const moved = moveTabItem(this.tabs, destination.tabs, id, before, tab => {
             this.stack.remove(tab.page); tab.owner = destination; tab.id = destination.nextId++;
             destination.stack.add_named(tab.page, String(tab.id));
             destination.clipboardFormat = this.clipboardFormat;
-        }
-        const at = destination.tabs.findIndex(item => item.id === before);
-        destination.tabs.splice(at < 0 ? destination.tabs.length : at, 0, tab);
-        destination.selectTab(tab.id);
-        if (destination !== this) {
-            if (!this.tabs.length) this.destroy();
-            else if (this.active === id) this.selectTab(this.tabs[Math.min(index, this.tabs.length - 1)].id);
-            else this.renderTabs();
-            destination.show();
-        }
+        });
+        completeTabMove(moved, destination !== this, {
+            tabs: this.tabs, active: this.active, removed: id,
+            empty: () => this.destroy(), select: id => this.selectTab(id), refresh: () => this.renderTabs(),
+        }, destination);
     }
     private disposeTab(tab: TerminalTab) { tab.disposed = true; tab.cancel.cancel(); tab.root.unmount(); tab.terminal?.destroy(); }
     closeTab(id: number) {

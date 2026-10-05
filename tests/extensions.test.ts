@@ -1,14 +1,15 @@
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import {ROOT, readText, saveConfig, loadConfig} from '../src/config.js';
-import {ExtensionManager} from '../src/extensions/manager.js';
-import {validateManifest, validateState, validateValues, validateExtensionId} from '../src/extensions/schema.js';
-import {clockFormat} from '../src/extensions/clock.js';
+import {readText} from '@dev-os/core';
+import {
+    removeTree, Gio, GLib, UIRuntime, type UIContext,
+    type UICommand
+} from '@dev-os/core';
+import {ROOT, saveConfig, loadConfig} from '@dev-os/config';
+import {ExtensionManager, clockFormat, systemManifests, loadSystemExtensions} from '@dev-os/extensions';
+import {validateManifest, validateState, validateValues, validateExtensionId} from '@dev-os/extensions/schema';
+
 import {opensInEditor} from '../extensions/org.devos.editor/associations.js';
 import {materialIcon, setMaterialIcons} from '../extensions/org.devos.icons/material.js';
-import {UIRuntime} from '../src/extensions/runtime.js';
-import type {UIContext, UICommand} from '../src/extensions/runtime.js';
-import {systemManifests, loadSystemExtensions} from '../src/extensions/system.js';
+
 
 let passed = 0;
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
@@ -21,14 +22,7 @@ function file(path: string, content: unknown): void {
     GLib.mkdir_with_parents(Gio.File.new_for_path(path).get_parent()!.get_path()!, 0o700);
     GLib.file_set_contents(path, JSON.stringify(content));
 }
-function cleanup(path: Gio.File): void {
-    if (path.query_file_type(Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null) === Gio.FileType.DIRECTORY) {
-        const files = path.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-        try { for (let item = files.next_file(null); item; item = files.next_file(null)) cleanup(path.get_child(item.get_name())); }
-        finally { files.close(null); }
-    }
-    path.delete(null);
-}
+
 try {
     test('system JSON manifests define UI entries and activation order', () => {
         const catalog = systemManifests();
@@ -196,5 +190,5 @@ try {
             assert(!opensInEditor(path, '.ts, Dockerfile'), `Does not match ${path}`);
         assert(!opensInEditor('/work/a.ts', ''), 'Empty associations use default applications');
     });
-} finally { cleanup(Gio.File.new_for_path(temporary)); }
+} finally { removeTree(temporary); }
 print(`${passed} extension tests passed`);

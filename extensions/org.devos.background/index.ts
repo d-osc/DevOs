@@ -1,10 +1,10 @@
+import {
+    Gtk, Gdk, GtkLayerShell, type UIContext, type Config
+} from '@dev-os/core';
 import Cairo from 'cairo';
-import {Gtk, Gdk, GtkLayerShell} from '../../src/gtk.js';
-import {layerWindow} from '../../src/layers.js';
-import type {UIContext} from '../../src/extensions/runtime.js';
-import type {Config} from '../../src/config.js';
+import {layerWindow} from '@dev-os/services/layers';
 import {mountBackground} from './view.js';
-import {onTabDrag, tabDetachTarget} from '../../src/window-tabs.js';
+import {onTabDrag, tabDetachTarget} from '@dev-os/services/window-tabs';
 
 export class Background {
     window: Gtk.ApplicationWindow;

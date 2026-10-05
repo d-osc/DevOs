@@ -1,10 +1,12 @@
-import {Gtk, Gdk, Gio, GLib} from '../../src/gtk.js';
-import type {UIContext} from '../../src/extensions/runtime.js';
+import {
+    moveTabItem, completeTabMove, Gtk, Gdk, Gio,
+    GLib, type UIContext
+} from '@dev-os/core';
 import {FileBrowser} from './model.js';
 import {opensInEditor} from '../org.devos.editor/associations.js';
 import {materialIcon} from '../org.devos.icons/material.js';
 import {mountFiles} from './view.js';
-import {mountTabbedHeader, type TabDragHost} from '../../src/window-tabs.js';
+import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs';
 
 interface FileTab {id: number; owner: Files; page: Gtk.Box; model: FileBrowser; view: ReturnType<typeof mountFiles>; unsubscribe: () => void;}
 
@@ -110,21 +112,14 @@ export class Files implements TabDragHost {
     }
     moveTab(id: number, destination: TabDragHost, before?: number) {
         if (!(destination instanceof Files) || this.disposed || destination.disposed) return;
-        const index = this.tabs.findIndex(tab => tab.id === id); if (index < 0 || (destination === this && before === id)) return;
-        const [tab] = this.tabs.splice(index, 1);
-        if (destination !== this) {
+        const moved = moveTabItem(this.tabs, destination.tabs, id, before, tab => {
             this.stack.remove(tab.page); tab.owner = destination; tab.id = destination.nextId++;
             destination.stack.add_named(tab.page, String(tab.id));
-        }
-        const at = destination.tabs.findIndex(item => item.id === before);
-        destination.tabs.splice(at < 0 ? destination.tabs.length : at, 0, tab);
-        destination.selectTab(tab.id);
-        if (destination !== this) {
-            if (!this.tabs.length) this.destroy();
-            else if (this.active === id) this.selectTab(this.tabs[Math.min(index, this.tabs.length - 1)].id);
-            else this.renderTabs();
-            destination.show();
-        }
+        });
+        completeTabMove(moved, destination !== this, {
+            tabs: this.tabs, active: this.active, removed: id,
+            empty: () => this.destroy(), select: id => this.selectTab(id), refresh: () => this.renderTabs(),
+        }, destination);
     }
     closeTab(id: number) {
         const index = this.tabs.findIndex(tab => tab.id === id); if (index < 0) return;

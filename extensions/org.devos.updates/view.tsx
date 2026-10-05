@@ -1,8 +1,10 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import {React, Box, Label, Button, Entry, Switch, Image, ScrolledWindow, useState, useEffect} from '@dev-os/react-gtk';
-import type {SettingsHost} from '../../src/extensions/types.js';
-import type {Updates} from '../../src/updates/service.js';
-import {repository} from '../../src/updates/protocol.js';
+import {
+    Gtk, React, Box, Label, Button,
+    Entry, Switch, Image, ScrolledWindow, useState,
+    useEffect, type SettingsHost
+} from '@dev-os/core';
+import type {Updates} from '@dev-os/updates';
+import {repository} from '@dev-os/updates/protocol';
 
 export function UpdatesView({updater, preferences, useVersion}: {updater: Updates; preferences: SettingsHost; useVersion?: (root: string) => Promise<void>}) {
     const id = 'org.devos.updates';

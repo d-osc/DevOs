@@ -1,9 +1,10 @@
-import GLib from 'gi://GLib';
-import Gio from 'gi://Gio';
-import {ROOT, DEFAULTS, validateConfig, loadConfig, configPath, expandHome} from '../src/config.js';
-import {searchApps, findDesktopApp} from '../src/apps.js';
+import {
+    GLib, Gio
+} from '@dev-os/core';
+import {ROOT, DEFAULTS, validateConfig, loadConfig, configPath, expandHome} from '@dev-os/config';
+import {searchApps, findDesktopApp} from '@dev-os/services/apps';
 // Import the UI without constructing windows: syntax / GI binding checks.
-import {DesktopShell} from '../src/shell.js';
+import {DesktopShell} from '@dev-os/shell';
 
 let count = 0;
 function assert(condition: unknown, message = 'Assertion failed') { if (!condition) throw new Error(message); }
@@ -73,9 +74,33 @@ test('name matches rank above description and multiple terms filter', () => {
     equal(searchApps(apps, 'foot').map(app => app.get_display_name()), ['Foot', 'Browser']);
     equal(searchApps(apps, 'foot wayland').map(app => app.get_display_name()), ['Foot']);
 });
+
+test('repeated app searches reuse metadata and keep keyword matching and alphabetical ranking', () => {
+    let reads = 0;
+    const fake = (name: string) => ({get_display_name: () => { reads++; return name; },
+        get_description: () => 'Wayland tools', get_id: () => `${name}.desktop`, get_keywords: () => ['code', 'editor']});
+    const apps = [fake('Zulu'), fake('Alpha')];
+    equal(searchApps(apps, '').map(app => app.get_id()), ['Alpha.desktop', 'Zulu.desktop']);
+    const firstReads = reads;
+    equal(searchApps(apps, 'CODE wayland').map(app => app.get_id()), ['Alpha.desktop', 'Zulu.desktop']);
+    equal(searchApps(apps, 'no-match'), []);
+    assert(reads === firstReads, 'Typing another query must not reread native application metadata');
+});
 test('example config and every GJS UI module load', () => {
     assert(typeof DesktopShell === 'function');
     equal(loadConfig(`${ROOT}/config/config.json`), DEFAULTS);
+});
+
+test('remote editor arguments keep caller cwd, multiple files and spaces', () => {
+    const opened: (string | undefined)[] = [];
+    const receiver = {startupError: null, commands: new Map([
+        ['editor', (_monitor: unknown, path?: string) => { opened.push(path); }],
+    ])} as unknown as InstanceType<typeof DesktopShell>;
+    const execute = DesktopShell.prototype.handleArguments.bind(receiver);
+    equal(execute(['editor', 'first file.ts', 'file:///tmp/second%20file.ts'], '/tmp/caller directory'), 0);
+    equal(opened, ['/tmp/caller directory/first file.ts', '/tmp/second file.ts']);
+    execute(['editor'], '/tmp');
+    assert(opened.length === 3 && opened[2] === undefined, 'No file arguments still opens an empty editor');
 });
 test('taskbar resolves desktop IDs and StartupWMClass without confusing unrelated apps', () => {
     const editor = {get_id: () => 'com.microsoft.VSCode.desktop', get_startup_wm_class: () => 'Code'};

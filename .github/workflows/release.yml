@@ -23,16 +23,22 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs gir1.2-soup-3.0 curl
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
       - run: npm ci
       - run: npm run build
       - name: Test update protocol and installation
         run: gjs -m dist/updates-test.js
       - name: Test Extension Store
         run: gjs -m dist/store-test.js
+      - name: Test shared helpers and supervisor library
+        run: |
+          gjs -m dist/core-test.js
+          gjs -m dist/supervisor-test.js
       - name: Test session dependency environment
         run: python3 tests/runtime-env.test.py
-      - run: node tools/release.ts
+      - run: node tools/build/release.ts
       - name: Publish verified runtime package
         env:
           GH_TOKEN: ${{ github.token }}

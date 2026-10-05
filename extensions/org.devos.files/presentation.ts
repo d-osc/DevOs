@@ -1,4 +1,6 @@
-import {GLib} from '../../src/gtk.js';
+import {
+    GLib
+} from '@dev-os/core';
 import type {FileEntry} from './model.js';
 
 export function fileKind(entry: FileEntry): {label: string; tag: string; color: string} {

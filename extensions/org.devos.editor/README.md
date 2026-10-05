@@ -44,8 +44,8 @@ Source:
 - `browser/index.tsx`: React DOM + Monaco และ workers.
 - `extension.json`: manifest และ settings.
 
-Build ด้วย `npm run build`. `tools/smoke.py` ทดสอบ file IO, Monaco workers, save,
+Build ด้วย `npm run build`. `tools/test/smoke.py` ทดสอบ file IO, Monaco workers, save,
 dirty close cancellation และการย้ายแท็บที่รักษา undo history.
-`python3 tools/editor-smoke.py` ทดสอบเปิดหลายไฟล์จาก command line, พิมพ์แล้วกด Ctrl+S,
+`python3 tools/test/editor-smoke.py` ทดสอบเปิดหลายไฟล์จาก command line, พิมพ์แล้วกด Ctrl+S,
 ลากแท็บแยก/รวมหน้าต่าง และ Esc ด้วย input จริงใน private headless session
-(ต้องมี `wtype`, `grim`, Pillow และ pointer helpers จาก `tools/bootstrap-pointer-test.sh`).
+(ต้องมี `wtype`, `grim`, Pillow และ pointer helpers จาก `tools/setup/bootstrap-pointer-test.sh`).

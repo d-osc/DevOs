@@ -1,12 +1,14 @@
-import {React, Box, Label, Button, Image, Scale, createRoot, useState, useEffect, useLayoutEffect, useRef} from '@dev-os/react-gtk';
-import {Gtk, GLib, Gio, Gdk as NativeGdk} from '../../src/gtk.js';
-import type Gdk from '@girs/gdk-3.0';
-import type {SettingsHost} from '../../src/extensions/types.js';
-import {ROOT} from '../../src/config.js';
-import {clockFormat} from '../../src/extensions/clock.js';
+import {
+    React, Box, Label, Button, Image,
+    Scale, createRoot, useState, useEffect, useLayoutEffect,
+    useRef, Gtk, GLib, Gio, Gdk as NativeGdk,
+    type GdkTypes as Gdk, type SettingsHost
+} from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
+import {clockFormat} from '@dev-os/extensions';
 import type {DeviceControls, DeviceState} from './devices.js';
-import {windowGroup, type WindowControls, type DesktopWindow} from '../../src/windows.js';
-import {findDesktopApp} from '../../src/apps.js';
+import {windowGroup, type WindowControls, type DesktopWindow} from '@dev-os/services/windows';
+import {findDesktopApp, desktopApps as installedDesktopApps} from '@dev-os/services/apps';
 
 export interface PanelApplication {
     config: {name: string; clock_format: string};
@@ -115,13 +117,13 @@ function PanelView({application, monitor, message}: {application: PanelApplicati
     const [now, setNow] = useState(() => GLib.DateTime.new_now_local());
     const [device, setDevice] = useState(application.devices?.state ?? unavailable);
     const [windows, setWindows] = useState(application.windows?.state ?? []);
-    const [desktopApps, setDesktopApps] = useState(() => Gio.AppInfo.get_all());
+    const [desktopApps, setDesktopApps] = useState(installedDesktopApps);
     useEffect(() => {
         const appMonitor = Gio.AppInfoMonitor.get();
         const screen = NativeGdk.Display.get_default()!.get_default_screen();
         const update = () => {
             Gtk.IconTheme.get_for_screen(screen).rescan_if_needed();
-            setDesktopApps(Gio.AppInfo.get_all());
+            setDesktopApps(installedDesktopApps());
         };
         const signal = appMonitor.connect('changed', update);
         update();

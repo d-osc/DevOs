@@ -1,6 +1,7 @@
-import {React} from '@dev-os/react-gtk';
-import {Updates} from '../../src/updates/service.js';
-import type {UIExtension} from '../../src/extensions/runtime.js';
+import {
+    React, type UIExtension
+} from '@dev-os/core';
+import {Updates} from '@dev-os/updates';
 import {UpdatesView} from './view.js';
 
 export default {id: 'org.devos.updates', activate(context) {

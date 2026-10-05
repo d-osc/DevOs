@@ -34,7 +34,7 @@ package มี root directory ชื่อ `extension/`:
 extension/
   extension.json
   dist/<entry>.js       สำหรับ kind: ui
-  dist/react-gtk.js     shim เพื่อใช้ React GTK runtime ของ desktop
+  dist/core.js     shim เพื่อใช้ React GTK runtime ของ desktop
   assets/              optional
   icons/               optional
   style.css            optional
@@ -49,7 +49,7 @@ draft, prerelease และ asset ที่ไม่มี SHA-256 digest ถู
 ## สร้าง package
 
 มีตัวอย่าง React UI ที่ `examples/extensions/org.example.status/`.
-ใช้ Dev OS toolkit ที่มี `tools/extension-release.ts` (Node.js 24+ และ tar):
+ใช้ Dev OS toolkit ที่มี `tools/build/extension-release.ts` (Node.js 24+ และ tar):
 
 ```sh
 npm ci
@@ -62,11 +62,11 @@ npm run extension:package -- examples/extensions/org.example.status
 สำหรับ source ของ extension repo แยก ให้เรียก CLI ของ toolkit โดยส่ง path ไปยัง directory ที่มี manifest:
 
 ```sh
-node /path/to/dev-os/tools/extension-release.ts /path/to/my-extension /path/to/output
+node /path/to/dev-os/tools/build/extension-release.ts /path/to/my-extension /path/to/output
 gh release create v1.0.0 /path/to/output/extension.json /path/to/output/dev-os-extension.tar.gz /path/to/output/SHA256SUMS --title "My extension 1.0.0" --generate-notes
 ```
 
-UI source ชื่อ `extension.tsx` หรือ `extension.ts`. Import React และ GTK components จาก `@dev-os/react-gtk`.
+UI source ชื่อ `extension.tsx` หรือ `extension.ts`. Import React และ GTK components จาก `@dev-os/core`.
 ตัว packager compile TS/TSX เป็น GJS module และใช้ runtime ของ desktop ร่วมกัน จึงไม่ bundle React สำเนาใหม่.
 ใช้ `context.packageRoot` เป็น absolute path สำหรับอ่าน icons, CSS หรือ assets ของรุ่นที่กำลังรัน.
 ส่งคืน cleanup จาก `activate(context)` เพื่อปิด window/React root/subscriptions.
@@ -101,11 +101,11 @@ Rollback เลือกรุ่นก่อนหน้า; Check release + Up
 ```sh
 npm run build
 gjs -m dist/store-test.js
-python3 tools/smoke.py
+python3 tools/test/smoke.py
 ```
 
 Store integration tests ใช้ network fixture และ tar จริง ตรวจ install/update/rollback,
 loader ของ user UI, settings persistence, corrupt downloads, disable/uninstall และ base protection.
 ไม่ได้สร้างหรือ publish GitHub extension repo ตัวอย่างให้อัตโนมัติ.
 หลัง package ตัวอย่างแล้ว ตั้ง `DEV_OS_STORE_TEST_PACKAGE` เป็น absolute path ของ tar
-เพื่อทดสอบ packager artifact และ shared React hooks เพิ่มด้วย `store-test.js` และ `tools/smoke.py`.
+เพื่อทดสอบ packager artifact และ shared React hooks เพิ่มด้วย `store-test.js` และ `tools/test/smoke.py`.

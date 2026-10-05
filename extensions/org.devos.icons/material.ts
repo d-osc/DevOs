@@ -1,5 +1,7 @@
-import GLib from 'gi://GLib';
-import {ROOT} from '../../src/config.js';
+import {
+    readJson, GLib
+} from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
 
 interface Mappings {names: Record<string, string>; extensions: Record<string, string>; folders: Record<string, string>;}
 let mappings: Mappings | undefined;
@@ -8,7 +10,7 @@ export function setMaterialIcons(value: boolean) { const previous = enabled; ena
 export function materialIcon(path = '', directory = false): string | undefined {
     if (!enabled) return;
     if (!mappings) {
-        try { mappings = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.icons/material/mapping.json`)[1])) as Mappings; }
+        try { mappings = readJson(`${ROOT}/extensions/org.devos.icons/material/mapping.json`) as Mappings; }
         catch (error) { printerr(`Material icons unavailable: ${String(error)}`); enabled = false; return; }
     }
     const name = path.split('/').filter(Boolean).at(-1)?.toLowerCase() ?? '';

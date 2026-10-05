@@ -1,0 +1,64 @@
+{
+  "name": "@dev-os/extensions",
+  "version": "0.3.6",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./clock": {
+      "types": "./dist/clock.d.ts",
+      "import": "./dist/clock.js"
+    },
+    "./manager": {
+      "types": "./dist/manager.d.ts",
+      "import": "./dist/manager.js"
+    },
+    "./monitor-ui": {
+      "types": "./dist/monitor-ui.d.ts",
+      "import": "./dist/monitor-ui.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
+    },
+    "./settings-pages": {
+      "types": "./dist/settings-pages.d.ts",
+      "import": "./dist/settings-pages.js"
+    },
+    "./store-protocol": {
+      "types": "./dist/store-protocol.d.ts",
+      "import": "./dist/store-protocol.js"
+    },
+    "./store": {
+      "types": "./dist/store.d.ts",
+      "import": "./dist/store.js"
+    },
+    "./system": {
+      "types": "./dist/system.d.ts",
+      "import": "./dist/system.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    },
+    "./user": {
+      "types": "./dist/user.d.ts",
+      "import": "./dist/user.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@dev-os/config": "0.3.6",
+    "@dev-os/core": "0.3.6",
+    "@dev-os/updates": "0.3.6"
+  }
+}

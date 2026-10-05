@@ -1,5 +1,7 @@
-import {React, Box, Label, Button, useState} from '@dev-os/react-gtk';
-import type {UIExtension} from '@dev-os/extensions';
+import {
+    React, Box, Label, Button, useState,
+    type UIExtension
+} from '@dev-os/core';
 
 export default {id: 'org.example.status', activate(context) {
     context.registerSettingsPage?.('org.example.status', function StatusPage() {

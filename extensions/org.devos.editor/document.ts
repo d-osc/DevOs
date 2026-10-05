@@ -1,4 +1,6 @@
-import {Gio, GLib} from '../../src/gtk.js';
+import {
+    Listeners, Gio, GLib
+} from '@dev-os/core';
 
 export function languageForPath(path: string | undefined): string {
     const name = (path ? GLib.path_get_basename(path) : '').toLowerCase();
@@ -23,12 +25,12 @@ export class EditorDocument {
     private bom = false;
     private disposed = false;
     private cancel = new Gio.Cancellable();
-    private listeners = new Set<() => void>();
+    private listeners = new Listeners();
     get dirty() { return this.content !== this.saved; }
     get language() { return languageForPath(this.path); }
     get title() { return this.path ? GLib.path_get_basename(this.path) : 'Untitled'; }
-    subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
-    private publish() { if (!this.disposed) this.listeners.forEach(listener => listener()); }
+    subscribe(listener: () => void) { return this.listeners.subscribe(listener); }
+    private publish() { if (!this.disposed) this.listeners.emit(); }
     reportError(message: string) { this.error = message; this.publish(); }
     edit(content: string) { if (!this.disposed && !this.loading) { this.content = content; this.error = ''; this.publish(); } }
     async load(path: string): Promise<boolean> {

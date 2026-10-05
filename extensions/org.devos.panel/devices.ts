@@ -1,4 +1,6 @@
-import {Gio, GLib} from '../../src/gtk.js';
+import {
+    Listeners, Gio, GLib
+} from '@dev-os/core';
 
 export interface DeviceState {
     connected: boolean; wireless: boolean; network: string;
@@ -29,7 +31,7 @@ function text(path: string): string {
 export class Devices implements DeviceControls {
     state: DeviceState = {connected: false, wireless: false, network: 'Checking network…', wifi: null,
         bluetooth: null, volume: null, muted: false, battery: null, busy: false, error: ''};
-    private listeners = new Set<() => void>();
+    private listeners = new Listeners();
     private cancel = new Gio.Cancellable();
     private processes = new Set<Gio.Subprocess>();
     private network = Gio.NetworkMonitor.get_default();
@@ -43,11 +45,11 @@ export class Devices implements DeviceControls {
         this.timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => { void this.refresh(); return GLib.SOURCE_CONTINUE; });
         void this.refresh();
     }
-    subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+    subscribe(listener: () => void) { return this.listeners.subscribe(listener); }
     private update(next: Partial<DeviceState>) {
         if (this.disposed) return;
         this.state = {...this.state, ...next};
-        for (const listener of this.listeners) listener();
+        this.listeners.emit();
     }
     private run(args: string[]): Promise<string> {
         return new Promise((resolve, reject) => {

@@ -1,0 +1,61 @@
+{
+  "name": "@dev-os/compat",
+  "version": "0.3.6",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./background-view": {
+      "types": "./dist/background-view.d.ts",
+      "import": "./dist/background-view.js"
+    },
+    "./background": {
+      "types": "./dist/background.d.ts",
+      "import": "./dist/background.js"
+    },
+    "./gtk": {
+      "types": "./dist/gtk.d.ts",
+      "import": "./dist/gtk.js"
+    },
+    "./launcher-view": {
+      "types": "./dist/launcher-view.d.ts",
+      "import": "./dist/launcher-view.js"
+    },
+    "./launcher": {
+      "types": "./dist/launcher.d.ts",
+      "import": "./dist/launcher.js"
+    },
+    "./panel-view": {
+      "types": "./dist/panel-view.d.ts",
+      "import": "./dist/panel-view.js"
+    },
+    "./panel": {
+      "types": "./dist/panel.d.ts",
+      "import": "./dist/panel.js"
+    },
+    "./preferences": {
+      "types": "./dist/preferences.d.ts",
+      "import": "./dist/preferences.js"
+    },
+    "./settings-view": {
+      "types": "./dist/settings-view.d.ts",
+      "import": "./dist/settings-view.js"
+    },
+    "./settings": {
+      "types": "./dist/settings.d.ts",
+      "import": "./dist/settings.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@dev-os/config": "0.3.6",
+    "@dev-os/core": "0.3.6",
+    "@dev-os/extensions": "0.3.6",
+    "@dev-os/services": "0.3.6"
+  }
+}

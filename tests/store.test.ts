@@ -1,13 +1,13 @@
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
+import {
+    Gio, GLib, type UIContext
+} from '@dev-os/core';
 import System from 'system';
-import {ROOT} from '../src/config.js';
-import {ExtensionManager} from '../src/extensions/manager.js';
-import {ExtensionStore, type StoreTransport} from '../src/extensions/store.js';
-import {repoInput, manifestForRelease, validateExtensionArchive} from '../src/extensions/store-protocol.js';
-import {loadUserExtensions} from '../src/extensions/user.js';
-import {removeTree} from '../src/updates/service.js';
-import type {UIContext} from '../src/extensions/runtime.js';
+import {ROOT} from '@dev-os/config';
+import {ExtensionManager, ExtensionStore, type StoreTransport, loadUserExtensions} from '@dev-os/extensions';
+
+import {repoInput, manifestForRelease, validateExtensionArchive} from '@dev-os/extensions/store-protocol';
+
+import {removeTree} from '@dev-os/updates';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function fails(callback: () => unknown) { let failed = false; try { callback(); } catch { failed = true; } assert(failed, 'Expected rejection'); }

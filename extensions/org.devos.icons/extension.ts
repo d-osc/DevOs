@@ -1,6 +1,7 @@
-import {Gtk, Gio} from '../../src/gtk.js';
-import type {UIExtension, UIContext} from '../../src/extensions/runtime.js';
-import {ROOT} from '../../src/config.js';
+import {
+    Gtk, Gio, type UIExtension, type UIContext
+} from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
 import {setMaterialIcons} from './material.js';
 
 export function installedIconThemes(theme: Gtk.IconTheme): string[] {

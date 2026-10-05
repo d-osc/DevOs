@@ -1,7 +1,8 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import GLib from 'gi://GLib';
-import Gio from 'gi://Gio';
-import {React, createRoot, mountWindowHeader, Box, Button, Label, Entry, useState, useEffect, type Root} from '@dev-os/react-gtk';
+import {
+    Gtk, GLib, Gio, React, createRoot,
+    mountWindowHeader, Box, Button, Label, Entry,
+    useState, useEffect, type Root
+} from '@dev-os/core';
 
 function Counter() {
     const [count, setCount] = useState(0);

@@ -1,6 +1,7 @@
-import {Gtk, Gdk, GtkLayerShell} from '../../src/gtk.js';
-import {layerWindow} from '../../src/layers.js';
-import type {UIContext} from '../../src/extensions/runtime.js';
+import {
+    Gtk, Gdk, GtkLayerShell, type UIContext
+} from '@dev-os/core';
+import {layerWindow} from '@dev-os/services/layers';
 import {mountPanel} from './view.js';
 import {Devices} from './devices.js';
 

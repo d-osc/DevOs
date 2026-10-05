@@ -76,9 +76,9 @@ Quick Open ค้นหาไฟล์รวมโฟลเดอร์ย่อ
 การเปลี่ยนไฟล์จากแอปอื่นใช้ Refresh หรือเปิด Quick Open ใหม่
 การอ่าน/เปิดไฟล์ไม่เรียก Thunar หรือ xdg-open
 
-WSL ใช้ labwc ส่วนตัวที่ build ด้วย `tools/bootstrap-wsl.sh` ซึ่งเพิ่มรองรับ
-`xdg_toplevel.show_window_menu` ผ่าน `tools/patches/labwc-window-menu.patch`
+WSL ใช้ labwc ส่วนตัวที่ build ด้วย `tools/setup/bootstrap-wsl.sh` ซึ่งเพิ่มรองรับ
+`xdg_toplevel.show_window_menu` ผ่าน `tools/setup/patches/labwc-window-menu.patch`
 แพตช์ตรวจ input serial และ seat ก่อนเปิด `client-menu` ของหน้าต่างที่ส่งคำขอ
-ทดสอบเมาส์ได้ด้วย `tools/bootstrap-pointer-test.sh` แล้วรัน
-`tools/smoke.py --keyboard --pointer` โดยเพิ่ม `build/wsl/bin` ใน PATH
+ทดสอบเมาส์ได้ด้วย `tools/setup/bootstrap-pointer-test.sh` แล้วรัน
+`tools/test/smoke.py --keyboard --pointer` โดยเพิ่ม `build/wsl/bin` ใน PATH
 เครื่องมือเมาส์อยู่ใน build ของโปรเจกต์และไม่ติดตั้งทับเครื่องมือระบบ

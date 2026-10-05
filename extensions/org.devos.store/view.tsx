@@ -1,7 +1,9 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import {React, Box, Label, Button, Entry, Image, Switch, ScrolledWindow, useState, useEffect} from '@dev-os/react-gtk';
-import type {ExtensionStore} from '../../src/extensions/store.js';
-import type {SettingsHost} from '../../src/extensions/types.js';
+import {
+    Gtk, React, Box, Label, Button,
+    Entry, Image, Switch, ScrolledWindow, useState,
+    useEffect, type SettingsHost
+} from '@dev-os/core';
+import type {ExtensionStore} from '@dev-os/extensions';
 
 export function StoreView({store, preferences}: {store: ExtensionStore; preferences: SettingsHost}) {
     const [, refresh] = useState(0), [source, setSource] = useState(''), [query, setQuery] = useState('');

@@ -1,7 +1,12 @@
-import {Gtk, Gdk, GLib, Gio, Pango} from '../../src/gtk.js';
-import {React, Box, Label, Button, Image, Entry, CheckButton, ScrolledWindow,
-    ListBox, ListBoxRow, FlowBox, FlowBoxChild, createRoot, mountWindowHeader, flushSync, useState, useLayoutEffect, useRef, useImperativeHandle} from '@dev-os/react-gtk';
-import type {FileBrowser} from './model.js';
+import {
+    Gtk, Gdk, GLib, Gio, Pango,
+    React, Box, Label, Button, Image,
+    Entry, CheckButton, ScrolledWindow, ListBox, ListBoxRow,
+    FlowBox, FlowBoxChild, createRoot, mountWindowHeader, flushSync,
+    useState, useLayoutEffect, useRef, useImperativeHandle, useMemo,
+    memo
+} from '@dev-os/core';
+import type {FileBrowser, FileEntry} from './model.js';
 import {fileKind, modifiedLabel, compactPath} from './presentation.js';
 import {FileSearch, DEFAULT_SEARCH_EXCLUDES} from './search.js';
 import {materialIcon} from '../org.devos.icons/material.js';
@@ -14,6 +19,30 @@ function entryIcon(entry: {path: string; directory: boolean; icon: Gio.Icon | nu
     const material = materialIcon(entry.path, entry.directory);
     return material ? Gio.ThemedIcon.new(material) : entry.icon ?? Gio.ThemedIcon.new(entry.directory ? 'folder' : 'text-x-generic');
 }
+// Selection and address typing should not recreate icons/labels for every file.
+const FileRow = memo(function FileRow({entry, selected}: {entry: FileEntry; selected: boolean}) {
+    const kind = fileKind(entry);
+    return <ListBoxRow tooltip={entry.label} className={selected ? 'selected-file' : ''}>
+        <Box spacing={12} borderWidth={8}>
+            <Image gicon={entryIcon(entry)} pixelSize={20} />
+            <Label className="file-name mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE} maxWidthChars={38} expand>{entry.label}</Label>
+            <Label className={`file-type kind-${kind.color}`} xalign={0} widthRequest={106}>{kind.label}</Label>
+            <Label className="subtle mono" xalign={1} widthRequest={72}>{entry.directory ? '—' : GLib.format_size(entry.size)}</Label>
+            <Label className="subtle mono" xalign={1} widthRequest={110}>{modifiedLabel(entry.modified)}</Label>
+        </Box>
+    </ListBoxRow>;
+});
+const FileCard = memo(function FileCard({entry, selected}: {entry: FileEntry; selected: boolean}) {
+    const kind = fileKind(entry);
+    return <FlowBoxChild tooltip={entry.path} className={selected ? 'selected-file' : ''}>
+        <Box className="file-card" orientation="vertical" spacing={10} borderWidth={14} widthRequest={126}>
+            <Box spacing={12}><Image gicon={entryIcon(entry)} pixelSize={36} expand />
+                <Label className={`type-badge kind-${kind.color}`} valign="start">{kind.tag}</Label></Box>
+            <Label className="file-name mono" xalign={0} maxWidthChars={19} ellipsize={Pango.EllipsizeMode.MIDDLE}>{entry.label}</Label>
+            <Label className="subtle" xalign={0}>{entry.directory ? kind.label : GLib.format_size(entry.size)}</Label>
+        </Box>
+    </FlowBoxChild>;
+});
 function FilesView({model, search, options, handle, copyPath}: {model: FileBrowser; search: FileSearch; options: BrowserOptions; handle: React.Ref<ViewHandle>; copyPath(path: string): void}) {
     const [state, update] = useState(model.state);
     const [grid, setGrid] = useState(options.gridView), [hidden, setHidden] = useState(options.showHidden);
@@ -38,8 +67,9 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
         setQuick(true);
     };
     useImperativeHandle(handle, () => ({focusAddress() { addressEntry.current?.grab_focus(); addressEntry.current?.select_region(0, -1); }, toggleHidden() { setHidden(value => !value); }, submitName() { if (editing) submit(); }, setGrid(value) { setGrid(value); model.select(null); }, quickOpen: openQuick, searchKey: (key, shift) => quick ? quickHandle.current?.key(key, shift) ?? false : false}));
-    const filtered = state.entries.filter(entry => hidden || !entry.hidden);
-    const entries = filtered.slice(0, limit), selected = state.entries.find(entry => entry.path === state.selected);
+    const filtered = useMemo(() => state.entries.filter(entry => hidden || !entry.hidden), [state.entries, hidden]);
+    const entries = useMemo(() => filtered.slice(0, limit), [filtered, limit]);
+    const selected = state.entries.find(entry => entry.path === state.selected);
     const open = (index: number) => { const entry = entries[index]; if (entry) void model.open(entry); };
     const rename = () => { if (selected) { setName(selected.name); setEditing('rename'); } };
     const submit = () => { void (editing === 'create' ? model.createFolder(name) : model.rename(name)).then(ok => { if (ok) setEditing(null); }); };
@@ -48,7 +78,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
     for (const part of state.directory.split('/').filter(Boolean)) { path += `/${part}`; breadcrumbs.push({label: part, path}); }
     const places = [['Home', GLib.get_home_dir()], ['Documents', GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS)],
         ['Downloads', GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)], ['File system', '/']];
-    const folders = state.entries.filter(entry => entry.directory && (hidden || !entry.hidden)).slice(0, 8);
+    const folders = useMemo(() => filtered.filter(entry => entry.directory).slice(0, 8), [filtered]);
     return <Box orientation="vertical" spacing={0} expand vexpand>
         <Box spacing={0} expand>
             <ScrolledWindow className="files-sidebar" widthRequest={180} hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
@@ -116,26 +146,11 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                         minChildrenPerLine={1} maxChildrenPerLine={6} rowSpacing={8} columnSpacing={8}
                         onChildActivated={(_box, child) => open(child.get_index())}
                         onSelectedChildrenChanged={box => model.select(entries[box.get_selected_children()[0]?.get_index()]?.path ?? null)}>
-                        {entries.map(entry => <FlowBoxChild key={entry.path} tooltip={entry.path} className={state.selected === entry.path ? 'selected-file' : ''}>
-                            <Box className="file-card" orientation="vertical" spacing={10} borderWidth={14} widthRequest={126}>
-                                <Box spacing={12}><Image gicon={entryIcon(entry)} pixelSize={36} expand />
-                                    <Label className={`type-badge kind-${fileKind(entry).color}`} valign="start">{fileKind(entry).tag}</Label></Box>
-                                <Label className="file-name mono" xalign={0} maxWidthChars={19} ellipsize={Pango.EllipsizeMode.MIDDLE}>{entry.label}</Label>
-                                <Label className="subtle" xalign={0}>{entry.directory ? fileKind(entry).label : GLib.format_size(entry.size)}</Label>
-                            </Box>
-                        </FlowBoxChild>)}
+                        {entries.map(entry => <FileCard key={entry.path} entry={entry} selected={state.selected === entry.path} />)}
                     </FlowBox> : <ListBox id="files-list" selectionMode={Gtk.SelectionMode.SINGLE} activateOnSingleClick={false}
                         onRowSelected={(_list, row) => model.select(row ? entries[row.get_index()]?.path ?? null : null)}
                         onRowActivated={(_list, row) => open(row.get_index())}>
-                        {entries.map(entry => <ListBoxRow key={entry.path} tooltip={entry.label} className={state.selected === entry.path ? 'selected-file' : ''}>
-                            <Box spacing={12} borderWidth={8}>
-                                <Image gicon={entryIcon(entry)} pixelSize={20} />
-                                <Label className="file-name mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE} maxWidthChars={38} expand>{entry.label}</Label>
-                                <Label className={`file-type kind-${fileKind(entry).color}`} xalign={0} widthRequest={106}>{fileKind(entry).label}</Label>
-                                <Label className="subtle mono" xalign={1} widthRequest={72}>{entry.directory ? '—' : GLib.format_size(entry.size)}</Label>
-                                <Label className="subtle mono" xalign={1} widthRequest={110}>{modifiedLabel(entry.modified)}</Label>
-                            </Box>
-                        </ListBoxRow>)}
+                        {entries.map(entry => <FileRow key={entry.path} entry={entry} selected={state.selected === entry.path} />)}
                     </ListBox>}
                 </ScrolledWindow>
                 {!state.loading && !filtered.length && <Label className="empty-message">This folder is empty</Label>}

@@ -1,9 +1,9 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import Gdk from 'gi://Gdk?version=3.0';
-import Pango from 'gi://Pango';
-import type Gio from '@girs/gio-2.0';
-import {React, Box, Label, Button, Image, SearchEntry, ScrolledWindow, ListBox, ListBoxRow,
-    createRoot, flushSync, useState, useMemo, useRef, useLayoutEffect, useImperativeHandle} from '@dev-os/react-gtk';
+import {
+    Gtk, Gdk, Pango, type GioTypes as Gio, React,
+    Box, Label, Button, Image, SearchEntry,
+    ScrolledWindow, ListBox, ListBoxRow, createRoot, flushSync,
+    useState, useMemo, useRef, useLayoutEffect, useImperativeHandle
+} from '@dev-os/core';
 
 export interface LauncherServices {
     display: Gdk.Display;
@@ -50,7 +50,7 @@ function LauncherView({window, services, handle}: ViewProps) {
     };
     useLayoutEffect(() => {
         rows.current?.select_row(rows.current.get_row_at_index(0));
-    }, [matches]);
+    }, [matches, visible]);
     useLayoutEffect(() => {
         if (visible) { window.show(); search.current?.grab_focus(); }
         else window.hide();

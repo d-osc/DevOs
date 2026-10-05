@@ -3,17 +3,93 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "jsx": "react",
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["@girs/gjs", "@girs/gjs/console", "@girs/gjs/cairo", "@girs/gjs/system", "@girs/gtk-3.0", "@girs/gtklayershell-0.1", "@girs/glibunix-2.0", "@girs/glib-2.0", "@girs/gio-2.0", "@girs/pango-1.0", "@girs/webkit2-4.1", "@girs/soup-3.0"],
+    "types": [
+      "@girs/gjs",
+      "@girs/gjs/console",
+      "@girs/gjs/cairo",
+      "@girs/gjs/system",
+      "@girs/gtk-3.0",
+      "@girs/gtklayershell-0.1",
+      "@girs/glibunix-2.0",
+      "@girs/glib-2.0",
+      "@girs/gio-2.0",
+      "@girs/pango-1.0",
+      "@girs/webkit2-4.1",
+      "@girs/soup-3.0"
+    ],
     "paths": {
-      "@dev-os/react-gtk": ["./packages/react-gtk/index.ts"],
-      "@dev-os/extensions": ["./src/extensions/runtime.ts"]
+      "@dev-os/core": [
+        "./packages/core/index.ts"
+      ],
+      "@dev-os/extensions": [
+        "./packages/extensions/index.ts"
+      ],
+      "@dev-os/extensions/*": [
+        "./packages/extensions/*.ts"
+      ],
+      "@dev-os/updates": [
+        "./packages/updates/index.ts"
+      ],
+      "@dev-os/updates/*": [
+        "./packages/updates/*.ts"
+      ],
+      "@dev-os/runtime": [
+        "./packages/runtime/index.ts"
+      ],
+      "@dev-os/runtime/*": [
+        "./packages/runtime/*"
+      ],
+      "@dev-os/services": [
+        "./packages/services/index.ts"
+      ],
+      "@dev-os/services/*": [
+        "./packages/services/*"
+      ],
+      "@dev-os/compat": [
+        "./packages/compat/index.ts"
+      ],
+      "@dev-os/compat/*": [
+        "./packages/compat/*"
+      ],
+      "@dev-os/config": [
+        "./packages/config/index.ts"
+      ],
+      "@dev-os/config/*": [
+        "./packages/config/*"
+      ],
+      "@dev-os/shell": [
+        "./packages/shell/index.ts"
+      ],
+      "@dev-os/shell/*": [
+        "./packages/shell/*"
+      ],
+      "@dev-os/supervisor": [
+        "./packages/supervisor/index.ts"
+      ],
+      "@dev-os/supervisor/*": [
+        "./packages/supervisor/*"
+      ]
     }
   },
-  "include": ["extensions/**/*.ts", "extensions/**/*.tsx", "packages/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "examples/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"],
-  "exclude": ["extensions/org.devos.editor/browser"]
+  "include": [
+    "extensions/**/*.ts",
+    "extensions/**/*.tsx",
+    "packages/**/*.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "examples/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "packages/**/*.tsx"
+  ],
+  "exclude": [
+    "extensions/org.devos.editor/browser"
+  ]
 }

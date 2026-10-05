@@ -1,6 +1,6 @@
 # Base และ UI extensions
 
-Base อยู่ใน `src/shell.ts` ดูแล GTK application, Wayland display, monitors,
+Base อยู่ใน `packages/shell/index.ts` ดูแล GTK application, Wayland display, monitors,
 คำสั่งระบบ, configuration และ event services โดยไม่สร้าง panel หรือหน้าต่าง UI เอง
 UI ทั้งหมดของ shell อยู่ใน system extension packages ซึ่งเป็นชุดพื้นฐานที่เปิดพร้อม session
 
@@ -18,10 +18,10 @@ UI ทั้งหมดของ shell อยู่ใน system extension pack
 
 แต่ละ package มี `extension.json` เป็น manifest, `extension.ts` เป็น lifecycle source และ `index.ts` เป็น native window adapter
 และ `view.tsx` เป็น React UI (theme ใช้ `style.css`)
-ไฟล์ UI เดิมใน `src/` เหลือ compatibility re-exports เท่านั้น
+ไฟล์ UI compatibility อยู่ใน `packages/compat/` และใช้ผ่าน `@dev-os/compat/*`
 
-`src/extensions/system.ts` อ่าน manifest และโหลด compiled entry ตามค่า `order`
-`src/extensions/runtime.ts` ให้ `UIExtension.activate(context)` และ cleanup
+`packages/extensions/system.ts` อ่าน manifest และโหลด compiled entry ตามค่า `order`
+`packages/core/extension-runtime.ts` ให้ `UIExtension.activate(context)` และ cleanup
 Base ไม่อ้าง instance ของ Panel, Launcher, Background หรือ Settings
 การสื่อสารระหว่าง UI ใช้ `context.invoke('settings')`, `context.invoke('launcher')`
 และ command ที่ extension ลงทะเบียนผ่าน `registerCommand()`
@@ -44,7 +44,7 @@ UI callbacks ใช้บริการจาก `UIContext`: `config()`, `save
 ตัวอย่าง entry สำหรับ UI extension ที่มี React window adapter:
 
 ```ts
-import type {UIExtension} from '../../src/extensions/runtime.js';
+import type {UIExtension} from '../../packages/extensions/runtime.js';
 import {MyWindow} from './index.js';
 
 export default {
@@ -125,7 +125,7 @@ extensions/
   org.devos.icons/               extension.json, extension.ts, README.md
   org.devos.files/               extension.json, extension.ts, index.ts, model.ts, view.tsx
   org.devos.clock/extension.json  ตัวอย่าง bundled extension
-src/extensions/
+packages/extensions/
   types.ts                       contract ของ manifest, state และ SettingsHost
   schema.ts                      ตรวจ manifest, defaults, values และ version
   manager.ts                     discovery, registry, persistence และ subscriptions
@@ -133,9 +133,9 @@ src/extensions/
   runtime.ts                     UIContext และ activation/cleanup contract
   system.ts                      manifest discovery และ compiled UI loader
   monitor-ui.ts                  per-monitor surface lifecycle
-src/preferences.ts               atomic JSON writer
-src/shell.ts                     base services และ runtime host
-src/config.ts                    core desktop config และ validation
+packages/compat/preferences.ts               atomic JSON writer
+packages/shell/index.ts                     base services และ runtime host
+packages/config/index.ts                    core desktop config และ validation
 ```
 
 การไหลของข้อมูล: `extension.json → validate → ExtensionManager → React form → Apply → validate → atomic save → notify → reload shell`

@@ -1,7 +1,9 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import GLib from 'gi://GLib';
-import {React, Scale, createRoot, Box, Label, Button, Entry, useState,
-    useLayoutEffect, useEffect, createContext, useContext, Image, ScrolledWindow} from '@dev-os/react-gtk';
+import {
+    Gtk, GLib, React, Scale, createRoot,
+    Box, Label, Button, Entry, useState,
+    useLayoutEffect, useEffect, createContext, useContext, Image,
+    ScrolledWindow
+} from '@dev-os/core';
 
 Gtk.init(null);
 let passed = 0;
@@ -48,6 +50,27 @@ test('controlled entry, updated callbacks and property removal', () => {
     root.render(<Entry ref={entry} text="third" />);
     entry.current!.set_text('user again');
     assert(calls === 10, 'Removed handler disconnects');
+    root.render(<Entry ref={entry} text="third" />);
+    assert(entry.current!.get_text() === 'third', 'Controlled value is restored even when its prop did not change');
+});
+
+test('unrelated updates preserve native icons and apply visibility changes', () => {
+    const image = React.createRef<Gtk.Image>(), box = React.createRef<Gtk.Box>();
+    const tree = (visible: boolean, selected: boolean, iconName = 'folder-symbolic') =>
+        <Box ref={box} visible={visible} className={selected ? 'selected' : ''}>
+            <Image ref={image} iconName={iconName} pixelSize={20} />
+            <Button visible={false}>Hidden child</Button>
+        </Box>;
+    root.render(tree(true, false));
+    let iconChanges = 0;
+    image.current!.connect('notify::icon-name', () => { iconChanges++; });
+    root.render(tree(true, true));
+    assert(iconChanges === 0, 'Selecting a row must not reload its unchanged icon');
+    root.render(tree(false, true));
+    assert(!box.current!.get_visible(), 'Visibility update hides the native parent');
+    root.render(tree(true, true, 'document-open-symbolic'));
+    assert(box.current!.get_visible() && !box.current!.get_children()[1].get_visible(), 'Showing the parent preserves hidden children');
+    assert(iconChanges > 0, 'Changed icons still update GTK');
 });
 test('context, fragments, conditional children and visibility', () => {
     const Context = createContext('default');

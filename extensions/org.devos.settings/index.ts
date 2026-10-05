@@ -1,7 +1,8 @@
-import {Gtk, Gdk, GLib} from '../../src/gtk.js';
-import {configPath} from '../../src/config.js';
+import {
+    Gtk, Gdk, GLib, type UIContext
+} from '@dev-os/core';
+import {configPath} from '@dev-os/config';
 import {mountSettings} from './view.js';
-import type {UIContext} from '../../src/extensions/runtime.js';
 
 export class Settings {
     window: Gtk.ApplicationWindow;

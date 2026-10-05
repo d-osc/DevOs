@@ -1,4 +1,6 @@
-import {Gio, GLib} from '../../src/gtk.js';
+import {
+    Listeners, Gio, GLib
+} from '@dev-os/core';
 
 export const DEFAULT_SEARCH_EXCLUDES = '.git,node_modules,dist,build,.venv,vendor,.cache';
 export interface SearchFile {name: string; path: string; relative: string;}
@@ -46,16 +48,16 @@ export class FileSearch {
     state: SearchState = {root: '', query: '', results: [], matches: 0, indexed: 0,
         scanning: false, pending: false, limited: false, skipped: 0, error: ''};
     private files: SearchFile[] = [];
-    private listeners = new Set<() => void>();
+    private listeners = new Listeners();
     private cancel: Gio.Cancellable | null = null;
     private timer = 0;
     private limit = 100;
     private disposed = false;
-    subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+    subscribe(listener: () => void) { return this.listeners.subscribe(listener); }
     private change(next: Partial<SearchState>) {
         if (this.disposed) return;
         this.state = {...this.state, ...next};
-        for (const listener of this.listeners) listener();
+        this.listeners.emit();
     }
     private publish(next: Partial<SearchState> = {}) {
         this.change({...(!this.state.pending ? matchFiles(this.files, this.state.query, this.limit) : {}), indexed: this.files.length, ...next});

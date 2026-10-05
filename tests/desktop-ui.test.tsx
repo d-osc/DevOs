@@ -1,31 +1,30 @@
-import Gtk from 'gi://Gtk?version=3.0';
-import Gdk from 'gi://Gdk?version=3.0';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
+import {
+    Gtk, Gdk, Gio, GLib, React,
+    createRoot, DrawingArea, ListBox, ListBoxRow, Label,
+    type UIContext
+} from '@dev-os/core';
 import Cairo from 'cairo';
-import {React, createRoot, DrawingArea, ListBox, ListBoxRow, Label} from '@dev-os/react-gtk';
-import {mountLauncher} from '../src/launcher-view.js';
-import {mountPanel} from '../src/panel-view.js';
+import {mountLauncher} from '@dev-os/compat/launcher-view';
+import {mountPanel} from '@dev-os/compat/panel-view';
 import {Devices} from '../extensions/org.devos.panel/devices.js';
 import {Panel} from '../extensions/org.devos.panel/index.js';
-import type {UIContext} from '../src/extensions/runtime.js';
-import {mountBackground} from '../src/background-view.js';
-import {mountSettings} from '../src/settings-view.js';
-import {SettingsPages} from '../src/extensions/settings-pages.js';
-import {ExtensionStore} from '../src/extensions/store.js';
+import {mountBackground} from '@dev-os/compat/background-view';
+import {mountSettings} from '@dev-os/compat/settings-view';
+import {SettingsPages} from '@dev-os/core';
+import {ExtensionStore, loadUserExtensions, ExtensionManager} from '@dev-os/extensions';
 import {StoreView} from '../extensions/org.devos.store/view.js';
-import {loadUserExtensions} from '../src/extensions/user.js';
-import {Updates} from '../src/updates/service.js';
+
+import {Updates} from '@dev-os/updates';
 import {UpdatesView} from '../extensions/org.devos.updates/view.js';
-import {ExtensionManager} from '../src/extensions/manager.js';
-import {DEFAULTS, ROOT, validateConfig} from '../src/config.js';
+
+import {DEFAULTS, ROOT, validateConfig} from '@dev-os/config';
 import icons, {installedIconThemes} from '../extensions/org.devos.icons/extension.js';
 import {materialIcon} from '../extensions/org.devos.icons/material.js';
 import {FileBrowser} from '../extensions/org.devos.files/model.js';
 import {mountFiles} from '../extensions/org.devos.files/view.js';
 import {Files} from '../extensions/org.devos.files/index.js';
 import {TerminalWindow} from '../extensions/org.devos.terminal/extension.js';
-import {Windows} from '../src/windows.js';
+import {Windows} from '@dev-os/services/windows';
 import {EditorDocument} from '../extensions/org.devos.editor/document.js';
 import {EditorWindow} from '../extensions/org.devos.editor/extension.js';
 import {EditorAssets} from '../extensions/org.devos.editor/assets.js';
@@ -80,6 +79,9 @@ test('search results, empty state and reopening reset', () => {
     assert(list.get_children().length === 0 && labels().some(text => text.startsWith('No applications')), 'Empty state');
     launcher.hide(); launcher.show();
     assert(entry.get_text() === '' && list.get_children().length === 2, 'Reopen restores app list');
+    list.select_row(list.get_row_at_index(1));
+    launcher.hide(); launcher.show();
+    assert(list.get_selected_row()?.get_index() === 0, 'Reopening a cached app list resets keyboard selection');
 });
 test('logout confirmation is rendered and reset on hide', () => {
     launcher.requestLogout();

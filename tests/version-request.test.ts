@@ -1,6 +1,8 @@
-import GLib from 'gi://GLib';
+import {
+    GLib
+} from '@dev-os/core';
 import System from 'system';
-import {requestSessionVersion} from '../src/session-version.js';
+import {requestSessionVersion} from '@dev-os/runtime/session-version';
 
 const loop = new GLib.MainLoop(null, false); let failed: unknown;
 void requestSessionVersion(ARGV[0]).catch(error => { failed = error; }).finally(() => loop.quit());

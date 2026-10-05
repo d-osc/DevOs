@@ -4,7 +4,7 @@
 จัดการหน้าต่างและอุปกรณ์ input ส่วน desktop shell เขียนด้วย **TypeScript / GJS + GTK 3 + gtk-layer-shell**
 แยกเป็นโมดูลเพื่อเปลี่ยนหน้าตาและเพิ่มความสามารถต่อได้ง่าย
 
-รองรับ **React + TypeScript / TSX → native GTK widgets** ผ่าน lib ใน `packages/react-gtk/`
+รองรับ **React + TypeScript / TSX → native GTK widgets** ผ่าน lib ใน `packages/core/`
 UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, เมนู session และพื้นหลัง
 เริ่มแก้ได้ที่ `extensions/org.devos.panel/view.tsx`, `extensions/org.devos.launcher/view.tsx` และ `extensions/org.devos.files/view.tsx`
 
@@ -47,7 +47,7 @@ sudo apt install swaylock
 chmod +x bin/*
 npm ci
 npm run build
-sh tools/bootstrap-window-tracker.sh
+sh tools/setup/bootstrap-window-tracker.sh
 bin/dev-os-shell doctor
 bin/dev-os-session --nested
 ```
@@ -84,6 +84,12 @@ Session ใช้ PATH ของ Linux โดยตัดโฟลเดอร�
 Source ยังอยู่ใน Windows และ settings ยังอยู่ในตำแหน่งเดิม; runtime ชั่วคราวถูกลบเมื่อ session ปิด.
 หลังแก้ source หรือ theme assets ให้ปิดแล้วรันใหม่เพื่อใช้ build ล่าสุด.
 
+`dev.ps1 run` และ `demo` จะใช้ build เดิมเมื่อ source, dependencies และไฟล์ bundle ยังตรงกัน;
+เมื่อมีการแก้โค้ดหรือ bundle หาย จะตรวจ TypeScript และ build ใหม่อัตโนมัติ.
+build ปกติใช้ React production และลดขนาด bundle; `npm run watch` หรือ
+`node tools/build/build.ts --development` ใช้ development สำหรับ debug.
+ดูรายละเอียดการปรับประสิทธิภาพและวิธีวัดซ้ำใน [docs/performance.md](docs/performance.md).
+
 ## พัฒนาด้วย React
 
 lib ใช้ React 19.2.8 และ `react-reconciler` 0.33.0 สร้าง GTK 3 widgets จริง
@@ -100,10 +106,10 @@ npm run watch       # rebuild เมื่อแก้โค้ด แล้ว�
 
 บน Linux ใช้ `npm run build` ตามด้วย `npm run demo` หรือ `npm run dev`
 ตัวอย่างเต็มอยู่ที่ `examples/Counter.tsx` และคู่มือ API อยู่ที่
-[packages/react-gtk/README.md](packages/react-gtk/README.md)
+[packages/core/README.md](packages/core/README.md)
 
 ```tsx
-import {React, Box, Label, Button, useState} from '@dev-os/react-gtk';
+import {React, Box, Label, Button, useState} from '@dev-os/core';
 
 function Counter() {
     const [count, setCount] = useState(0);
@@ -121,11 +127,11 @@ container จะ cleanup hooks และ signals ส่วน layer-shell แล
 ส่วน widget tree, การค้นหาแอป, ข้อความ, การยืนยัน logout และนาฬิกาอยู่ใน React
 พื้นหลังใช้ `<DrawingArea onDraw={...}>` ใน TSX โดยวาดภาพด้วย Cairo
 
-`npm run build` ตรวจ types ก่อน build และสร้าง `dist/react-gtk.d.ts` ให้ด้วย
+`npm run build` ตรวจ types ก่อน build และสร้าง `dist/core.d.ts` ให้ด้วย
 source, tests และ build tool เป็น `.ts` / `.tsx` ทั้งหมด; JavaScript ใน `dist/` เป็นไฟล์ที่สร้างจาก build
 แยกการตรวจ GJS ใน `tsconfig.json` และ Node build tool ใน `tsconfig.tools.json`
-build tool `tools/build.ts` รันด้วย [Node TypeScript support](https://nodejs.org/en/blog/release/v22.18.0/)
-alias `@dev-os/react-gtk` ชี้ไปที่ source ระหว่างตรวจ types และชี้ไปที่ bundle เดียวกัน
+build tool `tools/build/build.ts` รันด้วย [Node TypeScript support](https://nodejs.org/en/blog/release/v22.18.0/)
+alias `@dev-os/core` ชี้ไปที่ source ระหว่างตรวจ types และชี้ไปที่ bundle เดียวกัน
 เมื่อ build เพื่อให้ React กับ renderer ใช้ instance เดียวกัน
 ถ้าแก้เฉพาะไฟล์ type ให้ใช้ `npm run typecheck` หรือเปิด `npm run typecheck:watch` อีก terminal
 
@@ -215,7 +221,7 @@ cp config/config.json ~/.config/dev-os/config.json
 หากมี config จากเวอร์ชัน Python ที่ `~/.config/dev-os/config.toml` อยู่แล้ว:
 
 ```sh
-python3 tools/migrate-config.py
+python3 tools/maintenance/migrate-config.py
 ```
 
 ตัวแปลงเก็บ TOML ต้นฉบับไว้ และไม่เขียนทับ JSON ที่มีอยู่แล้ว
@@ -227,14 +233,14 @@ python3 tools/migrate-config.py
 
 ```sh
 npm run build
-python3 tools/install.py --prefix ~/.local
+python3 tools/maintenance/install.py --prefix ~/.local
 ~/.local/bin/dev-os-session --nested
 ```
 
 หากต้องการให้ Dev OS เป็นตัวเลือกที่หน้า login:
 
 ```sh
-sudo python3 tools/install.py --prefix /usr/local
+sudo python3 tools/maintenance/install.py --prefix /usr/local
 ```
 
 ตัวติดตั้งสร้าง `/usr/local/share/wayland-sessions/dev-os.desktop`
@@ -278,9 +284,9 @@ Build และตัวโหลดอ่าน manifest อัตโนมั�
 npm run build
 gjs -m dist/config-test.js # config และ app search tests 13 รายการ + imports ของ UI
 gjs -m dist/extensions-test.js # extension schema, persistence, UI lifecycle และ JSON loader 12 รายการ
-python3 tools/check.py     # เพิ่มตรวจ syntax ของ development tools และ XML
+python3 tools/test/check.py     # เพิ่มตรวจ syntax ของ development tools และ XML
 bin/dev-os-session --check
-python3 tools/smoke.py --screenshots build/screenshots
+python3 tools/test/smoke.py --screenshots build/screenshots
 ```
 
 Smoke test ใช้ `labwc`, `dbus-run-session` และ `grim` (เมื่อเลือกบันทึกภาพ):
@@ -309,37 +315,26 @@ keyed list, drawing lifecycle, settings forms/Apply, icon themes และ file 
 ## จุดสำหรับต่อยอด
 
 ```text
+src/                        CLI entry point (main.ts)
+packages/
+  core/                     React renderer, GTK widgets and native bindings
+  extensions/               manifests, lifecycle, settings and extension store
+  updates/                  update service and release protocol
+  runtime/, services/       session runtime and desktop services
+  compat/, config/          UI compatibility and configuration
+  shell/, supervisor/       application host and session supervision
+extensions/                 system UI packages (org.devos.*)
+tools/
+  build/                    bundles, release archives and npm packages
+  setup/                    native dependencies, WSL staging and patches
+  test/                     checks, smoke tests and performance tools
+  maintenance/              installation, config migration and icon imports
+tests/                      integration tests and type checks
+examples/                   renderer demo and example extensions
 bin/                        CLI entry points
-src/
-  main.ts                   GJS entry point and CLI
-  supervisor.ts             compositor + managed service lifecycle
-  shell.ts                  base application, services and extension runtime
-  layers.ts                 Wayland layer surfaces
-  background.ts             compatibility export for background extension
-  background-view.tsx       compatibility export for React wallpaper
-  panel.ts                  compatibility export for panel extension
-  panel-view.tsx            compatibility export for React panel
-  launcher.ts               compatibility export for launcher extension
-  launcher-view.tsx         compatibility export for React launcher
-  apps.ts                   GIO app discovery/search
-  config.ts                 validated JSON configuration
-  preferences.ts            atomic settings persistence
-  settings.ts               compatibility export for Settings extension
-  settings-view.tsx         compatibility export for React settings forms
-  extensions/               typed contracts, lifecycle runtime and registries
-  doctor.ts                 dependency checks without starting the UI
-  signals.ts                typed GJS Unix signal binding
-extensions/org.devos.theme/style.css  GTK styling
-data/themes/DevOS/          compositor window decorations
-config/labwc/              workspaces, shortcuts, menus
-tools/                      install, checks, smoke and WSL bootstrap
-packages/react-gtk/         native React renderer and GTK host components
-examples/Counter.tsx        state, input, conditional UI and effect cleanup
-extensions/                 system React UI packages and settings contributions
-docs/extensions.md          extension architecture and authoring guide
-tsconfig.json               strict TypeScript configuration and native imports
-tsconfig.tools.json         strict Node build tool configuration
-dist/                       generated GJS bundles (npm run build)
+config/, data/              compositor configuration and desktop assets
+docs/                       architecture and usage guides
+dist/, build/               generated output and local development artifacts
 ```
 
 ลำดับที่ต่อยอดได้:
@@ -377,7 +372,7 @@ GJS ใช้ bundle ที่คอมไพล์แล้ว; Node.js แล�
 
 
 Terminal ของระบบอยู่ที่ `extensions/org.devos.terminal/extension.tsx` ใช้ VTE GTK3
-Header ของ Terminal และ Files เป็นแท็บ React ที่แชร์ `src/window-tabs.tsx`;
+Header ของ Terminal และ Files เป็นแท็บ React ที่แชร์ `packages/services/window-tabs.tsx`;
 ปุ่มควบคุมหน้าต่างและเมนูคลิกขวายังใช้ `mountWindowHeader()` ร่วมกับ Settings และ React demo.
 Terminal เปิดแท็บด้วย + หรือ Ctrl+Shift+T, ปิดด้วย Ctrl+Shift+W; shell exit ปิดเฉพาะแท็บนั้น.
 Files เปิดแท็บด้วย + หรือ Ctrl+T, ปิดด้วย Ctrl+W. ทั้งสองแอปสลับด้วย Ctrl+Tab / Ctrl+Shift+Tab.
@@ -386,18 +381,18 @@ Files เปิดแท็บด้วย + หรือ Ctrl+T, ปิดด�
 ลากไปปล่อยบน header ของหน้าต่างแอปชนิดเดียวกันเพื่อรวมกลับ หรือจัดลำดับแท็บในหน้าต่างเดิม.
 กด Esc ระหว่างลากเพื่อยกเลิก. ย้าย VTE/PTY และ FileBrowser เดิม จึงรักษา shell, scrollback, โฟลเดอร์และ history.
 ถ้าย้ายแท็บสุดท้ายออก หน้าต่างต้นทางจะปิด; หน้าต่างที่แยกยังมีรายการบน panel และปิดตาม extension lifecycle.
-WSL ใช้ `tools/patches/labwc-tab-drag-focus.patch` และ `labwc-tab-drag-escape.patch` เพื่อแก้ focus และการยกเลิก DnD ใน labwc 0.7.1;
+WSL ใช้ `tools/setup/patches/labwc-tab-drag-focus.patch` และ `labwc-tab-drag-escape.patch` เพื่อแก้ focus และการยกเลิก DnD ใน labwc 0.7.1;
 `dev.ps1 run` เตรียม compositor ส่วนตัวให้อัตโนมัติเมื่อยังไม่มี fix นี้.
-ทดสอบลากด้วยเมาส์จริงได้หลัง `tools/bootstrap-pointer-test.sh` ด้วย `python3 tools/tab-drag-smoke.py`.
+ทดสอบลากด้วยเมาส์จริงได้หลัง `tools/setup/bootstrap-pointer-test.sh` ด้วย `python3 tools/test/tab-drag-smoke.py`.
 Header ที่ compositor วาดใช้ไอคอนแอปขนาด 16 px จาก `app_id` และ `Icon` ใน `.desktop`
-ผ่าน `tools/patches/labwc-app-icons.patch`; หากหาไม่พบใช้ไอคอนแอปทั่วไปของ Adwaita.
+ผ่าน `tools/setup/patches/labwc-app-icons.patch`; หากหาไม่พบใช้ไอคอนแอปทั่วไปของ Adwaita.
 คลิกไอคอนหรือคลิกขวาที่ header ยังเปิดเมนูหน้าต่างเดิม.
-`dev.ps1 run` build patch นี้ให้อัตโนมัติ; ทดสอบได้ด้วย `python3 tools/app-icons-smoke.py`
+`dev.ps1 run` build patch นี้ให้อัตโนมัติ; ทดสอบได้ด้วย `python3 tools/test/app-icons-smoke.py`
 หลังเตรียม pointer tools เช่นเดียวกับการทดสอบลากแท็บ.
 ตั้งค่า `terminal: ["dev-os-terminal"]` เพื่อใช้ตัวนี้; ค่าเดิม `["foot"]` ใช้ Terminal ใหม่เช่นกัน.
 ถ้าต้องการ foot ภายนอกโดยตรงใช้ `["foot", "--app-id=foot"]`; คำสั่งภายนอกอื่นยังทำงานตามเดิม.
 ปรับฟอนต์และ scrollback ได้ใน Settings → Terminal. ใช้ Ctrl+Shift+C/V เพื่อคัดลอก/วาง.
-บน Linux ติดตั้ง `gir1.2-vte-2.91`; WSL ใช้ `tools/bootstrap-terminal.sh`
+บน Linux ติดตั้ง `gir1.2-vte-2.91`; WSL ใช้ `tools/setup/bootstrap-terminal.sh`
 ซึ่งจัดเตรียม dependency ใน `build/wsl/vte` และ `dev.ps1 run` เรียกให้อัตโนมัติ.
 
 VS Code ใช้แพ็กเกจ Linux `code` จาก Microsoft และเปิดจากเมนู Applications ได้.
@@ -414,7 +409,7 @@ Panel อยู่ด้านล่างบนทุก monitor: ซ้าย�
 ไอคอนแอปมี indicator แสดงสถานะเปิด/active/minimized จาก Wayland foreign-toplevel protocol.
 กดไอคอนเพื่อย่อหน้าต่าง active หรือเรียกหน้าต่างที่ย่อกลับมา; หลายหน้าต่างมี popup ให้เลือก.
 แอปอื่นที่เปิดอยู่แสดงบน panel ด้วย และรายการจะหายเมื่อปิดแอป.
-Base service อยู่ที่ `src/windows.ts`, transport ที่ `native/window-tracker.c`; UI ยังอยู่ใน panel extension.
+Base service อยู่ที่ `packages/services/windows.ts`, transport ที่ `native/window-tracker.c`; UI ยังอยู่ใน panel extension.
 ขวาเป็น Quick Settings (network/audio/battery) → เวลาและวันที่ → Alert.
 กดกลุ่มอุปกรณ์เพื่อเปิด Wi-Fi/Bluetooth, mute และแถบปรับเสียง; กดวันเวลาเพื่อดูวันที่เต็ม.
 Alert เก็บข้อความจาก desktop shell และล้างรายการได้ (ยังไม่ใช่ Freedesktop notification daemon).
@@ -423,3 +418,11 @@ UI อยู่ที่ `extensions/org.devos.panel/view.tsx`; backend ที�
 และ Bluetooth ใช้ BlueZ (`bluetoothctl`). อุปกรณ์หรือ backend ที่ไม่มีจะแสดง Unavailable.
 `dev.ps1 run` เตรียม `pactl` ใน `build/wsl/bin` ให้อัตโนมัติสำหรับ WSL;
 บน Linux ติดตั้งเครื่องมือควบคุมเสียง/เครือข่ายผ่าน package manager ของ distro.
+
+แพ็กเกจ `@dev-os/core` รวม API และ types สำหรับ extension lifecycle, settings และ desktop services ดู [packages/core/README.md](packages/core/README.md).
+
+สร้างแพ็กเกจ `@dev-os/core` แบบ standalone ด้วย `npm run core:pack` ไฟล์ `.tgz` อยู่ใน `build/core-package/` โดยรวม React, React Reconciler และ Scheduler ไว้ใน bundle พร้อม TypeScript declarations ดู [คู่มือแพ็กเกจ](packages/core/README.md#pack-a-standalone-library).
+
+Extension services live in `packages/extensions` (`@dev-os/extensions`), and update services in `packages/updates` (`@dev-os/updates`). Build package archives with `npm run extensions:pack` and `npm run updates:pack`; the output is under `build/extensions-package` and `build/updates-package`.
+
+Desktop libraries are published separately as `@dev-os/runtime`, `@dev-os/services`, `@dev-os/compat`, `@dev-os/config`, `@dev-os/shell` and `@dev-os/supervisor`. Pack each library with `npm run <name>:pack`.
