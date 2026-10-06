@@ -3,7 +3,7 @@ import {
 } from '@dev-os/core';
 import System from 'system';
 import {ROOT} from '@dev-os/config';
-import {Updates, type UpdateTransport} from '@dev-os/updates';
+import {Updates, parseSwaylockRelease, parseSwaylockVersion, type UpdateTransport} from '@dev-os/updates';
 import {newer, parseRelease, validateArchive, repository, type Release} from '@dev-os/updates/protocol';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
@@ -36,6 +36,12 @@ function fixture(base: string, releaseVersion: string): {archive: string; releas
 }
 
 async function main() {
+    const swaylockRelease = {tag_name: 'v1.8.6', html_url: 'https://github.com/swaywm/swaylock/releases/tag/v1.8.6'};
+    assert(parseSwaylockVersion('swaylock version 1.7.2\n') === '1.7.2', 'Parse installed locker version');
+    assert(parseSwaylockRelease(swaylockRelease) === '1.8.6', 'Parse upstream stable locker release');
+    fails(() => parseSwaylockRelease({...swaylockRelease, prerelease: true}));
+    fails(() => parseSwaylockRelease({...swaylockRelease, html_url: 'https://example.com/fake'}));
+    fails(() => parseSwaylockVersion('unknown locker'));
     assert(newer('0.10.0', '0.2.0') && !newer('0.2.0', '0.10.0') && !newer('0.2.0', '0.2.0'), 'Numeric semver comparison');
     fails(() => repository('d-osc/../../etc')); fails(() => newer('v1.2.3-beta', '0.2.0'));
     const base = GLib.dir_make_tmp('dev-os-updates-test-XXXXXX');
@@ -44,7 +50,7 @@ async function main() {
         const first = fixture(base, '0.3.0'), second = fixture(base, '0.4.0');
         let selected = first, downloads = 0;
         const transport: UpdateTransport = {
-            async get() { return {status: 200, body: selected.release}; },
+            async get(url) { return {status: 200, body: url.includes('/swaywm/swaylock/') ? swaylockRelease : selected.release}; },
             async download(_release: Release, target: string) { downloads++; Gio.File.new_for_path(selected.archive).copy(Gio.File.new_for_path(target), Gio.FileCopyFlags.NONE, null, null); },
         };
         const root = `${base}/data/dev-os-updates`;
@@ -60,6 +66,7 @@ async function main() {
         fails(() => validateArchive(names, details.replace(/^-/m, 'l')));
         print('PASS: update versions, repository URLs, platform selection and unsafe archive rejection');
         await updater.check(); assert(updater.state.status === 'available', updater.state.error || 'Update detected');
+        assert(updater.state.swaylock.latest === '1.8.6' && !updater.state.swaylock.error, 'Dependency releases checked alongside Dev OS');
         await updater.install(); assert(updater.state.installed === '0.3.0' && updater.state.status === 'ready', updater.state.error || 'First release installed');
         const firstHistory = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(`${root}/history.json`)[1]));
         const immutableSession = `${root}/releases/${firstHistory.current.key}/bin/dev-os-session`;
@@ -94,6 +101,7 @@ async function main() {
             async get(url) { return {status: url.endsWith('/latest') ? 404 : 200, body: {}}; }, async download() { throw new Error('Should not download'); },
         }});
         await missing.check(); assert(missing.state.status === 'empty' && missing.state.error === '', 'Empty GitHub repository is distinct from a network error'); missing.dispose();
+        assert(missing.state.swaylock.error.includes('404'), 'Dependency errors are isolated from Dev OS update status');
         print('PASS: repository without releases has a clear empty state');
         const corruptRoot = `${base}/corrupt`;
         write(`${corruptRoot}/history.json`, JSON.stringify({current: false, previous: null}));

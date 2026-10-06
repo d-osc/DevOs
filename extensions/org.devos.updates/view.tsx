@@ -4,6 +4,7 @@ import {
     useEffect, type SettingsHost
 } from '@dev-os/core';
 import type {Updates} from '@dev-os/updates';
+import {SWAYLOCK_RELEASES, SWAYLOCK_PINNED_VERSION} from '@dev-os/updates';
 import {repository} from '@dev-os/updates/protocol';
 
 export function UpdatesView({updater, preferences, useVersion}: {updater: Updates; preferences: SettingsHost; useVersion?: (root: string) => Promise<void>}) {
@@ -31,7 +32,7 @@ export function UpdatesView({updater, preferences, useVersion}: {updater: Update
                 <Box className="settings-page-icon" widthRequest={44} heightRequest={44} valign="center"><Image iconName="software-update-available-symbolic" pixelSize={24} expand /></Box>
                 <Box orientation="vertical" spacing={5} expand>
                     <Label className="heading" xalign={0}>System updates</Label>
-                    <Label className="settings-description" xalign={0}>Keep Dev OS and its built-in extensions up to date.</Label>
+                    <Label className="settings-description" xalign={0}>Keep Dev OS, its extensions and native dependencies up to date.</Label>
                 </Box>
                 <Label className="settings-badge badge-on" valign="start">STABLE</Label>
             </Box>
@@ -53,6 +54,22 @@ export function UpdatesView({updater, preferences, useVersion}: {updater: Update
                         {state.previous && <Button id="updates-rollback" sensitive={!state.busy} onClicked={() => { void updater.rollback(); }}>Use previous version</Button>}
                     </Box>
                     {state.checked && <Label className="settings-description" xalign={0}>{`Last checked ${new Date(state.checked).toLocaleString()}`}</Label>}
+                </Box>
+                <Box id="updates-swaylock" className="settings-card" orientation="vertical">
+                    <Box className="settings-card-header" spacing={10}>
+                        <Image iconName="system-lock-screen-symbolic" pixelSize={18} />
+                        <Label className="section-heading" xalign={0} expand>swaylock · Lock screen</Label>
+                        <Label className="settings-badge">{`PINNED ${SWAYLOCK_PINNED_VERSION}`}</Label>
+                    </Box>
+                    <Box className="updates-details" orientation="vertical" spacing={10}>
+                        <Label id="updates-swaylock-version" className="settings-description" xalign={0} wrap>{`Installed: ${state.swaylock.installed ?? (state.swaylock.latest ? 'Not installed' : 'Unknown')}  ·  Latest upstream: ${state.swaylock.latest ?? 'Unknown'}`}</Label>
+                        {state.swaylock.error && <Label className="error" xalign={0} wrap>{state.swaylock.error}</Label>}
+                        <Label className="settings-description" xalign={0} wrap>{`Dev OS pins swaylock to ${SWAYLOCK_PINNED_VERSION}. New upstream releases are shown for reference; the installed version remains pinned.`}</Label>
+                        <Button id="updates-swaylock-releases" onClicked={() => {
+                            try { Gtk.show_uri_on_window(null, SWAYLOCK_RELEASES, 0); setSourceError(''); }
+                            catch (error) { setSourceError(`Could not open releases: ${String(error)}`); }
+                        }}>View swaylock releases</Button>
+                    </Box>
                 </Box>
                 {state.release && <Box className="settings-card" orientation="vertical">
                     <Box className="settings-card-header" spacing={10}><Image iconName="document-new-symbolic" pixelSize={18} /><Label className="section-heading" xalign={0}>{`Dev OS ${state.release.version}`}</Label></Box>

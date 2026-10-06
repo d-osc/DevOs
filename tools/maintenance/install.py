@@ -20,6 +20,7 @@ def main():
     if prefix == ROOT or prefix.is_relative_to(ROOT):
         parser.error("Use an install prefix outside the source tree")
     destination = prefix / "share/dev-os"
+    subprocess.run(["sh", str(ROOT / "tools/setup/bootstrap-lock.sh")], check=True)
     subprocess.run(["sh", str(ROOT / "tools/setup/bootstrap-window-tracker.sh")], check=True)
     if not all((ROOT / f"dist/{name}.js").is_file()
                for name in ("main", "supervisor", "react-gtk", "panel-view", "launcher-view", "background-view")):

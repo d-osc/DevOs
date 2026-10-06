@@ -36,4 +36,5 @@ printf 'WSLg compositor ready: %s/labwc\n' "$bin_dir"
 
 
 sh "$project_root/tools/setup/bootstrap-terminal.sh"
+sh "$project_root/tools/setup/bootstrap-lock.sh"
 sh "$project_root/tools/setup/bootstrap-window-tracker.sh"

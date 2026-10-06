@@ -15,7 +15,7 @@ export const ROOT = GLib.getenv('DEV_OS_ROOT') ??
 export const DEFAULTS: Readonly<Config> = Object.freeze({
     name: 'Dev OS', accent: '#88e0c0', background: '#101b25', panel_height: 36,
     clock_format: '%H:%M', terminal: ['dev-os-terminal'],
-    files: ['thunar', '~'], lock: ['swaylock', '-c', '101b25'], autostart: [],
+    files: ['thunar', '~'], lock: ['dev-os-lock'], autostart: [],
 });
 
 export function configPath() {

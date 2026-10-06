@@ -4,11 +4,13 @@ import {
 } from '@dev-os/core';
 import {VERSION, ROOT} from '@dev-os/config';
 import {repository, version, parseRelease, newer, platform, validateArchive, type Release} from './protocol.js';
+import {parseSwaylockRelease, parseSwaylockVersion, type DependencyUpdate} from './dependencies.js';
 
 export type UpdateStatus = 'idle' | 'checking' | 'empty' | 'current' | 'available' | 'downloading' | 'installing' | 'ready' | 'error';
 export interface UpdateState {
     status: UpdateStatus; busy: boolean; message: string; error: string; release: Release | null;
     running: string; installed: string; managed: boolean; previous: string | null; checked: string;
+    swaylock: DependencyUpdate;
 }
 interface Installed {key: string; version: string; repository: string; platform: string;}
 interface History {current: Installed | null; previous: Installed | null;}
@@ -95,7 +97,8 @@ export class Updates {
         catch (error) { historyError = `Cannot read installed updates: ${String(error)}`; }
         const running = options.running ?? VERSION;
         this.state = {status: 'idle', busy: false, error: '', message: 'Check for the latest stable release.', release: null,
-            running, installed: this.history.current?.version ?? running, managed: Boolean(this.history.current), previous: this.history.previous?.version ?? null, checked: ''};
+            running, installed: this.history.current?.version ?? running, managed: Boolean(this.history.current), previous: this.history.previous?.version ?? null, checked: '',
+            swaylock: {installed: null, latest: null, available: false, error: ''}};
         if (historyError) this.fail(historyError);
         else if (this.canUseInstalled) this.update({status: 'ready', message: `Dev OS ${this.state.installed} is installed. Use latest version to switch this session.`});
     }
@@ -146,7 +149,22 @@ export class Updates {
             }
             this.update({checked: new Date().toISOString()});
         } catch (error) { this.fail(error); }
-        finally { this.update({busy: false}); }
+        finally { await this.checkSwaylock(); this.update({busy: false}); }
+    }
+    private async checkSwaylock(): Promise<void> {
+        if (this.disposed || this.cancel.is_cancelled()) return;
+        let installed: string | null = null;
+        try {
+            if (GLib.find_program_in_path('swaylock'))
+                installed = parseSwaylockVersion(await run(['swaylock', '--version'], this.cancel, 10));
+            const response = await this.transport.get('https://api.github.com/repos/swaywm/swaylock/releases/latest', this.cancel);
+            if (response.status !== 200) throw new Error(`swaylock releases returned HTTP ${response.status}`);
+            const latest = parseSwaylockRelease(response.body);
+            this.update({swaylock: {installed, latest, available: installed === null || newer(latest, installed), error: ''}});
+        } catch (error) {
+            this.update({swaylock: {installed, latest: null, available: false,
+                error: error instanceof Error ? error.message : String(error)}});
+        }
     }
     private fail(error: unknown) { this.update({status: 'error', error: error instanceof Error ? error.message : String(error), message: 'The update could not be completed.'}); }
     private lock(): Gio.File {

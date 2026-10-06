@@ -26,6 +26,7 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
             gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
+          sudo sh tools/setup/bootstrap-lock.sh
       - run: npm ci
       - run: npm run build
       - name: Test update protocol and installation
@@ -35,6 +36,7 @@ jobs:
       - name: Test shared helpers and supervisor library
         run: |
           gjs -m dist/core-test.js
+          gjs -m dist/lock-test.js
           gjs -m dist/supervisor-test.js
       - name: Test session dependency environment
         run: python3 tests/runtime-env.test.py

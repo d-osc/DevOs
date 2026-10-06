@@ -18,7 +18,7 @@ UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, 
 - Compositor: ย้าย/ปรับขนาดหน้าต่าง, Alt + Tab, snap และ 4 workspaces
 - ตั้งค่าผ่าน JSON, เปลี่ยนสีและความสูง panel แล้ว reload ได้
 - ตัวจัดการ session: shell ปิดแล้ว compositor ปิดตาม และหยุด autostart services
-- Lock เรียก `swaylock` ถ้าติดตั้งไว้; logout มีขั้นตอนยืนยัน
+- Lock screen ใช้ธีม Dev OS พร้อมชื่อผู้ใช้และตัวบอกสถานะรหัสผ่านผ่าน `swaylock`; logout มีขั้นตอนยืนยัน
 - ตัวติดตั้งและ Wayland session entry สำหรับ display manager
 - Dependency doctor, config tests และ smoke test บน Wayland compositor จริง
 - Settings → Updates: ดาวน์โหลดรุ่น stable จาก GitHub Releases, ตรวจ SHA-256 และย้อนกลับรุ่นก่อนหน้าได้
@@ -41,8 +41,7 @@ sudo apt update
 sudo apt install labwc gjs gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 \
   dbus-daemon util-linux gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0 foot xdg-utils thunar \
   build-essential pkg-config libwayland-dev libwayland-bin curl tar coreutils
-# ตัวเลือกเสริม: ตัวล็อกหน้าจอ
-sudo apt install swaylock
+sudo sh tools/setup/bootstrap-lock.sh
 
 chmod +x bin/*
 npm ci
@@ -203,7 +202,7 @@ cp config/config.json ~/.config/dev-os/config.json
   "clock_format": "%a %d %b  ·  %H:%M",
   "terminal": ["dev-os-terminal"],
   "files": ["thunar"],
-  "lock": ["swaylock", "-c", "101b25"],
+  "lock": ["dev-os-lock"],
   "autostart": []
 }
 ```

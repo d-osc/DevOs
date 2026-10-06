@@ -10,6 +10,7 @@ import {Windows} from '@dev-os/services/windows';
 import {SettingsPages} from '@dev-os/core';
 import {requestSessionVersion} from '@dev-os/runtime/session-version';
 import {shellApplicationId, controlInterface} from '@dev-os/runtime/remote';
+import {LockScreen} from '@dev-os/runtime/lock';
 
 interface ShellOptions {config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]; preferences?: ExtensionManager;}
 
@@ -35,6 +36,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     declare windows: Windows | undefined;
     declare settingsPages: SettingsPages;
     declare control: Gio.DBusExportedObject | undefined;
+    declare lockScreen: LockScreen;
     constructor(options: ShellOptions) {
         super(options as unknown as Gtk.Application.ConstructorProps);
     }
@@ -59,6 +61,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         this.extensions = preferences ?? new ExtensionManager();
         this.settingsPages = new SettingsPages();
         this.control = undefined;
+        this.lockScreen = new LockScreen();
     }
 
     vfunc_startup() {
@@ -199,6 +202,10 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             catch (error) { this.showMessage(`Could not open Files: ${String(error)}`); return false; }
         }
         const args = this.config[command].map(expandHome);
+        if (command === 'lock' && args.length === 1 && args[0] === 'dev-os-lock')
+            return this.lockScreen.start(this.config, message => {
+                if (!this.quitting) this.showMessage(message);
+            });
         if (command === 'terminal' && args.length === 1 && ['dev-os-terminal', 'foot'].includes(args[0])) {
             try {
                 const open = this.commands.get('terminal.native');

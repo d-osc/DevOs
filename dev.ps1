@@ -42,6 +42,8 @@ if ($Mode -eq 'updated') {
     }
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-terminal.sh"
     if ($LASTEXITCODE -ne 0) { throw 'Terminal dependencies could not be prepared.' }
+    & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-lock.sh"
+    if ($LASTEXITCODE -ne 0) { throw 'Lock screen dependency could not be installed.' }
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-panel-tools.sh"
     if ($LASTEXITCODE -ne 0) { Write-Warning 'Audio controls need pactl or wpctl.' }
     Write-Host 'Preparing desktop runtime on the Linux filesystem...'

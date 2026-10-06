@@ -359,6 +359,8 @@ asyncTest('Updates offers the installed version on reopening and requires confir
     const click = (id: string) => (widgets(native).find(widget => widget.name === id) as Gtk.Button).emit('clicked');
     try {
         react.render(<UpdatesView updater={updater} preferences={preferences} useVersion={async root => { switched = root; }} />); await idle();
+        assert(widgets(native).some(widget => widget.name === 'updates-swaylock') &&
+            widgets(native).some(widget => widget.name === 'updates-swaylock-releases'), 'Native dependency is listed with its release action');
         assert(updater.canUseInstalled && updater.state.running === '0.2.0', 'Installed version is pending without claiming the old process was updated');
         click('updates-use-version'); assert(!switched && widgets(native).some(widget => widget.name === 'updates-switch-warning'), 'First click shows save-work confirmation');
         click('updates-cancel-switch'); assert(!switched, 'Cancel keeps this session running');

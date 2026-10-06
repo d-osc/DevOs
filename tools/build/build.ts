@@ -64,7 +64,7 @@ function uiEntries(): Record<string, string> {
         if (manifest.id !== directory.name) throw new Error('UI package folder must match manifest ID');
         const key = manifest.entry!.slice(0, -3);
         if (reservedRuntimeEntry(manifest.entry!) || ['react-gtk', 'core', 'extensions', 'updates', 'panel-view', 'launcher-view', 'background-view', 'react-demo', 'renderer-test',
-            'desktop-ui-test', 'supervisor-test', 'view-test', 'core-test', 'performance-test', 'main', 'supervisor', 'config-test', 'extensions-test', 'updates-test', 'updates-live-test', 'store-test', 'version-request-test'].includes(key))
+            'desktop-ui-test', 'supervisor-test', 'view-test', 'core-test', 'lock-test', 'performance-test', 'main', 'supervisor', 'config-test', 'extensions-test', 'updates-test', 'updates-live-test', 'store-test', 'version-request-test'].includes(key))
             throw new Error(`UI entry conflicts with base output ${manifest.entry}`);
         if (entries[key]) throw new Error(`Duplicate UI entry ${manifest.entry}`);
         const source = `extensions/${manifest.id}/extension`;
@@ -96,7 +96,7 @@ const options: BuildOptions = {
     entryPoints: {...libraryEntries(), ...uiEntries(), 'react-gtk': 'packages/core/compat.ts',
         'panel-view': 'packages/compat/panel-view.tsx', 'react-demo': 'examples/Counter.tsx',
         'launcher-view': 'packages/compat/launcher-view.tsx', 'background-view': 'packages/compat/background-view.tsx',
-        'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'desktop-ui-test': 'tests/desktop-ui.test.tsx', 'performance-test': 'tests/performance.test.tsx',
+        'lock-test': 'tests/lock.test.ts', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'desktop-ui-test': 'tests/desktop-ui.test.tsx', 'performance-test': 'tests/performance.test.tsx',
         main: 'src/main.ts', supervisor: 'packages/supervisor/entry.ts', 'config-test': 'tests/config.test.ts',
         'extensions-test': 'tests/extensions.test.ts', 'updates-test': 'tests/updates.test.ts', 'updates-live-test': 'tests/updates-live.test.ts', 'store-test': 'tests/store.test.ts', 'version-request-test': 'tests/version-request.test.ts'},
     // Desktop UI tests use the same external React runtime as every view.
