@@ -1,0 +1,57 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Test Super+Tab, desktop operations and overlay keyboard focus privately."); return 0 }
+    smoke.withSession("task-view", Map<str,str>(), fn(session: smoke.Session) {
+        let env: Map<str,str> = smoke.environment(session)
+        env.set("DEV_OS_TASK_VIEW_TEST", session.base)
+        let fixture: child_process.Child = smoke.launch(Vec<str>("gjs", "-m", session.root + "/dist/task-view-native-test.js"), env, session.log)
+        let outcome = result.run(fn() {
+            smoke.marker(session, "fixture-ready")
+            smoke.key(env, Vec<str>("-M", "logo", "-k", "Tab", "-m", "logo"))
+            tool.waitFor(fn(): bool { return strings.contains(util.read(session.log), "Dev OS Task View ready:") }, 10000, "Task View did not open.")
+            time.sleep_ms(800)
+            let artifacts = session.root + "/build/task-view-native"
+            smoke.screenshot(env, artifacts + "/task-view.png")
+            smoke.key(env, Vec<str>("-k", "Tab", "-k", "Tab", "-k", "Tab", "-k", "Tab", "-k", "Right", "-k", "Return"))
+            smoke.marker(session, "desktop-switched")
+            smoke.screenshot(env, artifacts + "/desktop-two.png")
+            smoke.key(env, Vec<str>("-k", "ISO_Left_Tab", "-k", "ISO_Left_Tab", "-k", "ISO_Left_Tab", "-k", "ISO_Left_Tab", "-k", "ISO_Left_Tab", "-k", "Return"))
+            time.sleep_ms(200); smoke.screenshot(env, artifacts + "/keyboard-after.png")
+            tool.waitFor(fn(): bool { return strings.contains(util.read(session.log), "Dev OS Task View hidden") }, 10000, "Task View did not hide.")
+            tool.write(session.base + "/selected", "selected"); smoke.marker(session, "fixture-passed")
+            for i in 0..2 { smoke.remote(session, env, "task-view-show") }
+            tool.require(tool.count(util.read(session.log), "Dev OS Task View ready:") >= 3, "Gesture show must be idempotent.")
+            smoke.remote(session, env, "task-view-hide")
+            tool.waitFor(fn(): bool { return tool.count(util.read(session.log), "Dev OS Task View hidden") >= 2 }, 10000, "Task View hide command failed.")
+            smoke.remote(session, env, "task-view-hide"); smoke.remote(session, env, "task-view-show")
+            tool.waitFor(fn(): bool { return tool.count(util.read(session.log), "Dev OS Task View ready:") >= 4 }, 10000, "Task View did not re-open.")
+            smoke.key(env, Vec<str>("-k", "Escape"))
+            let code = "const {Gtk,Gdk,GLib}=imports.gi;Gtk.init(null);const d=GLib.getenv('DEV_OS_TASK_VIEW_TEST');const w=new Gtk.Window({title:'Overlay keyboard probe',default_width:400,default_height:240});w.connect('key-press-event',(_w,e)=>{if(e.get_keyval()[1]===Gdk.KEY_F8)GLib.file_set_contents(d+'/overlay-keyboard','received');return false;});w.show_all();GLib.file_set_contents(d+'/overlay-probe-ready','ready');Gtk.main();"
+            let probe: child_process.Child = smoke.launch(Vec<str>("gjs", "-c", code), env, session.log)
+            let checked = result.run(fn() {
+                smoke.marker(session, "overlay-probe-ready"); time.sleep_ms(300)
+                for command in Vec<str>("launcher", "task-view-show", "") {
+                    if !strings.equal(command, "") { smoke.remote(session, env, command); time.sleep_ms(400) }
+                    for i in 0..2 { smoke.remote(session, env, "overlays-hide") }
+                    time.sleep_ms(400); util.remove(session.base + "/overlay-keyboard")
+                    smoke.key(env, Vec<str>("-k", "F8")); smoke.marker(session, "overlay-keyboard")
+                }
+            })
+            smoke.stop(probe); result.unwrap(checked)
+            tool.copy(session.log, artifacts + "/session.log")
+        })
+        smoke.stop(fixture); result.unwrap(outcome)
+    })
+    print("PASS: Super+Tab, desktops, native close, Escape, overlay hide idempotence and restored keyboard focus")
+    return 0
+}
+return tool.main(main)

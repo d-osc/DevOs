@@ -1,0 +1,163 @@
+# Privileged Linux accounts and verified GitHub-to-UID bindings.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/http"
+use "std/process"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/accounts.dev" as identity
+use "./privileged.dev" as secure
+struct Mutation { data: json.Value, value: json.Value }
+extern fn getpwnam(username: str): *void
+fn statePath(): str { return "/var/lib/devos/accounts.json" }
+fn users(): json.Value { return identity.users() }
+fn human(username: str): json.Value { return identity.human(username) }
+fn githubUsername(login: str): str { return identity.githubUsername(login) }
+fn registry(): json.Value {
+    if !fs.existsSync(statePath()) { return {bindings: {}, provisioned: false} }
+    let data = json.parse(secure.trusted(statePath()))
+    secure.require(strings.equal(json.kind(util.get(data, "bindings")), "object"), "Invalid account registry.")
+    return data
+}
+fn githubUser(token: json.Value): json.Value {
+    let text = util.text(token)
+    secure.require(!strings.equal(text, "") && strings.charLength(text) <= 4096, "Invalid GitHub credential.")
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        secure.require(!strings.equal(strings.trim(ch), "") && !strings.equal(ch, secure.nul()), "Invalid GitHub credential.")
+    }
+    let headers = Map<str,str>()
+    headers.set("Authorization", "Bearer " + text)
+    headers.set("Accept", "application/vnd.github+json")
+    headers.set("User-Agent", "DevOs-OS-Login")
+    let response = http.request("GET", "https://api.github.com/user", headers, "", 20000)
+    secure.require(response.ok && json.valid(response.body), "GitHub did not verify this account.")
+    let user = json.parse(response.body)
+    let id = util.get(user, "id")
+    secure.require(strings.equal(json.kind(id), "number") && util.number(id) > 0 && strings.equal(json.stringify(id), json.stringify(json.get({id: util.number(id)}, "id"))) && !strings.equal(util.text(util.get(user, "login")), ""), "GitHub did not verify this account.")
+    return {id: util.number(id), login: util.text(util.get(user, "login"))}
+}
+fn firstSetup(data: json.Value): bool {
+    let devos = false
+    for line in strings.split(util.read("/etc/os-release"), "\n") {
+        if strings.equal(strings.trim(line), "ID=devos") || strings.equal(strings.trim(line), "ID=\"devos\"") { devos = true }
+    }
+    if !devos || util.boolean(util.get(data, "provisioned")) { return false }
+    let all = users()
+    for i in 0..(json.len(all) as i64) { if !strings.equal(util.text(util.get(json.at(all, i), "username")), "devos") { return false } }
+    return true
+}
+fn bind(data: json.Value, username: str, token: json.Value): Mutation {
+    let account = human(username)
+    let verified = githubUser(token)
+    let bindings = util.get(data, "bindings")
+    for name in json.keys(bindings) {
+        secure.require(strings.equal(name, username) || util.number(util.get(json.get(bindings, name), "id")) != util.number(util.get(verified, "id")), "This GitHub account is already linked to another Linux user.")
+    }
+    bindings = json.set(bindings, username, json.set(verified, "uid", util.get(account, "uid")))
+    return Mutation(json.set(data, "bindings", bindings), verified)
+}
+fn reserved(name: str): bool {
+    return strings.equal(name, "root") || strings.equal(name, "devos") || strings.equal(name, "devos-greeter") || strings.equal(name, "nobody")
+}
+fn validUsername(name: str): bool {
+    let size = strings.charLength(name)
+    if size < 1 || size > 31 || reserved(name) || !strings.contains("abcdefghijklmnopqrstuvwxyz", strings.charAt(name, 0)) { return false }
+    for i in 0..size { if !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789_-", strings.charAt(name, i)) { return false } }
+    return true
+}
+fn run(argv: Vec<str>, input: str) {
+    let output = secure.run(argv, input)
+    secure.require(output.success, "Linux account operation failed: " + argv[0])
+}
+fn existsUser(username: str): bool {
+    unsafe { return getpwnam(username) as bool }
+}
+fn create(data: json.Value, request: json.Value, setup: bool): Mutation {
+    let username = util.text(util.get(request, "username"))
+    let name = util.text(util.get(request, "name"))
+    let provider = json.has(request, "provider") ? util.text(util.get(request, "provider")) : "guest"
+    let verified = json.null_value()
+    if strings.equal(provider, "github") {
+        verified = githubUser(util.get(request, "token"))
+        let bindings = util.get(data, "bindings")
+        for field in json.keys(bindings) { secure.require(util.number(util.get(json.get(bindings, field), "id")) != util.number(util.get(verified, "id")), "This GitHub account already has a Linux user. Select it on the login screen.") }
+        username = githubUsername(util.text(util.get(verified, "login")))
+        name = util.text(util.get(verified, "login"))
+    } else { secure.require(strings.equal(provider, "guest"), "Choose GitHub or Guest for the new user.") }
+    let password = util.text(util.get(request, "password"))
+    secure.require(validUsername(username), "Use a lowercase username beginning with a letter (maximum 31 characters).")
+    secure.require((!json.has(request, "name") || strings.equal(json.kind(util.get(request, "name")), "string") || strings.equal(provider, "github")) && strings.charLength(name) <= 80 && !strings.contains(name, ":") && !strings.contains(name, "\r") && !strings.contains(name, "\n") && !strings.contains(name, secure.nul()), "Enter a valid display name.")
+    secure.require(strings.charLength(password) >= 4 && strings.charLength(password) <= 512 && !strings.contains(password, "\r") && !strings.contains(password, "\n") && !strings.contains(password, secure.nul()), "Choose a local password of at least 4 characters for offline login and screen lock.")
+    secure.require(!existsUser(username), "This Linux username already exists.")
+    secure.require(!fs.existsSync("/home/" + username), "A home directory with this name already exists.")
+    let arguments = Vec<str>("/usr/sbin/useradd", "--create-home", "--home-dir", "/home/" + username, "--user-group", "--shell", "/bin/sh", "--comment", name)
+    if setup { arguments.push("--groups"); arguments.push("wheel") }
+    arguments.push("--"); arguments.push(username)
+    run(arguments, "")
+    let outcome = result.run(fn() {
+        run(Vec<str>("/usr/sbin/chpasswd"), username + ":" + password + "\n")
+        secure.mode(util.text(util.get(human(username), "home")), 448)
+    })
+    if result.isErr(outcome) {
+        run(Vec<str>("/usr/sbin/usermod", "--lock", "--", username), "")
+        result.raise(result.message(outcome))
+    }
+    data = json.set(data, "provisioned", true)
+    if !json.is_null(verified) { data = json.set(data, "bindings", json.set(util.get(data, "bindings"), username, json.set(verified, "uid", util.get(human(username), "uid")))) }
+    return Mutation(data, {username: username})
+}
+fn caller(): str {
+    let uid = process.getenv("SUDO_UID")
+    if strings.equal(uid, "") { uid = process.getenv("PKEXEC_UID") }
+    secure.require(!strings.equal(uid, ""), "Cannot identify the requesting user.")
+    for i in 0..strings.charLength(uid) { secure.require(strings.contains("0123456789", strings.charAt(uid, i)), "Invalid requesting user.") }
+    let all = users()
+    for i in 0..(json.len(all) as i64) {
+        let account = json.at(all, i)
+        if strings.equal(json.stringify(util.get(account, "uid")), uid) { return util.text(util.get(account, "username")) }
+    }
+    result.raise("Select a regular personal Linux user."); return ""
+}
+fn administer(request: json.Value, setup: bool): json.Value {
+    secure.require(secure.root(), "Administrator authentication is required.")
+    secure.require(strings.equal(json.kind(request), "object"), "Invalid account request.")
+    secure.stateDirectory()
+    let lockFd = secure.lock("/var/lib/devos/accounts.lock")
+    let outcome = result.attempt(fn(): json.Value {
+        let data = registry()
+        let action = util.text(util.get(request, "action"))
+        if setup { secure.require(strings.equal(action, "create-user") && firstSetup(data), "Initial administrator setup has already completed or is unavailable on this OS.") }
+        let changed = Mutation(data, json.object())
+        if strings.equal(action, "create-user") { changed = create(data, request, setup) }
+        else if strings.equal(action, "link") { changed = bind(data, caller(), util.get(request, "token")) }
+        else if strings.equal(action, "unlink") {
+            let username = caller(); human(username)
+            let bindings = json.object()
+            for field in json.keys(util.get(data, "bindings")) { if !strings.equal(field, username) { bindings = json.set(bindings, field, json.get(util.get(data, "bindings"), field)) } }
+            changed = Mutation(json.set(data, "bindings", bindings), json.object())
+        } else { result.raise("Unknown privileged account operation.") }
+        secure.save(statePath(), json.stringify(changed.data) + "\n")
+        return changed.value
+    })
+    secure.unlock(lockFd)
+    return result.unwrap(outcome)
+}
+fn authenticate(username: str, credential: str): bool {
+    if !secure.root() { return false }
+    if strings.equal(username, "devos") && strings.equal(credential, "DEVOS_GUEST") {
+        let all = users()
+        for i in 0..(json.len(all) as i64) {
+            let account = json.at(all, i)
+            if strings.equal(util.text(util.get(account, "username")), "devos") { return util.number(util.get(account, "uid")) >= 1000 && strings.equal(util.text(util.get(account, "home")), "/home/devos") }
+        }
+        return false
+    }
+    let account = human(username)
+    if !strings.startsWith(credential, "DEVOS_GITHUB:") { return false }
+    let binding = util.get(util.get(registry(), "bindings"), username)
+    if json.is_null(binding) || util.number(util.get(binding, "uid")) != util.number(util.get(account, "uid")) { return false }
+    let verified = githubUser(json.parse(json.stringify(strings.substring(credential, 13, strings.charLength(credential)))))
+    return util.number(util.get(verified, "id")) == util.number(util.get(binding, "id"))
+}

@@ -2,11 +2,15 @@ import {
     GLibUnix
 } from '@dev-os/core';
 
-// The generated GIR types expose the C alias signal_add, while GJS exposes
-// signal_add_full. Keep this version-specific binding at one typed boundary.
+// GLib's GIR name differs between the build host and the native image.
+type SignalAdd = (priority: number, signal: number, callback: () => boolean) => number;
 interface UnixSignals {
-    signal_add_full(priority: number, signal: number, callback: () => boolean): number;
+    signal_add?: SignalAdd;
+    signal_add_full?: SignalAdd;
 }
 export function addUnixSignal(priority: number, signal: number, callback: () => boolean): number {
-    return (GLibUnix as unknown as UnixSignals).signal_add_full(priority, signal, callback);
+    const signals = GLibUnix as unknown as UnixSignals;
+    const add = signals.signal_add ?? signals.signal_add_full;
+    if (typeof add !== 'function') throw new Error('GLibUnix has no Unix signal registration function');
+    return add.call(GLibUnix, priority, signal, callback);
 }

@@ -1,0 +1,81 @@
+# Download and verify the pinned DevLang runtime for the ARM64 image.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "../lib/posix.dev" as posix
+
+fn version(): str { return "0.5.5" }
+
+fn expected(): str { return "2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32" }
+
+fn sha256File(path: str): str {
+    let output = child_process.execFileSync("sha256sum", Vec<str>(path), child_process.options())
+    if !output.success { return "" }
+    let text = decodeOutput(output.stdout)
+    return strings.substring(text, 0, 64)
+}
+
+fn decodeOutput(bytes: Vec<u8>): str {
+    let text = ""
+    for i in 0..(bytes.len() as i64) {
+        text = text + charFromByte(bytes[i])
+    }
+    return text
+}
+
+fn charFromByte(value: u8): str {
+    let digits = "0123456789abcdef"
+    if value >= 0x30 && value <= 0x39 { return digitOf(value - 0x30) }
+    if value >= 0x61 && value <= 0x66 { return digitOf(value - 0x61 + 10) }
+    if value == 0x20 || value == 0x0a { return " " }
+    return ""
+}
+
+fn digitOf(index: u8): str {
+    let digits = "0123456789abcdef"
+    return strings.charAt(digits, index as i64)
+}
+
+fn members(): Vec<str> { return Vec<str>("d", "devrun", "devc", "LICENSE") }
+
+fn payloadName(member: str): str {
+    if strings.equal(member, "LICENSE") { return "devlang-LICENSE" }
+    return "devlang-arm64-" + member
+}
+
+fn snapshot(payload: str): json.Value {
+    let archiveName = "devlang-d-v" + version() + "-linux-arm64.tar.gz"
+    let url = "https://github.com/d-osc/DevLang/releases/download/v" + version() + "/" + archiveName
+    let archivePath = payload + "/" + archiveName
+    let digest = ""
+    if !fs.existsSync(archivePath) { digest = "missing" } else { digest = sha256File(archivePath) }
+    if !strings.equal(digest, expected()) {
+        if posix.shell("curl -sL -o " + archivePath + ".part " + url) != 0 {
+            print("DevLang archive download failed: " + url)
+            return json.null_value()
+        }
+        digest = sha256File(archivePath + ".part")
+        if !strings.equal(digest, expected()) {
+            print("DevLang archive checksum mismatch")
+            return json.null_value()
+        }
+        fs.renameSync(archivePath + ".part", archivePath)
+    }
+    let root = "devlang-d-v" + version() + "-linux-arm64"
+    let record = json.set(json.object(), "target", "linux-arm64")
+    record = json.set(record, "version", version())
+    record = json.set(record, "url", url)
+    record = json.set(record, "archiveSha256", expected())
+    for i in 0..(members().len() as i64) {
+        let member = members()[i]
+        if posix.shell("tar -xzf " + archivePath + " -C " + payload + " " + root + "/" + member) != 0 {
+            print("DevLang archive extraction failed: " + member)
+            return json.null_value()
+        }
+        fs.renameSync(payload + "/" + root + "/" + member, payload + "/" + payloadName(member))
+        record = json.set(record, "files." + payloadName(member), sha256File(payload + "/" + payloadName(member)))
+    }
+    fs.writeFileSync(payload + "/devlang-provenance.json", json.pretty(record) + "\n")
+    return record
+}

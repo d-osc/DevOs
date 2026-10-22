@@ -1,0 +1,98 @@
+#!/usr/bin/env d
+# Start a downloaded/local immutable release privately and verify a supervisor handoff.
+use "std/fs"
+use "std/json"
+use "std/path"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+use "../../lib/desktop.dev" as util
+use "../../lib/posix.dev" as posix
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d update-smoke.dev -- --output DIR [--switch] [--package ARCHIVE]"); return 0 }
+    let output: str = tool.resolve(tool.option("--output", ""))
+    tool.require(tool.has("--output"), "Supply an output directory.")
+    fs.mkdirSync(output, true)
+    tool.scope("devos-live-update-", fn(base: str) {
+        let root: str = tool.root()
+        let workspace = base + "/workspace"
+        tool.write(workspace + "/hello.ts", "export const message = \"Updated from GitHub Releases\";\n")
+        tool.jsonWrite(base + "/config/dev-os/extensions/org.devos.files.json", {version: 1, enabled: true, values: {homeDirectory: workspace}})
+        fs.mkdirSync(base + "/runtime", true); tool.chmod(base + "/runtime", "700")
+        let env: Map<str,str> = smoke.env(base, root)
+        env.set("XDG_DATA_HOME", base + "/data"); env.set("DEV_OS_UPDATE_TEST_PACKAGE", "__DEVOS_UNSET__")
+        if tool.has("--package") { env.set("DEV_OS_UPDATE_TEST_PACKAGE", tool.resolve(tool.option("--package", ""))) }
+        let machine = strings.trim(tool.exec(Vec<str>("uname", "-m")))
+        let vte = root + "/build/wsl/vte/usr/lib/" + machine + "-linux-gnu"
+        if tool.has("--switch") { for key in Vec<str>("GI_TYPELIB_PATH", "LD_LIBRARY_PATH", "DEV_OS_VTE_RUNTIME") { env.set(key, "__DEVOS_UNSET__") } }
+        else if fs.is_dir(vte) { env.set("GI_TYPELIB_PATH", vte + "/girepository-1.0"); env.set("LD_LIBRARY_PATH", vte) }
+        tool.checked(Vec<str>("gjs", "-m", root + "/dist/updates-live-test.js", base), env, "", 300000)
+        let report = json.parse(tool.read(base + "/result.json"))
+        let history = json.parse(tool.read(base + "/data/dev-os-updates/history.json"))
+        let installed: str = base + "/data/dev-os-updates/releases/" + util.text(util.get(util.get(history, "current"), "key"))
+        let launcher = root + "/bin/dev-os-updated-session"
+        tool.write(output + "/doctor.log", tool.checked(Vec<str>("sh", launcher, "--check"), env, "", 30000))
+        print("PASS: downloaded release dependency doctor")
+        let log: str = output + "/session.log"
+        tool.write(log, "")
+        let child: child_process.Child = smoke.launch(Vec<str>("sh", tool.has("--switch") ? root + "/bin/dev-os-session" : launcher, "--headless"), env, log)
+        let initial: str = tool.has("--switch") ? root : installed
+        let session: smoke.Session = smoke.Session(initial, base, base + "/runtime", log, env, child)
+        let outcome = result.run(fn() {
+            smoke.waitReady(session)
+            let environment = smoke.environment(session)
+            let ids = smoke.processIds(session.runtime, initial + "/dist/main.js")
+            tool.require(ids.len() == 1, "Expected one updated shell.")
+            let shellPid = ids[0]
+            if tool.has("--switch") {
+                let compositor = environment.get("LABWC_PID")
+                let requestEnv = env
+                requestEnv.set("DEV_OS_VERSION_REQUEST", environment.get("DEV_OS_VERSION_REQUEST"))
+                let rejected = tool.run(Vec<str>("gjs", "-m", root + "/dist/version-request-test.js", base + "/unselected"), requestEnv, "", 30000)
+                tool.require(!rejected.success && !fs.existsSync(environment.get("DEV_OS_VERSION_REQUEST")), "Invalid target created a restart request.")
+                tool.checked(Vec<str>("gjs", "-m", root + "/dist/version-request-test.js", installed), requestEnv, "", 60000)
+                tool.require(posix.send(shellPid, posix.SIGTERM()), "Could not stop old private shell.")
+                tool.waitFor(fn(): bool { return tool.count(util.read(log), "Dev OS shell ready") >= 2 }, 30000, "Updated shell did not start.")
+                let updated = smoke.Session(installed, base, session.runtime, log, env, child)
+                environment = smoke.environment(updated)
+                let current = smoke.processIds(session.runtime, installed + "/dist/main.js")
+                tool.require(current.len() == 1, "Version switch started duplicate shells.")
+                shellPid = current[0]
+                tool.require(strings.equal(environment.get("LABWC_PID"), compositor), "Version switch restarted the compositor.")
+                tool.require(tool.count(util.read(log), "Dev OS: switching session runtime") == 1, "Supervisor must hand off exactly once.")
+                report = json.set(report, "version_switch", "passed")
+                print("PASS: preflight, old shell exit, one runtime handoff and unchanged compositor")
+            }
+            tool.require(strings.equal(environment.get("DEV_OS_ROOT"), installed), "Session does not use the immutable release.")
+            let version = strings.trim(tool.checked(Vec<str>("sh", installed + "/bin/dev-os-shell", "--version"), env, "", 10000))
+            tool.require(strings.equal(version, util.text(util.get(report, "installed"))), "Running version differs from installed package.")
+            report = json.set(report, "running", version)
+            let current = smoke.Session(installed, base, session.runtime, log, environment, child)
+            smoke.screenshot(environment, output + "/updated-desktop.png")
+            smoke.remote(current, environment, "terminal")
+            tool.waitFor(fn(): bool { return strings.contains(util.read(log), "Dev OS Terminal ready:") }, 30000, "Updated Terminal failed.")
+            time.sleep_ms(500); smoke.screenshot(environment, output + "/updated-terminal.png")
+            smoke.remote(current, environment, "files")
+            tool.waitFor(fn(): bool { return strings.contains(util.read(log), "Dev OS Files ready") }, 30000, "Updated Files failed.")
+            smoke.screenshot(environment, output + "/updated-files.png")
+            tool.checked(Vec<str>("sh", installed + "/bin/dev-os-shell", "editor", workspace + "/hello.ts"), environment, "", 20000)
+            tool.waitFor(fn(): bool { return strings.contains(tool.checked(Vec<str>("wlrctl", "toplevel", "list"), environment, "", 5000), "Dev OS Editor") }, 30000, "Updated Editor failed.")
+            time.sleep_ms(2000); smoke.screenshot(environment, output + "/updated-editor.png")
+            smoke.remote(current, environment, "settings"); time.sleep_ms(500); smoke.screenshot(environment, output + "/updated-settings.png")
+            ui.cleanLog(current)
+            posix.send(shellPid, posix.SIGTERM())
+            tool.waitFor(fn(): bool { return child.ready() }, 15000, "Updated session did not exit.")
+            for file in fs.readdirSync(session.runtime) { tool.require(!strings.startsWith(file, "wayland-"), "Updated session did not remove its Wayland socket.") }
+            for field in Vec<str>("wayland", "terminal", "files", "editor", "settings", "cleanup") { report = json.set(report, field, "passed") }
+            tool.jsonWrite(output + "/report.json", report)
+            print("PASS: immutable runtime, VTE, Files, Monaco, Settings and compositor cleanup")
+        })
+        smoke.cleanup(session); result.unwrap(outcome)
+    })
+    return 0
+}
+return tool.main(main)

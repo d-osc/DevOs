@@ -8,10 +8,30 @@
   </theme>
   <focus><followMouse>no</followMouse><raiseOnFocus>yes</raiseOnFocus></focus>
   <desktops number="4"><popupTime>700</popupTime></desktops>
+  <regions>
+    <region name="devos-quarter-top-left" x="0%" y="0%" width="50%" height="50%" />
+    <region name="devos-quarter-top-right" x="50%" y="0%" width="50%" height="50%" />
+    <region name="devos-quarter-bottom-left" x="0%" y="50%" width="50%" height="50%" />
+    <region name="devos-quarter-bottom-right" x="50%" y="50%" width="50%" height="50%" />
+    <region name="devos-third-left" x="0%" y="0%" width="33%" height="100%" />
+    <region name="devos-third-center" x="33%" y="0%" width="34%" height="100%" />
+    <region name="devos-third-right" x="67%" y="0%" width="33%" height="100%" />
+    <region name="devos-wide-left" x="0%" y="0%" width="67%" height="100%" />
+    <region name="devos-wide-right" x="33%" y="0%" width="67%" height="100%" />
+  </regions>
   <keyboard>
     <default />
+    <keybind key="XF86MonBrightnessUp"><action name="Execute" command="dev-os-backlight -- up" /></keybind>
+    <keybind key="XF86MonBrightnessDown"><action name="Execute" command="dev-os-backlight -- down" /></keybind>
+    <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="wpctl set-volume --limit 1.0 @DEFAULT_AUDIO_SINK@ 5%+" /></keybind>
+    <keybind key="XF86AudioLowerVolume"><action name="Execute" command="wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" /></keybind>
+    <keybind key="XF86AudioMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" /></keybind>
     <keybind key="W-Return"><action name="Execute" command="dev-os-shell terminal" /></keybind>
     <keybind key="W-space"><action name="Execute" command="dev-os-shell launcher" /></keybind>
+    <keybind key="W-Tab"><action name="Execute" command="dev-os-shell task-view" /></keybind>
+    <!-- Open Applications on a Super tap, without firing after Super shortcuts. -->
+    <keybind key="Super_L" onRelease="yes"><action name="Execute" command="dev-os-shell launcher" /></keybind>
+    <keybind key="Super_R" onRelease="yes"><action name="Execute" command="dev-os-shell launcher" /></keybind>
     <keybind key="W-e"><action name="Execute" command="dev-os-shell files" /></keybind>
     <keybind key="W-l"><action name="Execute" command="dev-os-shell lock" /></keybind>
     <keybind key="W-S-r"><action name="Execute" command="dev-os-shell reload" /></keybind>
@@ -25,7 +45,9 @@
     <keybind key="W-S-4"><action name="SendToDesktop" to="4" /></keybind>
     <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
     <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
-    <keybind key="W-Up"><action name="ToggleMaximize" /></keybind>
+    <keybind key="W-Up"><action name="Maximize" /></keybind>
+    <keybind key="W-Down"><action name="Iconify" /></keybind>
+    <keybind key="W-z"><action name="ShowMenu" menu="devos-snap-layouts" /></keybind>
   </keyboard>
   <mouse><default /></mouse>
   <libinput><device category="touchpad"><tap>yes</tap><naturalScroll>yes</naturalScroll></device></libinput>

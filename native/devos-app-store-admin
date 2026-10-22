@@ -1,0 +1,17 @@
+#!/usr/bin/d
+use "std/json"
+use "std/result"
+use "/usr/share/dev-os/native/devos_app_store.dev" as store
+use "/usr/share/dev-os/native/privileged.dev" as secure
+use "/usr/share/dev-os/lib/desktop.dev" as util
+fn main(): i32 {
+    let outcome = result.attempt(fn(): json.Value {
+        let raw = secure.descriptorText(0, 65535)
+        secure.require(json.valid(raw), "Invalid JSON request.")
+        return store.administer(json.parse(raw))
+    })
+    if result.isErr(outcome) { print(json.stringify(util.error(result.message(outcome)))); return 1 }
+    print(json.stringify(json.set(result.unwrap(outcome), "ok", true)))
+    return 0
+}
+return main()

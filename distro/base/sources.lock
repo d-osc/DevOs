@@ -1,0 +1,4 @@
+# Component version SHA-256 URL (official upstream archives, no distro packages)
+# Linux source/config/Image come from DevOsLinuxKernel; see output/kernel-source.json.
+musl 1.2.5 a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4 https://musl.libc.org/releases/musl-1.2.5.tar.gz
+busybox 1.37.0 3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4 https://busybox.net/downloads/busybox-1.37.0.tar.bz2

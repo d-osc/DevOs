@@ -1,5 +1,30 @@
 <?xml version="1.0"?>
 <openbox_menu>
+  <menu id="devos-snap-layouts" label="Snap Layouts">
+    <item label="Left half  ·  Super+←"><action name="SnapToEdge" direction="left" /></item>
+    <item label="Right half  ·  Super+→"><action name="SnapToEdge" direction="right" /></item>
+    <separator />
+    <menu id="devos-snap-quarters" label="Four corners">
+      <item label="Top left"><action name="SnapToRegion" region="devos-quarter-top-left" /></item>
+      <item label="Top right"><action name="SnapToRegion" region="devos-quarter-top-right" /></item>
+      <item label="Bottom left"><action name="SnapToRegion" region="devos-quarter-bottom-left" /></item>
+      <item label="Bottom right"><action name="SnapToRegion" region="devos-quarter-bottom-right" /></item>
+    </menu>
+    <menu id="devos-snap-thirds" label="Three columns">
+      <item label="Left column"><action name="SnapToRegion" region="devos-third-left" /></item>
+      <item label="Center column"><action name="SnapToRegion" region="devos-third-center" /></item>
+      <item label="Right column"><action name="SnapToRegion" region="devos-third-right" /></item>
+    </menu>
+    <menu id="devos-snap-wide" label="Wide + narrow">
+      <item label="Wide left"><action name="SnapToRegion" region="devos-wide-left" /></item>
+      <item label="Narrow right"><action name="SnapToRegion" region="devos-third-right" /></item>
+      <item label="Narrow left"><action name="SnapToRegion" region="devos-third-left" /></item>
+      <item label="Wide right"><action name="SnapToRegion" region="devos-wide-right" /></item>
+    </menu>
+    <separator />
+    <item label="Maximize  ·  Super+↑"><action name="Maximize" /></item>
+    <item label="Minimize  ·  Super+↓"><action name="Iconify" /></item>
+  </menu>
   <menu id="root-menu" label="Dev OS">
     <item label="Applications"><action name="Execute" command="dev-os-shell launcher" /></item>
     <item label="Terminal"><action name="Execute" command="dev-os-shell terminal" /></item>

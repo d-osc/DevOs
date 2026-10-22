@@ -12,8 +12,10 @@ import {FileSearch, DEFAULT_SEARCH_EXCLUDES} from './search.js';
 import {materialIcon} from '../org.devos.icons/material.js';
 import {QuickOpen} from './search-view.js';
 import type {QuickOpenHandle} from './search-view.js';
+import {fileMenuOptions, createFileContextMenu, fileContextEntry, type FileMenuOptions} from './context-menu.js';
+import {runCustomMenuItem} from './custom-menu.js';
 
-export interface BrowserOptions {gridView: boolean; showHidden: boolean; searchExcludedDirectories?: string; materialIcons?: boolean;}
+export interface BrowserOptions {gridView: boolean; showHidden: boolean; searchExcludedDirectories?: string; materialIcons?: boolean; contextMenu?: FileMenuOptions; openTerminal?(directory: string): void;}
 interface ViewHandle {focusAddress(): void; toggleHidden(): void; submitName(): void; setGrid(value: boolean): void; quickOpen(): void; searchKey(key: number, shift: boolean): boolean;}
 function entryIcon(entry: {path: string; directory: boolean; icon: Gio.Icon | null}) {
     const material = materialIcon(entry.path, entry.directory);
@@ -53,6 +55,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
     const [quick, setQuick] = useState(false);
     const quickHandle = useRef<QuickOpenHandle>(null);
     const addressEntry = useRef<Gtk.Entry>(null);
+    const listWidget = useRef<Gtk.ListBox>(null), gridWidget = useRef<Gtk.FlowBox>(null);
     useLayoutEffect(() => model.subscribe(() => update(model.state)), [model]);
     useLayoutEffect(() => { setGrid(options.gridView); setHidden(options.showHidden); }, [options.gridView, options.showHidden]);
     useLayoutEffect(() => { setAddress(state.directory); setLimit(200); setEditing(null); setNotice(''); }, [state.directory]);
@@ -73,6 +76,37 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
     const open = (index: number) => { const entry = entries[index]; if (entry) void model.open(entry); };
     const rename = () => { if (selected) { setName(selected.name); setEditing('rename'); } };
     const submit = () => { void (editing === 'create' ? model.createFolder(name) : model.rename(name)).then(ok => { if (ok) setEditing(null); }); };
+    useLayoutEffect(() => {
+        const widget = grid ? gridWidget.current : listWidget.current;
+        if (!widget || quick) return;
+        let menu: Gtk.Menu | undefined;
+        const gesture = new Gtk.GestureMultiPress({widget, button: 3, propagation_phase: Gtk.PropagationPhase.CAPTURE});
+        const signal = gesture.connect('pressed', (_gesture, _count, x, y) => {
+            const optionsMenu = options.contextMenu ?? fileMenuOptions();
+            if (!optionsMenu.contextEnabled) return;
+            const entry = fileContextEntry(widget, x, y, entries);
+            // Read this click's target directly; React selection updates may commit later.
+            model.select(entry?.path ?? null);
+            const current = model.state, busy = current.loading || current.busy;
+            menu?.destroy();
+            menu = createFileContextMenu(optionsMenu, {
+                contextOpen: () => {if (entry) void model.open(entry);},
+                contextRename: () => {if (entry) {setName(entry.name); setEditing('rename');}},
+                contextCopyPath: () => {copyPath(entry?.path ?? current.directory); setNotice('Path copied');},
+                contextNewFolder: () => {setName(''); setEditing('create');},
+                contextTerminal: options.openTerminal ? () => options.openTerminal!(entry?.directory ? entry.path : current.directory) : undefined,
+                contextRefresh: () => {void model.refresh();},
+                contextHidden: () => {setHidden(value => !value); model.select(null);},
+            }, Boolean(entry), busy, hidden, {target: entry ? entry.directory ? 'folder' : 'file' : 'background',
+                activate: item => runCustomMenuItem(item, entry?.path ?? current.directory, current.directory, message => setNotice(message))});
+            if (!menu.get_children().length) return;
+            menu.show_all();
+            const event = gesture.get_last_event(gesture.get_current_sequence());
+            menu.popup_at_pointer(event);
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED);
+        });
+        return () => {gesture.disconnect(signal); gesture.run_dispose(); menu?.destroy();};
+    }, [grid, quick, entries, options.contextMenu, options.openTerminal, hidden]);
     const breadcrumbs = [{label: 'File system', path: '/'}];
     let path = '';
     for (const part of state.directory.split('/').filter(Boolean)) { path += `/${part}`; breadcrumbs.push({label: part, path}); }
@@ -142,12 +176,12 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                     <Label xalign={1} widthRequest={72}>SIZE</Label><Label xalign={1} widthRequest={110}>MODIFIED</Label>
                 </Box>}
                 <ScrolledWindow expand hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
-                    {grid ? <FlowBox id="files-grid" selectionMode={Gtk.SelectionMode.SINGLE} activateOnSingleClick={false}
+                    {grid ? <FlowBox id="files-grid" ref={gridWidget} selectionMode={Gtk.SelectionMode.SINGLE} activateOnSingleClick={false}
                         minChildrenPerLine={1} maxChildrenPerLine={6} rowSpacing={8} columnSpacing={8}
                         onChildActivated={(_box, child) => open(child.get_index())}
                         onSelectedChildrenChanged={box => model.select(entries[box.get_selected_children()[0]?.get_index()]?.path ?? null)}>
                         {entries.map(entry => <FileCard key={entry.path} entry={entry} selected={state.selected === entry.path} />)}
-                    </FlowBox> : <ListBox id="files-list" selectionMode={Gtk.SelectionMode.SINGLE} activateOnSingleClick={false}
+                    </FlowBox> : <ListBox id="files-list" ref={listWidget} selectionMode={Gtk.SelectionMode.SINGLE} activateOnSingleClick={false}
                         onRowSelected={(_list, row) => model.select(row ? entries[row.get_index()]?.path ?? null : null)}
                         onRowActivated={(_list, row) => open(row.get_index())}>
                         {entries.map(entry => <FileRow key={entry.path} entry={entry} selected={state.selected === entry.path} />)}

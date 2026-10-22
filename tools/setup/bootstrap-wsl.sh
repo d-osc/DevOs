@@ -25,10 +25,24 @@ for compositor_fix in tab-drag-focus tab-drag-escape app-icons; do
         git -C "$source_dir" apply "$compositor_patch"
     fi
 done
-if [ ! -f "$build_dir/build.ninja" ]; then
-    meson setup "$build_dir" "$source_dir" \
-        -Dxwayland=disabled -Dman-pages=disabled -Dsvg=disabled -Dnls=disabled
+devlang_bin="${DEV_OS_DEVLANG:-}"
+if [ -z "$devlang_bin" ]; then
+    if command -v d >/dev/null 2>&1; then
+        devlang_bin=d
+    else
+        devlang_bin="$HOME/.local/bin/d"
+    fi
 fi
+"$devlang_bin" "$project_root/tools/setup/patch-task-view-gesture.dev" -- "$source_dir"
+"$devlang_bin" "$project_root/tools/setup/patch-task-view-workspaces.dev" -- "$source_dir"
+set --
+if [ -f "$build_dir/build.ninja" ]; then set -- --reconfigure; fi
+# Newer distro headers add enum members unknown to wlroots 0.17. Keep warnings
+# visible without turning them into errors in this pinned compatibility build.
+meson setup "$@" "$build_dir" "$source_dir" --force-fallback-for=wlroots \
+        -Dxwayland=disabled -Dman-pages=disabled -Dsvg=disabled -Dnls=disabled \
+        -Dwlroots:werror=false -Dwlroots:backends=drm,libinput \
+        -Dwlroots:session=enabled -Dwlroots:renderers=gles2 -Dwlroots:allocators=gbm
 meson compile -C "$build_dir"
 mkdir -p "$bin_dir"
 install -m 755 "$build_dir/labwc" "$bin_dir/labwc"

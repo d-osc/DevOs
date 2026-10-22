@@ -1,0 +1,3 @@
+# Compatibility import for cleanup shared by isolated native smoke tests.
+use "../lib/smoke.dev" as smoke
+fn cleanupSession(session: smoke.Session) { smoke.cleanup(session) }

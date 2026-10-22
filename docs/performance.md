@@ -50,7 +50,7 @@ On Linux, after building and preparing the native dependencies:
 
 ```sh
 npm run build
-PATH="$PWD/build/wsl/bin:$PATH" python3 tools/test/performance.py
+PATH="$PWD/build/wsl/bin:$PATH" d tools/test/performance.dev --
 ```
 
 For a staged WSL runtime, run the same script with `--root /tmp/dev-os-runtime-...`

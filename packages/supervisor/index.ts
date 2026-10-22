@@ -100,6 +100,12 @@ export function runSupervisor(): number {
         const config = loadConfig();
         const shell = GLib.getenv('DEV_OS_SHELL');
         if (!shell) throw new Error('DEV_OS_SHELL is missing');
+        if (GLib.getenv('DEV_OS_POLKIT_AGENT_STARTED') !== '1' && GLib.getenv('WLR_BACKENDS') !== 'headless' && !GLib.getenv('WSL_DISTRO_NAME') && !GLib.getenv('WSL_INTEROP')) {
+            const agent = ['/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1',
+                '/usr/libexec/polkit-gnome-authentication-agent-1', 'polkit-gnome-authentication-agent-1']
+                .find(path => GLib.find_program_in_path(path));
+            if (agent) spawn([agent]);
+        }
         spawn([shell], true);
         for (const command of config.autostart) {
             if (GLib.find_program_in_path(expandHome(command[0]))) spawn(command);

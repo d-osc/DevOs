@@ -1,0 +1,21 @@
+#!/usr/bin/env d
+use "std/args"
+use "std/strings"
+use "../lib/tool.dev" as tool
+fn main(): i32 {
+    tool.require(args.len() == 1, "Supply the casper-bottom ORDER file.")
+    let file = args.get(0)
+    let text = tool.read(file)
+    let marker = "/scripts/casper-bottom/99casperboot"
+    if !strings.contains(text, "/90devos-session ") {
+        tool.require(strings.contains(text, marker), "Casper boot hook is missing.")
+        let entry = "/scripts/casper-bottom/90devos-session \"$@\"\n[ -e /conf/param.conf ] && . /conf/param.conf\n"
+        let at = strings.indexOf(text, marker)
+        # ORDER files contain ASCII shell script paths.
+        text = strings.substring(text, 0, at) + entry + strings.substring(text, at, strings.charLength(text))
+        tool.write(file, text)
+    }
+    tool.require(strings.indexOf(text, "/90devos-session ") < strings.indexOf(text, "/99casperboot "), "DevOs session must precede casperboot.")
+    return 0
+}
+return tool.main(main)

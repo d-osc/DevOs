@@ -1,0 +1,10 @@
+#!/usr/bin/env d
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main(): i32 {
+    if tool.has("--help") { print("Validate Applications in an isolated headless compositor."); return 0 }
+    smoke.native("launcher-native", "DEV_OS_LAUNCHER_TEST", "<labwc_config/>", 10000)
+    print("PASS: isolated fullscreen Applications, search, Escape and close")
+    return 0
+}
+return tool.main(main)

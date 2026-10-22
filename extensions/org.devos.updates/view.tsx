@@ -4,7 +4,7 @@ import {
     useEffect, type SettingsHost
 } from '@dev-os/core';
 import type {Updates} from '@dev-os/updates';
-import {SWAYLOCK_RELEASES, SWAYLOCK_PINNED_VERSION} from '@dev-os/updates';
+import {SWAYLOCK_RELEASES} from '@dev-os/updates';
 import {repository} from '@dev-os/updates/protocol';
 
 export function UpdatesView({updater, preferences, useVersion}: {updater: Updates; preferences: SettingsHost; useVersion?: (root: string) => Promise<void>}) {
@@ -59,12 +59,12 @@ export function UpdatesView({updater, preferences, useVersion}: {updater: Update
                     <Box className="settings-card-header" spacing={10}>
                         <Image iconName="system-lock-screen-symbolic" pixelSize={18} />
                         <Label className="section-heading" xalign={0} expand>swaylock · Lock screen</Label>
-                        <Label className="settings-badge">{`PINNED ${SWAYLOCK_PINNED_VERSION}`}</Label>
+                        <Label className="settings-badge">{`INSTALLED ${state.swaylock.installed ?? 'unknown'}`}</Label>
                     </Box>
                     <Box className="updates-details" orientation="vertical" spacing={10}>
                         <Label id="updates-swaylock-version" className="settings-description" xalign={0} wrap>{`Installed: ${state.swaylock.installed ?? (state.swaylock.latest ? 'Not installed' : 'Unknown')}  ·  Latest upstream: ${state.swaylock.latest ?? 'Unknown'}`}</Label>
                         {state.swaylock.error && <Label className="error" xalign={0} wrap>{state.swaylock.error}</Label>}
-                        <Label className="settings-description" xalign={0} wrap>{`Dev OS pins swaylock to ${SWAYLOCK_PINNED_VERSION}. New upstream releases are shown for reference; the installed version remains pinned.`}</Label>
+                        <Label className="settings-description" xalign={0} wrap>{'Manage swaylock through your Linux distribution. Upstream releases are shown for reference.'}</Label>
                         <Button id="updates-swaylock-releases" onClicked={() => {
                             try { Gtk.show_uri_on_window(null, SWAYLOCK_RELEASES, 0); setSourceError(''); }
                             catch (error) { setSourceError(`Could not open releases: ${String(error)}`); }

@@ -1,9 +1,11 @@
 #!/bin/sh
 # Source before starting GJS, including the supervisor, so dependency paths
 # survive every installed-version handoff. System installations need no override.
+
 dev_os_vte_runtime=${DEV_OS_VTE_RUNTIME:-}
-if [ -f "$root/build/wsl/vte/usr/lib/x86_64-linux-gnu/girepository-1.0/Vte-2.91.typelib" ]; then
-    dev_os_vte_runtime="$root/build/wsl/vte/usr/lib/x86_64-linux-gnu"
+dev_os_multiarch="$(uname -m)-linux-gnu"
+if [ -f "$root/build/wsl/vte/usr/lib/${dev_os_multiarch}/girepository-1.0/Vte-2.91.typelib" ]; then
+    dev_os_vte_runtime="$root/build/wsl/vte/usr/lib/${dev_os_multiarch}"
 elif [ ! -f "$dev_os_vte_runtime/girepository-1.0/Vte-2.91.typelib" ]; then
     dev_os_vte_runtime=
     # Compatibility with older supervisors: their PATH still includes the
@@ -15,7 +17,7 @@ elif [ ! -f "$dev_os_vte_runtime/girepository-1.0/Vte-2.91.typelib" ]; then
         else dev_os_remaining_path=${dev_os_remaining_path#*:}; fi
         case "$dev_os_path_entry" in
             */build/wsl/bin)
-                dev_os_candidate="${dev_os_path_entry%/bin}/vte/usr/lib/x86_64-linux-gnu"
+                dev_os_candidate="${dev_os_path_entry%/bin}/vte/usr/lib/${dev_os_multiarch}"
                 if [ -f "$dev_os_candidate/girepository-1.0/Vte-2.91.typelib" ]; then dev_os_vte_runtime=$dev_os_candidate; break; fi ;;
         esac
     done
@@ -31,4 +33,4 @@ if [ -n "$dev_os_vte_runtime" ] && [ -f "$dev_os_vte_runtime/girepository-1.0/Vt
         *) export LD_LIBRARY_PATH="$dev_os_vte_runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
     esac
 fi
-unset dev_os_vte_runtime dev_os_remaining_path dev_os_path_entry dev_os_candidate
+unset dev_os_multiarch dev_os_vte_runtime dev_os_remaining_path dev_os_path_entry dev_os_candidate

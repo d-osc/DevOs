@@ -1,0 +1,4 @@
+#!/bin/sh
+# DevOs uses native packages. Do not delay its desktop for the Ubuntu installer.
+case "${1:-}" in prereqs) exit 0 ;; esac
+rm -f /root/etc/systemd/system/display-manager.service.d/wait-for-snapd-seeding.conf

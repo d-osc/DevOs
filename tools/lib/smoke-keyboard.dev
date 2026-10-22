@@ -1,0 +1,83 @@
+# Keyboard checks shared by the full headless smoke runner.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn screenshot(env: Map<str,str>, screens: str, name: str) { if !strings.equal(screens, "") { smoke.screenshot(env, screens + "/" + name + ".png") } }
+fn keys(env: Map<str,str>, args: Vec<str>) { smoke.key(env, args); time.sleep_ms(200) }
+fn waitText(session: smoke.Session, text: str) { tool.waitFor(fn(): bool { return strings.contains(util.read(session.log), text) }, 12000, "Missing session event: " + text) }
+fn waitFile(file: str) { tool.waitFor(fn(): bool { return fs.existsSync(file) }, 12000, "Missing test marker: " + file) }
+fn files(session: smoke.Session, env: Map<str,str>, fixture: str, marker: str, screens: str) {
+    keys(env, Vec<str>("-M", "ctrl", "-k", "p", "-m", "ctrl")); keys(env, Vec<str>("-d", "30", "fvtsx")); time.sleep_ms(500)
+    screenshot(env, screens, "files-quick-open")
+    keys(env, Vec<str>("-M", "ctrl", "-k", "p", "-m", "ctrl")); keys(env, Vec<str>("-d", "30", "tsx")); keys(env, Vec<str>("-k", "Down"))
+    keys(env, Vec<str>("-M", "shift", "-k", "Return", "-m", "shift")); waitText(session, "Dev OS Files ready: " + fixture + "/src")
+    screenshot(env, screens, "files-reveal")
+    keys(env, Vec<str>("-M", "alt", "-k", "Left", "-m", "alt")); keys(env, Vec<str>("-M", "ctrl", "-k", "p", "-m", "ctrl")); keys(env, Vec<str>("-k", "Escape"))
+    print("PASS: Quick Open fuzzy query, selection, Shift Enter reveal, history and Escape")
+    keys(env, Vec<str>("-M", "ctrl", "-k", "2", "-m", "ctrl")); screenshot(env, screens, "files-grid")
+    keys(env, Vec<str>("-M", "ctrl", "-k", "1", "-m", "ctrl")); keys(env, Vec<str>("-M", "ctrl", "-k", "l", "-m", "ctrl"))
+    keys(env, Vec<str>("-d", "10", fixture + "/Documents", "-k", "Return")); waitText(session, "Dev OS Files ready: " + fixture + "/Documents")
+    screenshot(env, screens, "files-folder")
+    keys(env, Vec<str>("-M", "ctrl", "-k", "t", "-m", "ctrl")); keys(env, Vec<str>("-M", "ctrl", "-k", "l", "-m", "ctrl"))
+    keys(env, Vec<str>("-d", "10", fixture + "/Downloads", "-k", "Return")); waitText(session, "Dev OS Files ready: " + fixture + "/Downloads")
+    screenshot(env, screens, "files-tabs")
+    keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "Tab", "-m", "shift", "-m", "ctrl"))
+    for folder in Vec<str>("Documents", "Downloads", "Documents") {
+        keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl")); waitFile(marker)
+        tool.require(strings.equal(strings.trim(tool.read(marker + ".cwd")), fixture + "/" + folder), "Files tabs did not retain independent current folders.")
+        fs.unlinkSync(marker)
+        if strings.equal(folder, "Documents") { keys(env, Vec<str>("-M", "ctrl", "-k", "Tab", "-m", "ctrl")) }
+        else { keys(env, Vec<str>("-M", "ctrl", "-k", "w", "-m", "ctrl")) }
+    }
+    print("PASS: Files tabs, independent folders and terminal current directory")
+    keys(env, Vec<str>("-M", "alt", "-k", "F4", "-m", "alt"))
+}
+fn terminal(session: smoke.Session, env: Map<str,str>, fixture: str, screens: str) {
+    let cwd: str = session.base + "/vte-shell.cwd"
+    smoke.remote(session, env, "terminal"); waitText(session, "Dev OS Terminal ready:"); time.sleep_ms(500)
+    keys(env, Vec<str>("-d", "10", "pwd > " + util.quote(cwd), "-k", "Return")); waitFile(cwd)
+    tool.require(strings.equal(strings.trim(tool.read(cwd)), tool.home()), "Native shell must start in home.")
+    screenshot(env, screens, "native-terminal")
+    let first: str = session.base + "/tab-first"
+    let second: str = session.base + "/tab-second"
+    keys(env, Vec<str>("-d", "10", "export DEV_OS_TAB=first", "-k", "Return"))
+    let previous: i64 = tool.count(util.read(session.log), "Dev OS Terminal ready:")
+    keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl"))
+    tool.waitFor(fn(): bool { return tool.count(util.read(session.log), "Dev OS Terminal ready:") > previous }, 12000, "Terminal tab did not start.")
+    time.sleep_ms(800)
+    keys(env, Vec<str>("-d", "10", "printf '%s' \"$" + "{DEV_OS_TAB-unset}\" > " + util.quote(second), "-k", "Return")); waitFile(second)
+    tool.require(strings.equal(tool.read(second), "unset"), "New tabs must have independent shell environments.")
+    keys(env, Vec<str>("-d", "10", "export DEV_OS_TAB=second", "-k", "Return")); keys(env, Vec<str>("-M", "ctrl", "-k", "l", "-m", "ctrl"))
+    screenshot(env, screens, "terminal-tabs")
+    keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "Tab", "-m", "shift", "-m", "ctrl"))
+    keys(env, Vec<str>("-d", "10", "printf '%s' \"$DEV_OS_TAB\" > " + util.quote(first), "-k", "Return")); waitFile(first)
+    tool.require(strings.equal(tool.read(first), "first"), "Switching tabs must preserve the first shell.")
+    keys(env, Vec<str>("-M", "ctrl", "-k", "Tab", "-m", "ctrl")); keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "w", "-m", "shift", "-m", "ctrl"))
+    fs.unlinkSync(first)
+    keys(env, Vec<str>("-d", "10", "printf '%s' \"$DEV_OS_TAB\" > " + util.quote(first), "-k", "Return")); waitFile(first)
+    tool.require(strings.equal(tool.read(first), "first"), "Closing a tab must retain the first shell.")
+    previous = tool.count(util.read(session.log), "Dev OS Terminal ready:")
+    keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl"))
+    tool.waitFor(fn(): bool { return tool.count(util.read(session.log), "Dev OS Terminal ready:") > previous }, 12000, "Second terminal tab did not start.")
+    time.sleep_ms(800); keys(env, Vec<str>("-d", "10", "exit", "-k", "Return")); time.sleep_ms(800)
+    fs.unlinkSync(first)
+    keys(env, Vec<str>("-d", "10", "printf '%s' \"$DEV_OS_TAB\" > " + util.quote(first), "-k", "Return")); waitFile(first)
+    tool.require(strings.equal(tool.read(first), "first"), "Shell exit must close only its own tab.")
+    print("PASS: independent Terminal shells, cycling, close and per-tab exit")
+    keys(env, Vec<str>("-d", "20", "exit", "-k", "Return")); time.sleep_ms(500)
+    smoke.remote(session, env, "files"); time.sleep_ms(300)
+    let ready = "Dev OS Files ready: " + fixture + "/Documents"
+    let count: i64 = tool.count(util.read(session.log), ready)
+    keys(env, Vec<str>("-M", "ctrl", "-k", "l", "-m", "ctrl")); keys(env, Vec<str>("-d", "10", fixture + "/Documents", "-k", "Return"))
+    tool.waitFor(fn(): bool { return tool.count(util.read(session.log), ready) > count }, 12000, "Files did not navigate.")
+    keys(env, Vec<str>("-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl"))
+    waitText(session, "Dev OS Terminal ready: " + fixture + "/Documents"); time.sleep_ms(400); fs.unlinkSync(cwd)
+    keys(env, Vec<str>("-d", "10", "pwd > " + util.quote(cwd), "-k", "Return")); waitFile(cwd)
+    tool.require(strings.equal(strings.trim(tool.read(cwd)), fixture + "/Documents"), "Native Terminal must use the Files current directory.")
+    keys(env, Vec<str>("-d", "20", "exit", "-k", "Return"))
+    print("PASS: real PTY shell and native Terminal directory inherited from Files")
+}

@@ -1,6 +1,18 @@
 PREFIX ?= $(HOME)/.local
 
-.PHONY: build check doctor run smoke install
+.PHONY: build check doctor run smoke install base base-test distro-check distro-image
+
+base:
+	bash distro/base/build.sh
+
+base-test:
+	bash distro/base/test-qemu.sh
+
+distro-check:
+	bash distro/oe/build.sh --parse
+
+distro-image:
+	bash distro/oe/build.sh --build
 
 build:
 	npm run build
@@ -18,8 +30,8 @@ run: build
 	bin/dev-os-session --nested
 
 smoke: build
-	python3 tools/test/smoke.py
+	d tools/test/smoke.dev --
 
 install: build
-	python3 tools/maintenance/install.py --prefix "$(PREFIX)"
+	d tools/maintenance/install.dev -- --prefix "$(PREFIX)"
 

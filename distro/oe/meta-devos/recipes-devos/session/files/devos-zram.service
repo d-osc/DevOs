@@ -1,0 +1,12 @@
+[Unit]
+Description=DevOs compressed swap
+After=systemd-modules-load.service
+Before=devos-memory.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/d /usr/bin/dev-os-memory -- --setup-swap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

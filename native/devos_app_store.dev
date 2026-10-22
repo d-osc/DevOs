@@ -1,0 +1,124 @@
+# Native IPK store: catalog allowlist, signed HTTPS feed and root-only mutation.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/url"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "./privileged.dev" as secure
+fn catalogPath(): str { return "/etc/devos/app-store.json" }
+fn confPath(): str { return "/etc/devos/app-store-opkg.conf" }
+fn validPackage(name: str): bool {
+    let size = strings.charLength(name)
+    if size < 1 || size > 128 || !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789", strings.charAt(name, 0)) { return false }
+    for i in 0..size { if !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789+.-", strings.charAt(name, i)) { return false } }
+    return true
+}
+fn catalog(): json.Value {
+    if !fs.existsSync(catalogPath()) { return {schemaVersion: 1, source: {name: "DevOs", url: ""}, apps: []} }
+    let data = json.parse(secure.trusted(catalogPath()))
+    secure.require(util.number(util.get(data, "schemaVersion")) == 1 && strings.equal(json.kind(util.get(data, "apps")), "array"), "Invalid native app catalog.")
+    let seen = Vec<str>()
+    let apps = util.get(data, "apps")
+    for i in 0..(json.len(apps) as i64) {
+        let app = json.at(apps, i)
+        let id = util.get(app, "id")
+        secure.require(strings.equal(json.kind(id), "string") && strings.equal(json.kind(util.get(app, "name")), "string") && validPackage(util.text(util.get(app, "package"))), "Invalid or duplicate catalog application.")
+        for previous in seen { secure.require(!strings.equal(previous, util.text(id)), "Invalid or duplicate catalog application.") }
+        seen.push(util.text(id))
+    }
+    return data
+}
+fn native(): bool {
+    for line in strings.split(util.read("/etc/os-release"), "\n") { if strings.equal(line, "ID=devos") || strings.equal(line, "ID=\"devos\"") { return true } }
+    return false
+}
+fn executable(): str {
+    for file in Vec<str>("/usr/bin/opkg", "/bin/opkg") { if fs.is_file(file) { return file } }
+    return ""
+}
+fn connected(data: json.Value): bool {
+    let address = util.text(util.get(util.get(data, "source"), "url"))
+    while strings.endsWith(address, "/") { address = strings.substring(address, 0, strings.charLength(address) - 1) }
+    if strings.equal(address, "") { return false }
+    secure.require(strings.startsWith(address, "https://") && strings.charLength(address) > 8 && !strings.contains(address, "@") && !strings.contains(address, "?") && !strings.contains(address, "#") && !strings.contains(address, "\\") && !strings.contains(address, secure.nul()), "The DevOs feed requires an HTTPS URL without embedded credentials.")
+    secure.require(!strings.equal(strings.charAt(address, 8), "/"), "The DevOs feed requires an HTTPS URL without embedded credentials.")
+    for i in 0..strings.charLength(address) { secure.require(!strings.equal(strings.trim(strings.charAt(address, i)), ""), "The DevOs feed requires an HTTPS URL without embedded credentials.") }
+    let parsed = url.parse(address)
+    let host = parsed.hostname
+    secure.require(!strings.equal(host, ""), "The DevOs feed requires an HTTPS URL without embedded credentials.")
+    if !fs.existsSync(confPath()) { return false }
+    let feeds = ""
+    let signatures = ""
+    for raw in strings.split(secure.trusted(confPath()), "\n") {
+        let line = strings.trim(raw)
+        if strings.equal(line, "") || strings.startsWith(line, "#") { continue }
+        if strings.startsWith(line, "src ") || strings.startsWith(line, "src/gz ") { feeds = feeds + line + "\n" }
+        if strings.startsWith(line, "option check_signature ") { signatures = signatures + line + "\n" }
+    }
+    secure.require(strings.equal(feeds, "src/gz devos-app-store " + address + "\n") && strings.equal(signatures, "option check_signature 1\n"), "The feed must match the catalog and require signature verification.")
+    return true
+}
+fn run(arguments: Vec<str>): str {
+    let program = executable()
+    secure.require(native() && !strings.equal(program, ""), "Native package operations require a booted DevOs image. WSL supports the store preview only.")
+    let command = Vec<str>(program, "--conf", confPath())
+    for argument in arguments { command.push(argument) }
+    return secure.packageRun(command)
+}
+fn packageRows(text: str): json.Value {
+    let rows = json.object()
+    for line in strings.split(text, "\n") {
+        let parts = strings.split(line, " - ")
+        if parts.len() >= 2 && validPackage(parts[0]) { rows = json.set(rows, parts[0], parts[1]) }
+    }
+    return rows
+}
+fn state(): json.Value {
+    let data = catalog()
+    let ready = connected(data)
+    let available = native() && !strings.equal(executable(), "")
+    let versions = json.object()
+    let updates = json.object()
+    if available && ready { versions = packageRows(run(Vec<str>("list-installed"))); updates = packageRows(run(Vec<str>("list-upgradable"))) }
+    let apps = util.get(data, "apps")
+    let installed = json.array()
+    let upgraded = json.array()
+    for i in 0..(json.len(apps) as i64) {
+        let app = json.at(apps, i)
+        let packageName = util.text(util.get(app, "package"))
+        if json.has(versions, packageName) { installed = json.push(installed, json.set(app, "version", json.get(versions, packageName))) }
+        if json.has(updates, packageName) { upgraded = json.push(upgraded, json.set(app, "version", json.get(updates, packageName))) }
+    }
+    let sourceName = util.text(util.get(util.get(data, "source"), "name"))
+    if !json.has(util.get(data, "source"), "name") { sourceName = "DevOs" }
+    let value = {available: available, connected: ready, sourceName: sourceName, message: available ? "" : "Native packages run in the booted DevOs image. This session can preview the store."}
+    value = json.set(value, "catalog", apps); value = json.set(value, "installed", installed)
+    return json.set(value, "updates", upgraded)
+}
+fn protectedPackage(name: str): bool {
+    if strings.startsWith(name, "kernel") { return true }
+    for reserved in Vec<str>("devos-shell", "devos-session", "opkg", "glibc", "base-files", "systemd") { if strings.equal(name, reserved) { return true } }
+    return false
+}
+fn administer(request: json.Value): json.Value {
+    secure.require(secure.root(), "Administrator authentication is required.")
+    secure.require(strings.equal(json.kind(request), "object"), "Invalid native store request.")
+    let action = util.text(util.get(request, "action"))
+    secure.require(strings.equal(action, "refresh") || strings.equal(action, "install") || strings.equal(action, "remove") || strings.equal(action, "update"), "Unknown native store action.")
+    let data = catalog()
+    secure.require(connected(data), "No signed DevOs app feed has been configured yet.")
+    if strings.equal(action, "refresh") { run(Vec<str>("update")) }
+    else {
+        let app = json.null_value()
+        let apps = util.get(data, "apps")
+        for i in 0..(json.len(apps) as i64) { if strings.equal(util.text(util.get(json.at(apps, i), "id")), util.text(util.get(request, "id"))) { app = json.at(apps, i) } }
+        secure.require(!json.is_null(app), "This application is not in the trusted DevOs catalog.")
+        let packageName = util.text(util.get(app, "package"))
+        secure.require(!protectedPackage(packageName), "Core system packages are managed by OS updates.")
+        if strings.equal(action, "remove") { secure.require(!json.has(app, "removable") || util.boolean(util.get(app, "removable")), "This bundled application cannot be removed.") }
+        if strings.equal(action, "install") || strings.equal(action, "update") { run(Vec<str>("update")) }
+        run(Vec<str>(strings.equal(action, "update") ? "upgrade" : action, packageName))
+    }
+    return state()
+}

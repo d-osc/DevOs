@@ -75,7 +75,7 @@ runtime เก่าเก็บไว้เพื่อย้อนกลับ
 
 ## สร้าง release
 
-workflow `.github/workflows/release.yml` build บน Ubuntu 24.04 x64 และ publish GitHub Release เมื่อ push tag `vX.Y.Z`.
+workflow `.github/workflows/release.yml` build บน Ubuntu 24.04 ทั้ง x64 และ ARM64 แล้ว publish GitHub Release พร้อมแพ็กเกจทั้งสองสถาปัตยกรรมและ SHA256SUMS เมื่อ push tag `vX.Y.Z`.
 ต้องส่ง source และ workflow ไปยัง repository ก่อน; การเพิ่ม Git remote อย่างเดียวไม่ได้ publish release.
 ตัวอย่างเมื่อพร้อมเผยแพร่ source ที่ตรวจแล้ว:
 
@@ -124,7 +124,7 @@ extension เรียก `context.registerSettingsPage(id, Component)` เพ�
 npm run build
 gjs -m dist/updates-test.js
 gjs -m dist/extensions-test.js
-python3 tools/test/smoke.py
+d tools/test/smoke.dev --
 ```
 
 integration test ใช้ tar จริงใน temporary directories และ mock เฉพาะ network:
@@ -135,9 +135,9 @@ rollback, checksum ผิด, การติดตั้ง release แรก�
 หลังมี public release แล้ว ทดสอบ network และ session จริงด้วย:
 
 ```sh
-python3 tools/test/update-smoke.py --output build/update-live
+d tools/test/update-smoke.dev -- --output build/update-live
 # ทดสอบสลับ shell ที่กำลังเปิดอยู่ไปใช้แพ็กเกจจาก GitHub บน compositor เดิม
-python3 tools/test/update-smoke.py --switch --output build/update-switch
+d tools/test/update-smoke.dev -- --switch --output build/update-switch
 ```
 
 คำสั่งนี้ใช้ GitHub API และ HTTPS downloader ของระบบจริง ไม่มี network mock.

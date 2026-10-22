@@ -4,7 +4,7 @@ import {
 import System from 'system';
 import {ROOT} from '@dev-os/config';
 import {Updates, parseSwaylockRelease, parseSwaylockVersion, type UpdateTransport} from '@dev-os/updates';
-import {newer, parseRelease, validateArchive, repository, type Release} from '@dev-os/updates/protocol';
+import {newer, platform, parseRelease, validateArchive, repository, type Release} from '@dev-os/updates/protocol';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function fails(callback: () => unknown) { let failed = false; try { callback(); } catch { failed = true; } assert(failed, 'Expected rejection'); }
@@ -19,19 +19,22 @@ function write(path: string, value: string, executable = false) {
     GLib.file_set_contents(path, value);
     if (executable) Gio.File.new_for_path(path).set_attribute_uint32('unix::mode', 0o755, Gio.FileQueryInfoFlags.NONE, null);
 }
+const testPlatform = platform(run(['uname', '-m']));
+const otherPlatform = testPlatform === 'linux-x64' ? 'linux-arm64' : 'linux-x64';
+
 function fixture(base: string, releaseVersion: string): {archive: string; release: Record<string, unknown>} {
     const directory = `${base}/${releaseVersion}`;
     for (const name of ['main', 'supervisor', 'react-gtk']) write(`${directory}/dev-os/dist/${name}.js`, '// test runtime\n');
     for (const name of ['dev-os-session', 'dev-os-shell', 'dev-os-start']) write(`${directory}/dev-os/bin/${name}`, `#!/bin/sh\nprintf '%s\\n' '${releaseVersion}'\n`, true);
     write(`${directory}/dev-os/native/dev-os-window-tracker`, '#!/bin/sh\nexit 0\n', true);
-    write(`${directory}/dev-os/release.json`, JSON.stringify({format: 1, version: releaseVersion, platform: 'linux-x64'}));
+    write(`${directory}/dev-os/release.json`, JSON.stringify({format: 1, version: releaseVersion, platform: testPlatform}));
     const archive = `${base}/${releaseVersion}.tar.gz`;
     run(['tar', '-czf', archive, '-C', directory, 'dev-os']);
     const size = Gio.File.new_for_path(archive).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
     const sha = run(['sha256sum', '--', archive]).split(/\s+/)[0];
     return {archive, release: {tag_name: `v${releaseVersion}`, draft: false, prerelease: false, body: 'Test release', assets: [
-        {name: 'dev-os-linux-x64.tar.gz', state: 'uploaded', size, digest: `sha256:${sha}`,
-            browser_download_url: `https://github.com/d-osc/DevOs/releases/download/v${releaseVersion}/dev-os-linux-x64.tar.gz`},
+        {name: `dev-os-${testPlatform}.tar.gz`, state: 'uploaded', size, digest: `sha256:${sha}`,
+            browser_download_url: `https://github.com/d-osc/DevOs/releases/download/v${releaseVersion}/dev-os-${testPlatform}.tar.gz`},
     ]}};
 }
 
@@ -55,10 +58,10 @@ async function main() {
         };
         const root = `${base}/data/dev-os-updates`;
         updater = new Updates({repository: () => 'd-osc/DevOs', root, transport, running: '0.2.0'});
-        const parsed = parseRelease(first.release, 'd-osc/DevOs', 'linux-x64');
-        fails(() => parseRelease({...first.release, prerelease: true}, 'd-osc/DevOs', 'linux-x64'));
-        fails(() => parseRelease(first.release, 'another/repo', 'linux-x64'));
-        fails(() => parseRelease(first.release, 'd-osc/DevOs', 'linux-arm64'));
+        const parsed = parseRelease(first.release, 'd-osc/DevOs', testPlatform);
+        fails(() => parseRelease({...first.release, prerelease: true}, 'd-osc/DevOs', testPlatform));
+        fails(() => parseRelease(first.release, 'another/repo', testPlatform));
+        fails(() => parseRelease(first.release, 'd-osc/DevOs', otherPlatform));
         assert(parsed.version === '0.3.0', 'Parse a verified stable asset');
         const names = run(['tar', '-tzf', first.archive]), details = run(['tar', '-tvzf', first.archive, '--numeric-owner']);
         validateArchive(names, details);

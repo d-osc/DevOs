@@ -1,0 +1,55 @@
+#!/usr/bin/env d
+# Offline audit of a staged regular ext4 image. No physical disk access.
+use "std/fs"
+use "std/json"
+use "std/path"
+use "std/strings"
+use "../lib/tool.dev" as tool
+use "../lib/feed.dev" as feed
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d live-devlang-audit.dev -- --staging DIR"); return 0 }
+    tool.require(tool.has("--staging"), "Supply the staged Live bundle.")
+    let staging = tool.resolve(tool.option("--staging", ""))
+    let image = staging + "/rootfs.ext4"
+    tool.require(fs.is_file(image), "Expected a regular staged ext4 image.")
+    tool.scope("devos-devlang-audit-", fn(temporary: str) {
+        let result = json.object()
+        let sources = Vec<str>()
+        for name in fs.readdirSync(tool.root() + "/bin") { if fs.is_file(tool.root() + "/bin/" + name) && !strings.endsWith(name, ".ps1") { sources.push("bin/" + name) } }
+        for name in fs.readdirSync(tool.root() + "/lib") { if strings.endsWith(name, ".dev") { sources.push("lib/" + name) } }
+        for name in fs.readdirSync(tool.root() + "/native") { if strings.endsWith(name, ".dev") || strings.startsWith(name, "devos-") { sources.push("native/" + name) } }
+        for relative in sources {
+            let installed = "/usr/share/dev-os/" + relative
+            if strings.startsWith(relative, "bin/") { installed = "/usr/" + relative }
+            else if strings.startsWith(relative, "native/devos-") && !strings.endsWith(relative, ".dev") { installed = "/usr/libexec/" + path.basename(relative) }
+            let extracted = temporary + "/file"
+            if fs.existsSync(extracted) { fs.unlinkSync(extracted) }
+            tool.exec(Vec<str>("debugfs", "-R", "dump " + installed + " " + extracted, image))
+            tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(tool.root() + "/" + relative)), "Installed source differs or is missing: " + installed)
+            result = json.set(result, installed, feed.sha(extracted))
+            if strings.startsWith(relative, "lib/") {
+                let runtimePath = "/usr/" + relative
+                fs.unlinkSync(extracted)
+                tool.exec(Vec<str>("debugfs", "-R", "dump " + runtimePath + " " + extracted, image))
+                tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(tool.root() + "/" + relative)), "Runtime import differs or is missing: " + runtimePath)
+                result = json.set(result, runtimePath, feed.sha(extracted))
+            }
+        }
+        for name in Vec<str>("d", "devrun", "devc") {
+            let extracted = temporary + "/" + name
+            tool.exec(Vec<str>("debugfs", "-R", "dump /usr/bin/" + name + " " + extracted, image))
+            let pinned = tool.root() + "/build/devlang-v0.5.5/devlang-d-v0.5.5-linux-arm64/" + name
+            tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(pinned)), "Pinned DevLang 0.5.5 binary mismatch: " + name)
+            result = json.set(result, "/usr/bin/" + name, feed.sha(extracted))
+        }
+        for obsolete in Vec<str>("devos_accounts_system.py", "devos_app_store.py") {
+            let output = tool.exec(Vec<str>("debugfs", "-R", "stat /usr/share/dev-os/native/" + obsolete, image))
+            tool.require(!strings.contains(output, "Inode:"), "Obsolete native Python source in image: " + obsolete)
+        }
+        tool.jsonWrite(staging + "/devlang-audit.json", json.set(result, "result", "PASS"))
+    })
+    print("PASS: all installed desktop helpers, native services and shared libraries match current sources; DevLang 0.5.5 binaries verified")
+    return 0
+}
+return tool.main(main)

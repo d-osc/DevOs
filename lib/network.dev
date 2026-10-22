@@ -1,0 +1,211 @@
+# NetworkManager D-Bus implementation. GIO carries secrets in process memory.
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/uuid"
+use "std/time"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/dbus.dev" as dbus
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+extern fn g_compute_checksum_for_data(kind: i32, data: *u8, length: usize): *u8
+extern fn g_free(value: *void)
+extern fn g_utf8_make_valid(value: *u8, length: isize): *u8
+
+fn interfaceId(iface: str): str {
+    # RFC 4122 UUIDv5, NAMESPACE_OID: preserve the existing public interface IDs.
+    let namespace = Vec<u8>(0x6b, 0xa7, 0xb8, 0x12, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8)
+    let bytes = encoding.encode(iface, "utf8")
+    let hash = ""
+    unsafe {
+        let data = malloc(16 + bytes.len())
+        util.require(data as bool, "Out of memory.")
+        for i in 0..16 { data[i] = namespace[i] }
+        for i in 0..(bytes.len() as i64) { data[16 + i] = bytes[i] }
+        let checksum = g_compute_checksum_for_data(1, data, 16 + bytes.len())
+        free(data as *void)
+        util.require(checksum as bool, "Could not identify the Wi-Fi adapter.")
+        let encoded = Vec<u8>()
+        for i in 0..40 { encoded.push(checksum[i]) }
+        hash = encoding.decode(encoded, "utf8")
+        g_free(checksum as *void)
+    }
+    let hex = "0123456789abcdef"
+    let variant = strings.indexOf(hex, strings.charAt(hash, 16)) % 4 + 8
+    return strings.substring(hash, 0, 8) + "-" + strings.substring(hash, 8, 12) + "-5" + strings.substring(hash, 13, 16) + "-" + strings.charAt(hex, variant) + strings.substring(hash, 17, 20) + "-" + strings.substring(hash, 20, 32)
+}
+fn securityKind(point: json.Value): str {
+    let flags = util.number(util.get(point, "WpaFlags")) | util.number(util.get(point, "RsnFlags"))
+    if (flags & 0x100) != 0 { return "psk" }
+    if (flags & 0x400) != 0 { return "sae" }
+    if (flags & 0x1800) != 0 { return "owe" }
+    if (flags & 0x200) != 0 { return "enterprise" }
+    return (util.number(util.get(point, "Flags")) & 1) != 0 ? "unsupported" : "open"
+}
+fn secure(point: json.Value): bool {
+    return (util.number(util.get(point, "Flags")) & 1) != 0 || util.number(util.get(point, "WpaFlags")) != 0 || util.number(util.get(point, "RsnFlags")) != 0
+}
+fn supported(security: str): bool { return strings.equal(security, "open") || strings.equal(security, "psk") || strings.equal(security, "sae") || strings.equal(security, "owe") }
+fn ssidOf(value: json.Value): str {
+    let bytes = Vec<u8>()
+    for i in 0..(json.len(value) as i64) { bytes.push(json.int(json.at(value, i)) as u8) }
+    if bytes.len() == 0 { return "" }
+    # SSIDs are arbitrary bytes. One invalid UTF-8 name must not break the scan.
+    unsafe {
+        let data = malloc(bytes.len())
+        util.require(data as bool, "Out of memory.")
+        for i in 0..(bytes.len() as i64) { data[i] = bytes[i] }
+        let valid = g_utf8_make_valid(data, bytes.len() as isize)
+        free(data as *void)
+        util.require(valid as bool, "Could not decode the Wi-Fi name.")
+        let output = Vec<u8>()
+        let i = 0
+        while valid[i] != 0 { output.push(valid[i]); i = i + 1 }
+        let decoded = encoding.decode(output, "utf8")
+        g_free(valid as *void)
+        return decoded
+    }
+}
+fn connectionSettings(ssid: str, password: str, security: str): str {
+    let bytes = encoding.encode(ssid, "utf8")
+    util.require(bytes.len() >= 1 && bytes.len() <= 32, "Invalid Wi-Fi name.")
+    let n = strings.charLength(password)
+    if strings.equal(security, "psk") {
+        let hex = n == 64
+        for i in 0..n { if !strings.contains("0123456789abcdefABCDEF", strings.charAt(password, i)) { hex = false } }
+        util.require((n >= 8 && n <= 63) || hex, "Wi-Fi password must contain 8–63 characters or 64 hexadecimal digits.")
+    }
+    if strings.equal(security, "sae") { util.require(n >= 1 && n <= 63, "Enter a valid WPA3 password.") }
+    util.require(supported(security), "This network requires enterprise or legacy authentication, which DevOs does not support yet.")
+    let array = "@ay ["
+    for i in 0..(bytes.len() as i64) { array = array + (i == 0 ? "" : ", ") + json.stringify(bytes[i] as i64) }
+    array = array + "]"
+    let settings = "@a{sa{sv}} {\"connection\": {\"id\": <" + json.stringify(ssid) + ">, \"uuid\": <" + json.stringify(uuid.v4()) + ">, \"type\": <\"802-11-wireless\">, \"autoconnect\": <true>}, \"802-11-wireless\": {\"ssid\": <" + array + ">, \"mode\": <\"infrastructure\">}, \"ipv4\": {\"method\": <\"auto\">}, \"ipv6\": {\"method\": <\"auto\">}"
+    if !strings.equal(security, "open") {
+        let key = strings.equal(security, "psk") ? "wpa-psk" : security
+        settings = settings + ", \"802-11-wireless-security\": {\"key-mgmt\": <" + json.stringify(key) + ">"
+        if strings.equal(security, "psk") || strings.equal(security, "sae") { settings = settings + ", \"psk\": <" + json.stringify(password) + ">" }
+        settings = settings + "}"
+    }
+    return settings + "}"
+}
+fn nmCall(bus: *void, method: str, parameters: str): json.Value {
+    return dbus.call(bus, "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager", method, parameters, 10000)
+}
+fn activateNew(bus: *void, device: str, pointPath: str, point: json.Value, password: str) {
+    let settings = connectionSettings(ssidOf(util.get(point, "Ssid")), password, securityKind(point))
+    let reply = nmCall(bus, "AddAndActivateConnection", "(" + settings + ", objectpath " + json.stringify(device) + ", objectpath " + json.stringify(pointPath) + ")")
+    let saved: str = json.string(json.at(reply, 0))
+    let active: str = json.string(json.at(reply, 1))
+    let outcome = result.run(fn() {
+            let deadline = time.now_ms() + 25000
+            while time.now_ms() < deadline {
+                let state = dbus.property(bus, active, "org.freedesktop.NetworkManager.Connection.Active", "State")
+                if json.int(state) == 2 { return }
+                util.require(json.int(state) != 4, "Wi-Fi connection failed. Check the password and signal, then try again.")
+                time.sleep_ms(200)
+            }
+            result.raise("Wi-Fi connection timed out. Check the password and signal.")
+    })
+    if result.isErr(outcome) {
+        result.run(fn() { nmCall(bus, "DeactivateConnection", "(objectpath " + json.stringify(active) + ",)") })
+        result.run(fn() { dbus.call(bus, saved, "org.freedesktop.NetworkManager.Settings.Connection", "Delete", "()", 2000) })
+        result.raise(result.message(outcome))
+    }
+}
+fn checkedCommand(argv: Vec<str>, timeout: i64) {
+    let probe = util.run("nmcli", argv, "", timeout)
+    # Do not return command diagnostics that may include credentials.
+    util.require(probe.success, "NetworkManager could not complete the requested operation.")
+}
+fn execute(bus: *void, request: json.Value): json.Value {
+    util.require(strings.equal(json.kind(request), "object"), "Invalid network request.")
+    let action = util.text(util.get(request, "action"))
+    util.require(!strings.equal(action, "settings"), "Manage Wi-Fi inside DevOs Settings. External network settings are disabled.")
+    let props = dbus.properties(bus, "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager")
+    let devices = json.at(nmCall(bus, "GetDevices", "()"), 0)
+    let wifi = Vec<str>()
+    for i in 0..(json.len(devices) as i64) {
+        let device = json.string(json.at(devices, i))
+        if util.number(dbus.property(bus, device, "org.freedesktop.NetworkManager.Device", "DeviceType")) == 2 { wifi.push(device) }
+    }
+    util.require(wifi.len() > 0, "No Linux Wi-Fi adapter detected. Check the kernel driver and device firmware; USB Ethernet can be used meanwhile.")
+    if strings.equal(action, "radio") {
+        let enabled = util.get(request, "enabled")
+        util.require(strings.equal(json.kind(enabled), "bool"), "Invalid Wi-Fi radio state.")
+        checkedCommand(Vec<str>("radio", "wifi", json.bool(enabled) ? "on" : "off"), 5000)
+        return util.ok()
+    }
+    if strings.equal(action, "connect") || strings.equal(action, "disconnect") {
+        let device = ""
+        let iface = ""
+        for candidate in wifi {
+            let name = util.text(dbus.property(bus, candidate, "org.freedesktop.NetworkManager.Device", "Interface"))
+            if strings.equal(interfaceId(name), util.text(util.get(request, "interfaceId"))) { device = candidate; iface = name; break }
+        }
+        util.require(!strings.equal(device, ""), "Wi-Fi adapter changed. Refresh the network list.")
+        if strings.equal(action, "disconnect") { checkedCommand(Vec<str>("--wait", "5", "device", "disconnect", iface), 7000); return util.ok() }
+        let profile = util.text(util.get(request, "profile"))
+        if !strings.equal(profile, "") {
+            util.require(uuid.isValid(profile), "Invalid saved connection UUID.")
+            checkedCommand(Vec<str>("--wait", "12", "connection", "up", "uuid", profile, "ifname", iface), 14000)
+            return util.ok()
+        }
+        util.require(strings.equal(json.kind(util.get(request, "password")), "string") || json.is_null(util.get(request, "password")), "Invalid Wi-Fi password.")
+        let points = util.get(dbus.properties(bus, device, "org.freedesktop.NetworkManager.Device.Wireless"), "AccessPoints")
+        let bestPath = ""
+        let best = json.object()
+        let strength = -1
+        for i in 0..(json.len(points) as i64) {
+            let pointPath = json.string(json.at(points, i))
+            let point = dbus.properties(bus, pointPath, "org.freedesktop.NetworkManager.AccessPoint")
+            if !strings.equal(ssidOf(util.get(point, "Ssid")), util.text(util.get(request, "ssid"))) { continue }
+            let security = util.text(util.get(request, "security"))
+            if !strings.equal(security, "") && !strings.equal(securityKind(point), security) { continue }
+            if secure(point) != util.boolean(util.get(request, "secure")) { continue }
+            let signal = util.number(util.get(point, "Strength"))
+            if signal > strength { bestPath = pointPath; best = point; strength = signal }
+        }
+        util.require(!strings.equal(bestPath, ""), "Network is no longer available. Refresh and try again.")
+        activateNew(bus, device, bestPath, best, util.text(util.get(request, "password")))
+        return util.ok()
+    }
+    util.require(strings.equal(action, "scan"), "Unknown network action.")
+    if !util.boolean(util.get(props, "WirelessEnabled")) { return {ok: true, networks: [], wirelessEnabled: false} }
+    for device in wifi {
+        # RequestScan refreshes asynchronously; cached access points stay usable.
+        result.run(fn() { dbus.call(bus, device, "org.freedesktop.NetworkManager.Device.Wireless", "RequestScan", "(@a{sv} {},)", 3000) })
+    }
+    let networks = json.array()
+    for device in wifi {
+        let deviceProps = dbus.properties(bus, device, "org.freedesktop.NetworkManager.Device")
+        let wireless = dbus.properties(bus, device, "org.freedesktop.NetworkManager.Device.Wireless")
+        let iface = util.text(util.get(deviceProps, "Interface"))
+        let active = util.text(util.get(wireless, "ActiveAccessPoint"))
+        let points = util.get(wireless, "AccessPoints")
+        let profiles = util.get(deviceProps, "AvailableConnections")
+        let saved = json.object()
+        for i in 0..(json.len(profiles) as i64) {
+            let profile: str = json.string(json.at(profiles, i))
+            let outcome = result.attempt(fn(): json.Value { return json.at(dbus.call(bus, profile, "org.freedesktop.NetworkManager.Settings.Connection", "GetSettings", "()", 5000), 0) })
+            if result.isErr(outcome) { continue }
+            let settings = result.unwrap(outcome)
+            let bytes = util.get(util.get(settings, "802-11-wireless"), "ssid")
+            if json.is_null(bytes) { continue }
+            # Compare byte arrays, including non-ASCII SSIDs, without parsing nmcli text.
+            saved = json.set(saved, json.stringify(bytes), util.get(util.get(settings, "connection"), "uuid"))
+        }
+        for i in 0..(json.len(points) as i64) {
+            let pointPath = json.string(json.at(points, i))
+            let point = dbus.properties(bus, pointPath, "org.freedesktop.NetworkManager.AccessPoint")
+            let bytes = util.get(point, "Ssid")
+            let name = ssidOf(bytes)
+            if strings.equal(name, "") { continue }
+            let profile = util.text(util.get(saved, json.stringify(bytes)))
+            let security = securityKind(point)
+            networks = json.push(networks, {ssid: name, profile: profile, adapter: iface, interfaceId: interfaceId(iface), signal: util.number(util.get(point, "Strength")), secure: secure(point), security: security, connected: strings.equal(active, pointPath), connectable: !strings.equal(profile, "") || supported(security)})
+        }
+    }
+    return json.set({ok: true, wirelessEnabled: true}, "networks", networks)
+}

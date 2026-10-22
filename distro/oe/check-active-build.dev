@@ -1,0 +1,70 @@
+# Reject a second client before it modifies an active OpenEmbedded build.
+use "std/fs"
+use "std/strings"
+use "std/process"
+use "std/path"
+use "std/encoding"
+
+fn fail(work: str): i32 {
+    print("DevOs build is already running.")
+    print("Let the existing build finish; do not start another desktop-build.")
+    print("Build log: " + work + "/build/tmp/log/cooker/qemuarm64/console-latest.log")
+    return 75
+}
+
+fn argsEqual(bytes: Vec<u8>, want: Vec<u8>, index: i64): bool {
+    let start = 0
+    let current = 0
+    let n = bytes.len() as i64
+    let argStart = -1
+    let argEnd = -1
+    let seen = 0
+    let i = 0
+    while i <= n {
+        let isEnd = i == n || bytes[i] == 0
+        if isEnd {
+            if seen == index {
+                argStart = start
+                argEnd = i
+                break
+            }
+            seen = seen + 1
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if argStart < 0 { return false }
+    if argEnd - argStart != want.len() as i64 { return false }
+    let j = 0
+    while j < want.len() as i64 {
+        if bytes[argStart + j] != want[j] { return false }
+        j = j + 1
+    }
+    return true
+}
+
+fn isAllDigits(value: str): bool {
+    if strings.equal(value, "") { return false }
+    let n = strings.charLength(value)
+    for i in 0..n {
+        let ch = strings.charAt(value, i)
+        if !strings.contains("0123456789", ch) { return false }
+    }
+    return true
+}
+
+fn main(): i32 {
+    let work = process.getenv("DEVOS_OE_WORK")
+    if strings.equal(work, "") { work = "/var/tmp/devos-oe" }
+    work = path.normalize(work)
+    let want = encoding.encode(work + "/bitbake/bin/bitbake", "utf8")
+    let entries = fs.readdirSync("/proc")
+    for i in 0..(entries.len() as i64) {
+        let name = entries[i]
+        if !isAllDigits(name) { continue }
+        let raw = fs.read_bytes("/proc/" + name + "/cmdline")
+        if argsEqual(raw, want, 0) || argsEqual(raw, want, 1) { return fail(work) }
+    }
+    return 0
+}
+return main()

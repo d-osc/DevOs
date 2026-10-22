@@ -1,0 +1,27 @@
+# Byte-offset-safe string helpers. std/strings returns UTF-8 byte offsets from
+# indexOf but substring uses scalar indices; these bridge the two.
+
+use "std/strings"
+
+fn byteLength(text: str): i64 { return strings.len(text) as i64 }
+
+fn scalarCount(text: str): i64 { return strings.charLength(text) }
+
+fn byteToScalar(text: str, byteOffset: i64): i64 {
+    let scalar = 0
+    let bytes = 0
+    let n = strings.charLength(text)
+    while scalar < n && bytes < byteOffset {
+        bytes = bytes + strings.len(strings.charAt(text, scalar)) as i64
+        scalar = scalar + 1
+    }
+    return scalar
+}
+
+fn byteSlice(text: str, startBytes: i64, endBytes: i64): str {
+    let startScalar = byteToScalar(text, startBytes)
+    let endScalar = byteToScalar(text, endBytes)
+    return strings.substring(text, startScalar, endScalar)
+}
+
+fn byteIndexOf(text: str, needle: str): i64 { return strings.indexOf(text, needle) }

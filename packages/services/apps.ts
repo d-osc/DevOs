@@ -1,6 +1,21 @@
 import {
-    Gio
+    Gio, GLib
 } from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
+import {isSystemApp} from './memory-policy.js';
+
+export async function launchDesktopApp(app: Gio.AppInfo, context: Gio.AppLaunchContext | null = null): Promise<void> {
+    if (isSystemApp(app.get_id() ?? '')) {app.launch([], context); return;}
+    const local = `${ROOT}/bin/dev-os-app-launch`;
+    const helper = GLib.file_test(local, GLib.FileTest.IS_REGULAR) ? local : GLib.find_program_in_path('dev-os-app-launch');
+    const filename = (app as Gio.AppInfo & {get_filename?(): string | null}).get_filename?.();
+    if (!filename || !app.get_id() || !helper) {app.launch([], context); return;}
+    const process = Gio.Subprocess.new(['d', helper, '--', app.get_id()!, filename], Gio.SubprocessFlags.STDERR_PIPE);
+    await new Promise<void>((resolve, reject) => process.communicate_utf8_async(null, null, (_source, result) => {
+        try {const [, , stderr] = process.communicate_utf8_finish(result); if (!process.get_successful()) throw new Error(stderr || 'Application launch failed'); resolve();}
+        catch (error) {reject(error);}
+    }));
+}
 
 let catalog: Gio.AppInfo[] | undefined;
 let visibleCatalog: Gio.AppInfo[] | undefined;

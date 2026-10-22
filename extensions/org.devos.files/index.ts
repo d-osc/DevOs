@@ -7,6 +7,7 @@ import {opensInEditor} from '../org.devos.editor/associations.js';
 import {materialIcon} from '../org.devos.icons/material.js';
 import {mountFiles} from './view.js';
 import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs';
+import {fileMenuOptions} from './context-menu.js';
 
 interface FileTab {id: number; owner: Files; page: Gtk.Box; model: FileBrowser; view: ReturnType<typeof mountFiles>; unsubscribe: () => void;}
 
@@ -62,7 +63,8 @@ export class Files implements TabDragHost {
     }
     private options() {
         const values = this.context.preferences.get('org.devos.files').state.values;
-        return {gridView: values.gridView === true, showHidden: values.showHidden === true, materialIcons: this.context.preferences.get('org.devos.icons').state.values.materialFiles !== false, searchExcludedDirectories: typeof values.searchExcludedDirectories === 'string' ? values.searchExcludedDirectories : undefined};
+        return {gridView: values.gridView === true, showHidden: values.showHidden === true, materialIcons: this.context.preferences.get('org.devos.icons').state.values.materialFiles !== false, searchExcludedDirectories: typeof values.searchExcludedDirectories === 'string' ? values.searchExcludedDirectories : undefined,
+            contextMenu: fileMenuOptions(values), openTerminal: (directory: string) => {this.context.runCommand('terminal', directory);}};
     }
     private renderTabs() {
         this.header.update({tabs: this.tabs.map(tab => ({id: tab.id,

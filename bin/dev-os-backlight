@@ -1,0 +1,107 @@
+#!/usr/bin/env d
+# Set a real kernel backlight. Never emulate brightness with a color overlay.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/args"
+use "std/encoding"
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn deviceNames(): Vec<str> {
+    let result = Vec<str>()
+    if !fs.existsSync("/sys/class/backlight") { return result }
+    let names = fs.readdirSync("/sys/class/backlight")
+    for i in 0..(names.len() as i64) {
+        let name = names[i]
+        let base = "/sys/class/backlight/" + name
+        if !fs.existsSync(base + "/brightness") { continue }
+        let maximum = intValue(fs.readFileSync(base + "/max_brightness", "utf8"))
+        if maximum > 0 { result.push(name) }
+    }
+    return result
+}
+
+fn intValue(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        if strings.contains("0123456789", ch) { value = value * 10 + digitOf(ch) }
+        else { break }
+    }
+    return value
+}
+
+fn digitOf(ch: str): i64 {
+    let digits = "0123456789"
+    for i in 0..10 {
+        if strings.equal(strings.charAt(digits, i), ch) { return i }
+    }
+    return 0
+}
+
+fn setBrightness(percent: i64): json.Value {
+    if percent < 1 || percent > 100 { return json.set(json.object(), "error", "Brightness must be between 1 and 100 percent.") }
+    let candidates = deviceNames()
+    if candidates.len() == 0 { return json.set(json.object(), "error", "No kernel backlight device is available. The display driver must support brightness control.") }
+    let name = candidates[0]
+    let base = "/sys/class/backlight/" + name
+    let maximum = intValue(fs.readFileSync(base + "/max_brightness", "utf8"))
+    let value = (maximum * percent + 50) / 100
+    if value < 1 { value = 1 }
+    if value > maximum { value = maximum }
+    let wrote = fs.writeFileSync(base + "/brightness", "${value}\n")
+    if !wrote {
+        let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.login1", "/org/freedesktop/login1/session/auto",
+            "org.freedesktop.login1.Session", "SetBrightness", "ssu", "backlight", name, "${value}"), child_process.options())
+        if !output.success {
+            return json.set(json.object(), "error", "The active login session could not change brightness.")
+        }
+    }
+    let actual = intValue(fs.readFileSync(base + "/brightness", "utf8"))
+    let result = json.set(json.object(), "device", name)
+    return json.set(result, "brightness", (actual * 100 + maximum / 2) / maximum)
+}
+
+fn main(): i32 {
+    if args.len() == 1 && (strings.equal(args.get(0), "up") || strings.equal(args.get(0), "down")) {
+        let candidates = deviceNames()
+        if candidates.len() == 0 {
+            print("No kernel backlight device is available.")
+            return 1
+        }
+        let base = "/sys/class/backlight/" + candidates[0]
+        let maximum = intValue(fs.readFileSync(base + "/max_brightness", "utf8"))
+        let current = intValue(fs.readFileSync(base + "/brightness", "utf8"))
+        let percent = current * 100 / maximum + (strings.equal(args.get(0), "up") ? 5 : -5)
+        if percent < 1 { percent = 1 }
+        if percent > 100 { percent = 100 }
+        print(json.stringify(setBrightness(percent)))
+        return 0
+    }
+    if args.len() == 2 && strings.equal(args.get(0), "set") {
+        let result = setBrightness(intValue(args.get(1)))
+        if json.has(result, "error") {
+            print(json.string(json.get(result, "error")))
+            return 1
+        }
+        print(json.stringify(result))
+        return 0
+    }
+    print("Usage: dev-os-backlight set PERCENT | up | down")
+    return 1
+}
+return main()

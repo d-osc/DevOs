@@ -1,0 +1,18 @@
+#!/usr/bin/env d
+use "std/strings"
+use "std/json"
+use "../lib/tool.dev" as tool
+use "../lib/feed.dev" as feed
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d publish.dev -- --packages DIR [--packages DIR] --catalog FILE --output NEW_DIR --url HTTPS_URL --key GPG_ID --architecture ARCH [--architecture ARCH] [--indexer COMMAND]"); return 0 }
+    let packages = tool.values("--packages")
+    let catalog = tool.option("--catalog", "")
+    let output = tool.option("--output", "")
+    let url = tool.option("--url", "")
+    let key = tool.option("--key", "")
+    tool.require(packages.len() > 0 && !strings.equal(catalog, "") && !strings.equal(output, "") && !strings.equal(url, "") && !strings.equal(key, ""), "Supply packages, catalog, output, URL, signing key and architecture.")
+    let count = feed.publish(packages, catalog, output, url, key, tool.values("--architecture"), tool.option("--indexer", "opkg-make-index"))
+    print("Prepared " + json.stringify(count) + " packages at " + output + ". Nothing uploaded or installed.")
+    return 0
+}
+return tool.main(main)

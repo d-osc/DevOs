@@ -1,0 +1,6 @@
+# greetd authenticates the selected user through PAM and starts their UID session.
+[terminal]
+vt = 1
+[default_session]
+command = "/usr/bin/devos-greeter"
+user = "devos-greeter"

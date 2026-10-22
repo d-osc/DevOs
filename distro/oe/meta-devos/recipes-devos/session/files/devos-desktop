@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+: "${HOME:?Session home directory is missing}"
+logdir=${XDG_STATE_HOME:-$HOME/.local/state}/devos
+mkdir -p "$logdir"
+# Clear text left on the login VT before Wayland takes over.
+if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
+exec >>"$logdir/devos-desktop.log" 2>&1
+# The QEMU TCG runner exposes a 2D virtio GPU without accelerated EGL.
+case " $(cat /proc/cmdline) " in
+    *' devos.renderer=pixman '*) export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1 ;;
+esac
+export XDG_CURRENT_DESKTOP=DevOS:labwc
+export XDG_SESSION_TYPE=wayland
+export DEV_OS_LOGIN=0
+unset GREETD_SOCK
+export PATH=/usr/bin:/usr/sbin:/usr/libexec:/bin:/sbin
+if [ "${1:-}" != --session ]; then
+    exec dbus-run-session -- "$0" --session
+fi
+# Start per-user audio with the PAM-created user manager, not root services.
+if ! systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service; then
+    printf '%s\n' 'DevOs: user audio services could not start; check the user journal.' >&2
+fi
+polkit-gnome-authentication-agent-1 &
+agent=$!
+export DEV_OS_POLKIT_AGENT_STARTED=1
+trap 'kill "$agent" 2>/dev/null || true' EXIT
+/usr/bin/dev-os-session

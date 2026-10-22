@@ -1,0 +1,22 @@
+# CLI wrapper for the kernel snapshot module.
+use "std/json"
+use "std/args"
+use "std/strings"
+use "kernel.dev" as kernel
+
+fn main(): i32 {
+    let output = ""
+    let project = ""
+    let i = 0
+    let argc = args.len() as i64
+    while i < argc {
+        if strings.equal(args.get(i), "--output") && i + 1 < argc { output = args.get(i + 1); i = i + 1 }
+        if strings.equal(args.get(i), "--project") && i + 1 < argc { project = args.get(i + 1); i = i + 1 }
+        i = i + 1
+    }
+    let record = kernel.snapshot(output, project)
+    if json.is_null(record) { return 1 }
+    print(json.stringify(record))
+    return 0
+}
+return main()

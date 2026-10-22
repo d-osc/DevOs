@@ -1,0 +1,186 @@
+# Prepare a pinned, independent OpenEmbedded DevOs build without running BitBake.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/args"
+use "std/process"
+use "std/os"
+use "std/path"
+use "std/module"
+use "../../lib/posix.dev" as posix
+use "../kernel.dev" as kernel
+use "../pm.dev" as pm
+use "../devlang.dev" as devlang
+use "../gh.dev" as gh
+
+fn decode(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn run(file: str, args: Vec<str>): bool {
+    let output = child_process.execFileSync(file, args, child_process.options())
+    return output.success
+}
+
+fn capture(file: str, args: Vec<str>): str {
+    let output = child_process.execFileSync(file, args, child_process.options())
+    return decode(output.stdout)
+}
+
+fn sha256File(file: str): str {
+    let output = child_process.execFileSync("sha256sum", Vec<str>(file), child_process.options())
+    if !output.success { return "" }
+    return strings.substring(decode(output.stdout), 0, 64)
+}
+
+fn hasWhitespace(text: str): bool {
+    return strings.contains(text, " ") || strings.contains(text, "\t")
+}
+
+fn buildRuntimeArchive(root: str, archive: str): bool {
+    let listPath = archive + ".list"
+    let find = "cd " + root + " && find bin lib dist config data extensions -type f ! -path \"*__pycache__*\" ! -path \"*/types/*\" ! -name \"*.pyc\" ! -name \"*.ps1\" ! -name \"*-test.js\" 2>/dev/null | sort"
+    let extras = Vec<str>("native/window-tracker.c", "native/protocols/wlr-foreign-toplevel-management-unstable-v1.xml",
+        "native/protocols/devos-workspaces-v1.xml", "native/devos_accounts_system.dev", "native/privileged.dev", "native/devos-account-admin",
+        "native/devos-pam-auth", "native/devos-account-askpass", "native/devos-account-askpass.dev", "native/devos_app_store.dev", "native/devos-app-store-admin")
+    let listing = posix.shell(find + " > " + listPath) == 0
+    if !listing { return false }
+    let append = ""
+    for i in 0..(extras.len() as i64) { append = append + "echo " + extras[i] + " >> " + listPath + "; " }
+    if posix.shell("cd " + root + " && " + append + "true") != 0 { return false }
+    return posix.shell("cd " + root + " && tar -czf " + archive + " --transform \"s,^,devos-runtime/,\" -T " + listPath) == 0
+}
+
+fn prepareSources(work: str, here: str): json.Value {
+    let sources = json.array()
+    let lock = fs.readFileSync(here + "/sources.lock", "utf8")
+    let lines = strings.split(lock, "\n")
+    for i in 0..(lines.len() as i64) {
+        let line = strings.trim(lines[i])
+        if strings.equal(line, "") || strings.startsWith(line, "#") { continue }
+        let fields = strings.split(line, " ")
+        if fields.len() < 4 { continue }
+        let name = fields[0]
+        let revision = fields[1]
+        let branch = fields[2]
+        let url = fields[3]
+        let destination = work + "/" + name
+        if !fs.existsSync(destination + "/.git") {
+            if !run("git", Vec<str>("init", destination)) { return json.null_value() }
+            if !run("git", Vec<str>("-C", destination, "remote", "add", "origin", url)) { return json.null_value() }
+        }
+        let head = capture("git", Vec<str>("-C", destination, "rev-parse", "HEAD"))
+        if !strings.equal(strings.trim(head), revision) {
+            let dirty = capture("git", Vec<str>("-C", destination, "status", "--porcelain"))
+            if !strings.equal(dirty, "") {
+                print("Refusing to change modified build sources: " + destination)
+                return json.null_value()
+            }
+            if !run("git", Vec<str>("-C", destination, "fetch", "--depth", "1", url, revision)) { return json.null_value() }
+            if !run("git", Vec<str>("-C", destination, "checkout", "--detach", revision)) { return json.null_value() }
+        }
+        let entry = json.set(json.object(), "name", name)
+        entry = json.set(entry, "revision", revision)
+        entry = json.set(entry, "branch", branch)
+        entry = json.set(entry, "url", url)
+        sources = json.push(sources, entry)
+    }
+    return sources
+}
+
+fn main(): i32 {
+    let work = "/var/tmp/devos-oe"
+    let kernelProject = ""
+    for i in 0..(args.len() as i64) {
+        if strings.equal(args.get(i), "--work") && i + 1 < args.len() as i64 { work = args.get(i + 1) }
+        if strings.equal(args.get(i), "--kernel-project") && i + 1 < args.len() as i64 { kernelProject = args.get(i + 1) }
+    }
+    if !path.isAbsolute(work) || strings.equal(work, "/") || hasWhitespace(work) {
+        print("Use Linux and an absolute, non-root build directory without whitespace")
+        return 2
+    }
+    if strings.startsWith(work, "/mnt/") {
+        print("Build on the Linux filesystem, not a Windows mounted drive")
+        return 2
+    }
+    let here = path.dirname(module.entry())
+    let root = path.dirname(path.dirname(here))
+    let required = Vec<str>("main.js", "supervisor.js", "core.js", "runtime.js", "editor/index.html", "build-info.json")
+    for i in 0..(required.len() as i64) {
+        if !fs.existsSync(root + "/dist/" + required[i]) {
+            print("Build the current desktop first: npm ci && npm run build")
+            return 2
+        }
+    }
+    fs.mkdirSync(work, true)
+    let sources = prepareSources(work, here)
+    if json.is_null(sources) { return 1 }
+    let payload = work + "/payload"
+    fs.mkdirSync(payload, true)
+    let kernelRecord = kernel.snapshot(payload, kernelProject)
+    if json.is_null(kernelRecord) { return 1 }
+    if json.is_null(pm.snapshot(payload)) { return 1 }
+    let devlangRecord = devlang.snapshot(payload)
+    if json.is_null(devlangRecord) { return 1 }
+    let ghRecord = gh.snapshot(payload)
+    if json.is_null(ghRecord) { return 1 }
+    let archive = payload + "/devos-runtime.tar.gz"
+    if !buildRuntimeArchive(root, archive) {
+        print("Failed to build the runtime archive")
+        return 1
+    }
+    let devlangBin = capture("sh", Vec<str>("-c", "command -v d || echo " + os.homedir() + "/.local/bin/d"))
+    devlangBin = strings.trim(devlangBin)
+    let provenance = json.set(json.object(), "sources", sources)
+    provenance = json.set(provenance, "kernel", kernelRecord)
+    provenance = json.set(provenance, "devlang", devlangRecord)
+    provenance = json.set(provenance, "gh", ghRecord)
+    provenance = json.set(provenance, "payload_sha256", sha256File(archive))
+    provenance = json.set(provenance, "desktop_build", json.parse(fs.readFileSync(root + "/dist/build-info.json", "utf8")))
+    fs.writeFileSync(payload + "/provenance.json", json.pretty(provenance) + "\n")
+    for i in 0..1 {
+        let names = Vec<str>("patch-task-view-gesture.dev", "devos-task-view.h", "devos-desktop-animation.h", "devos-window-animation.c", "patch-task-view-workspaces.dev", "devos-workspaces.c")
+        for n in 0..(names.len() as i64) {
+            posix.shell("cp -f " + root + "/tools/setup/" + names[n] + " " + payload + "/" + names[n])
+        }
+    }
+    posix.shell("cp -f " + root + "/native/protocols/devos-workspaces-v1.xml " + payload + "/devos-workspaces-v1.xml")
+    posix.shell("rm -rf " + work + "/meta-devos && cp -a " + here + "/meta-devos " + work + "/meta-devos")
+    let conf = work + "/build/conf"
+    fs.mkdirSync(conf, true)
+    let layer = work + "/meta-devos"
+    let bblayers = ("BBPATH = \"\${TOPDIR}\"\nBBFILES ?= \"\"\nBBLAYERS = \"" + work + "/openembedded-core/meta " +
+        work + "/meta-openembedded/meta-oe " + work + "/meta-openembedded/meta-python " + work + "/meta-openembedded/meta-networking " +
+        work + "/meta-openembedded/meta-gnome " + work + "/meta-openembedded/meta-multimedia " + work + "/meta-openembedded/meta-filesystems " +
+        work + "/meta-wayland-current " + layer + "\"\n")
+    fs.writeFileSync(conf + "/bblayers.conf", bblayers)
+    let local = ("MACHINE = \"qemuarm64\"\nDISTRO = \"devos\"\n" +
+        "DEVOS_KERNEL_VERSION = \"" + kernelRecord.version + "\"\n" +
+        "DEVOS_KERNEL_LICENSE_MD5 = \"" + kernelRecord.license_md5 + "\"\n" +
+        "PREFERRED_PROVIDER_virtual/kernel = \"linux-devos\"\n" +
+        "DEVOS_PAYLOAD_DIR = \"" + payload + "\"\n" +
+        "DEVOS_DEVLANG_BIN = \"" + devlangBin + "\"\n" +
+        "DL_DIR = \"" + work + "/downloads\"\n" +
+        "SSTATE_DIR = \"" + work + "/sstate-cache\"\n" +
+        "BB_HASHSERVE_DB_DIR = \"" + work + "/sstate-cache\"\n" +
+        "UNINATIVE_URL = \"https://downloads.yoctoproject.org/releases/uninative/\${UNINATIVE_VERSION}/\"\n" +
+        "BB_NUMBER_THREADS = \"2\"\n" +
+        "PARALLEL_MAKE = \"-j2\"\n" +
+        "CONF_VERSION = \"2\"\n")
+    fs.writeFileSync(conf + "/local.conf", local)
+    print("Prepared " + work + "/build; target distro is DevOs, not the build-host OS.")
+    return 0
+}
+return main()

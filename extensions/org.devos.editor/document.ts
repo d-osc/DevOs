@@ -65,6 +65,23 @@ export class EditorDocument {
         try {
             const file = Gio.File.new_for_path(path);
             const bytes = new TextEncoder().encode((this.bom ? '\ufeff' : '') + text);
+            // Some GIO backends do not enforce the etag in replace_contents.
+            // Check explicitly as well; retain the replace etag for backends
+            // that support the atomic check.
+            if (sameFile && this.etag !== null) {
+                const info = await new Promise<Gio.FileInfo>((resolve, reject) => file.query_info_async('etag::value,standard::size',
+                    Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, this.cancel, (source, result) => {
+                        try { resolve((source as Gio.File).query_info_finish(result)); } catch (error) { reject(error); }
+                    }));
+                const expected = new TextEncoder().encode((this.bom ? '\ufeff' : '') + this.saved);
+                const changed = () => new Error('The file changed on disk. Use Save As or reopen it before saving.');
+                if (info.get_etag() !== this.etag || info.get_size() !== expected.length) throw changed();
+                // Fast writes can also share an etag on some filesystems.
+                const current = await new Promise<Uint8Array>((resolve, reject) => file.load_contents_async(this.cancel, (source, result) => {
+                    try { resolve((source as Gio.File).load_contents_finish(result)[1]); } catch (error) { reject(error); }
+                }));
+                if (current.length !== expected.length || current.some((byte, index) => byte !== expected[index])) throw changed();
+            }
             const etag = await new Promise<string>((resolve, reject) => file.replace_contents_async(bytes, sameFile ? this.etag : null,
                 false, Gio.FileCreateFlags.NONE, this.cancel, (source, result) => {
                     try { const [, etag] = (source as Gio.File).replace_contents_finish(result); resolve(etag); } catch (error) { reject(error); }

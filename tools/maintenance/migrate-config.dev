@@ -1,0 +1,41 @@
+#!/usr/bin/env d
+# Preserve an existing JSON config and the original TOML using exclusive creation.
+use "std/args"
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/json"
+use "std/toml"
+use "../../lib/desktop.dev" as util
+use "../lib/tool.dev" as tool
+extern fn open(path: str, flags: i32, mode: u32): i32
+extern fn write(fd: i32, text: str, size: usize): isize
+extern fn close(fd: i32): i32
+extern fn _open(path: str, flags: i32, mode: i32): i32
+extern fn _write(fd: i32, text: str, size: u32): i32
+extern fn _close(fd: i32): i32
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d migrate-config.dev -- [--source FILE] [--destination FILE]"); return 0 }
+    let config = process.getenv("XDG_CONFIG_HOME")
+    if strings.equal(config, "") { config = tool.home() + "/.config" }
+    let source = tool.option("--source", config + "/dev-os/config.toml")
+    let destination = tool.option("--destination", path.dirname(source) + "/" + path.parse(source).name + ".json")
+    let data = json.pretty(toml.parse(tool.read(source))) + "\n"
+    fs.mkdirSync(path.dirname(destination), true)
+    unsafe {
+        let windows = strings.equal(process.platform(), "win32")
+        tool.require(windows || strings.equal(process.platform(), "linux"), "Run migration on Windows or Linux.")
+        # Exclusive create on both CRTs. Windows also requests binary UTF-8 output.
+        let fd: i32 = -1
+        if windows { fd = _open(destination, 34049, 384) } else { fd = open(destination, 193, 384) }
+        tool.require(fd >= 0, "Destination exists or cannot be created: " + destination)
+        let written: isize = 0
+        if windows { written = _write(fd, data, strings.len(data) as u32) as isize; _close(fd) }
+        else { written = write(fd, data, strings.len(data)); close(fd) }
+        tool.require(written == strings.len(data) as isize, "Could not write the complete configuration.")
+    }
+    print("Migrated " + source + " to " + destination + "; original preserved.")
+    return 0
+}
+use "std/strings"
+return tool.main(main)

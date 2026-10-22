@@ -10,5 +10,9 @@
   "order": 0,
   "settingsVersion": 1,
   "enabledByDefault": true,
-  "settings": []
+  "settings": [{"id": "appearance", "title": "Appearance", "fields": [
+    {"key": "palette", "title": "Workspace palette", "type": "string", "default": "graphite"},
+    {"key": "useDesktopAccent", "title": "Use Desktop accent", "type": "boolean", "default": true},
+    {"key": "accent", "title": "Accent color", "type": "color", "default": "#88e0c0"}
+  ]}]
 }

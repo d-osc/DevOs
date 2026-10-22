@@ -7,8 +7,8 @@ interface Mappings {names: Record<string, string>; extensions: Record<string, st
 let mappings: Mappings | undefined;
 let enabled = true;
 export function setMaterialIcons(value: boolean) { const previous = enabled; enabled = value; return previous; }
-export function materialIcon(path = '', directory = false): string | undefined {
-    if (!enabled) return;
+export function materialIcon(path = '', directory = false, useMaterial = enabled): string | undefined {
+    if (!useMaterial) return;
     if (!mappings) {
         try { mappings = readJson(`${ROOT}/extensions/org.devos.icons/material/mapping.json`) as Mappings; }
         catch (error) { printerr(`Material icons unavailable: ${String(error)}`); enabled = false; return; }

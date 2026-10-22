@@ -1,0 +1,9 @@
+# Installed into the RAM overlay by the Live initramfs only.
+[terminal]
+vt = 1
+[initial_session]
+command = "/usr/libexec/devos-live-root-session"
+user = "root"
+[default_session]
+command = "/usr/bin/devos-greeter"
+user = "devos-greeter"

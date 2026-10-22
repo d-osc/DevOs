@@ -1,0 +1,43 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+fn main(): i32 {
+    if tool.has("--help") { print("Test native minimize, taskbar restore and grouped window picker."); return 0 }
+    ui.withPointer("screenshots-taskbar-focused", Map<str,str>(), fn(session: smoke.Session, env: Map<str,str>, pointer: smoke.Input) {
+        let screens = session.root + "/build/screenshots-taskbar-focused"
+        for command in Vec<str>("files", "terminal") {
+            let label = strings.equal(command, "files") ? "Dev OS Files" : "Dev OS Terminal"
+            let x = strings.equal(command, "files") ? 82 : 50
+            smoke.remote(session, env, command)
+            ui.windowCount(env, label, 1)
+            time.sleep_ms(600)
+            let title: str = ui.title(env, label)
+            tool.require(ui.window(env, "maximize", title, "") && ui.window(env, "focus", title, ""), "Cannot focus window.")
+            ui.state(env, title, "activated")
+            time.sleep_ms(300)
+            pointer = ui.click(pointer, 1196, 16, "left"); ui.state(env, title, "minimized")
+            smoke.screenshot(env, screens + "/" + command + "-minimized.png")
+            pointer = ui.click(pointer, x, 702, "left"); ui.state(env, title, "activated")
+            tool.require(tool.count(ui.windows(env), label) == 1, "Restore must not create another window.")
+            smoke.screenshot(env, screens + "/" + command + "-restored.png")
+            pointer = ui.click(pointer, x, 702, "left"); ui.state(env, title, "minimized")
+            pointer = ui.click(pointer, x, 702, "left"); ui.state(env, title, "activated")
+            print("PASS: " + label + " native minimize, panel restore and active toggle")
+        }
+        smoke.remote(session, env, "terminal")
+        ui.windowCount(env, "Dev OS Terminal", 2)
+        time.sleep_ms(500)
+        pointer = ui.click(pointer, 50, 702, "left")
+        smoke.screenshot(env, screens + "/terminal-window-picker.png")
+        pointer = ui.click(pointer, 100, 534, "left")
+        time.sleep_ms(300)
+        tool.require(tool.count(ui.windows(env), "Dev OS Terminal") == 2, "Window picker must not launch another shell.")
+        print("PASS: grouped Terminal windows offer a taskbar picker")
+    })
+    return 0
+}
+return tool.main(main)

@@ -1,0 +1,19 @@
+[Unit]
+Description=DevOs recent application memory priorities
+After=devos-zram.service systemd-logind.service
+ConditionPathExists=/sys/fs/cgroup/cgroup.controllers
+
+[Service]
+ExecStart=/usr/bin/d /usr/bin/dev-os-memory -- --daemon
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUQuota=5%
+MemoryMax=64M
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

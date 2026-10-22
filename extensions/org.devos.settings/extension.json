@@ -10,5 +10,9 @@
   "order": 20,
   "settingsVersion": 1,
   "enabledByDefault": true,
-  "settings": []
+  "settings": [{"id": "window", "title": "Settings window", "fields": [
+    {"key": "compactNavigation", "title": "Compact navigation", "type": "boolean", "default": false},
+    {"key": "rememberPage", "title": "Continue where you left off", "type": "boolean", "default": false},
+    {"key": "closeOnEscape", "title": "Close with Esc", "type": "boolean", "default": true}
+  ]}]
 }

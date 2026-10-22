@@ -1,4 +1,4 @@
-param([ValidateSet('run', 'updated', 'check', 'smoke', 'doctor', 'bootstrap', 'build', 'demo')][string]$Mode = 'run')
+param([ValidateSet('run', 'updated', 'check', 'smoke', 'doctor', 'drivers', 'bootstrap', 'build', 'demo')][string]$Mode = 'run', [ValidatePattern('^$|^[a-z][a-z0-9_-]{0,30}$')][string]$User = '')
 $ErrorActionPreference = 'Stop'
 if ($Mode -in @('run', 'check', 'smoke', 'build', 'demo')) {
     Push-Location $PSScriptRoot
@@ -11,6 +11,9 @@ if ($Mode -in @('run', 'check', 'smoke', 'build', 'demo')) {
 }
 $linuxRoot = (& wsl -d Ubuntu --exec wslpath -a $PSScriptRoot).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the source directory inside WSL Ubuntu.' }
+$taskMachine = (& wsl -d Ubuntu --exec uname -m).Trim()
+if ($LASTEXITCODE -ne 0 -or $taskMachine -notin @('aarch64', 'x86_64')) { throw 'Dev OS requires an ARM64 or x64 Linux distribution.' }
+$taskMultiarch = "$taskMachine-linux-gnu"
 $linuxPath = (& wsl -d Ubuntu -- printenv PATH).Trim()
 $devPath = "$linuxRoot/build/wsl/bin:$linuxPath"
 if ($Mode -in @('run', 'check', 'smoke')) {
@@ -21,21 +24,21 @@ if ($Mode -eq 'updated') {
     $taskRuntimePath = ($linuxPath -split ':' | Where-Object { $_ -notmatch '^/mnt/[a-z]/' }) -join ':'
     $taskUpdatedEnv = @("PATH=$linuxRoot/build/wsl/bin:$taskRuntimePath", 'WLR_RENDERER=pixman')
     if (Test-Path -LiteralPath "$PSScriptRoot/build/wsl/vte") {
-        $taskUpdatedEnv += "GI_TYPELIB_PATH=$linuxRoot/build/wsl/vte/usr/lib/x86_64-linux-gnu/girepository-1.0"
-        $taskUpdatedEnv += "LD_LIBRARY_PATH=$linuxRoot/build/wsl/vte/usr/lib/x86_64-linux-gnu"
+        $taskUpdatedEnv += "GI_TYPELIB_PATH=$linuxRoot/build/wsl/vte/usr/lib/$taskMultiarch/girepository-1.0"
+        $taskUpdatedEnv += "LD_LIBRARY_PATH=$linuxRoot/build/wsl/vte/usr/lib/$taskMultiarch"
     }
     & wsl -d Ubuntu --exec env @taskUpdatedEnv sh "$linuxRoot/bin/dev-os-updated-session" --nested
+} elseif ($Mode -eq 'drivers') {
+    & wsl -d Ubuntu -- env "PATH=$devPath" d "$linuxRoot/bin/dev-os-drivers"
 } elseif ($Mode -eq 'bootstrap') {
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-wsl.sh"
 } elseif ($Mode -eq 'run') {
-    # Upgrade the private compositor when a desktop integration patch is missing.
-    $taskCompositorNeedsBuild = $false
-    foreach ($taskCompositorFix in @('tab-drag-focus', 'tab-drag-escape', 'app-icons')) {
-        & wsl -d Ubuntu -- git -C "$linuxRoot/build/wsl/labwc-source" apply --reverse --check "$linuxRoot/tools/setup/patches/labwc-$taskCompositorFix.patch" 2>$null
-        if ($LASTEXITCODE -ne 0) { $taskCompositorNeedsBuild = $true }
-        & wsl -d Ubuntu -- test "$linuxRoot/tools/setup/patches/labwc-$taskCompositorFix.patch" -nt "$linuxRoot/build/wsl/bin/labwc"
-        if ($LASTEXITCODE -eq 0) { $taskCompositorNeedsBuild = $true }
-    }
+    & wsl -d Ubuntu -u root -- sh "$linuxRoot/tools/setup/bootstrap-desktop-apps.sh"
+    if ($LASTEXITCODE -ne 0) { throw 'DevOs desktop dependencies could not be prepared. See the bootstrap error above.' }
+    # Missing sources are normal on a fresh checkout. Check inside Linux so
+    # expected git diagnostics cannot become terminating PowerShell 5 errors.
+    & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/check-wsl-compositor.sh"
+    $taskCompositorNeedsBuild = $LASTEXITCODE -ne 0
     if ($taskCompositorNeedsBuild) {
         & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-wsl.sh"
         if ($LASTEXITCODE -ne 0) { throw 'Compositor desktop integration could not be prepared.' }
@@ -52,10 +55,17 @@ if ($Mode -eq 'updated') {
     # Missing optional Linux tools must not scan every imported Windows directory.
     $taskRuntimePath = ($linuxPath -split ':' | Where-Object { $_ -notmatch '^/mnt/[a-z]/' }) -join ':'
     try {
-        & wsl -d Ubuntu --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:$taskRuntimePath" WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
+        if ($User) {
+            $taskSelectedUid = (& wsl -d Ubuntu -u root -- "$taskRuntimeRoot/build/wsl/bin/d" "$linuxRoot/tools/setup/prepare-wsl-user.dev" -- $User $taskRuntimeRoot).Trim()
+            if ($LASTEXITCODE -ne 0 -or $taskSelectedUid -notmatch '^\d+$') { throw 'Cannot prepare the selected Linux user session.' }
+            & wsl -d Ubuntu -u $User --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "XDG_RUNTIME_DIR=/run/user/$taskSelectedUid" WAYLAND_DISPLAY=/mnt/wslg/runtime-dir/wayland-0 "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" DEV_OS_LOGIN=0 WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
+        } else {
+            & wsl -d Ubuntu --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:$taskRuntimePath" "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
+        }
         $taskSessionExit = $LASTEXITCODE
     } finally {
-        & wsl -d Ubuntu --exec rm -rf -- $taskRuntimeRoot
+        if ($User) { & wsl -d Ubuntu -u root --exec rm -rf -- $taskRuntimeRoot }
+        else { & wsl -d Ubuntu --exec rm -rf -- $taskRuntimeRoot }
     }
     exit $taskSessionExit
 } elseif ($Mode -eq 'demo') {
@@ -65,8 +75,9 @@ if ($Mode -eq 'updated') {
     if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/extensions-test.js" }
     if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/updates-test.js" }
     if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/store-test.js" }
+    if ($LASTEXITCODE -eq 0) { & wsl -d Ubuntu -- gjs -m "$linuxRoot/dist/wifi-test.js" }
 } elseif ($Mode -eq 'smoke') {
-    & wsl -d Ubuntu -- env "PATH=$devPath" python3 "$linuxRoot/tools/test/smoke.py" --keyboard --screenshots "$linuxRoot/build/screenshots"
+    & wsl -d Ubuntu -- env "PATH=$devPath" d "$linuxRoot/tools/test/smoke.dev" -- --keyboard --screenshots "$linuxRoot/build/screenshots"
 } else {
     & wsl -d Ubuntu -- env "PATH=$devPath" sh "$linuxRoot/bin/dev-os-shell" doctor
 }

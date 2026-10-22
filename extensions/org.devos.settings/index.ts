@@ -3,16 +3,19 @@ import {
 } from '@dev-os/core';
 import {configPath} from '@dev-os/config';
 import {mountSettings} from './view.js';
+import {settingsOptions} from './options.js';
 
 export class Settings {
     window: Gtk.ApplicationWindow;
     private view: ReturnType<typeof mountSettings>;
-    constructor(context: UIContext) {
+    constructor(context: UIContext, switchUser?: (username?: string) => void) {
         this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Dev OS Settings', default_width: 960, default_height: 640});
         this.window.name = 'settings';
         this.view = mountSettings(this.window, {
             extensions: context.preferences,
             pages: context.settingsPages,
+            openFiles: () => context.invoke('files'),
+            switchUser,
             getCore: () => context.config(),
             saveCore: data => context.saveCore(data),
             applied: () => { if (!context.reload()) throw new Error('Could not reload preferences'); },
@@ -28,9 +31,10 @@ export class Settings {
         this.window.connect('delete-event', () => { this.window.hide(); return true; });
         this.window.connect('key-press-event', (_window, event) => {
             if ((event as unknown as Gdk.Event).get_keyval()[1] !== Gdk.KEY_Escape) return false;
+            if (!settingsOptions(context.preferences.get('org.devos.settings').state.values).closeOnEscape) return false;
             this.window.hide(); return true;
         });
     }
-    show() { this.view.show(); }
+    show(page?: string) { this.view.show(page); }
     destroy() { this.view.destroy(); this.window.destroy(); }
 }

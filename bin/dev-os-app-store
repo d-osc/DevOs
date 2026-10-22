@@ -1,0 +1,188 @@
+#!/usr/bin/env d
+# Unprivileged gateway to the native DevOs application catalog.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/args"
+use "std/io"
+use "std/encoding"
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command), child_process.options())
+    return decodeText(output.stdout)
+}
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn isNative(): bool {
+    if !fs.existsSync("/etc/os-release") { return false }
+    let lines = strings.split(fs.readFileSync("/etc/os-release", "utf8"), "\n")
+    for i in 0..(lines.len() as i64) {
+        if strings.startsWith(lines[i], "ID=") {
+            let value = strings.replaceAll(strings.replaceAll(lines[i], "ID=", ""), "\"", "")
+            return strings.equal(strings.trim(value), "devos")
+        }
+    }
+    return false
+}
+
+fn opkgPath(): str {
+    if fs.existsSync("/usr/bin/opkg") { return "/usr/bin/opkg" }
+    if fs.existsSync("/bin/opkg") { return "/bin/opkg" }
+    return ""
+}
+
+fn defaultCatalog(): json.Value {
+    let source = json.set(json.object(), "name", "DevOs")
+    source = json.set(source, "url", "")
+    let data = json.set(json.object(), "schemaVersion", 1)
+    data = json.set(data, "source", source)
+    return json.set(data, "apps", json.array())
+}
+
+fn trustedText(path: str): str {
+    let info = strings.trim(capture("stat -c \"%u %a\" " + path + " 2>/dev/null"))
+    let parts = strings.split(info, " ")
+    if parts.len() < 2 { return "" }
+    if !strings.equal(parts[0], "0") { return "" }
+    let mode = parts[1]
+    let writable = strings.endsWith(mode, "2") || strings.endsWith(mode, "3") || strings.endsWith(mode, "6") || strings.endsWith(mode, "7")
+    if writable { return "" }
+    return fs.readFileSync(path, "utf8")
+}
+
+fn feedReady(data: json.Value): bool {
+    let url = strings.trim(jsonText(optGet(optGet(data, "source"), "url")))
+    if strings.equal(url, "") { return false }
+    if !strings.startsWith(url, "https://") { return false }
+    if strings.contains(url, "@") || strings.contains(url, "?") || strings.contains(url, "#") || strings.contains(url, " ") { return false }
+    if !fs.existsSync("/etc/devos/app-store-opkg.conf") { return false }
+    let conf = trustedText("/etc/devos/app-store-opkg.conf")
+    if strings.equal(conf, "") { return false }
+    let lines = strings.split(conf, "\n")
+    let feeds = ""
+    let signatures = ""
+    for i in 0..(lines.len() as i64) {
+        let line = strings.trim(lines[i])
+        if strings.equal(line, "") || strings.startsWith(line, "#") { continue }
+        if strings.startsWith(line, "src ") || strings.startsWith(line, "src/gz ") { feeds = feeds + line + "\n" }
+        if strings.startsWith(line, "option check_signature ") { signatures = signatures + line + "\n" }
+    }
+    if !strings.equal(feeds, "src/gz devos-app-store " + url + "\n") { return false }
+    if !strings.equal(signatures, "option check_signature 1\n") { return false }
+    return true
+}
+
+fn optGet(value: json.Value, key: str): json.Value {
+    if json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+
+fn jsonText(value: json.Value): str {
+    let kind = json.kind(value)
+    if strings.equal(kind, "string") { return json.string(value) }
+    return ""
+}
+
+fn packageRows(text: str): json.Value {
+    let result = json.object()
+    let lines = strings.split(text, "\n")
+    for i in 0..(lines.len() as i64) {
+        let at = strings.indexOf(lines[i], " - ")
+        if at > 0 {
+            let name = strings.substring(lines[i], 0, at)
+            let rest = strings.substring(lines[i], at + 3, strings.charLength(lines[i]))
+            let end = strings.indexOf(rest, " - ")
+            let version = end >= 0 ? strings.substring(rest, 0, end) : rest
+            result = json.set(result, name, version)
+        }
+    }
+    return result
+}
+
+fn opkgList(program: str, action: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", program + " --conf /etc/devos/app-store-opkg.conf " + action + " 2>/dev/null"), child_process.options())
+    if !output.success { return "" }
+    return decodeText(output.stdout)
+}
+
+fn storeState(): json.Value {
+    let data = defaultCatalog()
+    if fs.existsSync("/etc/devos/app-store.json") { data = json.parse(fs.readFileSync("/etc/devos/app-store.json", "utf8")) }
+    let ready = feedReady(data)
+    let program = opkgPath()
+    let available = isNative() && !strings.equal(program, "")
+    let versions = json.object()
+    let upgrades = json.object()
+    if available && ready {
+        versions = packageRows(opkgList(program, "list-installed"))
+        upgrades = packageRows(opkgList(program, "list-upgradable"))
+    }
+    let installed = json.array()
+    let updates = json.array()
+    let apps = optGet(data, "apps")
+    for i in 0..(json.len(apps) as i64) {
+        let app = json.at(apps, i)
+        let packageName = jsonText(optGet(app, "package"))
+        if json.has(versions, packageName) { installed = json.push(installed, json.set(app, "version", json.get(versions, packageName))) }
+        if json.has(upgrades, packageName) { updates = json.push(updates, json.set(app, "version", json.get(upgrades, packageName))) }
+    }
+    let state = json.set(json.object(), "available", available)
+    state = json.set(state, "connected", ready)
+    state = json.set(state, "sourceName", jsonText(json.get(optGet(data, "source"), "name")))
+    state = json.set(state, "catalog", apps)
+    state = json.set(state, "installed", installed)
+    state = json.set(state, "updates", updates)
+    state = json.set(state, "message", available ? "" : "Native packages run in the booted DevOs image. This session can preview the store.")
+    return state
+}
+
+fn fail(message: str): i32 {
+    print(json.stringify(json.set(json.object(), "error", message)))
+    return 1
+}
+
+fn main(): i32 {
+    let raw = io.read_line()
+    let request = json.object()
+    if !strings.equal(strings.trim(raw), "") { request = json.parse(raw) }
+    let action = "get"
+    if json.has(request, "action") { action = jsonText(optGet(request, "action")) }
+    if strings.equal(action, "get") || strings.equal(action, "browse") {
+        let result = storeState()
+        print(json.stringify(json.set(result, "ok", true)))
+        return 0
+    }
+    if !strings.equal(action, "install") && !strings.equal(action, "remove") && !strings.equal(action, "update") && !strings.equal(action, "updates") {
+        return fail("Unknown App Store action.")
+    }
+    let current = storeState()
+    if !json.bool(optGet(current, "available")) || !json.bool(optGet(current, "connected")) {
+        return fail("No signed DevOs app feed has been configured yet.")
+    }
+    let adminRequest = json.set(json.object(), "action", strings.equal(action, "updates") ? "refresh" : action)
+    if json.has(request, "id") { adminRequest = json.set(adminRequest, "id", jsonText(optGet(request, "id"))) }
+    let runOptions = child_process.Options("", 30000, 1048576, encoding.encode(json.stringify(adminRequest) + "\n", "utf8"))
+    let output = child_process.execFileSync("pkexec", Vec<str>("/usr/libexec/devos-app-store-admin"), runOptions)
+    let data = json.null_value()
+    if output.success { data = json.parse(decodeText(output.stdout)) }
+    if json.is_null(data) { return fail("Administrator authentication was cancelled or the native store service is unavailable.") }
+    if !json.bool(optGet(data, "ok")) { return fail("Native package operation failed.") }
+    print(json.stringify(json.set(data, "ok", true)))
+    return 0
+}
+return main()

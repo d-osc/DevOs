@@ -1,0 +1,201 @@
+# Inspect the actual bootstrap archive, including its executable format.
+use "std/fs"
+use "std/compression"
+use "std/strings"
+use "std/args"
+use "std/module"
+
+fn hexValue(bytes: Vec<u8>, start: i64, count: i64): i64 {
+    let value = 0
+    for i in 0..count {
+        let ch = bytes[start + i]
+        let digit = 0
+        if ch >= 0x30 && ch <= 0x39 { digit = (ch - 0x30) as i64 }
+        else {
+            if ch >= 0x61 && ch <= 0x66 { digit = (ch - 0x61) as i64 + 10 }
+            else {
+                if ch >= 0x41 && ch <= 0x46 { digit = (ch - 0x41) as i64 + 10 }
+                else { return -1 }
+            }
+        }
+        value = value * 16 + digit
+    }
+    return value
+}
+
+fn align4(value: i64): i64 {
+    return value + (4 - value % 4) % 4
+}
+
+fn byteText(bytes: Vec<u8>, start: i64, end: i64): str {
+    let out = ""
+    let i = start
+    while i < end {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+        i = i + 1
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn u16At(bytes: Vec<u8>, at: i64): i64 {
+    return (bytes[at] as i64) + ((bytes[at + 1] as i64) * 256)
+}
+
+fn u64At(bytes: Vec<u8>, at: i64): i64 {
+    let value = 0
+    for i in 0..8 { value = value + (bytes[at + i] as i64) * pow256(i) }
+    return value
+}
+
+fn pow256(index: i64): i64 {
+    let value = 1
+    for i in 0..index { value = value * 256 }
+    return value
+}
+
+fn isCharDevice(mode: i64): bool { return (mode & 0xF000) == 0x2000 }
+fn isSymlink(mode: i64): bool { return (mode & 0xF000) == 0xA000 }
+fn isExecutable(mode: i64): bool { return (mode & 73) != 0 }
+
+struct ConsoleInfo { mode: i64, rdev: i64 }
+
+fn findConsole(data: Vec<u8>): ConsoleInfo {
+    let total = data.len() as i64
+    let off = 0
+    while off + 110 <= total {
+        let size2 = hexValue(data, off + 6 + 48, 8)
+        let namesize2 = hexValue(data, off + 6 + 88, 8)
+        let name2 = byteText(data, off + 110, off + 110 + namesize2 - 1)
+        if strings.equal(name2, "dev/console") {
+            let major = hexValue(data, off + 6 + 72, 8)
+            let minor = hexValue(data, off + 6 + 80, 8)
+            return ConsoleInfo(hexValue(data, off + 6 + 8, 8), major * 256 + minor)
+        }
+        off = align4(off + 110 + namesize2)
+        off = align4(off + size2)
+        if strings.equal(name2, "TRAILER!!!") { break }
+    }
+    return ConsoleInfo(0, -1)
+}
+
+fn main(): i32 {
+    let archive = args.get(0)
+    let data = compression.gunzip(fs.read_bytes(archive))
+    let offset = 0
+    let names = Vec<str>()
+    let modes = Vec<i64>()
+    let starts = Vec<i64>()
+    let sizes = Vec<i64>()
+    let total = data.len() as i64
+    let trailer = false
+    while offset + 110 <= total {
+        if (data[offset] != 0x30 || data[offset + 1] != 0x37 || data[offset + 2] != 0x30 || data[offset + 3] != 0x37
+            || data[offset + 4] != 0x30 || data[offset + 5] != 0x31) {
+            print("Not a newc initramfs")
+            return 1
+        }
+        let mode = hexValue(data, offset + 6 + 8, 8)
+        let size = hexValue(data, offset + 6 + 48, 8)
+        let namesize = hexValue(data, offset + 6 + 88, 8)
+        offset = offset + 110
+        let name = byteText(data, offset, offset + namesize - 1)
+        offset = align4(offset + namesize)
+        names.push(name)
+        modes.push(mode)
+        starts.push(offset)
+        sizes.push(size)
+        offset = align4(offset + size)
+        if strings.equal(name, "TRAILER!!!") { trailer = true }
+        if trailer { break }
+    }
+    if !trailer {
+        print("Incomplete initramfs archive")
+        return 1
+    }
+    let osRelease = ""
+    let initMode = 0
+    let initStart = 0
+    let consoleMode = 0
+    let consoleRdev = 0
+    let busyboxStart = 0
+    let busyboxSize = 0
+    for i in 0..(names.len() as i64) {
+        let name = names[i]
+        if strings.equal(name, "etc/os-release") { osRelease = byteText(data, starts[i], starts[i] + sizes[i]) }
+        if strings.equal(name, "init") { initMode = modes[i]; initStart = starts[i] }
+        if strings.equal(name, "dev/console") { consoleMode = modes[i]; consoleRdev = hexValue(data, 0, 0) }
+        if strings.equal(name, "bin/busybox") { busyboxStart = starts[i]; busyboxSize = sizes[i] }
+    }
+    let idCount = 0
+    let lines = strings.split(osRelease, "\n")
+    for i in 0..(lines.len() as i64) {
+        if strings.equal(lines[i], "ID=devos") { idCount = idCount + 1 }
+    }
+    if idCount != 1 {
+        print("Not a DevOs root filesystem")
+        return 1
+    }
+    if !strings.startsWith(byteText(data, initStart, initStart + 10), "#!/bin/sh") || !isExecutable(initMode) {
+        print("PID 1 script is missing or not executable")
+        return 1
+    }
+    # dev/console rdev lives in the cpio header field 7 (rdev); reparse it.
+    let consoleInfo = findConsole(data)
+    consoleMode = consoleInfo.mode
+    let consoleRdevValue = consoleInfo.rdev
+    if !isCharDevice(consoleMode) || ((consoleRdevValue >> 8) & 0xFFF) != 5 || (consoleRdevValue & 0xFF) != 1 {
+        print("Missing kernel console device")
+        return 1
+    }
+    if (data[busyboxStart] != 0x7f || data[busyboxStart + 1] != 0x45 || data[busyboxStart + 2] != 0x4c
+        || data[busyboxStart + 3] != 0x46 || data[busyboxStart + 4] != 2 || data[busyboxStart + 5] != 1
+        || u16At(data, busyboxStart + 18) != 183) {
+        print("BusyBox is not a little-endian ARM64 ELF64 executable")
+        return 1
+    }
+    let phoff = u64At(data, busyboxStart + 32)
+    let phentsize = u16At(data, busyboxStart + 54)
+    let phnum = u16At(data, busyboxStart + 56)
+    for i in 0..phnum {
+        let ptype = u32At(data, busyboxStart + phoff + i * phentsize)
+        if ptype == 2 || ptype == 3 {
+            print("BusyBox requires dynamic linking or an ELF interpreter")
+            return 1
+        }
+    }
+    for i in 0..(names.len() as i64) {
+        let name = names[i]
+        if strings.contains(name, ".so") || strings.startsWith(name, "etc/apt") || strings.startsWith(name, "var/lib/dpkg") || strings.startsWith(name, "casper/") {
+            print("Unexpected host/distro runtime file: " + name)
+            return 1
+        }
+    }
+    let applets = Vec<str>("sh", "mount", "mkdir", "hostname", "cat", "uname", "sed", "test", "printf", "sync", "poweroff", "setsid", "cttyhack")
+    for a in 0..(applets.len() as i64) {
+        let target = "busybox-missing"
+        for i in 0..(names.len() as i64) {
+            if strings.equal(names[i], "bin/" + applets[a]) {
+                if !isSymlink(modes[i]) { target = "not-symlink" }
+                else { target = byteText(data, starts[i], starts[i] + sizes[i]) }
+            }
+        }
+        if !strings.equal(strings.trim(target), "busybox") {
+            print("Invalid bootstrap applet: " + applets[a])
+            return 1
+        }
+    }
+    print("PASS: ${names.len()} initramfs entries; DevOs identity; static ARM64 BusyBox; no shared host runtime.")
+    return 0
+}
+
+fn u32At(bytes: Vec<u8>, at: i64): i64 {
+    return (bytes[at] as i64) + ((bytes[at + 1] as i64) * 256) + ((bytes[at + 2] as i64) * 65536) + ((bytes[at + 3] as i64) * 16777216)
+}
+return main()

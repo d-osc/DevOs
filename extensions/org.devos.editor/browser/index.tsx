@@ -14,7 +14,7 @@ declare global {
 globalThis.MonacoEnvironment = {getWorker(_id, label) {
     const name = ['typescript', 'javascript'].includes(label) ? 'ts' : ['css', 'scss', 'less'].includes(label) ? 'css'
         : ['html', 'handlebars', 'razor'].includes(label) ? 'html' : label === 'json' ? 'json' : 'editor';
-    return new Worker(new URL(`${name}.worker.js`, window.location.href));
+    return new Worker(new URL(`${name}.worker.js`, window.location.href), {type: 'module'});
 }};
 // Standalone Monaco does not enable JSX by default. React files need TSX/JSX parsing.
 for (const defaults of [monaco.typescript.typescriptDefaults, monaco.typescript.javascriptDefaults]) {

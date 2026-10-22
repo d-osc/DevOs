@@ -1,10 +1,12 @@
 import {
     moveTabItem, completeTabMove, Gtk, Gdk, Gio,
-    GLib, Pango, React, Box, Label,
+    GLib, React, Box, Label,
     createRoot, useLayoutEffect, useRef, type Root, type UIExtension,
     type UIContext, type VteTypes as Vte
 } from '@dev-os/core';
 import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs';
+import {applyTerminalOptions} from './options.js';
+import {TerminalSettings} from './settings-view.js';
 
 function TerminalSurface({terminal}: {terminal: Vte.Terminal}) {
     const host = useRef<Gtk.Box>(null);
@@ -26,6 +28,7 @@ export class TerminalWindow implements TabDragHost {
     private active = 0;
     private nextId = 1;
     private disposed = false;
+    private preferencesCleanup: () => void;
     private header: ReturnType<typeof mountTabbedHeader>;
     private clipboardFormat?: Vte.Format;
     private vte = import('@dev-os/core').then(({Vte}) => ({default: Vte}));
@@ -35,6 +38,10 @@ export class TerminalWindow implements TabDragHost {
         void this.vte.catch(() => {});
         this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Dev OS Terminal', default_width: 880, default_height: 560});
         this.window.name = 'terminal'; this.window.add(this.stack); this.stack.show();
+        this.preferencesCleanup = context.preferences.subscribe(() => {
+            const values = context.preferences.get('org.devos.terminal').state.values;
+            for (const tab of this.tabs) if (tab.terminal) applyTerminalOptions(tab.terminal, values);
+        });
         this.header = mountTabbedHeader(this.window, {title: 'Terminal', iconName: 'utilities-terminal-symbolic', windowIconName: 'utilities-terminal', iconId: 'terminal-window-icon'});
         this.window.connect('delete-event', () => { this.destroy(); return true; });
         this.window.connect('key-press-event', (_window, event) => {
@@ -79,10 +86,7 @@ export class TerminalWindow implements TabDragHost {
             tab.owner.clipboardFormat = Vte.Format.TEXT;
             const terminal = tab.terminal = new Vte.Terminal({hexpand: true, vexpand: true});
             const values = this.context.preferences.get('org.devos.terminal').state.values;
-            terminal.set_font(Pango.FontDescription.from_string(String(values.font))); terminal.set_scrollback_lines(Number(values.scrollback));
-            terminal.set_allow_hyperlink(true); terminal.set_audible_bell(false);
-            const foreground = new Gdk.RGBA(), background = new Gdk.RGBA(); foreground.parse('#dfe3eb'); background.parse('#181b21');
-            terminal.set_colors(foreground, background, null);
+            applyTerminalOptions(terminal, values);
             terminal.connect('child-exited', () => { if (!tab.disposed) tab.owner.closeTab(tab.id); });
             terminal.connect('notify::window-title', () => {
                 if (tab.disposed) return;
@@ -92,7 +96,15 @@ export class TerminalWindow implements TabDragHost {
             });
             tab.root.render(<TerminalSurface terminal={terminal} />);
             if (tab.owner.active === tab.id) terminal.grab_focus();
-            terminal.spawn_async(Vte.PtyFlags.DEFAULT, tab.directory, [Vte.get_user_shell() || '/bin/sh'], GLib.get_environ(), GLib.SpawnFlags.SEARCH_PATH,
+            const configuredShell = Vte.get_user_shell() || '/bin/sh';
+            const shell = configuredShell === '/bin/sh' ? GLib.find_program_in_path('bash') || configuredShell : configuredShell;
+            const bash = /(?:^|\/)bash$/.test(shell);
+            let environment = GLib.get_environ();
+            if (bash) {
+                environment = GLib.environ_setenv(environment, 'SHELL', shell, true);
+                environment = GLib.environ_setenv(environment, 'PS1', '\\u@\\h:\\w\\$ ', true);
+            }
+            terminal.spawn_async(Vte.PtyFlags.DEFAULT, tab.directory, bash ? [shell, '--login'] : [shell], environment, GLib.SpawnFlags.SEARCH_PATH,
                 null, -1, tab.cancel, (_terminal, _pid, error) => {
                     if (tab.disposed) return;
                     if (error) tab.root.render(<Box borderWidth={16}><Label wrap>{`Could not start shell: ${error.message}`}</Label></Box>);
@@ -139,11 +151,13 @@ export class TerminalWindow implements TabDragHost {
     show() { this.window.show(); this.window.present(); this.current?.terminal?.grab_focus(); }
     destroy() {
         if (this.disposed) return; this.disposed = true;
+        this.preferencesCleanup();
         for (const tab of this.tabs) this.disposeTab(tab);
         this.tabs = []; this.header.destroy(); this.window.destroy(); this.closed(this);
     }
 }
 export default {id: 'org.devos.terminal', activate(context) {
+    context.registerSettingsPage?.('org.devos.terminal', () => React.createElement(TerminalSettings, {preferences: context.preferences}));
     const windows = new Set<TerminalWindow>();
     context.registerCommand('terminal.native', (_monitor, directory) => {
         context.invoke('launcher.hide');

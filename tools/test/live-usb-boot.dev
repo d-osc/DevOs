@@ -1,0 +1,78 @@
+#!/usr/bin/env d
+# QEMU only: immutable staged image or a temporary overlay, never physical disks.
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn checkInitrd(staging: str, temporary: str): str {
+    let tree = temporary + "/initramfs"
+    tool.copy(staging + "/initramfs", tree)
+    let wrapper = tree + "/live/root-session"
+    tool.write(wrapper, strings.replaceAll(tool.read(wrapper), "umask 077", "umask 077\nexport WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1"))
+    let fixture = tree + "/test/fixture"
+    fs.mkdirSync(fixture + "/tools/test", true)
+    tool.copy(tool.root() + "/lib", fixture + "/lib")
+    tool.copy(tool.root() + "/tools/lib", fixture + "/tools/lib")
+    tool.copy(tool.root() + "/tools/test/live-root-check.dev", fixture + "/tools/test/live-root-check.dev")
+    for name in Vec<str>("wifi-test", "wifi-native-test") { tool.copy(tool.root() + "/dist/" + name + ".js", tree + "/test/" + name + ".js") }
+    tool.write(tree + "/test/check.service", "[Unit]\nAfter=greetd.service\n[Service]\nType=oneshot\nStandardOutput=journal+console\nStandardError=journal+console\nExecStart=/usr/bin/d /usr/libexec/devos-live-test/tools/test/live-root-check.dev\n")
+    tool.write(tree + "/test/output.conf", "[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n")
+    let hook = "cp -a /test/fixture /newroot/usr/libexec/devos-live-test\ncp /test/check.service /newroot/etc/systemd/system/devos-root-check.service\nmkdir -p /newroot/etc/systemd/system/multi-user.target.wants\nln -s ../devos-root-check.service /newroot/etc/systemd/system/multi-user.target.wants/devos-root-check.service\ncp /test/wifi-test.js /newroot/usr/share/dev-os/dist/wifi-test.js\ncp /test/wifi-native-test.js /newroot/usr/share/dev-os/dist/wifi-native-test.js\n"
+    for service in Vec<str>("devos-zram", "devos-memory") {
+        hook = hook + "mkdir -p /newroot/etc/systemd/system/" + service + ".service.d\ncp /test/output.conf /newroot/etc/systemd/system/" + service + ".service.d/test-output.conf\n"
+    }
+    let init = tool.read(tree + "/init")
+    tool.require(tool.count(init, "status '[5/6]") == 1, "Test initramfs injection anchor missing or ambiguous.")
+    tool.write(tree + "/init", strings.replaceAll(init, "status '[5/6]", hook + "status '[5/6]")); tool.chmod(tree + "/init", "755")
+    let output = temporary + "/root-check.cpio.gz"
+    tool.shell("cd " + util.quote(tree) + "; find . -print0 | cpio --null -o --format=newc | gzip -n > " + util.quote(output), Map<str,str>())
+    return output
+}
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d live-usb-boot.dev -- --staging DIR --log FILE [--timeout 90] [--storage usb|virtio] [--desktop-check]"); return 0 }
+    tool.require(tool.has("--staging") && tool.has("--log"), "Supply staging directory and log file.")
+    let staging: str = tool.resolve(tool.option("--staging", ""))
+    let log: str = tool.resolve(tool.option("--log", ""))
+    let timeout: i64 = json.int(json.parse(tool.option("--timeout", "90"))) * 1000
+    tool.require(timeout > 0 && timeout <= 290000, "Timeout must be 1–290 seconds.")
+    let storage = tool.option("--storage", "usb")
+    tool.require(strings.equal(storage, "usb") || strings.equal(storage, "virtio"), "Use usb or virtio storage.")
+    let record: json.Value = json.parse(tool.read(staging + "/manifest.json"))
+    if tool.has("--desktop-check") { tool.require(strings.equal(util.text(util.get(record, "liveDefaultUser")), "root"), "Staging manifest must select Live root profile.") }
+    let image: str = staging + "/devos-live-arm64-ux3407na.img"
+    for file in Vec<str>(staging + "/Image", staging + "/initramfs.cpio.gz", image) { tool.require(fs.is_file(file), "Missing staged file: " + file) }
+    tool.scope("devos-live-check-", fn(temporary: str) {
+        let initrd = tool.has("--desktop-check") ? checkInitrd(staging, temporary) : staging + "/initramfs.cpio.gz"
+        let append = "console=ttyAMA0 rdinit=/init devos.renderer=pixman devos.live.uuid=" + util.text(util.get(record, "filesystemUuid"))
+        let overlay = false
+        if tool.has("--desktop-check") && util.boolean(util.get(record, "bootDiagnostics")) {
+            let esp = util.text(util.get(record, "espVolumeId"))
+            tool.require(strings.charLength(esp) == 8, "Invalid ESP volume ID.")
+            append = append + " devos.live.esp_uuid=" + strings.substring(esp, 0, 4) + "-" + strings.substring(esp, 4, 8)
+            overlay = true
+        }
+        let argv = Vec<str>("qemu-system-aarch64", "-machine", "virt", "-cpu", "max", "-smp", "2", "-m", "2048", "-nographic", "-no-reboot", "-kernel", staging + "/Image", "-initrd", initrd, "-append", append, "-drive", "if=none,id=live,file=" + image + ",format=raw," + (overlay ? "snapshot=on" : "readonly=on"))
+        if strings.equal(storage, "usb") { argv.push("-device"); argv.push("qemu-xhci,id=xhci"); argv.push("-device"); argv.push("usb-storage,bus=xhci.0,drive=live") }
+        else { argv.push("-device"); argv.push("virtio-blk-pci,drive=live") }
+        tool.write(log, "")
+        let process: child_process.Child = smoke.launch(argv, Map<str,str>(), log)
+        let outcome = result.run(fn() {
+            tool.waitFor(fn(): bool {
+                let output = util.read(log)
+                tool.require(!strings.contains(output, "DEVOS LIVE: STOP:") && !strings.contains(output, "DEVOS_LIVE_ROOT_DESKTOP_FAIL") && !process.ready(), "QEMU Live boot failed; see " + log)
+                return strings.contains(output, "DEVOS_LIVE_OVERLAY_READY: [6/6]") && strings.contains(output, "systemd[1]: systemd ") && (!tool.has("--desktop-check") || strings.contains(output, "DEVOS_LIVE_ROOT_DESKTOP_PASS=uid0"))
+            }, timeout, "QEMU Live boot timed out; see " + log)
+            tool.require(!strings.contains(util.read(log), ": not found"), "Guest command missing; see " + log)
+        })
+        smoke.stop(process); result.unwrap(outcome)
+    })
+    print("PASS: staged Live initramfs, RAM overlay and systemd" + (tool.has("--desktop-check") ? "; root Wayland desktop UID 0" : "") + "; log: " + log)
+    return 0
+}
+return tool.main(main)

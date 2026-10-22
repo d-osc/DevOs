@@ -1,0 +1,178 @@
+# Linux driver audit implementation.
+# Audit sysfs; repair installed matching modules while retaining blacklist policy.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/args"
+use "std/encoding"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/posix.dev" as posix
+
+fn devices(root: str, modprobe: str): json.Value {
+    let found = json.array()
+    for bus in Vec<str>("pci", "usb", "vmbus", "virtio", "hid") {
+        let base = root + "/bus/" + bus + "/devices"
+        for name in util.children(base) {
+            let device = base + "/" + name
+            let alias = util.read(device + "/modalias")
+            let driver = util.command("readlink", Vec<str>("-e", device + "/driver"))
+            if !strings.equal(driver, "") {
+                let parts = strings.split(driver, "/")
+                driver = parts[(parts.len() as i64) - 1]
+            }
+            let status = ""
+            let detail = ""
+            let modules = Vec<str>()
+            if !strings.equal(driver, "") { status = "bound" }
+            else if strings.equal(bus, "vmbus") && strings.equal(strings.toLowerCase(util.read(device + "/class_id")), "{c376c1c3-d276-48d2-90a9-c04748072c60}") {
+                status = "optional-host-channel"
+                detail = "Hyper-V Initial Machine Configuration channel; no desktop driver repair required"
+            } else if (strings.equal(bus, "usb") && !strings.contains(name, ":")) || (strings.equal(bus, "pci") && strings.startsWith(util.read(device + "/class"), "0x06")) {
+                status = "core-managed"
+            } else if strings.equal(alias, "") || strings.equal(modprobe, "") {
+                status = "needs-review"
+                detail = strings.equal(alias, "") ? "No modalias available" : "modprobe is unavailable"
+            } else {
+                let probe = util.run(modprobe, Vec<str>("--resolve-alias", alias), "", 10000)
+                let output = util.output(probe)
+                if probe.success && !strings.equal(output, "") { modules = strings.split(output, "\n") }
+                status = modules.len() > 0 ? "loadable" : "unresolved"
+                if !probe.success { detail = strings.trim(encoding.decode(probe.stderr, "utf8")) }
+            }
+            let vendor = util.read(device + "/vendor")
+            let product = util.read(device + "/device")
+            let identifier = vendor + (!strings.equal(vendor, "") && !strings.equal(product, "") ? ":" : "") + product
+            let label = util.read(device + "/product")
+            if strings.equal(label, "") { label = util.read(device + "/name") }
+            if strings.equal(label, "") { label = strings.equal(identifier, "") ? name : identifier }
+            let item = {bus: bus, id: name, hardware_id: identifier, name: label, driver: driver, alias: alias, status: status, detail: detail}
+            item = json.set(item, "class", util.read(device + "/class"))
+            found = json.push(found, json.set(item, "modules", json.value(modules)))
+        }
+    }
+    return found
+}
+fn hasPrefix(dir: str, prefix: str): bool {
+    for name in util.children(dir) { if strings.startsWith(name, prefix) { return true } }
+    return false
+}
+fn capabilities(root: str, wsl: bool): json.Value {
+    let network = false
+    let wifi = false
+    for name in util.children(root + "/class/net") {
+        if !strings.equal(name, "lo") { network = true }
+        if fs.existsSync(root + "/class/net/" + name + "/wireless") || fs.existsSync(root + "/class/net/" + name + "/phy80211") { wifi = true }
+    }
+    let present = Vec<bool>(network, wifi, util.children(root + "/class/bluetooth").len() > 0,
+        hasPrefix(root + "/class/sound", "card") || (wsl && fs.existsSync("/mnt/wslg/PulseServer")),
+        hasPrefix(root + "/class/drm", "card") || (wsl && fs.existsSync("/dev/dxg")))
+    let names = Vec<str>("network", "wifi", "bluetooth", "audio", "graphics")
+    let commands = Vec<Vec<str>>(Vec<str>(), Vec<str>("nmcli"), Vec<str>("bluetoothctl"), Vec<str>("wpctl", "pactl"), Vec<str>())
+    let hints = Vec<str>("", "Install NetworkManager using your distribution's package manager", "Install BlueZ using your distribution's package manager", "Install WirePlumber/PipeWire tools or pulseaudio-utils using your distribution's package manager", "")
+    let items = json.array()
+    for i in 0..5 {
+        let tools = Vec<str>()
+        for tool in commands[i] { if !strings.equal(util.which(tool), "") { tools.push(tool) } }
+        let status = present[i] ? "available" : (wsl ? "not-exposed" : "not-detected")
+        let detail = "Presence does not prove the device is operational."
+        if !present[i] { detail = wsl ? "Device not exposed to WSL; this does not indicate a missing Linux driver." : "No device detected; absent hardware is not a missing driver." }
+        else if commands[i].len() > 0 && tools.len() == 0 { status = "missing-tool"; detail = hints[i] }
+        else if i == 3 {
+            status = "backend-unavailable"
+            detail = ""
+            for tool in tools {
+                let argv = strings.equal(tool, "wpctl") ? Vec<str>("get-volume", "@DEFAULT_AUDIO_SINK@") : Vec<str>("get-sink-volume", "@DEFAULT_SINK@")
+                let probe = util.run(tool, argv, "", 10000)
+                if probe.success { status = "available"; detail = util.output(probe); break }
+                let message = strings.trim(encoding.decode(probe.stderr, "utf8"))
+                detail = detail + (strings.equal(detail, "") ? "" : "; ") + (strings.equal(message, "") ? "No default audio output" : message)
+            }
+        }
+        items = json.push(items, json.set({name: names[i], status: status, detail: detail}, "tools", json.value(tools)))
+    }
+    return items
+}
+fn repair(items: json.Value, modprobe: str): json.Value {
+    let actions = json.array()
+    for i in 0..(json.len(items) as i64) {
+        let item = json.at(items, i)
+        if !strings.equal(util.text(util.get(item, "status")), "loadable") { continue }
+        let probe = util.run(modprobe, Vec<str>("--use-blacklist", util.text(util.get(item, "alias"))), "", 10000)
+        let detail = strings.trim(encoding.decode(probe.stderr, "utf8"))
+        if strings.equal(detail, "") { detail = util.output(probe) }
+        actions = json.push(actions, {bus: util.text(util.get(item, "bus")), id: util.text(util.get(item, "id")), status: probe.success ? "requested" : "failed", detail: detail})
+    }
+    return actions
+}
+fn main(): i32 {
+    let asJson = false
+    let fix = false
+    for i in 0..(args.len() as i64) {
+        let arg = args.get(i)
+        if strings.equal(arg, "--json") { asJson = true }
+        else if strings.equal(arg, "--fix") { fix = true }
+        else if strings.equal(arg, "--help") || strings.equal(arg, "-h") { print("Usage: dev-os-drivers [--json] [--fix]"); return 0 }
+        else { print("Unknown argument: " + arg); return 2 }
+    }
+    util.require(fs.is_dir("/sys/bus/pci/devices") || fs.is_dir("/sys/bus/vmbus/devices"), "Hardware inventory unavailable: run on Linux with sysfs mounted.")
+    if fix { util.require(posix.euid() == 0, "--fix requires root; run sudo dev-os-drivers --fix") }
+    let kernel = util.read("/proc/sys/kernel/osrelease")
+    let wsl = util.wsl()
+    let modprobe = util.which("modprobe")
+    let items = devices("/sys", modprobe)
+    let actions = json.array()
+    if fix {
+        actions = repair(items, modprobe)
+        if json.len(actions) > 0 {
+            if !strings.equal(util.which("udevadm"), "") { util.command("udevadm", Vec<str>("settle", "--timeout=10")) }
+            items = devices("/sys", modprobe)
+            let checked = json.array()
+            for i in 0..(json.len(actions) as i64) {
+                let action = json.at(actions, i)
+                if strings.equal(util.text(util.get(action, "status")), "requested") {
+                    let bound = false
+                    for j in 0..(json.len(items) as i64) {
+                        let item = json.at(items, j)
+                        if strings.equal(util.text(util.get(item, "bus")), util.text(util.get(action, "bus"))) && strings.equal(util.text(util.get(item, "id")), util.text(util.get(action, "id"))) {
+                            bound = strings.equal(util.text(util.get(item, "status")), "bound")
+                        }
+                    }
+                    action = json.set(action, "status", bound ? "bound" : "not-bound")
+                }
+                checked = json.push(checked, action)
+            }
+            actions = checked
+        }
+    }
+    let caps = capabilities("/sys", wsl)
+    let notes = Vec<str>("A bound driver is not proof of full device functionality.", "Unresolved aliases may mean absent modules, unsupported hardware, or intentionally unbound devices; check kernel logs and firmware.", "Audit covers PCI, USB interfaces, VMBus, virtio and HID; platform/ACPI devices and firmware health need further inspection.")
+    if wsl { notes.push("Host GPU/network drivers belong to Windows. WSLg supplies graphics/audio integration; physical Wi-Fi/Bluetooth may not be exposed.") }
+    let report = {environment: wsl ? "wsl" : "linux", kernel: kernel, module_tree: fs.is_dir("/lib/modules/" + kernel)}
+    report = json.set(report, "devices", items)
+    report = json.set(report, "capabilities", caps)
+    report = json.set(report, "actions", actions)
+    report = json.set(report, "notes", json.value(notes))
+    if asJson { print(json.pretty(report)) }
+    else {
+        print("Dev OS drivers: " + (wsl ? "wsl" : "linux") + " / " + kernel)
+        for group in Vec<json.Value>(items, caps, actions) {
+            for i in 0..(json.len(group) as i64) {
+                let item = json.at(group, i)
+                print(strings.toUpperCase(util.text(util.get(item, "status"))) + ": " + util.text(util.get(item, "bus")) + "/" + util.text(util.get(item, "id")) + " " + util.text(util.get(item, "name")) + " " + util.text(util.get(item, "detail")))
+            }
+        }
+        for note in notes { print("Note: " + note) }
+    }
+    let issues = false
+    for i in 0..(json.len(items) as i64) {
+        let status = util.text(util.get(json.at(items, i), "status"))
+        if !strings.equal(status, "bound") && !strings.equal(status, "core-managed") && !strings.equal(status, "optional-host-channel") { issues = true }
+    }
+    for i in 0..(json.len(caps) as i64) {
+        let status = util.text(util.get(json.at(caps, i), "status"))
+        if strings.equal(status, "missing-tool") || strings.equal(status, "backend-unavailable") { issues = true }
+    }
+    for i in 0..(json.len(actions) as i64) { if !strings.equal(util.text(util.get(json.at(actions, i), "status")), "bound") { issues = true } }
+    return issues ? 1 : 0
+}

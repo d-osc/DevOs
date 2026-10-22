@@ -1,0 +1,256 @@
+#!/usr/bin/env d
+# Time settings through systemd-timedated with normal interactive authorization.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/io"
+use "std/process"
+use "../lib/posix.dev" as posix
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command + " 2>/dev/null"), child_process.options())
+    return decodeText(output.stdout)
+}
+
+fn isWsl(): bool {
+    if !fs.existsSync("/proc/sys/kernel/osrelease") { return false }
+    return strings.contains(strings.toLowerCase(fs.readFileSync("/proc/sys/kernel/osrelease", "utf8")), "microsoft")
+}
+
+fn zoneList(): Vec<str> {
+    let raw = strings.trim(capture("timedatectl list-timezones"))
+    if strings.equal(raw, "") { return Vec<str>("UTC") }
+    let zones = Vec<str>("UTC")
+    let lines = strings.split(raw, "\n")
+    for i in 0..(lines.len() as i64) {
+        let zone = strings.trim(lines[i])
+        if !strings.equal(zone, "") && !strings.equal(zone, "UTC") { zones.push(zone) }
+    }
+    return zones
+}
+
+fn zoneKnown(zones: Vec<str>, zone: str): bool {
+    for i in 0..(zones.len() as i64) {
+        if strings.equal(zones[i], zone) { return true }
+    }
+    return false
+}
+
+fn busProperty(raw: str, key: str): str {
+    let text = strings.replaceAll(strings.replaceAll(strings.replaceAll(raw, "\"", ""), "\n", " "), "\t", " ")
+    let fields = strings.split(text, " ")
+    for i in 0..(fields.len() as i64) {
+        if !strings.equal(fields[i], key) { continue }
+        let next = i + 1
+        while next < fields.len() as i64 && strings.equal(fields[next], "") { next = next + 1 }
+        if next < fields.len() as i64 && (strings.equal(fields[next], "s") || strings.equal(fields[next], "b")) { next = next + 1 }
+        while next < fields.len() as i64 && strings.equal(fields[next], "") { next = next + 1 }
+        if next < fields.len() as i64 { return fields[next] }
+    }
+    return ""
+}
+
+fn timedateProperties(): str {
+    return capture("busctl call org.freedesktop.timedate1 /org/freedesktop/timedate1 org.freedesktop.DBus.Properties GetAll s org.freedesktop.timedate1")
+}
+
+fn localZone(): str {
+    let link = strings.trim(capture("readlink /etc/localtime"))
+    let marker = "/zoneinfo/"
+    let at = strings.lastIndexOf(link, marker)
+    if at >= 0 { return strings.substring(link, at + (strings.len(marker) as i64), strings.charLength(link)) }
+    return "UTC"
+}
+
+fn snapshot(propsRaw: str, error: str): json.Value {
+    let zones = zoneList()
+    let state = json.set(json.object(), "available", false)
+    state = json.set(state, "hostManaged", isWsl())
+    state = json.set(state, "timezone", "UTC")
+    state = json.set(state, "ntp", false)
+    state = json.set(state, "canNtp", false)
+    state = json.set(state, "synchronized", false)
+    state = json.set(state, "zones", json.value(zones))
+    state = json.set(state, "error", error)
+    let zone = localZone()
+    state = json.set(state, "timezone", zone)
+    if !strings.equal(strings.trim(propsRaw), "") {
+        let busZone = busProperty(propsRaw, "Timezone")
+        if !strings.equal(busZone, "") { state = json.set(state, "timezone", busZone) }
+        state = json.set(state, "available", true)
+        state = json.set(state, "ntp", strings.equal(busProperty(propsRaw, "NTP"), "true"))
+        state = json.set(state, "canNtp", strings.equal(busProperty(propsRaw, "CanNTP"), "true"))
+        state = json.set(state, "synchronized", strings.equal(busProperty(propsRaw, "NTPSynchronized"), "true"))
+    }
+    let current = json.string(json.get(state, "timezone"))
+    if !zoneKnown(zones, current) {
+        let withZone = json.array()
+        withZone.push(current)
+        let existing = json.get(state, "zones")
+        for i in 0..(json.len(existing) as i64) { withZone.push(json.at(existing, i)) }
+        state = json.set(state, "zones", withZone)
+    }
+    return state
+}
+
+fn optGet(value: json.Value, key: str): json.Value {
+    if json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+
+fn jsonText(value: json.Value): str {
+    if strings.equal(json.kind(value), "string") { return json.string(value) }
+    return ""
+}
+
+struct Calendar { second: i32, minute: i32, hour: i32, day: i32, month: i32, year: i32, weekday: i32, yearday: i32, dst: i32, offset: i64, zone: *u8 }
+extern fn calloc(count: usize, size: usize): *void
+extern fn free(value: *void)
+extern fn strptime(text: str, format: str, calendar: *Calendar): *u8
+extern fn mktime(calendar: *Calendar): i64
+extern fn localtime_r(epoch: *i64, calendar: *Calendar): *Calendar
+extern fn tzset()
+extern fn unsetenv(name: str): i32
+fn timestampFor(date: str, clock: str, zone: str): i64 {
+    if !isDateShape(date) || !isClockShape(clock) || !zoneKnown(zoneList(), zone) { return -1 }
+    let previous = process.getenv("TZ")
+    let present = process.env().contains("TZ")
+    if !posix.setEnv("TZ", zone) { return -1 }
+    let answer: i64 = -1
+    unsafe {
+        tzset()
+        let calendar = calloc(1, sizeof(Calendar(0,0,0,0,0,0,0,0,0,0,null))) as *Calendar
+        let back = calloc(1, sizeof(Calendar(0,0,0,0,0,0,0,0,0,0,null))) as *Calendar
+        let storage = calloc(1, sizeof(0 as i64)) as *i64
+        if calendar as bool && back as bool && storage as bool {
+            if strptime(date + " " + clock, "%Y-%m-%d %H:%M", calendar) as bool {
+                let wanted = calendar[0]
+                let ambiguous = false
+                for flag in -1..2 {
+                    calendar[0] = wanted; calendar[0].dst = flag as i32
+                    storage[0] = mktime(calendar)
+                    if !(localtime_r(storage, back) as bool) { continue }
+                    let actual = back[0]
+                    if actual.year == wanted.year && actual.month == wanted.month && actual.day == wanted.day && actual.hour == wanted.hour && actual.minute == wanted.minute {
+                        if answer >= 0 && answer != storage[0] { ambiguous = true }
+                        answer = storage[0]
+                    }
+                }
+                if ambiguous { answer = -1 }
+            }
+        }
+        free(calendar as *void); free(back as *void); free(storage as *void)
+        if present { posix.setEnv("TZ", previous) } else { unsetenv("TZ") }
+        tzset()
+    }
+    return answer < 0 ? -1 : answer * 1000000
+}
+
+fn isDateShape(date: str): bool {
+    let shape = "0000-00-00"
+    if strings.charLength(date) != 10 { return false }
+    for i in 0..10 {
+        let expected = strings.charAt(shape, i)
+        let actual = strings.charAt(date, i)
+        if strings.equal(expected, "0") {
+            if !strings.contains("0123456789", actual) { return false }
+        } else {
+            if !strings.equal(expected, actual) { return false }
+        }
+    }
+    return true
+}
+
+fn isClockShape(clock: str): bool {
+    let shape = "00:00"
+    if strings.charLength(clock) != 5 { return false }
+    for i in 0..5 {
+        let expected = strings.charAt(shape, i)
+        let actual = strings.charAt(clock, i)
+        if strings.equal(expected, "0") {
+            if !strings.contains("0123456789", actual) { return false }
+        } else {
+            if !strings.equal(expected, actual) { return false }
+        }
+    }
+    return true
+}
+
+fn main(): i32 {
+    let raw = io.read_line()
+    if strings.equal(strings.trim(raw), "") { return fail("Invalid time settings request.") }
+    let request = json.parse(raw)
+    let action = ""
+    if json.has(request, "action") { action = jsonText(json.get(request, "action")) }
+    if strings.equal(action, "get") {
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
+        return 0
+    }
+    if strings.equal(action, "windows-settings") {
+        if !isWsl() || !fs.existsSync("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe") { return fail("Windows settings are unavailable.") }
+        posix.shell("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -Command \"Start-Process 'ms-settings:dateandtime'\"")
+        print(json.stringify(json.set(json.object(), "ok", true)))
+        return 0
+    }
+    let props = timedateProperties()
+    if strings.equal(strings.trim(props), "") { return fail("Linux time service unavailable.") }
+    if strings.equal(action, "set-timezone") {
+        let zone = jsonText(optGet(request, "timezone"))
+        if !zoneKnown(zoneList(), zone) { return fail("Choose a valid time zone.") }
+        let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
+            "org.freedesktop.timedate1", "SetTimezone", "sb", zone, "true"), child_process.options())
+        if !output.success { return fail("Linux time service rejected the time zone.") }
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
+        return 0
+    }
+    if strings.equal(action, "set-ntp") {
+        if isWsl() { return fail("Windows manages the system clock in WSL. Use Windows time settings.") }
+        if !json.has(request, "enabled") || !strings.equal(json.kind(optGet(request, "enabled")), "bool") { return fail("Automatic time must be enabled or disabled.") }
+        if !strings.equal(busProperty(props, "CanNTP"), "true") { return fail("No network time service is available.") }
+        let enabled = json.bool(optGet(request, "enabled"))
+        let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
+            "org.freedesktop.timedate1", "SetNTP", "bb", enabled ? "true" : "false", "true"), child_process.options())
+        if !output.success { return fail("Linux time service rejected the NTP change.") }
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
+        return 0
+    }
+    if strings.equal(action, "set-time") {
+        if isWsl() { return fail("Windows manages the system clock in WSL. Use Windows time settings.") }
+        if strings.equal(busProperty(props, "NTP"), "true") { return fail("Turn off automatic time before setting the date and time manually.") }
+        let zone = busProperty(props, "Timezone")
+        if strings.equal(zone, "") { zone = "UTC" }
+        let date = jsonText(optGet(request, "date"))
+        let clock = jsonText(optGet(request, "time"))
+        if !isDateShape(date) || !isClockShape(clock) { return fail("Use YYYY-MM-DD for the date and HH:MM for the time.") }
+        let value = timestampFor(date, clock, zone)
+        if value < 0 { return fail("This local time is invalid during a daylight-saving change.") }
+        let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
+            "org.freedesktop.timedate1", "SetTime", "xbb", "${value}", "false", "true"), child_process.options())
+        if !output.success { return fail("Linux time service rejected the manual time.") }
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
+        return 0
+    }
+    return fail("Unsupported time settings action.")
+}
+
+fn fail(message: str): i32 {
+    print(json.stringify(json.set(json.set(json.object(), "ok", false), "error", message)))
+    return 1
+}
+return main()

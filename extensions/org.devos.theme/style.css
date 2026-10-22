@@ -1,9 +1,150 @@
+window#task-view { background: linear-gradient(125deg, #10232a, #141e2c 50%, #202439); color: #e4edf4; }
+#task-view .task-view-content { padding: 12px 24px; }
+#task-view .task-view-header { padding-bottom: 2px; }
+#task-view .task-view-eyebrow { color: @ACCENT@; font-size: 9px; font-weight: 700; letter-spacing: 2px; }
+#task-view .task-view-heading { color: #f1f6fa; font-size: 30px; font-weight: 700; }
+#task-view .task-view-description { color: #94a8bb; font-size: 11px; }
+#task-view .task-view-section-title { color: #dce8f0; font-size: 13px; font-weight: 600; }
+#task-view .task-view-summary { background: alpha(#b8d7df, 0.06); color: #a9c1ce; border: 1px solid alpha(#b8d7df, 0.12); border-radius: 20px; padding: 10px 16px; font-size: 11px; }
+#task-view .task-view-count { background: alpha(@ACCENT@, 0.12); color: @ACCENT@; padding: 3px 8px; border-radius: 9px; font-size: 10px; font-weight: 700; }
+#task-view flowboxchild { padding: 3px; }
+#task-view .task-view-card { background: #202d3b; border: 1px solid #3b4c5d; border-radius: 16px; box-shadow: 0 8px 22px alpha(#030a12, 0.22); }
+#task-view .task-view-active { border-color: alpha(@ACCENT@, 0.75); }
+#task-view .task-view-card-header { padding: 6px 13px; background: alpha(#0b1724, 0.45); border-bottom: 1px solid alpha(#9eb7c8, 0.08); border-radius: 16px 16px 0 0; }
+#task-view .task-view-app { color: #c0d0dc; font-size: 11px; font-weight: 600; }
+#task-view button { color: #d8e5ef; background: transparent; border: 1px solid transparent; border-radius: 8px; box-shadow: none; padding: 5px; transition: background-color 120ms ease, border-color 120ms ease; }
+#task-view button:hover { background-color: alpha(#acc8da, 0.10); }
+#task-view button:focus { border-color: @ACCENT@; background-color: alpha(@ACCENT@, 0.09); }
+#task-view button:disabled { color: #607484; }
+#task-view button.task-view-dismiss { padding: 12px; border: 1px solid alpha(#adc4d5, 0.15); border-radius: 50%; background: alpha(#b5c9db, 0.04); }
+#task-view button.task-view-close { padding: 5px; color: #8ca1b1; }
+#task-view button.task-view-close:hover, #task-view button.task-view-remove-desktop:hover { background: alpha(#e98692, 0.16); color: #ffbbc3; }
+#task-view .task-view-window { border-radius: 0; padding: 0; }
+#task-view .task-view-card-body { padding: 14px 18px; }
+#task-view .task-view-app-emblem { border-radius: 16px; background: linear-gradient(145deg, alpha(@ACCENT@, 0.16), alpha(#8b9edd, 0.10)); border: 1px solid alpha(#b0cfdf, 0.10); }
+#task-view .task-view-window-title { color: #e9f1f7; font-size: 13px; font-weight: 600; }
+#task-view .task-view-window-state { color: #92a9b9; font-size: 10px; }
+#task-view .task-view-state-active { color: @ACCENT@; }
+#task-view .task-view-empty-emblem { background: alpha(@ACCENT@, 0.06); border: 1px solid alpha(@ACCENT@, 0.16); border-radius: 26px; color: @ACCENT@; }
+#task-view .task-view-empty-title { color: #dbeaf4; font-size: 22px; font-weight: 600; }
+#task-view .task-view-desktops { padding: 14px 18px; background: alpha(#0b1622, 0.48); border: 1px solid alpha(#8eaec5, 0.14); border-radius: 20px; }
+#task-view button.task-view-new-desktop { background: alpha(@ACCENT@, 0.12); border-color: alpha(@ACCENT@, 0.25); color: @ACCENT@; padding: 9px 12px; font-size: 11px; }
+#task-view button.task-view-new-desktop:hover { background: alpha(@ACCENT@, 0.20); }
+#task-view button.task-view-remove-desktop { padding: 9px 10px; color: #9bb0c1; font-size: 11px; }
+#task-view button.task-view-desktop { padding: 10px; background: #1e2c3b; border: 1px solid #38495c; border-radius: 12px; }
+#task-view button.task-view-desktop:hover { background: #263b49; border-color: #6b8d9b; }
+#task-view button.task-view-desktop-current { background: #253d43; border-color: @ACCENT@; box-shadow: inset 0 -2px @ACCENT@; }
+#task-view .task-view-desktop-canvas { padding: 6px 10px; border-radius: 7px; background: linear-gradient(125deg, #24515a, #334662); }
+#task-view .task-view-canvas-1 { background: linear-gradient(125deg, #29445e, #40506b); }
+#task-view .task-view-canvas-2 { background: linear-gradient(125deg, #3c3e61, #355368); }
+#task-view .task-view-desktop-number { color: alpha(#e5f1fa, 0.45); font-size: 18px; font-weight: 700; }
+#task-view .task-view-desktop-app { padding: 4px; border-radius: 6px; background: alpha(#0a1725, 0.35); }
+#task-view .task-view-desktop-name { color: #e1edf3; font-size: 12px; font-weight: 600; }
+#task-view .task-view-move { padding: 10px 12px; border-top: 1px solid alpha(#95afc5, 0.12); }
+#task-view combobox button { background: #172636; border-color: #3a4f60; color: #c2d4e0; padding: 5px 8px; font-size: 11px; }
+#task-view combobox menu { background: #233343; color: #e4edf4; }
+#task-view .task-view-footer { padding: 0 4px; }
+#task-view .task-view-keycap { border: 1px solid alpha(#9bb8cd, 0.24); border-radius: 5px; background: alpha(#b5d3e4, 0.04); color: #bed0de; padding: 4px 8px; font-size: 10px; }
+#settings .files-settings-stage { padding: 18px; border: 1px solid #405362; border-radius: 16px; background: linear-gradient(125deg, #203b43, #242b3b); }
+#settings .files-menu-preview { padding: 8px; border: 1px solid #48576b; border-radius: 10px; background: #1d2531; }
+#settings .files-preview-menu-row { padding: 7px 8px; }
+#settings .files-preview-menu-row label { font-size: 12px; }
+#settings .files-settings-card { padding: 18px; }
+#settings .files-custom-item { padding: 12px; border: 1px solid #405063; border-radius: 8px; }
+#settings .files-custom-editor { padding-top: 14px; border-top: 1px solid #405063; }
+#settings .files-custom-editor combobox button { background: #242d39; color: #e4eaf4; border-color: #455064; box-shadow: none; }
+#settings .files-custom-editor combobox menu { background: #242d39; color: #e4eaf4; }
+menu.files-context-menu, menu.desktop-context-menu { background: #1d2531; color: #e4eaf4; border: 1px solid #48576b; padding: 6px; }
+menu.files-context-menu menuitem, menu.desktop-context-menu menuitem { padding: 8px 12px; color: #e4eaf4; }
+menu.files-context-menu menuitem:hover, menu.desktop-context-menu menuitem:hover { background: #304650; }
+menu.files-context-menu menuitem:disabled, menu.desktop-context-menu menuitem:disabled { color: #78869a; }
+#settings .icons-settings-stage { padding: 20px 18px; border: 1px solid #405362; border-radius: 16px; background: linear-gradient(125deg, #203b43, #242b3b); }
+#settings .icons-preview-item { padding: 8px 2px; }
+#settings .icons-preview-files { padding-top: 14px; border-top: 1px solid #405362; }
+#settings .icons-settings-card { padding: 18px; }
+#settings button.icons-theme-choice { padding: 11px 12px; background: #242d39; border-radius: 8px; }
+#settings button.icons-theme-selected { background: #283e40; border-color: @ACCENT@; }
+#settings .theme-settings-stage { padding: 18px; border: 1px solid #405362; border-radius: 16px; background: linear-gradient(125deg, #203b43, #242b3b); }
+#settings .theme-settings-card { padding: 18px; }
+#settings button.theme-palette { padding: 16px; border-radius: 12px; background: #242d39; }
+#settings button.theme-palette-selected { background: #283e40; border-color: @ACCENT@; }
+#settings .terminal-settings-stage { padding: 18px; border: 1px solid #405362; border-radius: 16px; background: linear-gradient(125deg, #203b43, #242b3b); }
+#settings .terminal-preview-title { padding: 10px; background: #283443; border-radius: 8px; color: #d9e7ed; }
+#settings .terminal-settings-card { padding: 18px; }
+#settings button.terminal-scheme { padding: 14px 12px; background: #242d39; border-radius: 10px; }
+#settings button.terminal-scheme-selected { background: #283e40; border-color: @ACCENT@; }
+#settings .terminal-settings-page spinbutton { color: #e4eaf4; background: #171e29; border: 1px solid #455064; border-radius: 8px; box-shadow: none; }
+#settings .terminal-settings-page spinbutton entry { color: #e4eaf4; background: transparent; border: none; box-shadow: none; }
+#settings .terminal-settings-page spinbutton button { color: #e4eaf4; background: #2b3544; border-color: #455064; padding: 6px 10px; box-shadow: none; }
+#settings .settings-app-stage { padding: 18px; border: 1px solid #405362; border-radius: 16px; background: linear-gradient(125deg, #203b43, #242b3b); }
+#settings .settings-app-preview { border: 1px solid #465467; border-radius: 10px; background: #202938; }
+#settings .settings-preview-navigation { padding: 14px; background: #171e29; border-radius: 10px 0 0 10px; }
+#settings .settings-preview-row { padding: 9px 10px; border-radius: 7px; }
+#settings .settings-preview-compact .settings-preview-row { padding: 4px 10px; }
+#settings .settings-preview-active { background: #293b37; color: @ACCENT@; }
+#settings .settings-app-card { padding: 22px 18px; }
+#settings .settings-sidebar-compact button.settings-nav { padding: 4px 10px; }
+window#panel.panel-top { border-top: none; border-bottom: 1px solid #3a4251; }
+#panel .clock-single-line .clock-time { font-size: 12px; }
+#settings .panel-settings-stage { padding: 18px; background: linear-gradient(125deg, #203b43, #222a3b); border: 1px solid #3d5661; border-radius: 16px; }
+#settings .panel-preview-desktop { background: linear-gradient(135deg, #294e59, #29334c 70%, #403951); border: 1px solid #526171; border-radius: 10px; }
+#settings .panel-preview-bar { padding: 0 12px; }
+window#panel, #settings .panel-preview-bar { background: rgba(24, 29, 39, 0.97); color: #e7ebf3; border-radius: 8px; }
+#settings .panel-preview-time { font-size: 11px; font-weight: bold; }
+#settings .panel-preview-date { font-size: 9px; color: #a9bac8; }
+#settings .panel-settings-card { padding: 18px; }
+#settings button.panel-position { padding: 16px; background: #242d39; border-radius: 12px; }
+#settings button.panel-position-selected { background: #283e40; border-color: @ACCENT@; }
+#settings .panel-settings-page spinbutton { color: #e4eaf4; background: #171e29; border: 1px solid #455064; border-radius: 8px; box-shadow: none; }
+#settings .panel-settings-page spinbutton entry { color: #e4eaf4; background: transparent; border: none; box-shadow: none; }
+#settings .panel-settings-page spinbutton button { color: #e4eaf4; background: #2b3544; border-color: #455064; padding: 6px 10px; box-shadow: none; }
+#settings .bluetooth-card { padding: 16px; }
+#settings .background-settings-card { padding: 18px; }
+#settings .background-preview-frame { border: 1px solid #465265; border-radius: 10px; background: #101b25; }
+#settings .clock-preview-card { padding: 22px 24px; border: 1px solid #3b5661; border-radius: 16px; background: linear-gradient(125deg, #203b43, #202938 70%, #242a3b); }
+#settings .clock-preview-eyebrow { font-size: 10px; font-weight: bold; color: #a8c5ca; }
+#settings .clock-live-dot { background: @ACCENT@; border-radius: 20px; min-width: 7px; min-height: 7px; }
+#settings .clock-zone { font-size: 11px; color: #a6b8c6; }
+#settings .clock-preview-time { font-size: 58px; font-weight: 600; color: #f0f7fa; }
+#settings .clock-period { font-size: 13px; font-weight: bold; padding: 6px 10px; border-radius: 8px; background: #334650; color: #bfe4df; }
+#settings .clock-preview-date { font-size: 14px; color: #b9cbd5; }
+#settings .clock-panel-preview { margin-top: 6px; padding: 12px 14px; border: 1px solid #3b505c; border-radius: 10px; background: rgba(14, 23, 34, .5); }
+#settings .clock-panel-example { font-size: 13px; font-weight: 600; color: #deebee; }
+#settings .clock-settings-card { padding: 18px; }
+#settings .clock-notice { font-size: 12px; color: #a9bdc9; }
+#settings button.clock-preset { padding: 15px 16px; border: 1px solid #3c4658; border-radius: 12px; background: #242c39; box-shadow: none; }
+#settings button.clock-preset:hover { background: #2c3745; border-color: #70818e; }
+#settings button.clock-preset-selected { background: #263d40; border-color: @ACCENT@; }
+#settings .clock-preset-title { font-size: 12px; font-weight: 600; color: #dce7ee; }
+#settings .clock-preset-time { font-size: 19px; font-weight: 600; color: #edf4f8; }
+#settings .clock-custom-section { padding-top: 14px; border-top: 1px solid #394352; }
+#settings .launcher-settings-stage { padding: 18px; background: linear-gradient(125deg, #203238, #202638); border: 1px solid #3d505d; border-radius: 16px; }
+#settings .launcher-settings-width { font-size: 11px; color: #add4cb; background: #2e4548; padding: 4px 8px; border-radius: 6px; }
+#settings .launcher-settings-preview { padding: 16px; background: #1c2330; border: 1px solid #465367; border-radius: 14px; }
+#settings .launcher-settings-brand { background: #304b46; border-radius: 8px; color: @ACCENT@; }
+#settings .launcher-preview-search { padding: 10px 12px; background: #161d27; border: 1px solid #3b485a; border-radius: 8px; }
+#settings .launcher-preview-shortcut { padding: 9px 7px; background: #2a3443; border: 1px solid #3b4658; border-radius: 8px; }
+#settings .launcher-preview-shortcut-label { font-size: 10px; font-weight: 600; }
+#settings .launcher-preview-row { padding: 8px; border: 1px solid transparent; border-radius: 8px; }
+#settings .launcher-preview-selected { background: #2a403d; border-color: #4b7467; }
+#settings .launcher-preview-compact { padding: 4px 8px; }
+#settings .launcher-preview-icon { background: #2e394a; border-radius: 7px; }
+#settings .launcher-preview-name { font-size: 12px; font-weight: 600; }
+#settings .launcher-preview-footer { border-top: 1px solid #3a4658; padding-top: 10px; }
+#settings .launcher-settings-card { padding: 18px; }
+#settings .launcher-settings-page spinbutton { color: #e4eaf4; background: #171e29; border: 1px solid #455064; border-radius: 8px; box-shadow: none; }
+#settings .launcher-settings-page spinbutton entry { color: #e4eaf4; background: transparent; border: none; box-shadow: none; }
+#settings .launcher-settings-page spinbutton button { color: #e4eaf4; background: #2b3544; border-color: #455064; padding: 6px 10px; box-shadow: none; }
+#settings .launcher-settings-page spinbutton:focus { border-color: @ACCENT@; box-shadow: none; }
+#settings button.launcher-density { padding: 16px; background: #242d39; border-radius: 12px; }
+#settings button.launcher-density-selected { background: #283e40; border-color: @ACCENT@; }
+#settings .launcher-settings-keys { padding: 10px 0; }
+#settings .bluetooth-device { padding: 8px 0; }
 * {
   font-family: "Inter", "Noto Sans", sans-serif;
   font-size: 13px;
 }
 window#panel {
-  background: rgba(24, 29, 39, 0.97); color: #e7ebf3;
   border-top: 1px solid #3a4251;
 }
 #panel .panel-content { padding: 0; }
@@ -52,11 +193,11 @@ window#panel {
 .accent { color: @ACCENT@; font-size: 22px; }
 .muted { color: #93a5b2; font-size: 11px; }
 window#launcher {
-  background: #1c212b;
+  background: linear-gradient(125deg, #142a30, #1c212b 55%, #25283b);
   color: #edf1f7;
-  border: 1px solid #46505f;
-  border-radius: 18px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 #launcher label { color: #edf1f7; }
 #launcher .heading { font-size: 22px; font-weight: bold; }
@@ -77,6 +218,12 @@ window#launcher {
 #launcher entry image { color: #91a0b4; }
 #launcher entry:focus { border-color: #6da78d; box-shadow: 0 0 0 1px rgba(109, 167, 141, 0.15); }
 #launcher list { background: transparent; }
+#launcher .launcher-view-selected { background: #30483f; border-color: @ACCENT@; }
+#launcher flowboxchild { background: rgba(255,255,255,0.035); border: 1px solid transparent; border-radius: 14px; padding: 2px; }
+#launcher flowboxchild:hover { background: #2a3240; }
+#launcher flowboxchild:selected { background: #293b37; border-color: #6da78d; }
+#launcher flowboxchild:focus { outline-color: @ACCENT@; outline-offset: -3px; }
+#launcher .launcher-workspace-item { background: rgba(255,255,255,0.025); border-radius: 10px; }
 #launcher row { border: 1px solid transparent; border-radius: 10px; margin: 0 3px 4px 0; }
 #launcher row:hover { background: #2a3240; }
 #launcher row:selected { background: #293b37; border-color: #3e5a4c; }
@@ -113,7 +260,7 @@ window#launcher {
 #launcher .launcher-message { color: #f3c491; font-size: 11px; }
 #launcher .launcher-empty { padding: 30px 10px; }
 #launcher .launcher-empty image { color: #73859a; }
-#launcher .launcher-footer { background: #171c24; border-top: 1px solid #303947; border-radius: 0 0 18px 18px; padding: 12px 16px; }
+#launcher .launcher-footer { background: #171c24; border-top: 1px solid #303947; border-radius: 0; padding: 12px 16px; }
 #launcher .launcher-footer image { color: #a5b2c7; }
 #launcher .launcher-footer label { font-size: 11px; }
 #launcher .launcher-logout { color: #acb8ca; border-color: #3a4556; }
@@ -150,6 +297,51 @@ window#settings { background: #1c212b; color: #edf1f7; }
 #settings .settings-nav-count { color: #a5b2c7; background: #29313e; border-radius: 6px; padding: 1px 6px; font-size: 9px; }
 #settings .settings-page-header { border-bottom: 1px solid #303947; padding: 20px 24px; }
 #settings .settings-form { padding: 20px 24px; }
+#settings .wifi-header { padding: 22px 24px 20px; }
+#settings .wifi-body { padding: 22px 24px 26px; }
+#settings .wifi-refresh { background: transparent; border-color: #3d4858; padding: 9px 12px; }
+#settings .wifi-refresh label { font-size: 11px; }
+#settings .wifi-connection { background: #232d36; border: 1px solid #3b4a57; border-radius: 14px; padding: 20px; }
+#settings .wifi-connection-active { background-image: linear-gradient(120deg, #233d36, #202f34); border-color: #3c6255; }
+#settings .wifi-connection-icon { background: #2b5145; border: 1px solid #426c5d; border-radius: 13px; color: @ACCENT@; }
+#settings .wifi-overline { color: #97b7aa; font-size: 9px; font-weight: bold; letter-spacing: 1px; }
+#settings .wifi-network-title { font-size: 19px; font-weight: bold; color: #edf6f1; }
+#settings .wifi-status-badge { color: #9aa9bb; background: #2a3541; border-radius: 20px; padding: 5px 9px; font-size: 9px; }
+#settings .wifi-status-online { color: @ACCENT@; background: #2d5143; border: 1px solid #416553; }
+#settings .wifi-connection-details { border-top: 1px solid #3a5149; padding-top: 14px; }
+#settings .wifi-connection-details label, #settings .wifi-connection-details image { color: #a9c4b8; font-size: 10px; }
+#settings .wifi-count { color: #91a0b5; font-size: 10px; }
+#settings .wifi-network-list { background: #202731; border: 1px solid #35404f; border-radius: 11px; }
+#settings .wifi-network-row { padding: 13px 14px; }
+#settings .wifi-row-divider { border-top: 1px solid #303b49; }
+#settings .wifi-row-icon { background: #2b3542; color: #a4b6cc; border-radius: 9px; }
+#settings .wifi-row-name { color: #e2e9f3; font-size: 12px; font-weight: bold; }
+#settings .wifi-row-detail, #settings .wifi-network-row image { color: #8f9fb4; font-size: 10px; }
+#settings .wifi-saved-badge { color: #a5bcaf; background: #2a3b35; border-radius: 4px; padding: 1px 5px; font-size: 8px; }
+#settings .wifi-connect-button { background: #365a4b; border-color: #527863; padding: 7px 13px; }
+#settings .wifi-connect-button label { color: #c3efdc; font-size: 11px; }
+#settings .wifi-connect-button:hover { background: #416d59; border-color: #6c9b7b; }
+#settings .wifi-setup-button { background: transparent; border-color: #3d495a; padding: 7px 13px; }
+#settings .wifi-setup-button label { color: #b3c1d3; font-size: 11px; }
+#settings .wifi-empty { padding: 26px 18px; color: #8fa2b7; }
+#settings .wifi-manage { padding: 16px 0 0; border-top: 1px solid #303b49; }
+#settings .wifi-manage-title { font-size: 11px; font-weight: bold; color: #b9c7d9; }
+#settings .wifi-manage-button { padding: 7px 10px; background: transparent; border-color: #3c4858; }
+#settings .wifi-manage-button label { font-size: 10px; }
+#settings .wifi-notice { padding: 12px; border-radius: 9px; }
+#settings .wifi-notice-error { color: #f0b5a6; background: #3b2b2b; border: 1px solid #684541; }
+#settings button.network-category { padding: 14px 16px; background: transparent; border: none; border-radius: 0; }
+#settings button.network-category:hover { background: #2b3643; }
+#settings button.network-category:focus { box-shadow: inset 0 0 0 1px @ACCENT@; }
+#settings button.network-category-divider { border-top: 1px solid #35404f; }
+#settings .network-category-icon { color: #a4b6cc; background: #2b3542; border-radius: 10px; }
+#settings .network-category-primary { color: @ACCENT@; background: #2b443b; }
+#settings .network-category-title { color: #e2e9f3; font-size: 12px; font-weight: bold; }
+#settings .network-host-badge { color: #8fa0b6; background: #29323f; border-radius: 5px; padding: 3px 6px; font-size: 9px; }
+#settings .network-breadcrumb { padding: 10px 24px 0; color: #8fa0b6; }
+#settings .network-breadcrumb button { padding: 3px 0; background: transparent; border: none; }
+#settings .network-breadcrumb label { font-size: 10px; }
+#settings .network-breadcrumb button label { color: @ACCENT@; }
 #settings .settings-page-icon { background: #293c37; border: 1px solid #3e5b4c; border-radius: 12px; }
 #settings .settings-page-icon image { color: @ACCENT@; }
 #settings .settings-badge { border-radius: 6px; padding: 4px 8px; font-size: 9px; font-weight: bold; }
@@ -311,3 +503,157 @@ window#editor, #editor .editor-body { background: #24292e; color: #e1e4e8; }
 #editor .mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px; }
 #editor .editor-status { background: #1f2428; border-top: 1px solid #1b2024; padding: 3px 12px; }
 #editor .error { color: #f28b82; font-size: 11px; }
+/* Language preferences */
+.language-card { padding: 18px; }
+.time-card { padding: 18px; }
+.system-card { padding: 18px; }
+.system-display { padding: 12px 0; }
+.system-display-number { background-color: alpha(@ACCENT@, 0.14); border: 1px solid alpha(@ACCENT@, 0.4); border-radius: 8px; color: @ACCENT@; font-size: 22px; font-weight: 700; }
+.panel-language { font-weight: 700; }
+.language-selected { background-color: alpha(@ACCENT@, 0.16); color: @ACCENT@; }
+/* Wallpaper widgets stay below application windows on the background surface. */
+#desktop-widgets .desktop-widget {
+    background-color: rgba(18, 28, 40, 0.90);
+    color: #eef4fa;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 20px;
+    padding: 18px;
+}
+#desktop-widgets .desktop-widget-time { font-size: 42px; font-weight: 700; }
+#desktop-widgets .desktop-widget-remove { background: transparent; color: #a9c4d7; border: none; box-shadow: none; padding: 0 5px; min-height: 20px; min-width: 20px; border-radius: 8px; }
+#desktop-widgets .desktop-widget-remove:hover { background: rgba(255, 100, 100, 0.2); color: #ffb4b4; }
+#desktop-widgets .settings-eyebrow { color: #a9c4d7; }
+window#launcher.animated-overlay, window#task-view.animated-overlay { background: transparent; }
+#launcher .overlay-motion-content { background: linear-gradient(125deg, #142a30, #1c212b 55%, #25283b); }
+#task-view .overlay-motion-content { background: linear-gradient(125deg, #10232a, #141e2c 50%, #202439); color: #e4edf4; }
+/* Standalone desktop welcome screen. */
+.login-screen { background: radial-gradient(ellipse at 15% 10%, alpha(#417c70, 0.28), transparent 65%), linear-gradient(135deg, #101f29, #0c121c 65%, #162635); color: #edf5f6; }
+.login-topbar { padding: 24px 36px; }
+.login-brand { background: #88e0c0; color: #14352d; border-radius: 10px; padding: 6px 12px; font-size: 19px; font-weight: 800; }
+.login-wordmark { font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+.login-top-note { color: #89a3ae; font-size: 12px; }
+.login-card { background: alpha(#192633, 0.96); border: 1px solid #344653; border-radius: 24px; padding: 30px 36px 22px; box-shadow: 0 18px 56px alpha(#000000, 0.28); }
+.login-avatar { background: linear-gradient(135deg, #294b49, #203943); border: 1px solid #49756c; border-radius: 24px; color: #a5edcf; }
+.login-eyebrow { color: #88e0c0; font-size: 10px; font-weight: bold; letter-spacing: 2px; }
+.login-title { color: #f4f8fc; font-size: 28px; font-weight: 700; }
+.login-subtitle { color: #a2b4c3; font-size: 12px; }
+button.login-primary, button.login-secondary { padding: 12px 18px; border-radius: 12px; box-shadow: none; text-shadow: none; }
+button.login-primary { background: #88e0c0; border: 1px solid #a3eed2; color: #12362b; }
+button.login-primary label { color: #12362b; font-weight: bold; font-size: 13px; }
+button.login-primary:hover { background: #a6efd3; }
+button.login-primary:disabled { background: #38584f; border-color: #47675e; }
+button.login-primary:disabled label { color: #98b7aa; }
+button.login-secondary { background: #233241; border: 1px solid #425363; color: #e2ebf2; }
+button.login-secondary label { color: #e2ebf2; font-size: 13px; }
+button.login-secondary:hover { background: #304554; border-color: #739b9b; }
+button.login-primary:focus, button.login-secondary:focus { outline: 2px solid #b4f5dc; outline-offset: 3px; }
+.login-divider { color: #788f9f; font-size: 11px; }
+.login-divider-line { background: #344552; }
+.login-card-footer { color: #88a39f; padding-top: 14px; border-top: 1px solid #30434c; font-size: 10px; }
+.login-profile-note { color: #8299a8; font-size: 11px; }
+.login-bottom { padding: 20px 36px; color: #76909c; font-size: 10px; letter-spacing: 1px; }
+.login-code-card { background: #101d28; border: 1px solid #3e665e; border-radius: 14px; padding: 18px; }
+.login-code { color: #b5f5db; font-family: monospace; font-size: 30px; font-weight: bold; letter-spacing: 5px; }
+.login-wait-icon { color: #88e0c0; }
+.login-error { background: #442d37; border: 1px solid #76505c; color: #ffccd5; border-radius: 10px; padding: 12px; font-size: 12px; }
+#settings .accounts-hero { padding: 24px; border: 1px solid #41615e; border-radius: 18px; background: linear-gradient(120deg, #233f40, #202d3c 75%); }
+#settings .accounts-profile-name { font-size: 25px; font-weight: bold; color: #f1f7fa; }
+#settings .accounts-overline { color: #93d9c3; font-size: 9px; font-weight: bold; letter-spacing: 1.6px; }
+#settings .accounts-status { background: #303b49; color: #b5c4d2; border: 1px solid #475566; border-radius: 7px; padding: 5px 8px; font-size: 9px; font-weight: bold; }
+#settings .accounts-status-connected { background: #24473e; border-color: #457365; color: #a8efd1; }
+#settings .accounts-card-body { padding: 18px 20px; }
+#settings .accounts-user-row { padding: 16px 20px; border-bottom: 1px solid #34414d; }
+#settings .accounts-you { color: #98e3c7; background: #29483f; border-radius: 5px; padding: 2px 6px; font-size: 9px; font-weight: bold; }
+#settings .accounts-users-footer { padding: 12px 20px; background: alpha(#16222b, 0.3); border-radius: 0 0 12px 12px; }
+#settings .accounts-security-note { padding: 15px 18px; border: 1px solid #344651; border-radius: 12px; background: #1d2b35; }
+#settings .accounts-security-note image { color: #89cbb6; }
+#settings .accounts-auth-code { padding: 18px; background: #17272e; border: 1px solid #41625a; border-radius: 12px; }
+#settings .accounts-page button.login-primary { background: #88e0c0; border-color: #a3eed2; padding: 10px 18px; border-radius: 10px; }
+#settings .accounts-page button.login-primary label { color: #12362b; font-weight: bold; }
+#settings .accounts-page button.login-primary:disabled { background: #38584f; border-color: #47675e; }
+#settings .accounts-page button.login-primary:disabled label { color: #98b7aa; }
+#settings .login-screen button.login-profile { background: #172632; border: 1px solid #354b58; border-radius: 12px; padding: 10px 14px; }
+#settings .login-screen button.login-profile-selected { background: #233d40; border-color: #88e0c0; }
+#settings .login-screen button.login-primary { background: #88e0c0; border: 1px solid #a3eed2; border-radius: 12px; padding: 12px 18px; color: #12362b; }
+#settings .login-screen button.login-primary label { color: #12362b; font-size: 13px; font-weight: bold; }
+#settings .login-screen button.login-primary:hover { background: #a6efd3; }
+#settings .login-screen button.login-primary:disabled { background: #38584f; border-color: #47675e; }
+#settings .login-screen button.login-primary:disabled label { color: #98b7aa; }
+#settings .login-screen button.login-secondary { background: #233241; border: 1px solid #425363; border-radius: 12px; padding: 12px 18px; }
+#settings .login-screen button.login-secondary:hover { background: #304554; border-color: #739b9b; }
+#settings .login-screen .login-eyebrow { color: #88e0c0; }
+#settings .login-screen .login-subtitle { color: #a2b4c3; }
+#settings .login-screen .login-brand { color: #14352d; }
+
+/* Process monitor */
+#task-manager { background: #101923; color: #e4edf3; }
+.task-manager-body { padding: 22px; }
+#task-manager button, #task-manager entry, #task-manager combobox button { background: #21303d; background-image: none; color: #e4edf3; border: 1px solid #3c5262; border-radius: 8px; box-shadow: none; padding: 8px 12px; }
+#task-manager button:hover { background: #2c4352; }
+#task-manager button:disabled { color: #758795; background: #1b2731; border-color: #2b3b46; }
+#task-manager .subtle { color: #a5b9c6; font-weight: normal; }
+#task-manager #task-end { background: #2d594d; border-color: #518b79; }
+#task-manager #task-end:disabled { background: #1b2731; border-color: #2b3b46; }
+.task-title { font-size: 24px; font-weight: bold; }
+.task-stat { background: #1b2935; border: 1px solid #304452; border-radius: 14px; padding: 16px; }
+.task-value { font-size: 28px; font-weight: bold; color: #8bdfc7; }
+.task-columns { color: #a5bbc9; padding: 0 14px; font-size: 11px; }
+button.task-process { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 9px 12px; box-shadow: none; color: #e4edf3; }
+button.task-process:hover { background: #223541; }
+button.task-process.selected { background: #26463f; border-color: #62ad97; }
+.task-confirm { background: #392d2b; border: 1px solid #79594c; border-radius: 10px; padding: 14px; }
+
+/* Disk overview */
+#disk-manager { background: #101923; color: #e4edf3; }
+.disk-manager-body { padding: 22px; }
+#disk-manager button { background: #21303d; background-image: none; color: #e4edf3; border: 1px solid #3c5262; border-radius: 9px; box-shadow: none; padding: 12px; }
+#disk-manager button:hover { background: #2c4352; }
+#disk-manager button:disabled { color: #758795; background: #1b2731; border-color: #2b3b46; }
+#disk-manager button.selected { background: #26463f; border-color: #62ad97; }
+#disk-manager .subtle { color: #a5b9c6; font-weight: normal; }
+.disk-summary, .disk-partition { padding: 16px; background: #1b2935; border: 1px solid #304452; border-radius: 12px; }
+.disk-name { font-size: 22px; font-weight: bold; }
+.disk-notice { padding: 12px; background: #1b3037; border-radius: 9px; }
+.disk-manager-settings .settings-card { padding: 20px; }
+.disk-manager-settings .disk-settings-hero { background: linear-gradient(115deg, #203a48, #233c3b); border-color: #3b6065; }
+.disk-settings-device { padding: 12px; background: rgba(100, 160, 175, 0.06); border-radius: 10px; }
+.task-manager-settings .settings-card { padding: 20px; }
+.task-manager-settings .task-settings-hero { background: linear-gradient(115deg, #243d45, #29374e); border-color: #425b6e; }
+/* Standalone application store */
+#app-store { background: #101923; color: #e7eef5; }
+#app-store button, #app-store entry { background: #21303e; background-image: none; border: 1px solid #344b5c; border-radius: 10px; color: #e7eef5; box-shadow: none; padding: 10px 14px; }
+#app-store button:hover { background: #2c4556; border-color: #587686; }
+#app-store button:disabled { background: #18232e; border-color: #293846; color: #738897; }
+#app-store .subtle { color: #a6b9c8; font-weight: normal; }
+.app-store-topbar { padding: 18px 24px; border-bottom: 1px solid #2a3b49; background: #15212c; }
+.app-store-brand { font-size: 20px; font-weight: bold; margin-right: 14px; }
+.app-store-sidebar { padding: 24px 14px; background: #131e28; border-right: 1px solid #2a3b49; }
+#app-store .app-store-sidebar button { background: transparent; border-color: transparent; padding: 11px; }
+#app-store .app-store-sidebar button.selected { background: #25483f; border-color: #406d60; color: #a5ead1; }
+.app-store-eyebrow { font-size: 10px; font-weight: bold; letter-spacing: 1.4px; color: #8bd9c0; }
+.app-store-sidebar .app-store-eyebrow { margin: 0 8px 14px; }
+.app-store-source { font-size: 11px; color: #8bd9c0; margin-top: 10px; }
+.app-store-content { padding: 26px; }
+.app-store-hero { background: linear-gradient(115deg, #244c43, #1a354a); border: 1px solid #426a64; border-radius: 20px; padding: 28px; }
+.app-store-hero-title { font-size: 32px; font-weight: bold; color: #f0fff8; }
+.app-store-chip { padding: 5px 10px; background: rgba(126, 191, 169, 0.12); border-radius: 7px; font-size: 11px; color: #b9dccf; }
+.app-store-section { font-size: 18px; font-weight: bold; }
+.app-store-card { padding: 22px; background: #1a2835; border: 1px solid #304858; border-radius: 16px; }
+#app-store button.app-store-app { padding: 17px; background: #192734; border-color: #2b4152; border-radius: 14px; }
+#app-store button.app-store-app:hover { background: #233b4c; border-color: #54796c; }
+.app-store-app-name { font-size: 16px; font-weight: bold; }
+.app-store-icon { border-radius: 13px; background: #2a4054; color: #bcd7ed; }
+.app-store-icon.category-creative { background: #443452; color: #e0b9ed; }
+.app-store-icon.category-media { background: #4b3c2a; color: #f3d094; }
+.app-store-icon.category-internet { background: #284b44; color: #a4e5cb; }
+.app-store-detail-title { font-size: 28px; font-weight: bold; }
+#app-store button.app-store-primary { background: #78cfb1; border-color: #78cfb1; color: #102c23; font-weight: bold; }
+#app-store button.app-store-primary:hover { background: #9ae5c9; }
+#app-store button.app-store-primary:disabled { background: #263e38; border-color: #344e45; color: #728a80; }
+.app-store-confirm, .app-store-notice { padding: 18px; background: #253e39; border: 1px solid #496d5e; border-radius: 12px; }
+.app-store-success { color: #9ae5c9; }
+.app-store-empty { padding: 48px 16px; color: #a6b9c8; }
+.app-store-settings-hero { background: linear-gradient(115deg, #203f39, #1c3040); border-color: #3a5d53; }
+.app-store-settings-stat { padding: 16px; }
+.app-store-settings .settings-card { padding: 20px; }
+.app-store-settings .app-store-settings-hero { background: linear-gradient(115deg, #203f39, #1c3040); border-color: #3a5d53; }

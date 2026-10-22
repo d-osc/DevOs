@@ -1,0 +1,44 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/json"
+use "std/process"
+use "std/strings"
+use "../lib/tool.dev" as tool
+fn main(): i32 {
+    if tool.has("--help") { print("Validate packed live initrds under DEVOS_LIVE_WORK."); return 0 }
+    let work: str = tool.option("--work", process.getenv("DEVOS_LIVE_WORK"))
+    if strings.equal(work, "") { work = "/var/tmp/devos-live-build" }
+    let results = json.object()
+    for flavor in Vec<str>("devos", "fallback") {
+        let name = strings.equal(flavor, "devos") ? "initrd" : "initrd-fallback"
+        let verified = json.object()
+        tool.scope("devos-initrd-check-", fn(directory: str) {
+            tool.exec(Vec<str>("unmkinitramfs", work + "/iso/casper/" + name, directory))
+            let orders = Vec<str>()
+            let uuids = Vec<str>()
+            for file in tool.walk(directory) {
+                if strings.endsWith(file, "/scripts/casper-bottom/ORDER") { orders.push(file) }
+                if strings.endsWith(file, "/conf/uuid.conf") { uuids.push(file) }
+            }
+            tool.require(orders.len() == 1 && uuids.len() == 1, "Expected one casper ORDER and UUID file.")
+            let order = tool.read(orders[0])
+            tool.require(strings.indexOf(order, "/90devos-session ") >= 0 && strings.indexOf(order, "/90devos-session ") < strings.indexOf(order, "/99casperboot "), "DevOs hook must run before casperboot.")
+            let hook = strings.replaceAll(orders[0], "/ORDER", "/90devos-session")
+            tool.require(tool.run(Vec<str>("test", "-x", hook), Map<str,str>(), "", 5000).success, "DevOs hook must be executable.")
+            tool.exec(Vec<str>("sh", "-n", hook))
+            let uuid = strings.trim(tool.read(uuids[0]))
+            tool.require(strings.equal(uuid, strings.trim(tool.read(work + "/iso/.disk/casper-uuid-" + flavor))), "Live UUID mismatch.")
+            tool.jsonWrite(directory + "/checked.json", {HookOrderedBeforeCasperBoot: true, LiveUUIDMatches: true, UUID: uuid})
+            # Write the result outside the disposable extraction before scope cleanup.
+            tool.copy(directory + "/checked.json", work + "/artifacts/checked-" + flavor + ".json")
+        })
+        results = json.set(results, flavor, json.parse(tool.read(work + "/artifacts/checked-" + flavor + ".json")))
+        fs.unlinkSync(work + "/artifacts/checked-" + flavor + ".json")
+    }
+    let config = tool.read(work + "/iso/boot/grub/grub.cfg")
+    tool.require(tool.count(config, "layerfs-path=filesystem.squashfs") == 3 && tool.count(config, "nopersistent") == 3 && !strings.contains(config, "autoinstall"), "Unexpected live boot configuration.")
+    tool.jsonWrite(work + "/artifacts/initrd-validation.json", results)
+    print(json.pretty(results))
+    return 0
+}
+return tool.main(main)

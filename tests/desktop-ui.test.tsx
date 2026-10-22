@@ -10,6 +10,8 @@ import {Devices} from '../extensions/org.devos.panel/devices.js';
 import {Panel} from '../extensions/org.devos.panel/index.js';
 import {mountBackground} from '@dev-os/compat/background-view';
 import {mountSettings} from '@dev-os/compat/settings-view';
+import {WifiSettings} from '../extensions/org.devos.settings/wifi-view.js';
+import {isWsl, type WifiControls} from '../extensions/org.devos.settings/wifi.js';
 import {SettingsPages} from '@dev-os/core';
 import {ExtensionStore, loadUserExtensions, ExtensionManager} from '@dev-os/extensions';
 import {StoreView} from '../extensions/org.devos.store/view.js';
@@ -50,6 +52,32 @@ function removeFixture(file: Gio.File): void {
     file.delete(null);
 }
 const idle = () => new Promise<void>(resolve => GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => { resolve(); return GLib.SOURCE_REMOVE; }));
+asyncTest('Wi-Fi settings shows networks and routes refresh, saved connect and Windows settings', async () => {
+    const native = new Gtk.Window(), container = new Gtk.Box(); native.add(container);
+    const root = createRoot(container);
+    let refreshed = 0, connected = '', opened = 0;
+    const controls: WifiControls = {
+        state: {networks: [
+            {ssid: 'Connected network', profile: 'current', adapter: 'Wi-Fi', interfaceId: 'a', signal: 100, secure: true, connected: true, connectable: true},
+            {ssid: 'Saved network', profile: 'saved', adapter: 'Wi-Fi', interfaceId: 'a', signal: 70, secure: true, connected: false, connectable: true}],
+            busy: false, error: '', message: '', accessDenied: false},
+        subscribe: () => () => {}, async refresh() { refreshed++; },
+        async connect(network) { connected = network.profile; }, async openWindowsSettings() { opened++; },
+    };
+    try {
+        root.render(<WifiSettings controls={controls} />); await idle();
+        const children = () => widgets(native);
+        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Connected to Connected network'), 'Connected SSID is visible');
+        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Saved network'), 'Available networks are visible');
+        const connect = children().find(widget => widget instanceof Gtk.Button && widget.get_label() === 'Connect') as Gtk.Button;
+        connect.emit('clicked'); assert(connected === 'saved', 'Saved network connects through backend');
+        (children().find(widget => widget.name === 'wifi-refresh') as Gtk.Button).emit('clicked');
+        const hostSettings = children().find(widget => widget.name === 'wifi-windows-settings') as Gtk.Button | undefined;
+        if (isWsl()) { hostSettings!.emit('clicked'); assert(opened === 1, 'WSL host settings action works'); }
+        else assert(!hostSettings && opened === 0, 'Native Wi-Fi stays inside DevOs Settings');
+        assert(refreshed >= 1, 'Refresh reaches the backend');
+    } finally { root.unmount(); native.destroy(); }
+});
 function widgets(parent: Gtk.Widget): Gtk.Widget[] {
     return [parent, ...(parent instanceof Gtk.Container ? parent.get_children().flatMap(widgets) : [])];
 }
@@ -92,13 +120,14 @@ test('logout confirmation is rendered and reset on hide', () => {
     launcher.requestLogout(); launcher.requestLogout();
     assert(quit === 1, 'Second request quits');
 });
-test('system messages, native footer action and row activation', () => {
+asyncTest('system messages, native footer action and row activation', async () => {
     launcher.showMessage('System message');
     assert(labels().includes('System message'), 'System message rendered through React');
     (widgets(window).find(widget => widget.name === 'launcher-terminal') as Gtk.Button).emit('clicked');
     assert(commanded === 'terminal' && !window.get_visible(), 'Footer action runs service and hides');
     launcher.show();
     list.emit('row-activated', list.get_row_at_index(0)!);
+    await idle();
     assert(!window.get_visible(), 'Row activation launches selected app and hides');
     launcher.destroy(); window.destroy();
 });
@@ -125,11 +154,19 @@ test('launcher workspace shortcuts, close action and complete app list', () => {
 });
 test('panel message remains across React clock ticks', () => {
     const panelWindow = makeWindow();
+    let switches = 0;
     const panel = mountPanel(panelWindow, {
         config: {name: 'Test desktop', clock_format: '%H:%M:%S'},
         launcher: {toggle() {}}, runCommand: () => true,
+        switchUser: () => {switches++;},
     }, display.get_monitor(0)!);
     panel.showMessage('Keep this message'); panelWindow.show();
+    (widgets(panelWindow).find(widget => widget.name === 'panel-switch-user') as Gtk.Button).emit('clicked');
+    assert(switches === 0, 'Panel profile button opens its popup before requesting a user switch');
+    const profile = widgets(panelWindow).find(widget => widget.name === 'panel-switch-user')!;
+    const tray = profile.get_parent() as Gtk.Container;
+    assert(tray.get_children().at(-1) === profile, 'Profile button is the rightmost tray item');
+    (profile as Gtk.Button).emit('clicked');
     const loop = new GLib.MainLoop(null, false);
     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1300, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
     loop.run();
@@ -279,7 +316,7 @@ test('native list keyed reorder keeps row identity', () => {
 test('background canvas and updated draw handler', () => {
     const backgroundWindow = makeWindow();
     const background = mountBackground(backgroundWindow, {name: 'Test', accent: '#88e0c0', background: '#101b25'});
-    const canvas = backgroundWindow.get_child() as Gtk.DrawingArea;
+    const canvas = widgets(backgroundWindow).find(widget => widget instanceof Gtk.DrawingArea) as Gtk.DrawingArea;
     assert(canvas instanceof Gtk.DrawingArea, 'Wallpaper canvas mounted by React');
     const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, 640, 480);
     const context = new Cairo.Context(surface);
@@ -304,12 +341,10 @@ test('settings validates core drafts and generates extension forms', () => {
     const click = (label: string) => (children().find(widget => widget instanceof Gtk.Button && widget.get_label() === label) as Gtk.Button).emit('clicked');
     const field = (key: string) => children().find(widget => widget.name === `settings-field-${key}`) as Gtk.Entry;
     const navigate = (id: string) => (children().find(widget => widget.name === `settings-nav-${id}`) as Gtk.Button).emit('clicked');
-    (children().find(widget => widget.name === 'settings-open-json') as Gtk.Button).emit('clicked');
-    assert(openedSettings === 'core', 'Desktop JSON action opens the selected settings file');
+    assert(!children().some(widget => widget.name === 'settings-open-json'), 'Desktop does not expose the removed JSON button');
     navigate('org.devos.editor');
-    (children().find(widget => widget.name === 'settings-open-json') as Gtk.Button).emit('clicked');
-    assert(openedSettings === 'org.devos.editor', 'Editor JSON action opens editor preferences');
-    navigate('core');
+    assert(!children().some(widget => widget.name === 'settings-open-json') && openedSettings === '', 'Extension pages do not expose or invoke the removed JSON button');
+    settings.show('core');
     const entries = () => children().filter(widget => widget instanceof Gtk.Entry && !(widget instanceof Gtk.SearchEntry)) as Gtk.Entry[];
     field('panel_height').set_text('999'); click('Apply');
     assert(applied === 0 && core.panel_height === DEFAULTS.panel_height, 'Invalid core draft must not apply');
@@ -338,7 +373,7 @@ test('settings validates core drafts and generates extension forms', () => {
     entries()[0].set_text('HighContrast'); click('Apply');
     assert(extensions.get('org.devos.icons').state.values.themeName === 'HighContrast', 'Icon theme form persists its JSON settings');
     navigate('org.devos.background');
-    assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'This extension has no configurable options.'), 'Base extension without settings has an explicit empty state');
+    assert(children().some(widget => widget.name === 'settings-field-imagePath') && children().some(widget => widget.name === 'settings-field-color'), 'Background exposes picture and color preferences instead of an empty page');
     settings.destroy(); settingsWindow.destroy(); extensions.dispose();
     Gio.File.new_for_path(`${temporary}/preferences/org.devos.clock.json`).delete(null);
     Gio.File.new_for_path(`${temporary}/preferences/org.devos.panel.json`).delete(null);

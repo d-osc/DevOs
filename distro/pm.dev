@@ -1,0 +1,55 @@
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/encoding"
+use "std/crypto"
+use "std/strings"
+use "std/process"
+use "std/os"
+use "../lib/posix.dev" as posix
+
+fn isArm64Elf(data: Vec<u8>): bool {
+    if data.len() < 20 { return false }
+    if data[0] != 0x7f || data[1] != 0x45 || data[2] != 0x4c || data[3] != 0x46 { return false }
+    return (data[18] as i64) + ((data[19] as i64) * 256) == 183
+}
+
+fn hex(bytes: Vec<u8>): str {
+    let digits = "0123456789abcdef"
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let value = bytes[i] as i64
+        out = out + strings.charAt(digits, value / 16) + strings.charAt(digits, value % 16)
+    }
+    return out
+}
+
+fn snapshot(payload: str): json.Value {
+    let project = "/mnt/c/Users/ondev/Projects/DevOsPM"
+    if !fs.existsSync(project + "/Cargo.lock") {
+        print("DevOsPM project with Cargo.lock is required beside DevOs.")
+        return json.null_value()
+    }
+    let home = os.homedir()
+    posix.setEnv("PATH", home + "/.cargo/bin:" + home + "/.local/zig:" + process.getenv("PATH"))
+    let target = "/var/tmp/devos-pm-build"
+    let args = Vec<str>("zigbuild", "--manifest-path", project + "/Cargo.toml", "--release", "--locked",
+        "--target", "aarch64-unknown-linux-musl", "--target-dir", target)
+    let output = child_process.execFileSync("cargo", args, child_process.options())
+    if !output.success {
+        print("cargo zigbuild failed for DevOsPM")
+        return json.null_value()
+    }
+    let binary = target + "/aarch64-unknown-linux-musl/release/dev"
+    let data = fs.read_bytes(binary)
+    if !isArm64Elf(data) {
+        print("DevOsPM is not an ARM64 ELF binary.")
+        return json.null_value()
+    }
+    fs.write_bytes(payload + "/devospm-arm64", data)
+    fs.writeFileSync(payload + "/devospm-LICENSE", fs.readFileSync(project + "/LICENSE", "utf8"))
+    let record = json.set(json.object(), "target", "aarch64-unknown-linux-musl")
+    record = json.set(record, "binarySha256", hex(crypto.hash("sha256", data)))
+    fs.writeFileSync(payload + "/devospm-provenance.json", json.pretty(record) + "\n")
+    return record
+}

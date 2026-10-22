@@ -1,0 +1,69 @@
+#!/usr/bin/env d
+# Install workspace control in legacy and modern labwc sources, idempotently.
+use "std/args"
+use "std/fs"
+use "std/path"
+use "std/module"
+use "std/strings"
+use "std/child_process"
+use "std/result"
+# Keep this source standalone: OE copies it beside its protocol and C assets.
+fn require(value: bool, message: str) { if !value { result.raise(message) } }
+fn read(file: str): str { return fs.readFileSync(file, "utf8") }
+fn write(file: str, text: str) { require(fs.writeFileSync(file, text), "Cannot write " + file) }
+fn copy(source: str, target: str) { require(fs.copyFileSync(source, target), "Cannot copy protocol asset.") }
+fn count(text: str, needle: str): i64 { return strings.split(text, needle).len() as i64 - 1 }
+fn patch(file: str, anchor: str, addition: str) {
+    let text = read(file)
+    if strings.contains(text, addition) { return }
+    require(count(text, anchor) == 1, "Missing or ambiguous patch anchor: " + file)
+    write(file, strings.replaceAll(text, anchor, anchor + addition))
+}
+fn has(value: str): bool { for i in 0..(args.len() as i64) { if strings.equal(args.get(i), value) { return true } }; return false }
+fn runMain(body: fn(): i32): i32 {
+    if has("--validate") { return 0 }
+    let outcome = result.attempt(body)
+    if result.isErr(outcome) { print(result.message(outcome)); return 1 }
+    return result.unwrap(outcome)
+}
+fn main(): i32 {
+    if has("--help") { print("Usage: d patch-task-view-workspaces.dev -- LABWC_SOURCE"); return 0 }
+    require(args.len() == 1, "Supply the labwc source directory.")
+    let source = args.get(0)
+    let assets = path.dirname(module.entry())
+    let modern = strings.contains(read(source + "/include/labwc.h"), "struct session_lock_manager *session_lock_manager")
+    let text = read(assets + "/devos-workspaces.c")
+    if modern { text = strings.replaceAll(text, "#include \"labwc.h\"", "#include \"labwc.h\"\n#include \"input/input.h\"\n#include \"input/keyboard.h\"") }
+    text = strings.replaceAll(text, "DEVOS_DESKTOP_LIST", modern ? "&(s)->workspaces.all" : "&(s)->workspaces")
+    text = strings.replaceAll(text, "DEVOS_CURRENT_DESKTOP", modern ? "(s)->workspaces.current" : "(s)->workspace_current")
+    text = strings.replaceAll(text, "DEVOS_LAST_DESKTOP", modern ? "(s)->workspaces.last" : "(s)->workspace_last")
+    text = strings.replaceAll(text, "DEVOS_DESKTOP_LOCKED", modern ? "((s)->session_lock_manager && (s)->session_lock_manager->locked)" : "((s)->session_lock != NULL || (s)->seat.active_client_while_inhibited != NULL)")
+    write(source + "/src/devos-workspaces.c", text)
+    let protocol = assets + "/devos-workspaces-v1.xml"
+    if !fs.existsSync(protocol) { protocol = path.dirname(path.dirname(assets)) + "/native/protocols/devos-workspaces-v1.xml" }
+    copy(protocol, source + "/protocols/devos-workspaces-v1.xml")
+    patch(source + "/src/meson.build", "labwc_sources = files(", "\n  'devos-workspaces.c',")
+    patch(source + "/protocols/meson.build", "server_protocols = [", "\n  'devos-workspaces-v1.xml',")
+    let server = source + "/src/server.c"
+    patch(server, "\tworkspaces_init(server);", "\n\tdevos_workspaces_init(server);")
+    patch(server, "#include \"labwc.h\"", "\nvoid devos_workspaces_init(struct server *server);")
+    let foreign = source + (modern ? "/src/foreign-toplevel/wlr-foreign.c" : "/src/foreign.c")
+    let original = read(foreign)
+    let assignment = modern ? "\twlr_toplevel->handle->data = view;" : "\ttoplevel->handle->data = view;"
+    if !strings.contains(original, assignment) {
+        let anchor = modern ? "\thandle_new_app_id(&wlr_toplevel->on_view.new_app_id, NULL);" : "\ttoplevel->maximize.notify = handle_request_maximize;"
+        require(count(original, anchor) == 1, "Foreign-toplevel patch anchor missing or ambiguous.")
+        write(foreign, strings.replaceAll(original, anchor, assignment + "\n" + anchor))
+    }
+    let file = source + "/src/workspaces.c"
+    let workspaces = read(file)
+    if !strings.contains(workspaces, "void devos_workspace_add(") { workspaces = workspaces + "\nvoid devos_workspace_add(struct server *server, const char *name);\nvoid devos_workspace_add(struct server *server, const char *name) { add_workspace(server, name); }\n" }
+    if !strings.contains(workspaces, "void devos_workspace_destroy(") {
+        let cleanup = modern ? "destroy_workspace(workspace);" : "wlr_scene_node_destroy(&workspace->tree->node);\n    free(workspace->name);\n    wl_list_remove(&workspace->link);\n    free(workspace);"
+        workspaces = workspaces + "\nvoid devos_workspace_destroy(struct workspace *workspace);\nvoid devos_workspace_destroy(struct workspace *workspace) {\n" + cleanup + "\n}\n"
+    }
+    write(file, workspaces)
+    print("Dev OS workspace control installed")
+    return 0
+}
+return runMain(main)

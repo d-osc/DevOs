@@ -62,7 +62,7 @@ export function loadConfig(path = configPath()) {
         if (path === configPath()) {
             const legacy = path.replace(/\.json$/, '.toml');
             if (GLib.file_test(legacy, GLib.FileTest.EXISTS))
-                throw new Error(`Found legacy ${legacy}; run python3 tools/maintenance/migrate-config.py first.`);
+                throw new Error(`Found legacy ${legacy}; run d tools/maintenance/migrate-config.dev -- first.`);
         }
         return validateConfig({});
     }

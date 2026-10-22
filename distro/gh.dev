@@ -1,0 +1,63 @@
+# Download and verify the pinned GitHub CLI for the ARM64 image.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "../lib/posix.dev" as posix
+
+fn version(): str { return "2.102.1" }
+
+fn expected(): str { return "5019b3cc6e8a03bb4d88600f8dbda2add8e6407705c159b0c63151036e77a1af" }
+
+fn sha256File(path: str): str {
+    let output = child_process.execFileSync("sha256sum", Vec<str>(path), child_process.options())
+    if !output.success { return "" }
+    let text = ""
+    let bytes = output.stdout
+    for i in 0..(bytes.len() as i64) {
+        text = text + charFromByte(bytes[i])
+    }
+    return strings.substring(text, 0, 64)
+}
+
+fn charFromByte(value: u8): str {
+    let digits = "0123456789abcdef"
+    if value >= 0x30 && value <= 0x39 { return strings.charAt(digits, (value - 0x30) as i64) }
+    if value >= 0x61 && value <= 0x66 { return strings.charAt(digits, (value - 0x61 + 10) as i64) }
+    return ""
+}
+
+fn snapshot(payload: str): json.Value {
+    let archiveName = "gh_" + version() + "_linux_arm64.tar.gz"
+    let url = "https://github.com/cli/cli/releases/download/v" + version() + "/" + archiveName
+    let archivePath = payload + "/" + archiveName
+    let digest = ""
+    if !fs.existsSync(archivePath) { digest = "missing" } else { digest = sha256File(archivePath) }
+    if !strings.equal(digest, expected()) {
+        if posix.shell("curl -sL -o " + archivePath + ".part " + url) != 0 {
+            print("GitHub CLI archive download failed: " + url)
+            return json.null_value()
+        }
+        digest = sha256File(archivePath + ".part")
+        if !strings.equal(digest, expected()) {
+            print("GitHub CLI archive checksum mismatch")
+            return json.null_value()
+        }
+        fs.renameSync(archivePath + ".part", archivePath)
+    }
+    let root = "gh_" + version() + "_linux_arm64"
+    if posix.shell("tar -xzf " + archivePath + " -C " + payload + " " + root + "/bin/gh " + root + "/LICENSE") != 0 {
+        print("GitHub CLI archive extraction failed")
+        return json.null_value()
+    }
+    fs.renameSync(payload + "/" + root + "/bin/gh", payload + "/gh-arm64")
+    fs.renameSync(payload + "/" + root + "/LICENSE", payload + "/gh-LICENSE")
+    let record = json.set(json.object(), "target", "linux_arm64")
+    record = json.set(record, "version", version())
+    record = json.set(record, "url", url)
+    record = json.set(record, "archiveSha256", expected())
+    record = json.set(record, "files.gh-arm64", sha256File(payload + "/gh-arm64"))
+    record = json.set(record, "files.gh-LICENSE", sha256File(payload + "/gh-LICENSE"))
+    fs.writeFileSync(payload + "/gh-provenance.json", json.pretty(record) + "\n")
+    return record
+}

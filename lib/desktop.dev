@@ -1,0 +1,83 @@
+# Shared runtime utilities for the Linux desktop bridges.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/child_process"
+use "std/path"
+use "std/time"
+use "std/datetime"
+use "std/result"
+use "../lib/devstr.dev" as devstr
+use "../lib/posix.dev" as posix
+
+fn get(value: json.Value, key: str): json.Value {
+    if strings.equal(json.kind(value), "object") && json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+fn text(value: json.Value): str {
+    if strings.equal(json.kind(value), "string") { return json.string(value) }
+    return ""
+}
+fn number(value: json.Value): i64 {
+    if strings.equal(json.kind(value), "number") { return json.int(value) }
+    return 0
+}
+fn boolean(value: json.Value): bool {
+    return strings.equal(json.kind(value), "bool") && json.bool(value)
+}
+fn error(message: str): json.Value {
+    # Located runtime exceptions are useful to developers; keep UI errors readable.
+    let marker = "std/result.raise: "
+    let offset = strings.lastIndexOf(message, marker)
+    if offset >= 0 { message = devstr.byteSlice(message, offset + strings.len(marker) as i64, strings.len(message) as i64) }
+    return json.set(json.set(json.object(), "ok", false), "error", message)
+}
+fn failed(value: json.Value): bool { return json.has(value, "error") && !strings.equal(text(get(value, "error")), "") }
+fn ok(): json.Value { return json.set(json.object(), "ok", true) }
+fn parse(raw: str): json.Value {
+    if !json.valid(raw) { return error("Invalid JSON request.") }
+    return json.parse(raw)
+}
+fn read(file: str): str {
+    if !fs.is_file(file) { return "" }
+    return strings.trim(fs.readFileSync(file, "utf8"))
+}
+fn readJson(file: str): json.Value {
+    let raw = read(file)
+    if strings.equal(raw, "") { return json.object() }
+    return parse(raw)
+}
+fn run(program: str, argv: Vec<str>, input: str, timeout: i64): child_process.Output {
+    return child_process.execFileSync(program, argv, child_process.Options("", timeout, 8388608, encoding.encode(input, "utf8")))
+}
+fn output(result: child_process.Output): str { return strings.trim(encoding.decode(result.stdout, "utf8")) }
+fn command(program: str, argv: Vec<str>): str {
+    let result = run(program, argv, "", 10000)
+    if !result.success { return "" }
+    return output(result)
+}
+fn which(program: str): str { return command("sh", Vec<str>("-c", "command -v " + quote(program))) }
+fn children(dir: str): Vec<str> {
+    if !fs.is_dir(dir) { return Vec<str>() }
+    return fs.readdirSync(dir)
+}
+fn wsl(): bool { return strings.contains(strings.toLowerCase(read("/proc/sys/kernel/osrelease")), "microsoft") }
+fn quote(value: str): str { return "'" + strings.replaceAll(value, "'", "'\"'\"'") + "'" }
+fn now(): i64 { return datetime.now() / 1000 }
+fn monotonic(): i64 { return time.now_ms() as i64 / 1000 }
+fn require(condition: bool, message: str) { if !condition { result.raise(message) } }
+fn remove(file: str) { if fs.existsSync(file) { fs.unlinkSync(file) } }
+fn atomic(file: str, value: json.Value): bool {
+    return atomicText(file, json.stringify(value) + "\n")
+}
+fn atomicText(file: str, text: str): bool {
+    let parent = path.dirname(file)
+    if !fs.mkdirSync(parent, true) { return false }
+    # mktemp creates an exclusive 0600 file; never truncate a predictable path.
+    let temporary = command("mktemp", Vec<str>(parent + "/.devos.XXXXXXXXXX"))
+    if strings.equal(temporary, "") { return false }
+    if !fs.writeFileSync(temporary, text) { remove(temporary); return false }
+    if !fs.renameSync(temporary, file) { remove(temporary); return false }
+    return true
+}

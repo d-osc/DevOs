@@ -20,14 +20,20 @@ export class EditorAssets {
             }
             const file = base.resolve_relative_path(relative);
             if (!file.has_prefix(base)) { message.set_status(404, null); return; }
-            try {
-                const [, bytes] = file.load_contents(null);
-                const type = ({html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8',
-                    css: 'text/css; charset=utf-8', ttf: 'font/ttf'} as Record<string, string>)[relative.split('.').pop()!] ?? 'application/octet-stream';
-                message.get_response_headers().append('X-Content-Type-Options', 'nosniff');
-                message.get_response_headers().append('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; worker-src 'self' blob:; connect-src 'self'");
-                message.set_status(200, null); message.set_response(type, Soup.MemoryUse.COPY, bytes);
-            } catch { message.set_status(404, null); }
+            // Keep GTK responsive while cold USB storage reads Monaco bundles.
+            message.pause();
+            file.load_contents_async(null, (source, result) => {
+                try {
+                    const [, bytes] = (source as Gio.File).load_contents_finish(result);
+                    const type = ({html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8',
+                        css: 'text/css; charset=utf-8', ttf: 'font/ttf'} as Record<string, string>)[relative.split('.').pop()!] ?? 'application/octet-stream';
+                    message.get_response_headers().append('X-Content-Type-Options', 'nosniff');
+                    message.get_response_headers().append('Cache-Control', 'private, max-age=3600');
+                    message.get_response_headers().append('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; worker-src 'self' blob:; connect-src 'self'");
+                    message.set_status(200, null); message.set_response(type, Soup.MemoryUse.COPY, bytes);
+                } catch { message.set_status(404, null); }
+                finally { message.unpause(); }
+            });
         });
         server.listen_local(0, Soup.ServerListenOptions.IPV4_ONLY);
         return new EditorAssets(server, `http://127.0.0.1:${server.get_uris()[0].get_port()}/${token}/`);

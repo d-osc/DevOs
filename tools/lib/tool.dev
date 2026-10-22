@@ -1,0 +1,137 @@
+# Shared source-runtime tools. All process arguments are passed separately.
+use "std/fs"
+use "std/path"
+use "std/module"
+use "std/process"
+use "std/args"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/child_process"
+use "std/result"
+use "std/time"
+use "std/os"
+use "../../lib/desktop.dev" as util
+use "../../lib/posix.dev" as posix
+
+fn root(): str {
+    let entry = strings.replaceAll(module.entry(), "\\", "/")
+    if strings.startsWith(entry, "//?/") { entry = strings.substring(entry, 4, strings.charLength(entry)) }
+    return path.dirname(path.dirname(path.dirname(entry)))
+}
+fn home(): str { return os.homedir() }
+fn has(flag: str): bool {
+    for i in 0..(args.len() as i64) { if strings.equal(args.get(i), flag) { return true } }
+    return false
+}
+fn option(flag: str, fallback: str): str {
+    for i in 0..(args.len() as i64) {
+        if strings.equal(args.get(i), flag) { util.require(i + 1 < args.len() as i64, "Missing value for " + flag); return args.get(i + 1) }
+    }
+    return fallback
+}
+fn values(flag: str): Vec<str> {
+    let found = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        if strings.equal(args.get(i), flag) { util.require(i + 1 < args.len() as i64, "Missing value for " + flag); found.push(args.get(i + 1)) }
+    }
+    return found
+}
+fn require(value: bool, message: str) { util.require(value, message) }
+fn read(file: str): str { return fs.readFileSync(file, "utf8") }
+fn write(file: str, text: str) {
+    fs.mkdirSync(path.dirname(file), true)
+    require(fs.writeFileSync(file, text), "Could not write " + file)
+}
+fn jsonWrite(file: str, value: json.Value) { write(file, json.pretty(value) + "\n") }
+fn envArgs(env: Map<str,str>): Vec<str> {
+    let argv = Vec<str>("-i")
+    let merged = process.env()
+    for key in json.keys(json.value(env)) {
+        if strings.equal(env.get(key), "__DEVOS_UNSET__") { merged.remove(key) }
+        else { merged.set(key, env.get(key)) }
+    }
+    # Map keys are represented through JSON, since Map has no iterator API.
+    let keys = json.keys(json.value(merged))
+    for key in keys { argv.push(key + "=" + merged.get(key)) }
+    return argv
+}
+fn run(argv: Vec<str>, env: Map<str,str>, input: str, timeout: i64): child_process.Output {
+    require(argv.len() > 0, "Missing executable.")
+    if strings.equal(process.platform(), "win32") {
+        require(env.len() == 0, "Run tools requiring Linux environment overrides inside WSL.")
+        let tail = Vec<str>()
+        for i in 1..(argv.len() as i64) { tail.push(argv[i]) }
+        return util.run(argv[0], tail, input, timeout)
+    }
+    let command = envArgs(env)
+    for arg in argv { command.push(arg) }
+    return util.run("env", command, input, timeout)
+}
+fn checked(argv: Vec<str>, env: Map<str,str>, input: str, timeout: i64): str {
+    let value = run(argv, env, input, timeout)
+    require(value.success, "Command failed: " + argv[0] + "\n" + encoding.decode(value.stderr, "utf8") + encoding.decode(value.stdout, "utf8"))
+    return encoding.decode(value.stdout, "utf8")
+}
+fn exec(argv: Vec<str>): str { return checked(argv, Map<str,str>(), "", 30000) }
+fn shell(code: str, env: Map<str,str>): str { return checked(Vec<str>("sh", "-eu", "-c", code), env, "", 300000) }
+fn temp(prefix: str): str { return strings.trim(exec(Vec<str>("mktemp", "-d", "-t", prefix + "XXXXXXXXXX"))) }
+fn removeTemp(dir: str) {
+    let real = strings.trim(exec(Vec<str>("realpath", "-e", "--", dir)))
+    require(strings.startsWith(real, "/tmp/") || strings.startsWith(real, "/var/tmp/"), "Refusing cleanup outside a temporary directory.")
+    require(!strings.equal(real, "/tmp") && !strings.equal(real, "/var/tmp"), "Unsafe cleanup target.")
+    exec(Vec<str>("rm", "-rf", "--", real))
+}
+fn scope(prefix: str, body: fn(str): void) {
+    let dir: str = temp(prefix)
+    let outcome = result.run(fn() { body(dir) })
+    removeTemp(dir)
+    result.unwrap(outcome)
+}
+fn copy(from: str, to: str) { exec(Vec<str>("cp", "-a", "--", from, to)) }
+fn chmod(file: str, mode: str) { exec(Vec<str>("chmod", mode, "--", file)) }
+fn resolve(file: str): str { return strings.trim(exec(Vec<str>("realpath", "-m", "--", file))) }
+fn library(soname: str): str {
+    for base in Vec<str>("/usr/lib", "/lib", "/usr/lib64", "/lib64") {
+        if fs.is_file(base + "/" + soname) { return base + "/" + soname }
+        for name in util.children(base) { if fs.is_dir(base + "/" + name) && fs.is_file(base + "/" + name + "/" + soname) { return base + "/" + name + "/" + soname } }
+    }
+    result.raise("Required system library is missing: " + soname)
+    return ""
+}
+fn walk(dir: str): Vec<str> {
+    let found = Vec<str>()
+    if !fs.is_dir(dir) { return found }
+    for name in fs.readdirSync(dir) {
+        if strings.equal(name, "__pycache__") || strings.equal(name, ".git") { continue }
+        let file = dir + "/" + name
+        found.push(file)
+        let link = ""
+        if !strings.equal(process.platform(), "win32") { link = util.command("readlink", Vec<str>(file)) }
+        if fs.is_dir(file) && strings.equal(link, "") { for child in walk(file) { found.push(child) } }
+    }
+    return found
+}
+fn count(text: str, needle: str): i64 { return (strings.split(text, needle).len() as i64) - 1 }
+fn after(text: str, prefix: str): str {
+    let items = strings.split(text, prefix)
+    require(items.len() > 1, "Missing anchor: " + prefix)
+    return items[1]
+}
+fn patch(file: str, anchor: str, addition: str) {
+    let original = read(file)
+    if strings.contains(original, addition) { return }
+    require(count(original, anchor) == 1, "Expected exactly one patch anchor in " + file)
+    write(file, strings.replaceAll(original, anchor, anchor + addition))
+}
+fn waitFor(predicate: fn(): bool, timeout: i64, message: str) {
+    let end = time.now_ms() + timeout as u64
+    while time.now_ms() < end { if predicate() { return }; time.sleep_ms(50) }
+    result.raise(message)
+}
+fn main(body: fn(): i32): i32 {
+    if has("--validate") { return 0 }
+    let outcome = result.attempt(body)
+    if result.isErr(outcome) { print(util.text(util.get(util.error(result.message(outcome)), "error"))); return 1 }
+    return result.unwrap(outcome)
+}

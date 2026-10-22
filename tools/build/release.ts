@@ -14,11 +14,14 @@ const temporary = mkdtempSync(join(tmpdir(), 'dev-os-release-'));
 try {
     const destination = join(temporary, 'dev-os');
     mkdirSync(destination);
-    for (const directory of ['bin', 'dist', 'data', 'config', 'extensions']) cpSync(join(root, directory), join(destination, directory), {
+    for (const directory of ['bin', 'lib', 'dist', 'data', 'config', 'extensions']) cpSync(join(root, directory), join(destination, directory), {
         recursive: true, dereference: false,
         filter: source => !source.endsWith('.pyc') && !source.includes('__pycache__') && !source.endsWith('-test.js') && !source.includes('/dist/types'),
     });
     mkdirSync(join(destination, 'native'));
+    for (const entry of readdirSync(join(root, 'native')).filter(name => name.endsWith('.dev'))) {
+        cpSync(join(root, 'native', entry), join(destination, 'native', entry));
+    }
     cpSync(join(root, 'build/native/dev-os-window-tracker'), join(destination, 'native/dev-os-window-tracker'));
     chmodSync(join(destination, 'native/dev-os-window-tracker'), 0o755);
     for (const entry of readdirSync(join(destination, 'bin'))) chmodSync(join(destination, 'bin', entry), 0o755);

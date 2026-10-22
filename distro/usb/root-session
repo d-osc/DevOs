@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+[ "$(id -u)" = 0 ] && [ -f /run/devos-live/root-session-enabled ] || exit 1
+umask 077
+if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
+export DEV_OS_LOGIN=0 DEV_OS_LIVE_ROOT=1 DEV_OS_POLKIT_AGENT_STARTED=1
+export XDG_CURRENT_DESKTOP=DevOS:labwc XDG_SESSION_TYPE=wayland
+export PATH=/usr/bin:/usr/sbin:/usr/libexec:/bin:/sbin
+unset GREETD_SOCK
+case " $(cat /proc/cmdline) " in
+    *' devos.renderer=pixman '*) export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1 ;;
+esac
+echo '<6>DEVOS_LIVE_ROOT_SESSION_UID=0' >/dev/kmsg
+if [ "${1:-}" != --session ]; then
+    exec dbus-run-session -- "$0" --session >>/run/devos-live/root-session.log 2>&1
+fi
+if ! systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service; then
+    echo 'DevOs Live: audio services failed; check the user journal.' >&2
+fi
+exec /usr/bin/dev-os-session

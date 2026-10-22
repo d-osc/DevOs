@@ -1,0 +1,16 @@
+#!/usr/bin/d
+use "std/process"
+use "std/strings"
+use "std/result"
+use "/usr/share/dev-os/native/devos_accounts_system.dev" as accounts
+use "/usr/share/dev-os/native/privileged.dev" as secure
+fn main(): i32 {
+    let outcome = result.attempt(fn(): bool {
+        if !strings.equal(process.getenv("PAM_TYPE"), "auth") { return false }
+        let credential = secure.descriptorText(0, 8192)
+        while strings.endsWith(credential, secure.nul()) { credential = strings.substring(credential, 0, strings.charLength(credential) - 1) }
+        return accounts.authenticate(process.getenv("PAM_USER"), credential)
+    })
+    return result.isErr(outcome) ? 1 : (result.unwrap(outcome) ? 0 : 1)
+}
+return main()

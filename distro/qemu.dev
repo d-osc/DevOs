@@ -1,0 +1,333 @@
+# Boot DevOs artifacts in QEMU, using temporary disk writes for desktop tests.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/args"
+use "std/process"
+use "std/os"
+use "std/path"
+use "std/time"
+use "std/regex"
+use "std/module"
+use "../lib/posix.dev" as posix
+
+fn decode(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command), child_process.options())
+    return decode(output.stdout)
+}
+
+fn regular(path: str, label: str): str {
+    if !fs.existsSync(path) || fs.size(path) == 0 {
+        print("Missing " + label + ": " + path)
+        return ""
+    }
+    return path
+}
+
+fn kernelRelease(path: str): str {
+    let magic = capture("dd if=" + path + " bs=1 skip=56 count=4 2>/dev/null | od -An -tu1 | tr -s \" \" | tr -d \"\\n\"")
+    if !strings.equal(strings.trim(magic), "65 82 77 100") {
+        print("QEMU requires an ARM64 Linux Image.")
+        return ""
+    }
+    let banner = strings.trim(capture("grep -aom1 \"Linux version [0-9][A-Za-z0-9.+_-]*-devos[A-Za-z0-9.+_-]*\" " + path))
+    if strings.equal(banner, "") {
+        print("The selected Image is not a DevOs Linux Kernel.")
+        return ""
+    }
+    return strings.replaceAll(banner, "Linux version ", "")
+}
+
+fn newestRootfs(directory: str): str {
+    let listing = strings.trim(capture("ls -t " + directory + "/devos-image*qemuarm64*.ext4 2>/dev/null | head -1"))
+    if strings.equal(listing, "") {
+        print("No desktop ext4 image in " + directory + ". Run .\\distro.ps1 desktop-build first.")
+        return ""
+    }
+    return listing
+}
+
+fn inspectRootfs(rootfs: str, release: str): bool {
+    if capture("command -v debugfs") == "" {
+        print("Install e2fsprogs on the Linux build host to validate the desktop image.")
+        return false
+    }
+    let identity = ""
+    for i in 0..2 {
+        let probe = i == 0 ? "/etc/os-release" : "/usr/lib/os-release"
+        let text = capture("debugfs -R \"cat " + probe + "\" " + rootfs + " 2>/dev/null | grep \"^ID=\" | head -1")
+        let value = strings.replaceAll(strings.replaceAll(text, "ID=", ""), "\"", "")
+        value = strings.trim(strings.replaceAll(value, "'", ""))
+        if !strings.equal(value, "") { identity = value }
+        if !strings.equal(identity, "") { break }
+    }
+    if !strings.equal(identity, "devos") {
+        print("The selected root filesystem is not a DevOs image.")
+        return false
+    }
+    for i in 0..2 {
+        let base = i == 0 ? "/lib/modules" : "/usr/lib/modules"
+        let stat = capture("debugfs -R \"stat " + base + "/" + release + "\" " + rootfs + " 2>/dev/null")
+        if strings.contains(stat, "Inode:") && strings.contains(stat, "Type: directory") { return true }
+    }
+    print("The desktop rootfs has no modules for " + release + ". Rebuild kernel and rootfs together.")
+    return false
+}
+
+fn plan(mode: str, kernel: str, rootfs: str, initrd: str, log: str, memory: i64, cpus: i64, headless: bool, test: bool): Vec<str> {
+    let command = Vec<str>("qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72", "-accel", "tcg,thread=multi",
+        "-smp", "${cpus}", "-m", "${memory}", "-no-reboot")
+    if test {
+        command.push("-display")
+        command.push("none")
+        command.push("-monitor")
+        command.push("none")
+        command.push("-serial")
+        command.push("stdio")
+    } else {
+        let display = strings.equal(mode, "base") || headless ? "none" : "gtk,gl=off"
+        let escapedLog = strings.replaceAll(log, ",", ",,")
+        command.push("-display")
+        command.push(display)
+        command.push("-chardev")
+        command.push("stdio,id=console,mux=on,signal=off,logfile=" + escapedLog)
+        command.push("-serial")
+        command.push("chardev:console")
+        command.push("-mon")
+        command.push("chardev:console,mode=readline")
+    }
+    if strings.equal(mode, "base") {
+        let append = "console=ttyAMA0 rdinit=/init panic=-1" + (test ? " devos.smoke=1" : "")
+        command.push("-kernel")
+        command.push(kernel)
+        command.push("-initrd")
+        command.push(initrd)
+        command.push("-append")
+        command.push(append)
+    } else {
+        let escapedRootfs = strings.replaceAll(rootfs, ",", ",,")
+        command.push("-kernel")
+        command.push(kernel)
+        command.push("-drive")
+        command.push("if=none,id=devos,file=" + escapedRootfs + ",format=raw,snapshot=on")
+        command.push("-device")
+        command.push("virtio-blk-pci,drive=devos")
+        command.push("-device")
+        command.push("virtio-gpu-pci")
+        command.push("-device")
+        command.push("qemu-xhci")
+        command.push("-device")
+        command.push("usb-tablet")
+        command.push("-device")
+        command.push("usb-kbd")
+        command.push("-netdev")
+        command.push("user,id=net0")
+        command.push("-device")
+        command.push("virtio-net-pci,netdev=net0")
+        command.push("-append")
+        command.push("console=ttyAMA0 root=/dev/vda rw rootwait panic=-1 systemd.show_status=yes devos.renderer=pixman")
+    }
+    return command
+}
+
+fn bootReady(mode: str, output: str, release: str): bool {
+    let ansi = regex.compile("\\x1b\\[[0-9;]*[A-Za-z]", "")
+    let clean = ansi.replaceAll(output, "")
+    ansi.close()
+    if !strings.contains(clean, release) || strings.contains(clean, "Kernel panic") { return false }
+    if strings.equal(mode, "base") {
+        return strings.contains(clean, "DEVOS_BASE_SMOKE_PASS") && (strings.contains(clean, "Power down") || strings.contains(clean, "Power off"))
+    }
+    let graphicalRegex = regex.compile("(Reached target|default target)[^\\n]*Graphical Interface", "i")
+    let graphical = graphicalRegex.test(clean) || strings.contains(clean, "Graphical Interface")
+    graphicalRegex.close()
+    let greeterRegex = regex.compile("Started[^\\n]*(greetd|Greeter daemon|GREETER DAEMON)", "i")
+    let greeter = greeterRegex.test(clean)
+    greeterRegex.close()
+    return graphical && greeter && strings.contains(clean, "login:")
+}
+
+fn alive(pid: str): bool {
+    return posix.shell("kill -0 " + pid + " 2>/dev/null") == 0
+}
+
+fn intOf(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        if !strings.contains("0123456789", ch) { break }
+        let digit = 0
+        let digits = "0123456789"
+        for d in 0..10 {
+            if strings.equal(strings.charAt(digits, d), ch) { digit = d }
+        }
+        value = value * 10 + digit
+    }
+    return value
+}
+
+fn smoke(command: Vec<str>, mode: str, release: str, log: str, timeout: i64): bool {
+    let joined = ""
+    for i in 0..(command.len() as i64) { joined = joined + " " + shellQuote(command[i]) }
+    fs.writeFileSync(log, "")
+    posix.shell("(" + joined + " >>" + log + " 2>&1 & echo $! > /tmp/devos-qemu.pid)")
+    let pid = strings.trim(fs.readFileSync("/tmp/devos-qemu.pid", "utf8"))
+    let deadline = time.now_ms() as i64 + timeout * 1000
+    while (time.now_ms() as i64) < deadline {
+        if alive(pid) {
+            let tailText = capture("tail -c 262144 " + log + " | sed 's/\\o033\\[[0-9;]*[A-Za-z]//g'")
+            if strings.contains(tailText, "Kernel panic") {
+                posix.killGroup(intOf(pid), posix.SIGKILL())
+                print("Guest kernel panic. See the serial log.")
+                return false
+            }
+            if bootReady(mode, tailText, release) {
+                posix.killGroup(intOf(pid), posix.SIGTERM())
+                posix.shell("sleep 1; kill -0 " + pid + " 2>/dev/null && kill -9 " + pid + " 2>/dev/null; true")
+                return true
+            }
+        } else {
+            let tailText = capture("tail -c 262144 " + log + " | sed 's/\\o033\\[[0-9;]*[A-Za-z]//g'")
+            if bootReady(mode, tailText, release) { return true }
+            print("QEMU exited before the expected guest boot checks passed.")
+            return false
+        }
+        time.sleep_ms(2000)
+    }
+    posix.killGroup(intOf(pid), posix.SIGKILL())
+    print("Guest boot checks timed out after ${timeout}s.")
+    return false
+}
+
+fn shellQuote(value: str): str {
+    if strings.equal(value, "") { return "\"\"" }
+    let safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_=:/.,+"
+    for i in 0..strings.charLength(value) {
+        if !strings.contains(safe, strings.charAt(value, i)) { return "'" + strings.replaceAll(value, "'", "'\\''") + "'" }
+    }
+    return value
+}
+
+fn main(): i32 {
+    let mode = "desktop"
+    let test = false
+    let headless = false
+    let check = false
+    let kernelArg = ""
+    let rootfsArg = ""
+    let logArg = ""
+    let imageDir = ""
+    let memoryArg = 0
+    let cpus = 2
+    let timeout = 120
+    let i = 0
+    let argc = args.len() as i64
+    while i < argc {
+        let a = args.get(i)
+        if strings.equal(a, "base") || strings.equal(a, "desktop") { mode = a }
+        if strings.equal(a, "--test") { test = true }
+        if strings.equal(a, "--headless") { headless = true }
+        if strings.equal(a, "--check") { check = true }
+        if strings.equal(a, "--kernel") && i + 1 < argc { kernelArg = args.get(i + 1); i = i + 1 }
+        if strings.equal(a, "--rootfs") && i + 1 < argc { rootfsArg = args.get(i + 1); i = i + 1 }
+        if strings.equal(a, "--log") && i + 1 < argc { logArg = args.get(i + 1); i = i + 1 }
+        if strings.equal(a, "--image-dir") && i + 1 < argc { imageDir = args.get(i + 1); i = i + 1 }
+        if strings.equal(a, "--memory") && i + 1 < argc { memoryArg = intOf(args.get(i + 1)); i = i + 1 }
+        if strings.equal(a, "--cpus") && i + 1 < argc { cpus = intOf(args.get(i + 1)); i = i + 1 }
+        if strings.equal(a, "--timeout") && i + 1 < argc { timeout = intOf(args.get(i + 1)); i = i + 1 }
+        i = i + 1
+    }
+    let memory = memoryArg != 0 ? memoryArg : (strings.equal(mode, "base") ? 512 : 4096)
+    if strings.equal(capture("command -v qemu-system-aarch64"), "") {
+        print("Install qemu-system-arm on the Linux build host.")
+        return 1
+    }
+    if strings.equal(imageDir, "") {
+        let oeWork = process.getenv("DEVOS_OE_WORK")
+        if strings.equal(oeWork, "") { oeWork = "/var/tmp/devos-oe" }
+        imageDir = oeWork + "/build/tmp/deploy/images/qemuarm64"
+    }
+    let kernel = ""
+    let rootfs = ""
+    let initrd = ""
+    if strings.equal(mode, "base") {
+        let baseWork = process.getenv("DEVOS_BASE_WORK")
+        if strings.equal(baseWork, "") { baseWork = "/var/tmp/devos-base" }
+        let output = baseWork + "/output"
+        kernel = regular(output + "/Image", "base kernel")
+        initrd = regular(output + "/initramfs.cpio.gz", "base initramfs")
+        if strings.equal(kernel, "") || strings.equal(initrd, "") { return 1 }
+        if posix.shell("cd " + output + " && sha256sum -c SHA256SUMS") != 0 { return 1 }
+        let devlangBin = strings.trim(capture("command -v d || echo $HOME/.local/bin/d"))
+        let verify = child_process.execFileSync(devlangBin, Vec<str>(path.dirname(module.entry()) + "/base/verify.dev", "--", initrd), child_process.options())
+        if !verify.success { return 1 }
+    } else {
+        kernel = kernelArg
+        rootfs = rootfsArg
+        if strings.equal(rootfs, "") {
+            rootfs = newestRootfs(imageDir)
+            if strings.equal(rootfs, "") { return 1 }
+        }
+        if strings.equal(kernel, "") {
+            if fs.existsSync(imageDir + "/Image") { kernel = imageDir + "/Image" }
+            else if fs.existsSync(imageDir + "/Image-qemuarm64.bin") { kernel = imageDir + "/Image-qemuarm64.bin" }
+            else {
+                print("No kernel Image in " + imageDir + ". Build the desktop with linux-devos first.")
+                return 1
+            }
+        }
+        if strings.equal(regular(kernel, "desktop kernel"), "") || strings.equal(regular(rootfs, "desktop rootfs"), "") { return 1 }
+    }
+    let release = kernelRelease(kernel)
+    if strings.equal(release, "") { return 1 }
+    if !strings.equal(rootfs, "") && !inspectRootfs(rootfs, release) { return 1 }
+    let root = path.dirname(path.dirname(module.entry()))
+    let stamp = strings.trim(capture("date -u +%Y%m%d-%H%M%SZ"))
+    let log = logArg
+    if strings.equal(log, "") { log = root + "/build/qemu/" + mode + "-" + stamp + "-" + pidText() + ".log" }
+    print("DevOs QEMU | " + mode + " | " + release + " | ${memory} MiB | ${cpus} CPUs")
+    print("Serial log: " + log)
+    if !strings.equal(rootfs, "") { print("Rootfs: " + rootfs + "\nWrites use a temporary QEMU snapshot and are discarded on exit.") }
+    if check {
+        print("PASS: required artifacts and kernel/rootfs checks")
+        return 0
+    }
+    fs.mkdirSync(root + "/build/qemu", true)
+    let command = plan(mode, kernel, rootfs, initrd, log, memory, cpus, headless, test)
+    if test {
+        if !smoke(command, mode, release, log, timeout) { return 1 }
+        if strings.equal(mode, "base") { print("PASS: console boot, init checks and clean poweroff") }
+        else { print("PASS: kernel and systemd graphical-target/greeter boot markers (not desktop interaction tests)") }
+        return 0
+    }
+    if strings.equal(mode, "desktop") && !headless {
+        let display = process.getenv("DISPLAY") + process.getenv("WAYLAND_DISPLAY")
+        if strings.equal(display, "") {
+            print("No graphical display. Use WSLg or --headless.")
+            return 1
+        }
+    }
+    print("Exit console/VM with Ctrl+A then X. Desktop changes are temporary.")
+    let joined = ""
+    for i in 0..(command.len() as i64) { joined = joined + " " + shellQuote(command[i]) }
+    return posix.shell(joined)
+}
+
+fn pidText(): str { return strings.trim(capture("echo $$")) }
+return main()

@@ -1,0 +1,118 @@
+#!/usr/bin/env d
+# Full isolated compositor smoke. No tests run against the user's current desktop.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/smoke-keyboard.dev" as keyboard
+use "../lib/ui.dev" as ui
+use "../../lib/desktop.dev" as util
+use "../../lib/posix.dev" as posix
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d smoke.dev -- [--screenshots DIR] [--keyboard] [--outputs 1|2] [--pointer] [--skip-ui-tests]"); return 0 }
+    let outputs: str = tool.option("--outputs", "1")
+    tool.require(strings.equal(outputs, "1") || strings.equal(outputs, "2"), "Use one or two outputs.")
+    if tool.has("--keyboard") { tool.require(!strings.equal(util.which("wtype"), "") && !strings.equal(util.which("foot"), ""), "--keyboard requires wtype and foot.") }
+    if tool.has("--pointer") { tool.require(tool.has("--keyboard") && strings.equal(outputs, "1") && !strings.equal(util.which("dev-os-test-pointer-session"), ""), "--pointer requires --keyboard, one output and bootstrap-pointer-test.sh.") }
+    let screens: str = tool.option("--screenshots", "")
+    tool.scope("devos-smoke-", fn(base: str) {
+        let root = tool.root()
+        let fixture: str = base + "/dev-os-de"
+        for directory in Vec<str>("Documents", "Downloads", "src", "extensions") { fs.mkdirSync(fixture + "/" + directory, true) }
+        tool.write(fixture + "/README.txt", "Native Dev OS Files smoke fixture\n")
+        tool.write(fixture + "/src/files-view.tsx", "export const FilesView = () => <Box />;\n")
+        tool.write(fixture + "/src/model.ts", "export class FileBrowser {}\n")
+        tool.write(fixture + "/package.json", "{\"name\":\"dev-workspace\",\"scripts\":{\"dev\":\"gjs -m dist/main.js\"}}\n")
+        tool.write(fixture + "/tsconfig.json", "{\"compilerOptions\":{\"strict\":true}}\n")
+        tool.write(fixture + "/app.tsx", "export const App = () => <Box><Label>Hello developer</Label></Box>;\n")
+        tool.write(fixture + "/README.md", "# Developer workspace\n\nNative React + TypeScript + GTK.\n")
+        tool.write(fixture + "/.gitignore", "dist/\nnode_modules/\n")
+        tool.jsonWrite(base + "/config/dev-os/extensions/org.devos.files.json", {version: 1, enabled: true, values: {homeDirectory: fixture, gridView: false, showHidden: false}})
+        let marker: str = base + "/terminal-opened"
+        tool.write(base + "/fake-terminal", "#!/bin/sh\npwd > " + util.quote(marker + ".cwd") + "\nprintf opened > " + util.quote(marker) + "\n")
+        tool.chmod(base + "/fake-terminal", "755")
+        tool.write(base + "/managed-service", "#!/bin/sh\necho $$ > " + util.quote(base + "/service.pid") + "\nexec sleep 300\n")
+        tool.chmod(base + "/managed-service", "755")
+        let nativeMarker: str = base + "/native-terminal-opened"
+        tool.write(base + "/native-terminal", "#!/bin/sh\nprintf 'Dev OS: native Wayland client OK\\n'\ntouch " + util.quote(nativeMarker) + "\nsleep 30\n")
+        tool.chmod(base + "/native-terminal", "755")
+        tool.write(base + "/data/applications/dev-os-smoke.desktop", "[Desktop Entry]\nType=Application\nName=Dev OS Smoke Terminal\nIcon=utilities-terminal\nTerminal=false\nExec=foot --title=Dev-OS-Smoke " + base + "/native-terminal\n")
+        tool.jsonWrite(base + "/config/dev-os/config.json", {terminal: [base + "/fake-terminal"], lock: ["dev-os-smoke-missing-locker"], autostart: [[base + "/managed-service"]]})
+        let extras = Map<str,str>(); extras.set("WLR_HEADLESS_OUTPUTS", outputs); extras.set("XDG_DATA_HOME", base + "/data")
+        let session: smoke.Session = smoke.start(base, root, extras)
+        let outcome = result.run(fn() {
+            smoke.waitReady(session); keyboard.waitFile(base + "/service.pid")
+            tool.require(strings.contains(util.read(session.log), "(" + outputs + " output(s))"), "Incorrect headless output count.")
+            let env: Map<str,str> = smoke.environment(session)
+            let shellPid = smoke.processIds(session.runtime, root + "/dist/main.js")[0]
+            let servicePid: i64 = json.int(json.parse(strings.trim(tool.read(base + "/service.pid"))))
+            print("PASS: compositor, layer surfaces and managed autostart started")
+            let strict = env; strict.set("G_DEBUG", "fatal-criticals")
+            if !tool.has("--skip-ui-tests") {
+                for name in Vec<str>("renderer-test", "desktop-ui-test") { tool.checked(Vec<str>("gjs", "-m", root + "/dist/" + name + ".js"), strict, "", 60000) }
+            } else { print("SKIP: renderer and desktop UI assertions (--skip-ui-tests)") }
+            tool.scope("devos-command-client-", fn(client: str) {
+                tool.copy(root + "/bin", client + "/bin"); tool.copy(root + "/dist", client + "/dist")
+                fs.unlinkSync(client + "/dist/react-gtk.js")
+                tool.checked(Vec<str>("sh", client + "/bin/dev-os-shell", "shell"), env, "", 10000)
+            })
+            print("PASS: remote CLI works without React/UI bundles")
+            keyboard.screenshot(env, screens, "desktop")
+            smoke.remote(session, env, "launcher"); time.sleep_ms(300); keyboard.screenshot(env, screens, "launcher"); smoke.remote(session, env, "launcher")
+            if tool.has("--keyboard") {
+                keyboard.keys(env, Vec<str>("-M", "logo", "-k", "space", "-m", "logo")); time.sleep_ms(1000)
+                keyboard.keys(env, Vec<str>("-d", "40", "Dev OS Smoke Terminal")); time.sleep_ms(500); keyboard.screenshot(env, screens, "search")
+                keyboard.keys(env, Vec<str>("-k", "Return")); keyboard.waitFile(nativeMarker); keyboard.screenshot(env, screens, "terminal")
+                keyboard.keys(env, Vec<str>("-M", "alt", "-k", "F4", "-m", "alt"))
+                let demo: child_process.Child = smoke.launch(Vec<str>("gjs", "-m", root + "/dist/react-demo.js"), strict, session.log)
+                let checked = result.run(fn() {
+                    time.sleep_ms(700); tool.require(!demo.ready(), "React demo must map a native window.")
+                    keyboard.keys(env, Vec<str>("-d", "20", "React")); keyboard.screenshot(env, screens, "react-demo")
+                    keyboard.keys(env, Vec<str>("-M", "alt", "-k", "F4", "-m", "alt"))
+                    tool.waitFor(fn(): bool { return demo.ready() }, 5000, "React demo did not unmount.")
+                })
+                let exited = demo.ready()
+                if !exited { demo.kill() }
+                let demoResult = demo.wait()
+                result.unwrap(checked); tool.require(demoResult.success, "React demo failed during unmount.")
+                print("PASS: compositor shortcut, launcher search, native client and React demo unmount")
+            }
+            smoke.remote(session, env, "files"); keyboard.waitText(session, "Dev OS Files ready: " + fixture)
+            keyboard.screenshot(env, screens, "files")
+            if tool.has("--keyboard") { keyboard.files(session, env, fixture, marker, screens) }
+            smoke.remote(session, env, "settings"); time.sleep_ms(500); keyboard.screenshot(env, screens, "settings")
+            if tool.has("--keyboard") { keyboard.keys(env, Vec<str>("-M", "alt", "-k", "F4", "-m", "alt")) }
+            print("PASS: Files and native React Settings commands")
+            smoke.remote(session, env, "terminal"); keyboard.waitFile(marker)
+            let missing = tool.run(Vec<str>("sh", root + "/bin/dev-os-shell", "lock"), env, "", 10000)
+            tool.require(!missing.success, "Missing optional locker must report failure.")
+            tool.jsonWrite(base + "/config/dev-os/config.json", {accent: "#ffbb77", panel_height: 64})
+            smoke.remote(session, env, "reload"); time.sleep_ms(300); keyboard.screenshot(env, screens, "reloaded")
+            if tool.has("--keyboard") { keyboard.terminal(session, env, fixture, screens) }
+            tool.jsonWrite(base + "/config/dev-os/config.json", {accent: "invalid"})
+            let invalid = tool.run(Vec<str>("sh", root + "/bin/dev-os-shell", "reload"), env, "", 10000)
+            tool.require(!invalid.success && !session.child.ready(), "Bad reload must preserve the running shell.")
+            tool.jsonWrite(base + "/config/dev-os/config.json", {accent: "#ffbb77"})
+            smoke.remote(session, env, "logout")
+            tool.require(!session.child.ready(), "Logout must wait for confirmation.")
+            tool.require(posix.send(shellPid, posix.SIGTERM()), "Could not stop the private shell.")
+            tool.waitFor(fn(): bool { return session.child.ready() }, 10000, "Session did not stop.")
+            tool.waitFor(fn(): bool { return !fs.existsSync("/proc/" + json.stringify(servicePid)) }, 5000, "Managed service survived session exit.")
+            for name in fs.readdirSync(session.runtime) { tool.require(!strings.startsWith(name, "wayland-"), "Wayland socket survived session exit.") }
+            ui.cleanLog(session)
+            print("PASS: configuration reload/denial, logout confirmation, managed service and compositor cleanup")
+        })
+        if result.isErr(outcome) && !strings.equal(screens, "") { tool.write(screens + "/failure.log", util.read(session.log)) }
+        smoke.cleanup(session); result.unwrap(outcome)
+    })
+    if tool.has("--pointer") {
+        # Keep the same native pointer checks in dedicated isolated compositors.
+        for file in Vec<str>("background-menu-smoke", "taskbar-smoke") { tool.checked(Vec<str>("d", tool.root() + "/tools/test/" + file + ".dev"), Map<str,str>(), "", 180000) }
+    }
+    return 0
+}
+return tool.main(main)

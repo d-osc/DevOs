@@ -1,0 +1,105 @@
+# Linux Unix-domain sockets and bounded UTF-8 stdin, using libc only.
+use "std/encoding"
+use "std/time"
+use "../lib/desktop.dev" as util
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+extern fn socket(domain: i32, type: i32, protocol: i32): i32
+extern fn connect(fd: i32, address: *u8, length: u32): i32
+extern fn close(fd: i32): i32
+extern fn recv(fd: i32, data: *u8, size: usize, flags: i32): isize
+extern fn send(fd: i32, data: *u8, size: usize, flags: i32): isize
+extern fn read(fd: i32, data: *u8, size: usize): isize
+extern fn poll(fds: *u8, count: usize, timeout: i32): i32
+
+struct Line { eof: bool, text: str, oversized: bool }
+fn line(limit: i64): Line {
+    let bytes = Vec<u8>()
+    let eof = false
+    let oversized = false
+    unsafe {
+        let buffer = malloc(1)
+        util.require(buffer as bool, "Out of memory.")
+        while true {
+            let count = read(0, buffer, 1)
+            if count <= 0 { eof = true; break }
+            if buffer[0] == 10 { break }
+            if (bytes.len() as i64) < limit { bytes.push(buffer[0]) } else { oversized = true }
+        }
+        free(buffer as *void)
+    }
+    return Line(eof && bytes.len() == 0 && !oversized, oversized ? "" : encoding.decode(bytes, "utf8"), oversized)
+}
+fn open(path: str): i32 {
+    let bytes = encoding.encode(path, "utf8")
+    util.require(bytes.len() > 0 && bytes.len() < 108, "Invalid login manager socket path.")
+    unsafe {
+        let address = malloc(110)
+        util.require(address as bool, "Out of memory.")
+        for i in 0..110 { address[i] = 0 }
+        # Linux sockaddr_un: native-endian AF_UNIX followed by sun_path[108].
+        let family = address as *u16
+        family[0] = 1
+        for i in 0..(bytes.len() as i64) { address[2 + i] = bytes[i] }
+        let fd = socket(1, 1 | 0x80000, 0)
+        if fd < 0 { free(address as *void); util.require(false, "Cannot create login manager socket.") }
+        let connected = connect(fd, address, 110)
+        free(address as *void)
+        if connected != 0 { close(fd); util.require(false, "Cannot connect to the login manager.") }
+        return fd
+    }
+}
+fn shutdown(fd: i32) { unsafe { close(fd) } }
+fn wait(fd: i32, writing: bool, deadline: u64): bool {
+    unsafe {
+        let descriptor = malloc(8)
+        util.require(descriptor as bool, "Out of memory.")
+        let pfd = descriptor as *i32
+        pfd[0] = fd
+        let flags = (descriptor + 4) as *i16
+        flags[0] = writing ? 4 : 1
+        flags[1] = 0
+        let now = time.now_ms()
+        let ready = false
+        if now < deadline { ready = poll(descriptor, 1, (deadline - now) as i32) > 0 }
+        free(descriptor as *void)
+        return ready
+    }
+}
+fn receive(fd: i32, size: i64, deadline: u64): Vec<u8> {
+    util.require(size >= 0 && size <= 1048576, "Invalid login manager response.")
+    let bytes = Vec<u8>()
+    if size == 0 { return bytes }
+    unsafe {
+        let buffer = malloc(size as usize)
+        util.require(buffer as bool, "Out of memory.")
+        let count = 0
+        while count < size {
+            if !wait(fd, false, deadline) { free(buffer as *void); util.require(false, "The login manager timed out.") }
+            let received = recv(fd, buffer, (size - count) as usize, 0)
+            if received <= 0 { free(buffer as *void); util.require(false, "The login manager disconnected.") }
+            for i in 0..(received as i64) { bytes.push(buffer[i]) }
+            count = count + received as i64
+        }
+        free(buffer as *void)
+    }
+    return bytes
+}
+fn write(fd: i32, bytes: Vec<u8>, deadline: u64) {
+    unsafe {
+        let buffer = malloc(bytes.len())
+        util.require(buffer as bool, "Out of memory.")
+        for i in 0..(bytes.len() as i64) { buffer[i] = bytes[i] }
+        let count = 0
+        while count < bytes.len() as i64 {
+            if !wait(fd, true, deadline) { free(buffer as *void); util.require(false, "The login manager timed out.") }
+            # MSG_NOSIGNAL avoids terminating the greeter on a disconnected peer.
+            let sent = send(fd, buffer + count, bytes.len() - count as usize, 0x4000)
+            if sent <= 0 { free(buffer as *void); util.require(false, "The login manager disconnected.") }
+            count = count + sent as i64
+        }
+        # Clear credentials before releasing the temporary native buffer.
+        for i in 0..(bytes.len() as i64) { buffer[i] = 0 }
+        free(buffer as *void)
+    }
+}

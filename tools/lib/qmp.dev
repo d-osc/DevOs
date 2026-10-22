@@ -1,0 +1,31 @@
+# QMP JSON-line framing on a private Unix socket.
+use "std/json"
+use "std/time"
+use "std/strings"
+use "std/encoding"
+use "../../lib/unix.dev" as unix
+use "../lib/tool.dev" as tool
+fn line(fd: i32): json.Value {
+    let bytes = Vec<u8>()
+    let deadline = time.now_ms() + 10000
+    while bytes.len() < 1048576 {
+        let byte = unix.receive(fd, 1, deadline)[0]
+        if byte == 10 { return json.parse(encoding.decode(bytes, "utf8")) }
+        bytes.push(byte)
+    }
+    tool.require(false, "QMP response exceeds 1 MiB.")
+    return json.object()
+}
+fn command(fd: i32, name: str, arguments: json.Value): json.Value {
+    let request = json.set(json.set(json.object(), "execute", name), "id", name)
+    if !json.is_null(arguments) { request = json.set(request, "arguments", arguments) }
+    unix.write(fd, encoding.encode(json.stringify(request) + "\n", "utf8"), time.now_ms() + 10000)
+    while true {
+        let reply = line(fd)
+        if json.has(reply, "id") && strings.equal(json.string(json.get(reply, "id")), name) {
+            tool.require(!json.has(reply, "error"), json.stringify(reply))
+            return reply
+        }
+    }
+    return json.object()
+}

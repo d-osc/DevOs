@@ -1,0 +1,17 @@
+#!/usr/bin/d
+# stdout is private to sudo. GTK is provided by the desktop's existing GJS ABI.
+use "std/child_process"
+use "std/encoding"
+use "std/io"
+use "std/result"
+fn main(): i32 {
+    let outcome = result.attempt(fn(): i32 {
+        let source = "imports.gi.versions.Gtk='3.0'; const Gtk=imports.gi.Gtk; Gtk.init(null); const dialog=new Gtk.Dialog({title:'DevOs · Administrator authentication'}); dialog.set_default_size(420,180); dialog.set_position(Gtk.WindowPosition.CENTER); dialog.set_keep_above(true); dialog.add_button('Cancel',Gtk.ResponseType.CANCEL); dialog.add_button('Authenticate',Gtk.ResponseType.OK); dialog.set_default_response(Gtk.ResponseType.OK); const box=dialog.get_content_area(); box.set_border_width(22); box.set_spacing(14); box.add(new Gtk.Label({label:'Enter your current WSL administrator password\\nto manage OS users.',xalign:0})); const entry=new Gtk.Entry({visibility:false,activates_default:true,placeholder_text:'Administrator password'}); box.add(entry); dialog.show_all(); entry.grab_focus(); const accepted=dialog.run()===Gtk.ResponseType.OK; const password=accepted?entry.get_text():''; entry.set_text(''); dialog.destroy(); if(!accepted) imports.system.exit(1); print(password);"
+        let output = child_process.execFileSync("/usr/bin/gjs", Vec<str>("-c", source), child_process.Options("/", 300000, 8192, Vec<u8>()))
+        if !output.success { return 1 }
+        io.write(encoding.decode(output.stdout, "utf8"))
+        return 0
+    })
+    return result.isErr(outcome) ? 1 : result.unwrap(outcome)
+}
+return main()

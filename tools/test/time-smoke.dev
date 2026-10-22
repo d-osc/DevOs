@@ -1,0 +1,33 @@
+#!/usr/bin/env d
+# Snapshot timedated and open its page; never change clock settings.
+use "std/fs"
+use "std/child_process"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Read-only time service and private desktop smoke."); return 0 }
+    smoke.withSession("time", Map<str,str>(), fn(session: smoke.Session) {
+        let env = smoke.environment(session)
+        let response = json.parse(tool.checked(Vec<str>("d", session.root + "/bin/dev-os-time"), env, "{\"action\":\"get\"}\n", 30000))
+        tool.require(util.boolean(util.get(response, "ok")), "Time service failed.")
+        let state = util.get(response, "state")
+        let zone = util.text(util.get(state, "timezone"))
+        let known = false
+        let zones = util.get(state, "zones")
+        for i in 0..(json.len(zones) as i64) { if strings.equal(json.string(json.at(zones, i)), zone) { known = true } }
+        tool.require(known, "Current timezone missing from timezone catalog.")
+        tool.jsonWrite(session.root + "/build/time-native/state.json", state)
+        smoke.remote(session, env, "time")
+        time.sleep_ms(1000)
+        smoke.screenshot(env, session.root + "/build/time-native/time.png")
+        tool.require(!session.child.ready() && !strings.contains(util.read(session.log), "JS ERROR"), "Session failed.")
+        tool.copy(session.log, session.root + "/build/time-native/session.log")
+    })
+    print("PASS: real time service snapshot and Time settings; system clock unchanged")
+    return 0
+}
+return tool.main(main)

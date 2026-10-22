@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Task Manager
+Comment=Monitor processes, CPU and memory
+Exec=dev-os-shell task-manager
+TryExec=dev-os-shell
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+Terminal=false

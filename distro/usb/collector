@@ -1,0 +1,43 @@
+#!/bin/sh
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+umask 077
+destination=/run/live/esp/DEVOS-LOGS/$(cat /proc/sys/kernel/random/boot_id)
+mkdir -p "$destination"
+# Bounded five-minute collection, scoped to boot/kernel/GUI services.
+for iteration in $(seq 1 60); do
+    journalctl -b -k --no-pager -n 5000 >"$destination/kernel-systemd.txt.new" 2>&1
+    mv "$destination/kernel-systemd.txt.new" "$destination/kernel-systemd.txt"
+    journalctl -b -u greetd -u seatd -u systemd-logind --no-pager -n 2000 >"$destination/gui-services.txt.new" 2>&1
+    mv "$destination/gui-services.txt.new" "$destination/gui-services.txt"
+    systemctl status greetd seatd systemd-logind --no-pager -l >"$destination/status.txt.new" 2>&1
+    mv "$destination/status.txt.new" "$destination/status.txt"
+    {
+        echo '=== PCI and USB devices ==='
+        lspci -nnk
+        lsusb
+        lsusb -t
+        echo '=== Network and Bluetooth ==='
+        /usr/bin/timeout 8 nmcli device status
+        rfkill list
+        /usr/bin/timeout 8 bluetoothctl list
+        systemctl status bluetooth --no-pager -l
+        echo '=== Sound cards ==='
+        cat /proc/asound/cards
+        echo '=== Deferred drivers ==='
+        cat /sys/kernel/debug/devices_deferred
+        echo '=== Backlight devices ==='
+        for file in /sys/class/backlight/*/brightness /sys/class/backlight/*/max_brightness /sys/class/backlight/*/type; do [ ! -f "$file" ] || { echo "$file"; cat "$file"; }; done
+        echo '=== Loaded modules ==='
+        lsmod
+    } >"$destination/hardware.txt.new" 2>&1
+    mv "$destination/hardware.txt.new" "$destination/hardware.txt"
+    journalctl -b -u bluetooth --no-pager -n 1000 >"$destination/bluetooth.txt.new" 2>&1
+    mv "$destination/bluetooth.txt.new" "$destination/bluetooth.txt"
+    journalctl -b _UID=0 --user-unit=pipewire.service --user-unit=pipewire-pulse.service --user-unit=wireplumber.service --no-pager -n 1000 >"$destination/audio.txt.new" 2>&1
+    mv "$destination/audio.txt.new" "$destination/audio.txt"
+    for source in /run/devos-live/root-session.log /root/.local/state/devos/logs/*.log; do
+        [ ! -f "$source" ] || cp "$source" "$destination/$(basename "$source")"
+    done
+    sync
+    sleep 5
+done

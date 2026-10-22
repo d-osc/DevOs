@@ -15,6 +15,11 @@
       "id": "terminal",
       "title": "Terminal",
       "fields": [
+        {"key": "scheme", "title": "Color scheme", "type": "string", "default": "midnight"},
+        {"key": "audibleBell", "title": "Audible bell", "type": "boolean", "default": false},
+        {"key": "allowHyperlinks", "title": "Clickable links", "type": "boolean", "default": true},
+        {"key": "scrollOnOutput", "title": "Follow new output", "type": "boolean", "default": false},
+        {"key": "scrollOnKeystroke", "title": "Follow typing", "type": "boolean", "default": true},
         {
           "key": "font",
           "title": "Font",

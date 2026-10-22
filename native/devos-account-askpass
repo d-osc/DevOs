@@ -1,0 +1,3 @@
+#!/bin/sh
+# sudo supplies a prompt argument; insert the DevLang program-argument separator.
+exec /usr/bin/d /usr/share/dev-os/native/devos-account-askpass.dev -- "$@"

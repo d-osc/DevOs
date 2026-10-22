@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="devos_workspaces_v1">
+  <copyright>Copyright 2026 Dev OS contributors. Permission is granted to use, copy, modify and distribute this protocol with this notice, without warranty.</copyright>
+  <interface name="devos_workspace_manager_v1" version="4">
+    <description summary="Dev OS workspace control">Desktop identifiers are one-based configuration order. Snapshots are bounded by begin/done. Window identifiers are existing zwlr_foreign_toplevel_handle_v1 resource IDs in the requesting client's namespace.</description>
+    <request name="destroy" type="destructor"/>
+    <request name="refresh"/>
+    <request name="activate"><arg name="desktop" type="uint"/></request>
+    <request name="move_window"><arg name="window" type="uint"/><arg name="desktop" type="uint"/></request>
+    <event name="begin"/>
+    <event name="desktop"><arg name="id" type="uint"/><arg name="name" type="string"/><arg name="active" type="uint"/></event>
+    <event name="window"><arg name="handle" type="uint"/><arg name="desktop" type="uint"/><arg name="sticky" type="uint"/></event>
+    <event name="done"/>
+    <request name="create" since="2"><description summary="Create and activate a desktop">Appends an empty desktop for the current compositor session and activates it.</description></request>
+    <request name="remove" since="3"><description summary="Remove a desktop">Moves its windows to the preceding desktop, or the next desktop when removing the first. The final desktop cannot be removed. Desktop identifiers are renumbered after removal.</description><arg name="desktop" type="uint"/></request>
+    <request name="set_layout" since="4"><description summary="Select keyboard layout">Select a zero-based group in the compositor keyboard keymap.</description><arg name="index" type="uint"/></request>
+    <event name="keyboard_layout" since="4"><arg name="index" type="uint"/><arg name="name" type="string"/><arg name="active" type="uint"/></event>
+  </interface>
+</protocol>

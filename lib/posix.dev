@@ -1,0 +1,76 @@
+# Dev OS POSIX helpers implemented through DevLang runtime FFI.
+use "std/strings"
+# System CRT symbols resolve automatically; extern calls need unsafe blocks.
+
+extern fn kill(pid: i32, sig: i32): i32
+extern fn getuid(): u32
+extern fn geteuid(): u32
+extern fn getgid(): u32
+extern fn getegid(): u32
+extern fn getppid(): i32
+extern fn setenv(name: str, value: str, overwrite: i32): i32
+extern fn system(command: str): i32
+extern fn getenv(name: str): *u8
+
+fn SIGHUP(): i32 { return 1 }
+fn SIGINT(): i32 { return 2 }
+fn SIGQUIT(): i32 { return 3 }
+fn SIGKILL(): i32 { return 9 }
+fn SIGTERM(): i32 { return 15 }
+fn SIGUSR1(): i32 { return 10 }
+fn SIGSTOP(): i32 { return 19 }
+fn SIGCONT(): i32 { return 18 }
+
+fn send(pid: i64, sig: i32): bool {
+    let result: i32 = -1
+    unsafe { result = kill(pid as i32, sig) }
+    return result == 0
+}
+
+fn killGroup(pid: i64, sig: i32): bool {
+    return send(0 - pid, sig)
+}
+
+fn uid(): u32 { let v: u32 = 0; unsafe { v = getuid() }; return v }
+fn euid(): u32 { let v: u32 = 0; unsafe { v = geteuid() }; return v }
+fn gid(): u32 { let v: u32 = 0; unsafe { v = getgid() }; return v }
+fn egid(): u32 { let v: u32 = 0; unsafe { v = getegid() }; return v }
+fn ppid(): i32 { let v: i32 = 0; unsafe { v = getppid() }; return v }
+
+fn setEnv(name: str, value: str): bool {
+    let result: i32 = -1
+    unsafe { result = setenv(name, value, 1) }
+    return result == 0
+}
+
+fn shell(command: str): i32 {
+    let result: i32 = -1
+    unsafe { result = system(command) }
+    return result
+}
+
+fn envValue(name: str): str {
+    let pointer: *u8 = null
+    unsafe { pointer = getenv(name) }
+    let present = false
+    unsafe { present = pointer as bool }
+    if !present { return "" }
+    let out = ""
+    let i = 0
+    let byte = 0
+    while true {
+        let raw: u8 = 0
+        unsafe { raw = pointer[i] }
+        byte = raw as i64
+        if byte == 0 { break }
+        out = out + charFromByte(raw)
+        i = i + 1
+    }
+    return out
+}
+
+fn charFromByte(value: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    if value >= 0x20 && value < 0x7f { return strings.charAt(chars, (value - 0x20) as i64) }
+    return ""
+}

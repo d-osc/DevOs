@@ -1,0 +1,192 @@
+# Fixed paths and descriptor-based IO for root-owned services. Linux statx has
+# the same documented layout on aarch64 and x86_64; no host struct stat ABI.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "std/child_process"
+use "std/process"
+use "../lib/desktop.dev" as util
+extern fn open(file: str, flags: i32, mode: u32): i32
+extern fn close(fd: i32): i32
+extern fn read(fd: i32, data: *u8, size: usize): isize
+extern fn write(fd: i32, data: *u8, size: usize): isize
+extern fn statx(fd: i32, file: str, flags: i32, mask: u32, data: *u8): i32
+extern fn malloc(size: usize): *u8
+extern fn free(data: *void)
+extern fn mkstemp(template: *u8): i32
+extern fn fsync(fd: i32): i32
+extern fn fchmod(fd: i32, mode: u32): i32
+extern fn chmod(file: str, mode: u32): i32
+extern fn mkdir(file: str, mode: u32): i32
+extern fn rename(from: str, to: str): i32
+extern fn flock(fd: i32, operation: i32): i32
+extern fn geteuid(): u32
+extern fn strdup(text: str): *u8
+extern fn posix_spawn_file_actions_init(actions: *void): i32
+extern fn posix_spawn_file_actions_adddup2(actions: *void, fd: i32, target: i32): i32
+extern fn posix_spawn_file_actions_destroy(actions: *void): i32
+extern fn posix_spawn(pid: *i32, executable: str, actions: *void, attributes: *void, argv: **u8, envp: **u8): i32
+extern fn waitpid(pid: i32, status: *i32, flags: i32): i32
+extern fn __errno_location(): *i32
+fn root(): bool { unsafe { return geteuid() == 0 } }
+fn nul(): str { return encoding.decode(Vec<u8>(0), "utf8") }
+fn nofollow(): i32 {
+    let arch = process.arch()
+    if strings.equal(arch, "arm64") || strings.equal(arch, "aarch64") { return 0x8000 }
+    require(strings.equal(arch, "x64") || strings.equal(arch, "x86_64"), "Unsupported privileged service architecture.")
+    return 0x20000
+}
+fn require(ok: bool, message: str) { util.require(ok, message) }
+fn checkDescriptorType(fd: i32, expectedType: u32) {
+    unsafe {
+        let info = malloc(256)
+        require(info as bool, "Out of memory.")
+        let code = statx(fd, "", 0x1000, 0x7ff, info)
+        let uid = ((info + 20) as *u32)[0]
+        let mode = ((info + 28) as *u16)[0] as u32
+        free(info as *void)
+        require(code == 0 && uid == 0 && (mode & 61440) == expectedType && (mode & 18) == 0, "Unsafe configuration ownership, type or write permissions.")
+    }
+}
+fn checkDescriptor(fd: i32) { checkDescriptorType(fd, 32768) }
+fn stateDirectory() {
+    unsafe {
+        let created = mkdir("/var/lib/devos", 493)
+        require(created == 0 || __errno_location()[0] == 17, "Cannot create account registry directory.")
+        let directoryFlag: i32 = nofollow() == 0x8000 ? 0x4000 : 0x10000
+        let fd = open("/var/lib/devos", directoryFlag | nofollow() | 0x80000, 0)
+        require(fd >= 0, "Cannot open account registry directory.")
+        let outcome = result.run(fn() { checkDescriptorType(fd, 16384) })
+        close(fd)
+        result.unwrap(outcome)
+    }
+}
+fn descriptorText(fd: i32, limit: i64): str {
+    let bytes = Vec<u8>()
+    unsafe {
+        let buffer = malloc(4096)
+        require(buffer as bool, "Out of memory.")
+        while true {
+            let count = read(fd, buffer, 4096)
+            if count < 0 { free(buffer as *void); require(false, "Could not read service input.") }
+            if count == 0 { break }
+            if bytes.len() as i64 + count as i64 > limit { free(buffer as *void); require(false, "Service input is too large.") }
+            for i in 0..(count as i64) { bytes.push(buffer[i]) }
+        }
+        free(buffer as *void)
+    }
+    return encoding.decode(bytes, "utf8")
+}
+fn trusted(file: str): str {
+    let fd: i32 = -1
+    unsafe { fd = open(file, 0x80000 | nofollow() | 0x800, 0) }
+    require(fd >= 0, "Cannot open trusted configuration.")
+    let value = result.attempt(fn(): str { checkDescriptor(fd); return descriptorText(fd, 8388608) })
+    unsafe { close(fd) }
+    return result.unwrap(value)
+}
+struct Temporary { file: str, fd: i32 }
+fn temporary(template: str): Temporary {
+    unsafe {
+        let bytes = encoding.encode(template, "utf8")
+        let buffer = malloc(bytes.len() + 1)
+        require(buffer as bool, "Out of memory.")
+        for i in 0..(bytes.len() as i64) { buffer[i] = bytes[i] }
+        buffer[bytes.len() as i64] = 0
+        let fd = mkstemp(buffer)
+        let name = Vec<u8>()
+        for i in 0..(bytes.len() as i64) { name.push(buffer[i]) }
+        free(buffer as *void)
+        require(fd >= 0, "Cannot create private service file.")
+        return Temporary(encoding.decode(name, "utf8"), fd)
+    }
+}
+fn save(file: str, text: str) {
+    let item = temporary(file + ".XXXXXX")
+    let outcome = result.run(fn() {
+        let bytes = encoding.encode(text, "utf8")
+        unsafe {
+            let buffer = malloc(bytes.len() + 1)
+            require(buffer as bool, "Out of memory.")
+            for i in 0..(bytes.len() as i64) { buffer[i] = bytes[i] }
+            let count = 0
+            while count < bytes.len() as i64 {
+                let wrote = write(item.fd, buffer + count, bytes.len() - count as usize)
+                if wrote <= 0 { free(buffer as *void); require(false, "Cannot save service state.") }
+                count = count + wrote as i64
+            }
+            free(buffer as *void)
+            require(fchmod(item.fd, 420) == 0 && fsync(item.fd) == 0, "Cannot sync service state.")
+            require(rename(item.file, file) == 0, "Cannot replace service state.")
+        }
+    })
+    unsafe { close(item.fd) }
+    if fs.existsSync(item.file) { fs.unlinkSync(item.file) }
+    result.unwrap(outcome)
+}
+fn lock(file: str): i32 {
+    unsafe {
+        let fd = open(file, 2 | 64 | nofollow() | 0x80000 | 0x800, 384)
+        require(fd >= 0, "Cannot open account registry lock.")
+        let outcome = result.run(fn() { checkDescriptor(fd); unsafe { require(flock(fd, 2) == 0, "Cannot lock account registry.") } })
+        if result.isErr(outcome) { close(fd); result.raise(result.message(outcome)) }
+        return fd
+    }
+}
+fn unlock(fd: i32) { unsafe { close(fd) } }
+fn mode(file: str, value: u32) { unsafe { require(chmod(file, value) == 0, "Cannot secure account home.") } }
+fn run(argv: Vec<str>, input: str): child_process.Output {
+    let command = Vec<str>("-i", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8")
+    for argument in argv { command.push(argument) }
+    return child_process.execFileSync("/usr/bin/env", command, child_process.Options("/", 30000, 8388608, encoding.encode(input, "utf8")))
+}
+# Package operations retain the original one-hour deadline. posix_spawn avoids
+# the DevLang child runtime's five-minute ceiling and never invokes a shell.
+fn packageRun(argv: Vec<str>): str {
+    let item = temporary("/tmp/devos-opkg.XXXXXX")
+    let outcome = result.attempt(fn(): str {
+        let command = Vec<str>("/usr/bin/timeout", "--kill-after=10s", "3600s")
+        for argument in argv { command.push(argument) }
+        unsafe {
+            let arguments = malloc((command.len() + 1) * sizeof(null as *u8)) as **u8
+            let environment = malloc(4 * sizeof(null as *u8)) as **u8
+            let actions = malloc(1024) as *void
+            let storage = malloc(8) as *i32
+            require(arguments as bool && environment as bool && actions as bool && storage as bool, "Out of memory.")
+            for i in 0..(command.len() as i64) { arguments[i] = strdup(command[i]) }
+            arguments[command.len() as i64] = null
+            environment[0] = strdup("PATH=/usr/sbin:/usr/bin:/sbin:/bin")
+            environment[1] = strdup(root() ? "HOME=/root" : "HOME=/")
+            environment[2] = strdup("LC_ALL=C"); environment[3] = null
+            let code = posix_spawn_file_actions_init(actions)
+            if code == 0 {
+                code = posix_spawn_file_actions_adddup2(actions, item.fd, 1)
+                if code == 0 { code = posix_spawn_file_actions_adddup2(actions, item.fd, 2) }
+                if code == 0 { code = posix_spawn(storage, "/usr/bin/timeout", actions, null, arguments, environment) }
+                posix_spawn_file_actions_destroy(actions)
+            }
+            for i in 0..(command.len() as i64) { free(arguments[i] as *void) }
+            for i in 0..3 { free(environment[i] as *void) }
+            free(arguments as *void); free(environment as *void); free(actions)
+            let waited: i32 = -1
+            let status: i32 = -1
+            if code == 0 {
+                while true { waited = waitpid(storage[0], storage + 1, 0); if waited >= 0 || __errno_location()[0] != 4 { break } }
+                status = storage[1]
+            }
+            free(storage as *void)
+            require(code == 0 && waited > 0, "Cannot run native package operation.")
+            let output = fs.readFileSync(item.file, "utf8")
+            if status != 0 {
+                if strings.charLength(output) > 5000 { output = strings.substring(output, strings.charLength(output) - 5000, strings.charLength(output)) }
+                require(false, strings.equal(output, "") ? "Native package operation failed." : output)
+            }
+            return output
+        }
+    })
+    unsafe { close(item.fd) }
+    fs.unlinkSync(item.file)
+    return result.unwrap(outcome)
+}

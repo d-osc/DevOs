@@ -1,0 +1,90 @@
+# Guest-only checks injected into a disposable QEMU initrd, never the shipped image.
+use "std/fs"
+use "std/json"
+use "std/module"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "std/encoding"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/pam.dev" as pam
+use "../../lib/desktop.dev" as util
+extern fn crypt(text: str, salt: str): str
+fn report(text: str) {
+    let out = ""
+    for line in strings.split(text, "\n") { out = out + "<6>" + line + "\n" }
+    fs.writeFileSync("/dev/kmsg", out)
+}
+fn password(file: str): str {
+    for line in strings.split(tool.read(file), "\n") { if strings.startsWith(line, "root:") { return strings.split(line, ":")[1] } }
+    tool.require(false, "Root shadow entry is missing.")
+    return ""
+}
+fn checks(): i32 {
+    report("DEVOS_LIVE_ROOT_CHECK_STARTED")
+    let session: str = "/usr/share/dev-os"
+    tool.waitFor(fn(): bool {
+        let shells = smoke.processIds("/run/user/0", session + "/dist/main.js")
+        return shells.len() == 1 && strings.contains(util.read("/run/devos-live/root-session.log"), "Dev OS shell ready")
+    }, 60000, "Live root shell/compositor did not start.")
+    let shells = smoke.processIds("/run/user/0", session + "/dist/main.js")
+    let pid = json.stringify(shells[0])
+    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%u", "/proc/" + pid))), "0"), "Live desktop must run as UID 0.")
+    let environment = Map<str,str>()
+    for variable in smoke.fields("/proc/" + pid + "/environ") {
+        let parts = strings.split(variable, "=")
+        if parts.len() > 1 { environment.set(parts[0], strings.substring(variable, strings.charLength(parts[0]) + 1, strings.charLength(variable))) }
+    }
+    tool.require(environment.contains("DEV_OS_LIVE_ROOT") && strings.equal(environment.get("DEV_OS_LIVE_ROOT"), "1"), "Live root environment marker missing.")
+    let lower = tool.read("/run/live/lower/etc/greetd/config.toml")
+    let locked = password("/run/live/lower/etc/shadow")
+    tool.require(!strings.contains(lower, "[initial_session]") && (strings.startsWith(locked, "!") || strings.startsWith(locked, "*")), "The base image's locked root configuration changed.")
+    let actual = password("/etc/shadow")
+    tool.require(strings.startsWith(actual, "$6$"), "Live root password must use SHA512 crypt.")
+    unsafe { tool.require(strings.equal(crypt("root", actual), actual) && !strings.equal(crypt("incorrect", actual), actual), "Live password hash failed validation.") }
+    tool.require(pam.authenticate("greetd", "root", "root") && !pam.authenticate("greetd", "root", "incorrect"), "Live root PAM acceptance/denial failed.")
+    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("/usr/bin/d", "--version"))), "d 0.5.5"), "Installed DevLang runtime version mismatch.")
+    for helper in Vec<str>("devos-account-admin", "devos-app-store-admin") {
+        let response = tool.run(Vec<str>("/usr/libexec/" + helper), Map<str,str>(), "{invalid", 10000)
+        let text = util.output(response)
+        tool.require(!response.success && json.valid(text) && strings.contains(util.text(util.get(json.parse(text), "error")), "Invalid JSON"), "Installed native DevLang service boundary failed: " + helper)
+    }
+    report("DEVOS_LIVE_DEVLANG_PASS: d 0.5.5 and installed native account/Store service protocols")
+    let audio = Map<str,str>(); audio.set("HOME", "/root"); audio.set("XDG_RUNTIME_DIR", "/run/user/0"); audio.set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/0/bus")
+    tool.checked(Vec<str>("systemctl", "--user", "is-active", "pipewire.socket", "pipewire-pulse.socket", "wireplumber.service"), audio, "", 10000)
+    let response = json.parse(util.output(tool.run(Vec<str>("d", "/usr/bin/dev-os-network-linux"), Map<str,str>(), "{\"action\":\"scan\"}\n", 25000)))
+    tool.require(!util.boolean(util.get(response, "ok")) && strings.contains(util.text(util.get(response, "error")), "No Linux Wi-Fi adapter detected"), "Installed Wi-Fi bridge did not report the missing QEMU adapter.")
+    let tests = audio; tests.set("DEV_OS_ROOT", session)
+    tool.checked(Vec<str>("gjs", "-m", session + "/dist/wifi-test.js"), tests, "", 25000)
+    tool.checked(Vec<str>("gjs", "-m", session + "/dist/wifi-native-test.js"), environment, "", 30000)
+    report("DEVOS_LIVE_INSTALLED_WIFI_PASS: installed helper and native UI")
+    let tools = tool.checked(Vec<str>("/bin/bash", "--login", "-ic", "cd; printf '%s\\n' \"$" + "{PS1@P}\"; git --version; devospm --version; dev --version"), audio, "", 20000)
+    tool.require(strings.contains(tools, "root@devos:~#") && strings.contains(tools, "git version") && tool.count(tools, "dev 0.5.0") == 2, "Default terminal prompt/tools failed.")
+    report("DEVOS_LIVE_DEFAULT_TOOLS_PASS: root prompt, Git, devospm and dev alias")
+    tool.exec(Vec<str>("systemctl", "is-active", "devos-zram.service", "devos-memory.service"))
+    tool.require(strings.contains(tool.read("/proc/swaps"), "/dev/zram"), "Compressed swap is not active.")
+    let group = "/sys/fs/cgroup/" + strings.trim(tool.after(tool.read("/proc/" + pid + "/cgroup"), "::"))
+    tool.require(strings.contains(group, "devos-system-") && strings.equal(strings.trim(tool.read(group + "/memory.swap.max")), "0"), "System shell is not protected from swap.")
+    report("DEVOS_LIVE_MEMORY_PASS: zram, memory policy and shell swap protection")
+    if strings.contains(tool.read("/proc/cmdline"), "devos.live.esp_uuid=") { tool.require(fs.is_dir("/run/live/esp/DEVOS-LOGS"), "Live USB diagnostics ESP did not mount.") }
+    report("DEVOS_LIVE_ROOT_DESKTOP_PASS=uid0; locked base preserved; Live password/PAM verified")
+    return 0
+}
+fn main(): i32 {
+    if tool.has("--help") { print("Guest-only Live root desktop verification; run through live-usb-boot.dev."); return 0 }
+    if !tool.has("--native") {
+        let legacy = result.attempt(fn(): str { return tool.library("libcrypt.so.1") })
+        let cryptLibrary = result.isOk(legacy) ? result.unwrap(legacy) : tool.library("libcrypt.so.2")
+        let value = tool.run(Vec<str>("d", module.entry(), "--ffi-lib", tool.library("libpam.so.0"), "--ffi-lib", cryptLibrary, "--", "--native"), Map<str,str>(), "", 120000)
+        if !value.success {
+            report(encoding.decode(value.stdout, "utf8") + encoding.decode(value.stderr, "utf8"))
+            report("DEVOS_LIVE_ROOT_DESKTOP_FAIL: native check worker failed")
+        }
+        return value.success ? 0 : 1
+    }
+    let outcome = result.attempt(checks)
+    if result.isErr(outcome) { report(result.message(outcome)); report("DEVOS_LIVE_ROOT_DESKTOP_FAIL: test exception"); return 1 }
+    return result.unwrap(outcome)
+}
+return tool.main(main)

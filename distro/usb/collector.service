@@ -1,0 +1,10 @@
+[Unit]
+Description=DevOs Live boot and GUI diagnostics
+After=systemd-journald.service
+ConditionPathIsMountPoint=/run/live/esp
+[Service]
+Type=simple
+ExecStart=/usr/libexec/devos-live-diagnostics
+TimeoutStopSec=10
+[Install]
+WantedBy=multi-user.target

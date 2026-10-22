@@ -1,0 +1,84 @@
+#!/usr/bin/env d
+# Never mutate account files until a private mount namespace has been verified.
+use "std/fs"
+use "std/args"
+use "std/json"
+use "std/module"
+use "std/path"
+use "std/strings"
+use "std/process"
+use "std/regex"
+use "../../lib/accounts.dev" as accounts
+use "../../lib/posix.dev" as posix
+use "../../lib/desktop.dev" as util
+use "../lib/tool.dev" as tool
+use "../lib/pam.dev" as pam
+fn administer(request: json.Value): json.Value {
+    return json.parse(tool.checked(Vec<str>("/usr/libexec/devos-account-admin"), Map<str,str>(), json.stringify(request), 30000))
+}
+fn inside(base: str, parentNamespace: str): i32 {
+    tool.require(!strings.equal(strings.trim(tool.exec(Vec<str>("readlink", "/proc/self/ns/mnt"))), parentNamespace), "Refusing account tests outside an isolated mount namespace.")
+    for name in Vec<str>("etc", "home", "state", "share", "libexec") {
+        let target = strings.equal(name, "state") ? "/var/lib/devos" : (strings.equal(name, "share") ? "/usr/share/dev-os" : (strings.equal(name, "libexec") ? "/usr/libexec" : "/" + name))
+        tool.exec(Vec<str>("mount", "--bind", base + "/" + name, target))
+    }
+    let name = "devos-test-person"
+    administer({action: "create-user", username: name, name: "Private Test", password: "2468"})
+    let account = accounts.human(name)
+    tool.require(util.number(util.get(account, "uid")) >= 1000 && strings.equal(util.text(util.get(account, "home")), "/home/" + name), "Invalid Linux account identity.")
+    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%a", "/home/" + name))), "700"), "User home must be private.")
+    tool.copy(tool.root() + "/distro/oe/meta-devos/recipes-devos/session/files/devos-greetd.pam", "/etc/pam.d/devos-account-test")
+    tool.require(pam.authenticate("devos-account-test", name, "2468"), "PAM must accept the four-character OS password.")
+    tool.require(!pam.authenticate("devos-account-test", name, "incorrect-password"), "PAM accepted incorrect credentials.")
+    tool.require(!pam.authenticate("devos-account-test", name, "DEVOS_GUEST"), "Guest credential authorized a personal user.")
+    let guest = false
+    let all = accounts.users()
+    for i in 0..(json.len(all) as i64) { if strings.equal(util.text(util.get(json.at(all, i), "username")), "devos") { guest = true } }
+    if !guest { tool.exec(Vec<str>("/usr/sbin/useradd", "--create-home", "--home-dir", "/home/devos", "--shell", "/bin/sh", "devos")) }
+    tool.require(pam.authenticate("devos-account-test", "devos", "DEVOS_GUEST"), "Dedicated Guest authentication failed.")
+    let result = administer({action: "create-user", provider: "github", username: "root", token: "private-test-token", password: "github-local-password"})
+    tool.require(strings.equal(util.text(util.get(result, "username")), "devos-test-github"), "Privileged creator trusted an unverified UI username.")
+    let binding = util.get(util.get(accounts.registry(), "bindings"), "devos-test-github")
+    tool.require(util.number(util.get(binding, "id")) == 987654 && util.number(util.get(binding, "uid")) == util.number(util.get(accounts.human("devos-test-github"), "uid")), "GitHub/UID binding mismatch.")
+    tool.require(!strings.contains(tool.read("/var/lib/devos/accounts.json"), "private-test-token"), "Token was written to registry.")
+    tool.require(pam.authenticate("devos-account-test", "devos-test-github", "github-local-password"), "GitHub user lost offline local login.")
+    tool.require(pam.authenticate("devos-account-test", "devos-test-github", "DEVOS_GITHUB:private-test-token"), "Freshly verified GitHub credential failed PAM.")
+    tool.require(!pam.authenticate("devos-account-test", "devos-test-github", "DEVOS_GITHUB:wrong-token"), "PAM accepted an unverified GitHub credential.")
+    let registry = accounts.registry()
+    let stale = json.set(binding, "uid", 65533)
+    tool.require(util.atomic("/var/lib/devos/accounts.json", json.set(registry, "bindings", json.set(util.get(registry, "bindings"), "devos-test-github", stale))), "Cannot stage stale-UID fixture.")
+    tool.require(!pam.authenticate("devos-account-test", "devos-test-github", "DEVOS_GITHUB:private-test-token"), "Stale UID binding authorized a reused username.")
+    print("PASS: private useradd/chpasswd, 0700 home, PAM local/Guest/GitHub, incorrect credential and stale UID denial")
+    return 0
+}
+fn main(): i32 {
+    if tool.has("--help") { print("Run as root: isolated account/PAM integration in a private mount namespace."); return 0 }
+    tool.require(posix.euid() == 0, "Run as root; mutations are confined to a private mount namespace.")
+    if args.len() == 3 && strings.equal(args.get(0), "--inside") { return inside(args.get(1), args.get(2)) }
+    tool.require(fs.is_dir("/usr/share/dev-os") && fs.is_dir("/usr/libexec") && fs.is_dir("/var/lib/devos"), "Create the service mount points before running integration.")
+    tool.scope("devos-account-test-", fn(base: str) {
+        tool.copy("/etc", base + "/etc"); fs.mkdirSync(base + "/home", true); fs.mkdirSync(base + "/state", true)
+        tool.copy("/usr/libexec", base + "/libexec")
+        fs.mkdirSync(base + "/share", true)
+        tool.copy(tool.root() + "/native", base + "/share/native")
+        tool.copy(tool.root() + "/lib", base + "/share/lib")
+        for helper in Vec<str>("devos-account-admin", "devos-account-setup", "devos-pam-auth", "devos-app-store-admin", "devos-account-askpass") {
+            let sourceName = strings.equal(helper, "devos-account-setup") ? "devos-account-admin" : helper
+            let source = strings.replaceAll(tool.read(tool.root() + "/native/" + sourceName), "/usr/bin/d", process.execPath())
+            tool.write(base + "/libexec/" + helper, source)
+            tool.chmod(base + "/libexec/" + helper, "755")
+        }
+        # Stub only the native service's external verifier in this private copy.
+        let file = base + "/share/native/devos_accounts_system.dev"
+        let pattern = regex.compile("fn githubUser\\(token: json.Value\\): json.Value \\{[\\s\\S]*?\\n\\}\\nfn firstSetup", "")
+        let original = tool.read(file)
+        tool.require(pattern.test(original), "Native verifier fixture anchor missing.")
+        let stub = "fn githubUser(token: json.Value): json.Value {\n    secure.require(strings.equal(util.text(token), \"private-test-token\"), \"Invalid fixture token.\")\n    return {id: 987654, login: \"devos-test-github\"}\n}\nfn firstSetup"
+        tool.write(file, pattern.replace(original, stub)); pattern.close()
+        let library = tool.library("libpam.so.0")
+        let namespace = strings.trim(tool.exec(Vec<str>("readlink", "/proc/self/ns/mnt")))
+        print(tool.checked(Vec<str>("unshare", "--mount", "--propagation", "private", "--fork", "d", module.entry(), "--ffi-lib", library, "--", "--inside", base, namespace), Map<str,str>(), "", 180000))
+    })
+    return 0
+}
+return tool.main(main)

@@ -1,0 +1,62 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/args"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d background-menu-smoke.dev -- [background|panel] [top|bottom]"); return 0 }
+    let surface: str = args.len() > 0 ? args.get(0) : "background"
+    let edge: str = args.len() > 1 ? args.get(1) : "top"
+    tool.require(strings.equal(surface, "background") || strings.equal(surface, "panel"), "Select background or panel.")
+    tool.require(strings.equal(edge, "top") || strings.equal(edge, "bottom"), "Select top or bottom panel edge.")
+    let build = tool.root() + "/build/" + surface + "-menu-native"
+    let program: str = smoke.compilePointer(build)
+    tool.scope("devos-menu-", fn(base: str) {
+        let root = tool.root()
+        fs.mkdirSync(base + "/runtime", true); tool.chmod(base + "/runtime", "700")
+        tool.write(base + "/config/rc.xml", "<labwc_config><mouse><default /></mouse><desktops><names><name>One</name><name>Two</name></names></desktops></labwc_config>")
+        let env: Map<str,str> = smoke.env(base, root)
+        env.set("WLR_BACKENDS", "headless"); env.set("WLR_RENDERER", "pixman"); env.set("GDK_BACKEND", "wayland")
+        env.set("LABWC_UPDATE_ACTIVATION_ENV", "0"); env.set("DEV_OS_PANEL_EDGE", edge)
+        env.set("DEV_OS_" + strings.toUpperCase(surface) + "_MENU_TEST", base)
+        env.set("DISPLAY", "__DEVOS_UNSET__"); env.set("WAYLAND_DISPLAY", "__DEVOS_UNSET__")
+        let compositor = root + "/build/wsl/bin/labwc"
+        if !fs.is_file(compositor) { compositor = "labwc" }
+        let child: child_process.Child = smoke.launch(Vec<str>("dbus-run-session", "--", compositor, "-C", base + "/config", "-s", "gjs -m " + util.quote(root + "/dist/" + surface + "-menu-native-test.js")), env, build + "/session.log")
+        let session: smoke.Session = smoke.Session(root, base, base + "/runtime", build + "/session.log", env, child)
+        let outcome = result.run(fn() {
+            smoke.marker(session, strings.equal(surface, "background") ? "drag-ready" : "ready")
+            for name in fs.readdirSync(session.runtime) { if strings.startsWith(name, "wayland-") && !strings.endsWith(name, ".lock") { env.set("WAYLAND_DISPLAY", name) } }
+            let pointer: smoke.Input = smoke.input(program, base, env)
+            let commands = result.run(fn() {
+                let p = pointer
+                if strings.equal(surface, "background") {
+                    p = smoke.send(p, "move -10000 -10000"); p = smoke.send(p, "move " + util.read(base + "/drag-ready")); p = smoke.send(p, "down left")
+                    for i in 0..10 { p = smoke.send(p, "move 20 10"); time.sleep_ms(25) }
+                    p = smoke.send(p, "up left"); tool.write(base + "/dragged", "dragged")
+                    smoke.marker(session, "remove-ready")
+                    p = smoke.send(p, "move -10000 -10000"); p = smoke.send(p, "move " + util.read(base + "/remove-ready")); p = smoke.send(p, "down left"); p = smoke.send(p, "up left")
+                    smoke.marker(session, "ready")
+                }
+                p = smoke.send(p, "move -10000 -10000")
+                p = smoke.send(p, strings.equal(surface, "panel") ? "move " + util.read(base + "/ready") : "move 150 150")
+                p = smoke.send(p, "down right"); p = smoke.send(p, "up right")
+                smoke.marker(session, "disabled-ready")
+                p = smoke.send(p, strings.equal(surface, "panel") ? "move 100 0" : "move 100 100")
+                p = smoke.send(p, "down right"); p = smoke.send(p, "up right")
+                tool.write(base + "/clicked-disabled", "clicked"); smoke.marker(session, "passed")
+            })
+            smoke.closeInput(pointer); result.unwrap(commands)
+        })
+        smoke.cleanup(session); result.unwrap(outcome)
+    })
+    print("PASS: isolated headless Wayland " + surface + " context menu smoke")
+    return 0
+}
+return tool.main(main)

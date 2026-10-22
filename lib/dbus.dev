@@ -1,0 +1,93 @@
+# Synchronous GIO D-Bus calls. Load with --ffi-lib libgio-2.0.so.0.
+# No credentials are placed in subprocess argv or environment.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../lib/desktop.dev" as util
+extern fn g_bus_get_sync(kind: i32, cancellable: *void, error: *void): *void
+extern fn g_dbus_connection_call_sync(connection: *void, service: str, path: str, interface: str, method: str, parameters: *void, replyType: *void, flags: i32, timeout: i32, cancellable: *void, error: *void): *void
+extern fn g_variant_parse(type: *void, text: str, limit: *void, end: *void, error: *void): *void
+extern fn g_variant_get_type_string(value: *void): str
+extern fn g_variant_n_children(value: *void): usize
+extern fn g_variant_get_child_value(value: *void, index: usize): *void
+extern fn g_variant_get_string(value: *void, length: *void): str
+extern fn g_variant_get_uint32(value: *void): u32
+extern fn g_variant_get_int32(value: *void): i32
+extern fn g_variant_get_int16(value: *void): i16
+extern fn g_variant_get_uint16(value: *void): u16
+extern fn g_variant_get_int64(value: *void): i64
+extern fn g_variant_get_uint64(value: *void): u64
+extern fn g_variant_get_double(value: *void): f64
+extern fn g_variant_get_byte(value: *void): u8
+extern fn g_variant_get_boolean(value: *void): i32
+extern fn g_variant_unref(value: *void)
+extern fn g_object_unref(value: *void)
+
+fn decode(value: *void): json.Value {
+    unsafe {
+        let type = g_variant_get_type_string(value)
+        if strings.equal(type, "s") || strings.equal(type, "o") || strings.equal(type, "g") { return json.value(g_variant_get_string(value, null)) }
+        if strings.equal(type, "u") { return json.value(g_variant_get_uint32(value) as i64) }
+        if strings.equal(type, "i") { return json.value(g_variant_get_int32(value) as i64) }
+        if strings.equal(type, "n") { return json.value(g_variant_get_int16(value) as i64) }
+        if strings.equal(type, "q") { return json.value(g_variant_get_uint16(value) as i64) }
+        if strings.equal(type, "x") { return json.value(g_variant_get_int64(value)) }
+        if strings.equal(type, "t") { return json.value(g_variant_get_uint64(value)) }
+        if strings.equal(type, "d") { return json.value(g_variant_get_double(value)) }
+        if strings.equal(type, "y") { return json.value(g_variant_get_byte(value) as i64) }
+        if strings.equal(type, "b") { return json.value(g_variant_get_boolean(value) != 0) }
+        if strings.equal(type, "v") {
+            let child = g_variant_get_child_value(value, 0)
+            let decoded = decode(child)
+            g_variant_unref(child)
+            return decoded
+        }
+        let count = g_variant_n_children(value) as i64
+        let found = json.array()
+        if strings.startsWith(type, "a{") {
+            let object = json.object()
+            for i in 0..count {
+                let entry = g_variant_get_child_value(value, i as usize)
+                let key = g_variant_get_child_value(entry, 0)
+                let item = g_variant_get_child_value(entry, 1)
+                object = json.set(object, g_variant_get_string(key, null), decode(item))
+                g_variant_unref(key)
+                g_variant_unref(item)
+                g_variant_unref(entry)
+            }
+            return object
+        }
+        for i in 0..count {
+            let item = g_variant_get_child_value(value, i as usize)
+            found = json.push(found, decode(item))
+            g_variant_unref(item)
+        }
+        return found
+    }
+}
+fn call(bus: *void, path: str, interface: str, method: str, parameters: str, timeout: i32): json.Value {
+    unsafe {
+        let args = g_variant_parse(null, parameters, null, null, null)
+        util.require(args as bool, "Invalid D-Bus method parameters.")
+        # call_sync consumes a floating parameters reference.
+        let reply = g_dbus_connection_call_sync(bus, "org.freedesktop.NetworkManager", path, interface, method, args, null, 0, timeout, null, null)
+        util.require(reply as bool, "NetworkManager request failed or authorization was denied.")
+        let decoded = result.attempt(fn(): json.Value { return decode(reply) })
+        g_variant_unref(reply)
+        return result.unwrap(decoded)
+    }
+}
+fn open(): *void {
+    unsafe {
+        let bus = g_bus_get_sync(1, null, null)
+        util.require(bus as bool, "Cannot connect to the system D-Bus.")
+        return bus
+    }
+}
+fn close(bus: *void) { unsafe { g_object_unref(bus) } }
+fn properties(bus: *void, path: str, interface: str): json.Value {
+    return json.at(call(bus, path, "org.freedesktop.DBus.Properties", "GetAll", "(" + json.stringify(interface) + ",)", 10000), 0)
+}
+fn property(bus: *void, path: str, interface: str, name: str): json.Value {
+    return json.at(call(bus, path, "org.freedesktop.DBus.Properties", "Get", "(" + json.stringify(interface) + ", " + json.stringify(name) + ")", 2000), 0)
+}

@@ -1,0 +1,39 @@
+#!/usr/bin/env d
+# Validate runtime tool parsing without running their actions, then XML and GJS checks.
+use "std/fs"
+use "std/strings"
+use "std/process"
+use "std/result"
+use "../lib/tool.dev" as tool
+fn main(): i32 {
+    if tool.has("--help") { print("Check DevLang tool syntax, compositor XML and GJS configuration tests."); return 0 }
+    let root = tool.root()
+    for file in tool.walk(root + "/tools") {
+        if !strings.endsWith(file, ".dev") || strings.contains(file, "/lib/") { continue }
+        if strings.endsWith(file, "/check.dev") { continue }
+        tool.exec(Vec<str>("d", file, "--", "--validate"))
+    }
+    let files = Vec<str>()
+    for name in fs.readdirSync(root + "/config/labwc") { if strings.endsWith(name, ".xml") { files.push(root + "/config/labwc/" + name) } }
+    if strings.equal(process.platform(), "win32") {
+        for file in files {
+            let quoted = "'" + strings.replaceAll(file, "'", "''") + "'"
+            tool.exec(Vec<str>("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; $null=[xml]([IO.File]::ReadAllText(" + quoted + "))"))
+        }
+    } else {
+        let library = ""
+        for soname in Vec<str>("libxml2.so.2", "libxml2.so.16", "libxml2.so") {
+            let candidate = result.attempt(fn(): str { return tool.library(soname) })
+            if result.isOk(candidate) { library = result.unwrap(candidate); break }
+        }
+        tool.require(!strings.equal(library, ""), "Install the system libxml2 library for compositor XML checks.")
+        let argv = Vec<str>("d", root + "/tools/test/check-xml.dev", "--ffi-lib", library, "--")
+        for file in files { argv.push(file) }
+        tool.exec(argv)
+    }
+    print("DevLang development tool syntax and compositor XML: OK")
+    if !strings.equal(process.platform(), "linux") { print("Run .\\dev.ps1 check for GJS tests inside WSL."); return 0 }
+    for name in Vec<str>("config-test", "extensions-test") { print(tool.exec(Vec<str>("gjs", "-m", root + "/dist/" + name + ".js"))) }
+    return 0
+}
+return tool.main(main)

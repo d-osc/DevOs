@@ -5,7 +5,9 @@ Install the pinned native locker: `sudo sh tools/setup/bootstrap-lock.sh`.
 Source installs and WSL bootstrap/run check this dependency with
 `tools/setup/bootstrap-lock.sh`, installing Ubuntu 24.04's `swaylock=1.7.2-1build2`
 with its PAM configuration and applying `apt-mark hold swaylock`.
-Installation fails explicitly if that exact package revision is unavailable.
+Installation fails explicitly on Ubuntu 24.04 if that exact revision is unavailable.
+On newer Ubuntu (including 26.04 ARM64), bootstrap uses the distribution's native
+`swaylock` package and PAM configuration without downgrading or holding it.
 
 The default `"lock": ["dev-os-lock"]` renders a Dev OS wallpaper using the configured
 name, accent and background, and the current Linux user's display name. The native
@@ -30,5 +32,6 @@ The wallpaper contains no desktop screenshots and is removed after unlock.
 Settings → Updates lists swaylock alongside Dev OS. Check for updates compares the
 installed executable's version with the latest stable release from
 [swaywm/swaylock releases](https://github.com/swaywm/swaylock/releases).
-The entry displays **PINNED 1.7.2**; newer upstream releases are informational.
-The system locker and its PAM configuration remain at the pinned package revision.
+The entry displays the installed version; newer upstream releases are informational.
+Use the distribution package manager to manage the locker and its PAM configuration.
+The Ubuntu 24.04 bootstrap retains its tested package pin.

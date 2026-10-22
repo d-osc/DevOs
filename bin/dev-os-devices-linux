@@ -1,0 +1,311 @@
+#!/usr/bin/env d
+# Bluetooth settings bridge using BlueZ D-Bus; no shell or driver installation.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/io"
+use "std/time"
+use "std/result"
+use "std/encoding"
+use "../lib/posix.dev" as posix
+
+fn decodeText(bytes: Vec<u8>): str {
+    return encoding.decode(bytes, "utf8")
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn readTrimmed(path: str): str {
+    if !fs.existsSync(path) { return "" }
+    return strings.trim(fs.readFileSync(path, "utf8"))
+}
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command + " 2>/dev/null"), child_process.options())
+    return decodeText(output.stdout)
+}
+
+fn isWsl(): bool {
+    if !fs.existsSync("/proc/sys/kernel/osrelease") { return false }
+    return strings.contains(strings.toLowerCase(fs.readFileSync("/proc/sys/kernel/osrelease", "utf8")), "microsoft")
+}
+
+fn vGet(value: json.Value): json.Value {
+    # busctl --json encodes variants as {"type":"..","data":..}
+    if strings.equal(json.kind(value), "object") && json.has(value, "data") {
+        return json.get(value, "data")
+    }
+    return value
+}
+
+fn vText(value: json.Value): str {
+    let inner = vGet(value)
+    if strings.equal(json.kind(inner), "string") { return json.string(inner) }
+    return ""
+}
+
+fn vBool(value: json.Value): bool {
+    let inner = vGet(value)
+    if strings.equal(json.kind(inner), "bool") { return json.bool(inner) }
+    return false
+}
+
+fn usbInventory(): json.Value {
+    let result = json.array()
+    let base = "/sys/bus/usb/devices"
+    if !fs.existsSync(base) { return result }
+    let names = fs.readdirSync(base)
+    for i in 0..(names.len() as i64) {
+        let dir = base + "/" + names[i]
+        let product = readTrimmed(dir + "/product")
+        if strings.equal(product, "") { continue }
+        let item = json.set(json.object(), "id", names[i])
+        item = json.set(item, "name", product)
+        item = json.set(item, "vendor", readTrimmed(dir + "/manufacturer"))
+        result = json.push(result, item)
+    }
+    return result
+}
+
+fn inputInventory(): json.Value {
+    let result = json.array()
+    let base = "/sys/class/input"
+    if !fs.existsSync(base) { return result }
+    let names = fs.readdirSync(base)
+    for i in 0..(names.len() as i64) {
+        if !strings.startsWith(names[i], "event") { continue }
+        let name = readTrimmed(base + "/" + names[i] + "/device/name")
+        if strings.equal(name, "") { continue }
+        let item = json.set(json.object(), "id", names[i])
+        item = json.set(item, "name", name)
+        item = json.set(item, "vendor", "")
+        result = json.push(result, item)
+    }
+    return result
+}
+
+fn objects(): json.Value {
+    let raw = strings.trim(capture("busctl call --json=short org.bluez / org.freedesktop.DBus.ObjectManager GetManagedObjects"))
+    if strings.equal(raw, "") { return json.null_value() }
+    let reply = json.parse(raw)
+    if json.has(reply, "data") {
+        let data = json.get(reply, "data")
+        if strings.equal(json.kind(data), "array") && json.len(data) == 1 { data = json.at(data, 0) }
+        if strings.equal(json.kind(data), "object") { return data }
+    }
+    return json.null_value()
+}
+
+fn adaptersOf(tree: json.Value): json.Value {
+    let result = json.array()
+    if strings.equal(json.kind(tree), "object") {
+        let paths = json.keys(tree)
+        for i in 0..(paths.len() as i64) {
+            let interfaces = json.get(tree, paths[i])
+            if !json.has(interfaces, "org.bluez.Adapter1") { continue }
+            let props = json.get(interfaces, "org.bluez.Adapter1")
+            let alias = vText(propGet(props, "Alias"))
+            if strings.equal(alias, "") { alias = vText(propGet(props, "Name")) }
+            if strings.equal(alias, "") { alias = paths[i] }
+            let item = json.set(json.object(), "id", paths[i])
+            item = json.set(item, "name", alias)
+            item = json.set(item, "powered", vBool(propGet(props, "Powered")))
+            result = json.push(result, item)
+        }
+    }
+    return result
+}
+
+fn propGet(props: json.Value, key: str): json.Value {
+    if json.has(props, key) { return json.get(props, key) }
+    return json.null_value()
+}
+
+fn devicesOf(tree: json.Value): json.Value {
+    let result = json.array()
+    if strings.equal(json.kind(tree), "object") {
+        let paths = json.keys(tree)
+        for i in 0..(paths.len() as i64) {
+            let interfaces = json.get(tree, paths[i])
+            if !json.has(interfaces, "org.bluez.Device1") { continue }
+            let props = json.get(interfaces, "org.bluez.Device1")
+            let name = vText(propGet(props, "Alias"))
+            if strings.equal(name, "") { name = vText(propGet(props, "Name")) }
+            let address = vText(propGet(props, "Address"))
+            if strings.equal(name, "") { name = strings.equal(address, "") ? paths[i] : address }
+            let item = json.set(json.object(), "id", paths[i])
+            item = json.set(item, "adapter", vText(propGet(props, "Adapter")))
+            item = json.set(item, "name", name)
+            item = json.set(item, "address", address)
+            let icon = vText(propGet(props, "Icon"))
+            item = json.set(item, "icon", strings.equal(icon, "") ? "bluetooth" : icon)
+            item = json.set(item, "paired", vBool(propGet(props, "Paired")))
+            item = json.set(item, "connected", vBool(propGet(props, "Connected")))
+            result = json.push(result, item)
+        }
+    }
+    return sortDevices(result)
+}
+
+fn sortDevices(devices: json.Value): json.Value {
+    let items = json.array()
+    for i in 0..(json.len(devices) as i64) { items = json.push(items, json.at(devices, i)) }
+    for i in 0..(json.len(items) as i64) {
+        let best = i
+        for j in (i + 1)..(json.len(items) as i64) {
+            if deviceLess(json.at(items, j), json.at(items, best)) { best = j }
+        }
+        if best != i {
+            let a = json.at(items, i)
+            let b = json.at(items, best)
+            items[i] = b
+            items[best] = a
+        }
+    }
+    return items
+}
+
+fn deviceLess(a: json.Value, b: json.Value): bool {
+    let aConnected = json.bool(propGet(a, "connected"))
+    let bConnected = json.bool(propGet(b, "connected"))
+    if aConnected != bConnected { return aConnected }
+    let aPaired = json.bool(propGet(a, "paired"))
+    let bPaired = json.bool(propGet(b, "paired"))
+    if aPaired != bPaired { return aPaired }
+    return strings.toLowerCase(json.string(propGet(a, "name"))) < strings.toLowerCase(json.string(propGet(b, "name")))
+}
+
+fn busCall(args: Vec<str>): bool {
+    let output = child_process.execFileSync("busctl", args, child_process.options())
+    return output.success
+}
+
+fn act(request: json.Value, tree: json.Value): json.Value {
+    let action = ""
+    if json.has(request, "action") { action = jsonText(json.get(request, "action")) }
+    let adapters = adaptersOf(tree)
+    let devices = devicesOf(tree)
+    if strings.equal(action, "scan") {
+        let adapter = ""
+        for i in 0..(json.len(adapters) as i64) {
+            if json.bool(propGet(json.at(adapters, i), "powered")) { adapter = json.string(propGet(json.at(adapters, i), "id")) }
+        }
+        if strings.equal(adapter, "") { return json.set(json.object(), "error", "Turn on a Bluetooth adapter before scanning.") }
+        if !busCall(Vec<str>("call", "org.bluez", adapter, "org.bluez.Adapter1", "StartDiscovery")) {
+            return json.set(json.object(), "error", "Bluetooth scan failed.")
+        }
+        time.sleep_ms(3000)
+        let outcome = result.attempt(fn(): json.Value { return objects() })
+        busCall(Vec<str>("call", "org.bluez", adapter, "org.bluez.Adapter1", "StopDiscovery"))
+        let refreshed = result.unwrap(outcome)
+        if json.is_null(refreshed) { return json.set(json.object(), "error", "Bluetooth scan failed.") }
+        return refreshed
+    }
+    if strings.equal(action, "power") {
+        let id = jsonText(propGet(request, "id"))
+        let adapter = ""
+        for i in 0..(json.len(adapters) as i64) {
+            if strings.equal(json.string(propGet(json.at(adapters, i), "id")), id) { adapter = id }
+        }
+        if strings.equal(adapter, "") || !json.has(request, "powered") || !strings.equal(json.kind(propGet(request, "powered")), "bool") {
+            return json.set(json.object(), "error", "Invalid Bluetooth adapter or power state.")
+        }
+        let powered = json.bool(json.get(request, "powered"))
+        if !busCall(Vec<str>("call", "org.bluez", adapter, "org.freedesktop.DBus.Properties", "Set", "ssv",
+            "org.bluez.Adapter1", "Powered", "b", powered ? "true" : "false")) {
+            return json.set(json.object(), "error", "Bluetooth power change failed.")
+        }
+        return objects()
+    }
+    if strings.equal(action, "connect") || strings.equal(action, "disconnect") || strings.equal(action, "forget") {
+        let id = jsonText(propGet(request, "id"))
+        let device = json.null_value()
+        for i in 0..(json.len(devices) as i64) {
+            if strings.equal(json.string(propGet(json.at(devices, i), "id")), id) { device = json.at(devices, i) }
+        }
+        if json.is_null(device) { return json.set(json.object(), "error", "Device is no longer available. Refresh the list.") }
+        if strings.equal(action, "connect") && !json.bool(propGet(device, "paired")) {
+            return json.set(json.object(), "error", "Pair this device in Bluetooth settings first.")
+        }
+        if strings.equal(action, "forget") {
+            if !busCall(Vec<str>("call", "org.bluez", json.string(propGet(device, "adapter")), "org.bluez.Adapter1", "RemoveDevice", "o", json.string(propGet(device, "id")))) {
+                return json.set(json.object(), "error", "Bluetooth forget failed.")
+            }
+        } else {
+            let method = strings.equal(action, "connect") ? "Connect" : "Disconnect"
+            if !busCall(Vec<str>("call", "org.bluez", json.string(propGet(device, "id")), "org.bluez.Device1", method)) {
+                return json.set(json.object(), "error", "Bluetooth " + action + " failed.")
+            }
+        }
+        return objects()
+    }
+    return json.set(json.object(), "error", "Unknown device action.")
+}
+
+fn jsonText(value: json.Value): str {
+    if strings.equal(json.kind(value), "string") { return json.string(value) }
+    return ""
+}
+
+fn panelTargets(page: str): str {
+    if strings.equal(page, "bluetooth") { return "bluetooth|ms-settings:bluetooth" }
+    if strings.equal(page, "mouse") { return "mouse|ms-settings:mousetouchpad" }
+    if strings.equal(page, "keyboard") { return "keyboard|ms-settings:typing" }
+    if strings.equal(page, "printers") { return "printers|ms-settings:printers" }
+    return ""
+}
+
+fn main(): i32 {
+    let raw = io.read_line()
+    if strings.equal(strings.trim(raw), "") { return fail("Invalid devices request.") }
+    let request = json.parse(raw)
+    let action = ""
+    if json.has(request, "action") { action = jsonText(json.get(request, "action")) }
+    if strings.equal(action, "settings") {
+        let page = jsonText(propGet(request, "page"))
+        let panel = panelTargets(page)
+        if strings.equal(panel, "") { return fail("Unknown devices settings page.") }
+        let dash = strings.indexOf(panel, "|")
+        let native = strings.substring(panel, 0, dash)
+        let windows = strings.substring(panel, dash + 1, strings.charLength(panel))
+        if isWsl() {
+            posix.shell("/mnt/c/Windows/explorer.exe " + windows + " >/dev/null 2>&1 &")
+        } else {
+            if strings.equal(strings.trim(capture("command -v gnome-control-center")), "") {
+                return fail("Native device settings are unavailable. Install gnome-control-center.")
+            }
+            posix.shell("gnome-control-center " + native + " >/dev/null 2>&1 &")
+        }
+        print(json.stringify(json.set(json.object(), "ok", true)))
+        return 0
+    }
+    let tree = objects()
+    if strings.equal(action, "get") {
+        let state = json.set(json.object(), "usb", usbInventory())
+        state = json.set(state, "inputs", inputInventory())
+        state = json.set(state, "adapters", adaptersOf(tree))
+        state = json.set(state, "devices", devicesOf(tree))
+        state = json.set(state, "bluetoothError", json.is_null(tree) ? "Bluetooth service unavailable." : "")
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", state)))
+        return 0
+    }
+    if json.is_null(tree) { return fail("Bluetooth service unavailable.") }
+    let result = act(request, tree)
+    if json.has(result, "error") { return fail(json.string(json.get(result, "error"))) }
+    let state = json.set(json.object(), "usb", usbInventory())
+    state = json.set(state, "inputs", inputInventory())
+    state = json.set(state, "adapters", adaptersOf(result))
+    state = json.set(state, "devices", devicesOf(result))
+    print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", state)))
+    return 0
+}
+
+fn fail(message: str): i32 {
+    print(json.stringify(json.set(json.set(json.object(), "ok", false), "error", message)))
+    return 1
+}
+return main()

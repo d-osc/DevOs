@@ -80,5 +80,40 @@ WSL ใช้ labwc ส่วนตัวที่ build ด้วย `tools/set
 `xdg_toplevel.show_window_menu` ผ่าน `tools/setup/patches/labwc-window-menu.patch`
 แพตช์ตรวจ input serial และ seat ก่อนเปิด `client-menu` ของหน้าต่างที่ส่งคำขอ
 ทดสอบเมาส์ได้ด้วย `tools/setup/bootstrap-pointer-test.sh` แล้วรัน
-`tools/test/smoke.py --keyboard --pointer` โดยเพิ่ม `build/wsl/bin` ใน PATH
+`tools/test/smoke.dev --keyboard --pointer` โดยเพิ่ม `build/wsl/bin` ใน PATH
 เครื่องมือเมาส์อยู่ใน build ของโปรเจกต์และไม่ติดตั้งทับเครื่องมือระบบ
+# Right-click menu settings
+
+Settings → Files includes a context menu preview, a master switch and individual
+switches for Open, Rename, Copy path, New folder, Open in Terminal, Refresh and
+Show hidden files. Apply updates open Files windows; Reset discards unapplied
+choices. Existing browsing defaults remain available on the same page.
+
+Right-click a row or icon to target that item. Right-click empty space to use
+the current folder; Open and Rename are then disabled. Open in Terminal uses
+the clicked folder, or the current directory for a file/background. File actions
+are disabled while loading or performing an operation. Both list and grid views
+use the same preferences. These switches affect the context menu; toolbar and
+keyboard actions remain available. All actions are visible by default.
+
+Default actions are fixed: they have on/off switches and no edit/remove controls.
+Custom actions can be added, edited, toggled and removed under Custom actions.
+Enter a menu name, executable command and scope (any, files, folders or empty
+space), click Add item/Save item, then Apply. Up to 50 custom actions are stored
+in the `contextCustomItems` preference, separately from the default actions.
+Reset restores the last applied list. Custom actions appear after default items.
+
+Commands execute directly as argument arrays in the current folder. `{path}`
+is the clicked file/folder, or the current folder on empty space; `{directory}`
+is the current folder. For example `my-editor "{path}"`. Arguments are parsed
+before substituting paths, preserving spaces and special characters as literal
+argument content. Shell operators, variables and `~` are not expanded. Missing
+commands and unsuccessful exits are reported in the Files status bar. Invalid
+custom definitions cannot replace defaults; malformed stored JSON can be cleared
+from the custom section without changing built-in actions.
+
+Validation: `npm run build`, then `gjs -m dist/files-settings-test.js` in a
+GTK-capable Linux session. Tests cover draft isolation, Apply/Reset, native menu
+visibility/action dispatch/disabled states, custom CRUD, protected defaults,
+scope matching, command execution and literal path substitution, and file
+targeting in both layouts.

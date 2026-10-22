@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Audio nodes adapted from Qualcomm UX3407NA v2, Bjorn Andersson, 2026.
+/ {
+	sound {
+		compatible = "qcom,glymur-sndcard";
+		model = "GLYMUR-ASUS-Zenbook-A14-UX3407NA";
+
+		audio-routing = "SpkrLeft IN", "WSA WSA_SPK1 OUT",
+				"SpkrRight IN", "WSA WSA_SPK2 OUT",
+				"VA DMIC0", "vdd-micb",
+				"VA DMIC1", "vdd-micb";
+
+		va-dai-link {
+			link-name = "VA Capture";
+
+			codec {
+				sound-dai = <&lpass_vamacro 0>;
+			};
+
+			cpu {
+				sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+
+		wsa-dai-link {
+			link-name = "WSA Playback";
+
+			codec {
+				sound-dai = <&left_speaker>, <&right_speaker>,
+					    <&swr0 0>, <&lpass_wsamacro 0>;
+			};
+
+			cpu {
+				sound-dai = <&q6apmbedai WSA_CODEC_DMA_RX_0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+	};
+};
+&swr0 {
+	status = "okay";
+
+	/* WSA8845, left */
+	left_speaker: speaker@0,0 {
+		compatible = "sdw20217020400";
+		reg = <0 0>;
+		reset-gpios = <&lpass_tlmm 12 GPIO_ACTIVE_LOW>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SpkrLeft";
+		vdd-1p8-supply = <&vreg_l15b_e0>;
+		vdd-io-supply = <&vreg_l18b_e0>;
+		qcom,port-mapping = <1 2 3 7 12 14>;
+	};
+
+	/* WSA8845, right */
+	right_speaker: speaker@0,1 {
+		compatible = "sdw20217020400";
+		reg = <0 1>;
+		reset-gpios = <&lpass_tlmm 12 GPIO_ACTIVE_LOW>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SpkrRight";
+		vdd-1p8-supply = <&vreg_l15b_e0>;
+		vdd-io-supply = <&vreg_l18b_e0>;
+		qcom,port-mapping = <4 5 6 7 13 15>;
+	};
+};
+&swr3 { status = "disabled"; };
+// btqca adds the qca/ directory to both property values.
+&uart14 { bluetooth { firmware-name = "ornnv11.bin", "ornbtfw11.tlv"; }; };

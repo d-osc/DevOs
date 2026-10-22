@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+if [ "${1:-}" = drivers ]; then
+    shift
+    exec d "$(dirname -- "$0")/dev-os-drivers" -- "$@"
+fi
 base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; else root="$base/share/dev-os"; fi
 export DEV_OS_ROOT="$root"
@@ -10,4 +14,3 @@ if [ ! -f "$root/dist/main.js" ]; then
     exit 1
 fi
 exec gjs -m "$root/dist/main.js" "$@"
-

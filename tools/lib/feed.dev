@@ -1,0 +1,94 @@
+# Signed native feed staging. Publication and installation are separate actions.
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/regex"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../../lib/desktop.dev" as util
+fn sha(file: str): str { return strings.substring(strings.trim(tool.exec(Vec<str>("sha256sum", file))), 0, 64) }
+fn publish(packages: Vec<str>, catalog: str, output: str, url: str, key: str, architectures: Vec<str>, indexer: str): i64 {
+    while strings.endsWith(url, "/") { url = strings.substring(url, 0, strings.charLength(url) - 1) }
+    let validUrl = regex.compile("^https://[^/?#\\s@]+(?:/[^?#\\s]*)?$", "")
+    let valid = validUrl.test(url); validUrl.close()
+    tool.require(valid, "Use the final HTTPS feed URL without embedded credentials.")
+    tool.require(architectures.len() > 0, "Specify compatible package architectures.")
+    let archPattern = regex.compile("^[A-Za-z0-9_+-]+$", "")
+    for arch in architectures { tool.require(archPattern.test(arch), "Invalid package architecture.") }
+    archPattern.close()
+    let data = json.parse(tool.read(catalog))
+    tool.require(util.number(util.get(data, "schemaVersion")) == 1 && strings.equal(json.kind(util.get(data, "apps")), "array"), "Invalid catalog schema.")
+    tool.require(!fs.existsSync(output) && fs.is_dir(path.dirname(output)), "Output must be new and its parent must exist.")
+    let temporary: str = strings.trim(tool.exec(Vec<str>("mktemp", "-d", path.dirname(output) + "/.devos-feed-XXXXXXXXXX")))
+    let stage: str = temporary + "/feed"
+    fs.mkdirSync(stage, true)
+    let outcome = result.attempt(fn(): i64 {
+        let hashes = Map<str,str>()
+        for directory in packages {
+            for name in fs.readdirSync(directory) {
+                if !strings.endsWith(name, ".ipk") { continue }
+                let digest = sha(directory + "/" + name)
+                if hashes.contains(name) { tool.require(strings.equal(hashes.get(name), digest), "Conflicting package filenames.") }
+                hashes.set(name, digest); tool.copy(directory + "/" + name, stage + "/" + name)
+            }
+        }
+        tool.require(hashes.len() > 0, "No IPK packages found. Supply target architecture directories and dependencies.")
+        let raw = tool.exec(Vec<str>(indexer, "--checksum", "md5", "--checksum", "sha256", stage))
+        let index = ""
+        for line in strings.split(raw, "\n") {
+            if strings.startsWith(line, "Filename: ") {
+                let name = path.basename(strings.substring(line, 10, strings.charLength(line)))
+                tool.require(hashes.contains(name), "Index references a package outside the feed.")
+                line = "Filename: " + name
+            }
+            index = index + line + "\n"
+        }
+        let names = Map<str,bool>()
+        for paragraph in strings.split(index, "\n\n") {
+            let fields = Map<str,str>()
+            for line in strings.split(paragraph, "\n") {
+                if strings.startsWith(line, " ") || !strings.contains(line, ": ") { continue }
+                let field = strings.split(line, ": ")[0]
+                fields.set(field, strings.substring(line, strings.charLength(field) + 2, strings.charLength(line)))
+            }
+            if !fields.contains("Package") { continue }
+            tool.require(fields.contains("Architecture") && fields.contains("Filename") && fields.contains("SHA256sum"), "Incomplete package index.")
+            let accepted = false
+            for arch in architectures { if strings.equal(arch, fields.get("Architecture")) { accepted = true } }
+            tool.require(accepted, "The feed contains an incompatible architecture.")
+            tool.require(hashes.contains(fields.get("Filename")) && strings.equal(hashes.get(fields.get("Filename")), fields.get("SHA256sum")), "Incorrect or missing package SHA256 checksum.")
+            names.set(fields.get("Package"), true)
+        }
+        tool.require(names.len() > 0, "The indexer produced an empty package index.")
+        let seen = Map<str,bool>()
+        let apps = util.get(data, "apps")
+        for i in 0..(json.len(apps) as i64) {
+            let app = json.at(apps, i)
+            let id = util.text(util.get(app, "id"))
+            tool.require(!strings.equal(id, "") && !seen.contains(id) && strings.equal(json.kind(util.get(app, "name")), "string") && names.contains(util.text(util.get(app, "package"))), "Catalog apps need unique IDs, names and real packages in the feed.")
+            seen.set(id, true)
+        }
+        tool.write(stage + "/Packages", index)
+        let compressed = tool.run(Vec<str>("gzip", "-n", "-c"), Map<str,str>(), index, 30000)
+        tool.require(compressed.success && fs.write_bytes(stage + "/Packages.gz", compressed.stdout), "Could not gzip the package index.")
+        let catalog = json.set(data, "source", {name: "DevOs", url: url})
+        tool.jsonWrite(stage + "/app-store.json", catalog)
+        for name in Vec<str>("Packages", "app-store.json") { tool.exec(Vec<str>("gpg", "--batch", "--yes", "--armor", "--local-user", key, "--output", stage + "/" + name + ".asc", "--detach-sign", stage + "/" + name)) }
+        let public = tool.exec(Vec<str>("gpg", "--batch", "--armor", "--export", key))
+        tool.require(!strings.equal(public, ""), "Could not export the signing public key.")
+        tool.write(stage + "/devos-store-public.asc", public)
+        let sums = ""
+        for name in json.keys(json.value(hashes)) { sums = sums + hashes.get(name) + "  " + name + "\n" }
+        tool.write(stage + "/SHA256SUMS", sums)
+        let config = "dest root /\nlists_dir ext /var/lib/opkg/lists\noption check_signature 1\n"
+        for i in 0..(architectures.len() as i64) { config = config + "arch " + architectures[i] + " " + json.stringify(i + 1) + "\n" }
+        tool.write(stage + "/app-store-opkg.conf", config + "src/gz devos-app-store " + url + "\n")
+        tool.require(fs.renameSync(stage, output), "Could not finalize the signed feed.")
+        return hashes.len() as i64
+    })
+    # temporary is an exclusive mktemp child of the existing output parent.
+    tool.require(strings.equal(path.dirname(temporary), path.dirname(output)) && strings.startsWith(path.basename(temporary), ".devos-feed-"), "Unsafe feed cleanup target.")
+    tool.exec(Vec<str>("rm", "-rf", "--", temporary))
+    return result.unwrap(outcome)
+}

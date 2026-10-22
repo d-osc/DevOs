@@ -1,0 +1,321 @@
+#!/usr/bin/env d
+# Bounded MRU cgroup policy. No freezing, memory limits or disk swap creation.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/time"
+use "std/args"
+use "std/crypto"
+use "std/encoding"
+use "std/datetime"
+use "../lib/posix.dev" as posix
+
+extern fn pidfd_open(pid: i32, flags: u32): i32
+extern fn process_madvise(fd: i32, vectors: *IOVec, count: usize, advice: i32, flags: u32): isize
+extern fn malloc(size: usize): *void
+extern fn free(value: *void)
+extern fn close(fd: i32): i32
+
+struct IOVec { base: *void, length: usize }
+
+fn mib(): i64 { return 1048576 }
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command + " 2>/dev/null"), child_process.options())
+    return decodeText(output.stdout)
+}
+
+fn intOf(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        if !strings.contains("0123456789", ch) { break }
+        let digit = 0
+        let digits = "0123456789"
+        for d in 0..10 {
+            if strings.equal(strings.charAt(digits, d), ch) { digit = d }
+        }
+        value = value * 10 + digit
+    }
+    return value
+}
+
+fn memoryInfo(): json.Value {
+    let result = json.object()
+    let lines = strings.split(fs.readFileSync("/proc/meminfo", "utf8"), "\n")
+    for i in 0..(lines.len() as i64) {
+        let colon = strings.indexOf(lines[i], ":")
+        if colon < 0 { continue }
+        let key = strings.substring(lines[i], 0, colon)
+        let value = 0
+        let parts = strings.split(strings.substring(lines[i], colon + 1, strings.charLength(lines[i])), " ")
+        for p in 0..(parts.len() as i64) {
+            if strings.charLength(parts[p]) > 0 && strings.contains("0123456789", strings.charAt(parts[p], 0)) { value = intOf(parts[p]) * 1024 }
+        }
+        result = json.set(result, key, json.value(value))
+    }
+    return result
+}
+
+fn optGet(value: json.Value, key: str): json.Value {
+    if json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+
+fn minOf(a: i64, b: i64): i64 { return a < b ? a : b }
+
+fn planLow(rank: i64, total: i64): i64 {
+    if rank >= 1 && rank <= 5 { return minOf(total / 10, 512 * mib()) }
+    if rank == 6 { return minOf(total / 20, 256 * mib()) }
+    return 0
+}
+
+fn planReclaim(rank: i64, total: i64, available: i64, swapFree: i64): bool {
+    return rank >= 7 && available < total / 5 && swapFree > 64 * mib()
+}
+
+fn planWarm(rank: i64, total: i64, available: i64): bool {
+    return rank == 6 && available > total / 4
+}
+
+fn sha24(key: str): str {
+    let digest = crypto.hash("sha256", encoding.encode(strings.toLowerCase(key), "utf8"))
+    let digits = "0123456789abcdef"
+    let out = ""
+    for i in 0..12 {
+        let value = digest[i] as i64
+        out = out + strings.charAt(digits, value / 16) + strings.charAt(digits, value % 16)
+    }
+    return out
+}
+
+fn rankings(uid: i64): json.Value {
+    let result = json.object()
+    let path = "/run/user/${uid}/devos-memory-policy.json"
+    if !fs.existsSync(path) { return result }
+    let info = strings.trim(capture("stat -c \"%u %s %Y\" " + path))
+    let parts = strings.split(info, " ")
+    if parts.len() < 3 { return result }
+    if !strings.equal(parts[0], "${uid}") { return result }
+    let size = intOf(parts[1])
+    if size > 16384 { return result }
+    let nowSec = datetime.now() / 1000
+    let age = nowSec - intOf(parts[2])
+    if age < -5 || age > 30 { return result }
+    let data = json.parse(fs.readFileSync(path, "utf8"))
+    if !strings.equal(json.kind(data), "array") { return result }
+    if json.len(data) > 128 { return result }
+    for i in 0..(json.len(data) as i64) {
+        let key = json.at(data, i)
+        if !strings.equal(json.kind(key), "string") { return result }
+        if strings.len(json.string(key)) > 256 { return result }
+    }
+    for i in 0..(json.len(data) as i64) {
+        let hashed = sha24(json.string(json.at(data, i)))
+        if !json.has(result, hashed) { result = json.set(result, hashed, json.value(json.len(result) + 1)) }
+    }
+    return result
+}
+
+fn writeChanged(path: str, value: str) {
+    if !fs.existsSync(path) { return }
+    if !strings.equal(strings.trim(fs.readFileSync(path, "utf8")), value) {
+        fs.writeFileSync(path, value)
+    }
+}
+
+fn isUnitName(name: str): bool {
+    # devos-app-<24 hex>-<32 hex>.service
+    if !strings.startsWith(name, "devos-app-") { return false }
+    if !strings.endsWith(name, ".service") { return false }
+    let core = strings.substring(name, 10, strings.charLength(name) - 8)
+    let dash = strings.indexOf(core, "-")
+    if dash != 24 { return false }
+    let first = strings.substring(core, 0, 24)
+    let second = strings.substring(core, 25, strings.charLength(core))
+    if strings.len(second) != 32 { return false }
+    return isHex(first) && isHex(second)
+}
+
+fn isHex(text: str): bool {
+    let hex = "0123456789abcdef"
+    for i in 0..strings.charLength(text) {
+        if !strings.contains(hex, strings.charAt(text, i)) { return false }
+    }
+    return true
+}
+
+fn unitHash(name: str): str {
+    return strings.substring(name, 10, 34)
+}
+
+fn warm(group: str, uid: i64, budget: i64): i64 {
+    let remaining = budget
+    let file = group + "/cgroup.procs"
+    if !fs.existsSync(file) { return 0 }
+    for raw in strings.split(fs.readFileSync(file, "utf8"), "\n") {
+        let pid = intOf(strings.trim(raw))
+        if pid <= 1 || remaining <= 0 { continue }
+        let folder = "/proc/${pid}"
+        if !strings.equal(strings.trim(capture("stat -c %u " + folder)), "${uid}") || !fs.existsSync(folder + "/maps") { continue }
+        unsafe {
+            let fd = pidfd_open(pid as i32, 0)
+            if fd < 0 { continue }
+            let vector = malloc(sizeof(IOVec(null, 0))) as *IOVec
+            if !(vector as bool) { close(fd); continue }
+            for line in strings.split(fs.readFileSync(folder + "/maps", "utf8"), "\n") {
+                let fields = strings.split(line, " ")
+                if fields.len() < 2 || !strings.equal(fields[1], "rw-p") || remaining <= 0 { continue }
+                let range = strings.split(fields[0], "-")
+                if range.len() != 2 { continue }
+                let start = hexOf(range[0]); let end = hexOf(range[1])
+                let length = minOf(end - start, remaining)
+                if length <= 0 { continue }
+                vector[0] = IOVec(start as *void, length as usize)
+                let advised = process_madvise(fd, vector, 1, 3, 0)
+                if advised > 0 { remaining = remaining - advised as i64 }
+            }
+            free(vector as *void); close(fd)
+        }
+    }
+    return budget - remaining
+}
+
+fn hexOf(text: str): i64 {
+    let value = 0
+    let hex = "0123456789abcdef"
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        let digit = 0
+        for d in 0..16 {
+            if strings.equal(strings.charAt(hex, d), ch) { digit = d }
+        }
+        value = value * 16 + digit
+    }
+    return value
+}
+
+fn cycle(warmed: json.Value): json.Value {
+    let info = memoryInfo()
+    let total = json.int(optGet(info, "MemTotal"))
+    let available = 0
+    if json.has(info, "MemAvailable") { available = json.int(optGet(info, "MemAvailable")) }
+    let swapFree = 0
+    if json.has(info, "SwapFree") { swapFree = json.int(optGet(info, "SwapFree")) }
+    let budget = 32 * mib()
+    let warmBudget = 8 * mib()
+    let base = "/sys/fs/cgroup/user.slice"
+    if !fs.existsSync(base) { return warmed }
+    let users = fs.readdirSync(base)
+    for u in 0..(users.len() as i64) {
+        if !strings.startsWith(users[u], "user-") { continue }
+        let uidText = strings.substring(users[u], 5, strings.charLength(users[u]) - 6)
+        let appSlice = base + "/" + users[u] + "/user@" + uidText + ".service/app.slice"
+        let uid = intOf(uidText)
+        if !fs.existsSync(appSlice) { continue }
+        let groups = Vec<str>()
+        let entries = fs.readdirSync(appSlice)
+        for e in 0..(entries.len() as i64) {
+            if isUnitName(entries[e]) { groups.push(entries[e]) }
+        }
+        let ranks = rankings(uid)
+        let ordered = orderGroups(groups, ranks)
+        for g in 0..(ordered.len() as i64) {
+            let name = ordered[g]
+            let group = appSlice + "/" + name
+            if !fs.existsSync(group) { continue }
+            let hash = unitHash(name)
+            let rank = 0
+            let hasRank = false
+            if json.has(ranks, hash) { rank = json.int(json.get(ranks, hash)); hasRank = true }
+            writeChanged(group + "/memory.low", "${planLow(hasRank ? rank : 0, total)}")
+            let identity = group
+            if planWarm(hasRank ? rank : 0, total, available) && !json.has(warmed, identity) && warmBudget > 0 {
+                warm(group, uid, warmBudget)
+                warmBudget = 0
+                warmed = json.set(warmed, identity, true)
+            } else {
+                if rank != 6 { warmed = json.remove(warmed, identity) }
+            }
+            if planReclaim(hasRank ? rank : 0, total, available, swapFree) && budget > 0 {
+                fs.writeFileSync(group + "/memory.reclaim", "${16 * mib()} swappiness=200")
+                budget = budget - 16 * mib()
+            }
+        }
+    }
+    return warmed
+}
+
+fn orderGroups(groups: Vec<str>, ranks: json.Value): Vec<str> {
+    # Stable selection sort by rank descending.
+    let items = Vec<str>()
+    for i in 0..(groups.len() as i64) { items.push(groups[i]) }
+    for i in 0..(items.len() as i64) {
+        let best = i
+        for j in (i + 1)..(items.len() as i64) {
+            let bestRank = 0
+            if json.has(ranks, unitHash(items[best])) { bestRank = json.int(json.get(ranks, unitHash(items[best]))) }
+            let rank = 0
+            if json.has(ranks, unitHash(items[j])) { rank = json.int(json.get(ranks, unitHash(items[j]))) }
+            if rank > bestRank { best = j }
+        }
+        if best != i {
+            let swap = items[i]
+            items[i] = items[best]
+            items[best] = swap
+        }
+    }
+    return items
+}
+
+fn setupSwap(): i32 {
+    let swaps = fs.readFileSync("/proc/swaps", "utf8")
+    let lines = strings.split(swaps, "\n")
+    for i in 1..(lines.len() as i64) {
+        if strings.contains(lines[i], "/dev/zram") {
+            print("DevOs: existing zram swap preserved")
+            return 0
+        }
+    }
+    if posix.shell("modprobe zram") != 0 { return 1 }
+    let size = minOf(json.int(optGet(memoryInfo(), "MemTotal")) / 2, 8 * 1024 * 1024 * 1024)
+    let device = strings.trim(capture("zramctl --find --size ${size} --algorithm lz4"))
+    if !strings.startsWith(device, "/dev/zram") { return 1 }
+    if posix.shell("mkswap " + device) != 0 { return 1 }
+    if posix.shell("swapon --priority 100 " + device) != 0 { return 1 }
+    fs.writeFileSync("/proc/sys/vm/swappiness", "80")
+    fs.writeFileSync("/proc/sys/vm/page-cluster", "0")
+    print("DevOs: compressed swap enabled on ${device}, ${size} bytes")
+    return 0
+}
+
+fn main(): i32 {
+    if args.len() == 1 && strings.equal(args.get(0), "--setup-swap") { return setupSwap() }
+    if args.len() == 1 && strings.equal(args.get(0), "--daemon") {
+        let warmed = json.object()
+        while true {
+            warmed = cycle(warmed)
+            time.sleep_ms(5000)
+        }
+        return 0
+    }
+    print("Usage: dev-os-memory --setup-swap | --daemon")
+    return 1
+}
+return main()

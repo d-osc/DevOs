@@ -1,6 +1,17 @@
 #!/bin/sh
-# Keep the Ubuntu 24.04 binary and PAM configuration at the tested package revision.
+# Preserve the tested Ubuntu 24.04 pin; newer Ubuntu uses its native PAM package.
 set -eu
+. /etc/os-release
+if [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" != 24.04 ]; then
+    if ! command -v swaylock >/dev/null 2>&1 || [ ! -f /etc/pam.d/swaylock ]; then
+        if [ "$(id -u)" = 0 ]; then apt-get install -y swaylock
+        else sudo apt-get install -y swaylock; fi
+    fi
+    command -v swaylock >/dev/null 2>&1
+    test -f /etc/pam.d/swaylock
+    swaylock --version
+    exit 0
+fi
 package_version=1.7.2-1build2
 if command -v swaylock >/dev/null 2>&1 && [ -f /etc/pam.d/swaylock ] &&
     [ "$(dpkg-query -W -f='${Version}' swaylock 2>/dev/null)" = "$package_version" ] &&

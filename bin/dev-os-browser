@@ -1,0 +1,27 @@
+#!/bin/sh
+# Launch native Chrome; WSL's nested software compositor cannot reliably use EGL.
+set -eu
+browser=$(command -v google-chrome-stable || true)
+if [ -z "$browser" ]; then
+    printf '%s\n' 'Google Chrome is not installed.' >&2
+    exit 1
+fi
+if [ "${XDG_SESSION_TYPE:-}" = wayland ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    set -- --ozone-platform=wayland "$@"
+fi
+# A root Live desktop needs Chromium's explicit root mode and its own profile.
+if [ "$(id -u)" = 0 ] && [ -f /run/devos-live/root-session-enabled ]; then
+    set -- --no-sandbox --user-data-dir="${XDG_CONFIG_HOME:-$HOME/.config}/devos-live/chrome" "$@"
+fi
+software=${DEV_OS_BROWSER_SOFTWARE_RENDERING:-auto}
+if [ "$software" = auto ]; then
+    software=0
+    if [ "${WLR_RENDERER:-}" = pixman ] || [ -n "${WSL_INTEROP:-}" ] || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then software=1; fi
+fi
+if [ "$software" = 1 ]; then set -- --disable-gpu "$@"; fi
+if [ -f /run/devos-live/root-session-enabled ]; then
+    logs=${XDG_STATE_HOME:-$HOME/.local/state}/devos/logs
+    mkdir -p "$logs"
+    exec "$browser" "$@" >>"$logs/chrome.log" 2>&1
+fi
+exec "$browser" "$@"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=App Store
+Comment=Discover and manage applications for your DevOs account
+Exec=dev-os-shell app-store
+TryExec=dev-os-shell
+Icon=system-software-install
+Categories=System;PackageManager;
+Terminal=false

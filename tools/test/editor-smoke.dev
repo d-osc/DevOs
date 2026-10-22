@@ -1,0 +1,40 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+fn main(): i32 {
+    if tool.has("--help") { print("Test Monaco typing/save, multiple file arguments and native Editor tab dragging."); return 0 }
+    ui.withPointer("screenshots-editor-focused", Map<str,str>(), fn(session: smoke.Session, env: Map<str,str>, pointer: smoke.Input) {
+        let first: str = session.base + "/first file.ts"
+        let second: str = session.base + "/second.ts"
+        tool.write(first, "export const first = 1;\n"); tool.write(second, "export const second = 2;\n")
+        let screens: str = session.root + "/build/screenshots-editor-focused"
+        tool.checked(Vec<str>("sh", session.root + "/bin/dev-os-editor", first, second), env, "", 10000)
+        tool.waitFor(fn(): bool { return strings.contains(ui.windows(env), "Dev OS Editor · second.ts") }, 30000, "Editor did not map.")
+        let title = ui.title(env, "second.ts")
+        tool.waitFor(fn(): bool { smoke.screenshot(env, screens + "/editor.png"); return ui.bright(screens + "/editor.png") }, 30000, "Monaco did not render text.")
+        time.sleep_ms(1000)
+        tool.require(ui.window(env, "maximize", title, "") && ui.window(env, "focus", title, ""), "Cannot focus Editor.")
+        time.sleep_ms(500)
+        pointer = ui.click(pointer, 400, 140, "left")
+        smoke.key(env, Vec<str>("-M", "ctrl", "-k", "a", "-m", "ctrl"))
+        smoke.key(env, Vec<str>("-d", "15", "export const saved = 42;"))
+        smoke.key(env, Vec<str>("-M", "ctrl", "-k", "s", "-m", "ctrl"))
+        tool.waitFor(fn(): bool { return strings.equal(strings.trim(tool.read(second)), "export const saved = 42;") }, 12000, "Monaco save failed.")
+        tool.require(strings.equal(tool.read(first), "export const first = 1;\n"), "Saving one tab must not change another file.")
+        smoke.screenshot(env, screens + "/editor-saved.png")
+        pointer = ui.drag(pointer, env, 240, 16, 900, 350, false)
+        ui.windowCount(env, "Dev OS Editor", 2); smoke.screenshot(env, screens + "/editor-detached.png")
+        pointer = ui.drag(pointer, env, 190, 32, 100, 16, false)
+        ui.windowCount(env, "Dev OS Editor", 1); smoke.screenshot(env, screens + "/editor-merged.png")
+        pointer = ui.drag(pointer, env, 240, 16, 900, 350, true)
+        tool.require(tool.count(ui.windows(env), "Dev OS Editor") == 1, "Escape must cancel Editor tab dragging.")
+        ui.cleanLog(session)
+        print("PASS: Editor multi-file command, Monaco typing/save, pointer detach/merge and Escape")
+    })
+    return 0
+}
+return tool.main(main)

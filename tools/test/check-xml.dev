@@ -1,0 +1,17 @@
+#!/usr/bin/env d
+# XML parser worker; the parent check tool supplies the system libxml2 library.
+use "std/args"
+use "../lib/tool.dev" as tool
+extern fn xmlReadFile(file: str, encoding: *void, options: i32): *void
+extern fn xmlFreeDoc(document: *void)
+fn main(): i32 {
+    for i in 0..(args.len() as i64) {
+        unsafe {
+            let document = xmlReadFile(args.get(i), null, 2048)
+            tool.require(document as bool, "Invalid compositor XML: " + args.get(i))
+            xmlFreeDoc(document)
+        }
+    }
+    return 0
+}
+return tool.main(main)

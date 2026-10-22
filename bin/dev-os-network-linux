@@ -1,0 +1,36 @@
+#!/usr/bin/env d
+# Load the platform GIO library in a DevLang worker; secrets travel only over stdin.
+use "std/fs"
+use "std/io"
+use "std/json"
+use "std/path"
+use "std/module"
+use "std/strings"
+use "std/result"
+use "../lib/desktop.dev" as util
+fn gioLibrary(): str {
+    for base in Vec<str>("/usr/lib", "/lib", "/usr/lib64", "/lib64") {
+        let direct = base + "/libgio-2.0.so.0"
+        if fs.is_file(direct) { return direct }
+        for name in util.children(base) {
+            let candidate = base + "/" + name + "/libgio-2.0.so.0"
+            if fs.is_file(candidate) { return candidate }
+        }
+    }
+    result.raise("The system GIO library is not installed.")
+    return ""
+}
+fn main(): i32 {
+    let raw = io.read_line()
+    let request = util.parse(raw)
+    util.require(strings.equal(json.kind(request), "object") && !util.failed(request), "Invalid network request.")
+    if strings.equal(util.text(util.get(request, "action")), "settings") { result.raise("Manage Wi-Fi inside DevOs Settings. External network settings are disabled.") }
+    let worker = path.dirname(path.dirname(module.entry())) + "/lib/network-worker.dev"
+    let response = util.run("d", Vec<str>(worker, "--ffi-lib", gioLibrary()), raw + "\n", 60000)
+    let value = util.parse(util.output(response))
+    print(json.stringify(value))
+    return response.success && !util.failed(value) ? 0 : 1
+}
+let outcome = result.attempt(fn(): i32 { return main() })
+if result.isErr(outcome) { print(json.stringify(util.error(result.message(outcome)))); return 1 }
+return result.unwrap(outcome)

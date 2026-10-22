@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.taskmanager",
+  "name": "Task Manager",
+  "description": "Monitor Linux processes, CPU and memory usage.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.taskmanager.js",
+  "order": 28,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

@@ -1,0 +1,42 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Measure headless startup, React/GTK updates and command latency [--root DIR]."); return 0 }
+    let root: str = tool.resolve(tool.option("--root", tool.root()))
+    tool.scope("devos-performance-", fn(base: str) {
+        tool.jsonWrite(base + "/config/dev-os/config.json", {autostart: []})
+        tool.jsonWrite(base + "/config/dev-os/extensions/org.devos.files.json", {version: 1, enabled: true, values: {homeDirectory: base}})
+        let start = time.now_ms()
+        let session: smoke.Session = smoke.start(base, root, Map<str,str>())
+        let outcome = result.run(fn() {
+            smoke.waitReady(session)
+            let startup = time.now_ms() - start
+            let env = smoke.environment(session)
+            let output = strings.trim(tool.checked(Vec<str>("gjs", "-m", root + "/dist/performance-test.js"), env, "", 60000))
+            let lines = strings.split(output, "\n")
+            let report = json.parse(lines[(lines.len() as i64) - 1])
+            report = json.set(report, "headless_session_startup_ms", startup)
+            for command in Vec<str>("shell", "launcher", "files") {
+                let samples = strings.equal(command, "files") ? 3 : 8
+                let elapsed = Vec<u64>()
+                for i in 0..samples { let before = time.now_ms(); smoke.remote(session, env, command); elapsed.push(time.now_ms() - before) }
+                elapsed.sort()
+                let median = samples % 2 == 0 ? (elapsed[samples / 2 - 1] as f64 + elapsed[samples / 2] as f64) / 2.0 : elapsed[samples / 2] as f64
+                report = json.set(report, command + "_command_median_ms", median)
+            }
+            print(json.pretty(report))
+        })
+        smoke.cleanup(session)
+        result.unwrap(outcome)
+    })
+    return 0
+}
+return tool.main(main)

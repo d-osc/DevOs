@@ -1,3 +1,4 @@
+import {isWsl} from '../org.devos.settings/wifi.js';
 import {
     Listeners, Gio, GLib
 } from '@dev-os/core';
@@ -5,12 +6,13 @@ import {
 export interface DeviceState {
     connected: boolean; wireless: boolean; network: string;
     wifi: boolean | null; bluetooth: boolean | null;
-    volume: number | null; muted: boolean; battery: number | null;
+    brightness?: number | null; volume: number | null; muted: boolean; battery: number | null;
     busy: boolean; error: string;
 }
 export interface DeviceControls {
     state: DeviceState;
     subscribe(listener: () => void): () => void;
+    setBrightness?(value: number): Promise<void>;
     setVolume(value: number): Promise<void>;
     toggleMute(): Promise<void>;
     toggleWifi(): Promise<void>;
@@ -84,8 +86,13 @@ export class Devices implements DeviceControls {
             const wireless = route ? GLib.file_test(`/sys/class/net/${route}/wireless`, GLib.FileTest.IS_DIR) : wirelessAdapter;
             const batteryName = entries('/sys/class/power_supply').find(name => text(`/sys/class/power_supply/${name}/type`) === 'Battery');
             const connected = this.network.get_network_available();
-            this.update({connected, wireless, network: connected ? wireless ? 'Wi-Fi connected' : 'Ethernet connected' : 'No network connection',
+            this.update({connected, wireless, network: connected ? isWsl() ? 'Connected through Windows' : wireless ? 'Wi-Fi connected' : 'Ethernet connected' : 'No network connection',
                 battery: batteryName ? Number(text(`/sys/class/power_supply/${batteryName}/capacity`)) : null});
+            const backlight = entries('/sys/class/backlight').sort().find(name => Number(text(`/sys/class/backlight/${name}/max_brightness`)) > 0);
+            const maximum = backlight ? Number(text(`/sys/class/backlight/${backlight}/max_brightness`)) : 0;
+            const brightnessText = backlight ? text(`/sys/class/backlight/${backlight}/brightness`) : '';
+            const brightness = Number(brightnessText);
+            this.update({brightness: brightnessText && maximum > 0 && Number.isFinite(brightness) ? Math.round(brightness / maximum * 100) : null});
             const reads: Promise<void>[] = [this.readAudio()];
             if (wirelessAdapter && GLib.find_program_in_path('nmcli')) reads.push(this.run(['nmcli', 'radio', 'wifi']).then(value => { this.update({wifi: value === 'enabled'}); }).catch(() => { this.update({wifi: null}); }));
             if (GLib.find_program_in_path('bluetoothctl')) reads.push(this.run(['bluetoothctl', 'show']).then(value => { this.update({bluetooth: /Powered: (yes|no)/.test(value) ? /Powered: yes/.test(value) : null}); }).catch(() => { this.update({bluetooth: null}); }));
@@ -117,6 +124,10 @@ export class Devices implements DeviceControls {
         try { await this.run(args); await this.readAudio(); await this.refresh(); }
         catch (error) { this.update({error: error instanceof Error ? error.message : String(error)}); }
         finally { this.update({busy: false}); }
+    }
+    setBrightness(value: number) {
+        if (this.state.brightness == null) return Promise.resolve();
+        return this.action(['dev-os-backlight', '--', 'set', String(Math.max(1,Math.min(100,Math.round(value))))]);
     }
     setVolume(value: number) {
         if (!this.audio) return Promise.resolve();

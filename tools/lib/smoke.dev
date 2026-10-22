@@ -1,0 +1,200 @@
+# Isolated smoke session lifecycle, process inspection, screenshots and virtual input.
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/encoding"
+use "std/child_process"
+use "std/result"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../../lib/desktop.dev" as util
+use "../../lib/posix.dev" as posix
+struct Session { root: str, base: str, runtime: str, log: str, env: Map<str,str>, child: child_process.Child }
+struct Input { child: child_process.Child, fd: i32, log: str, count: i64 }
+extern fn open(path: str, flags: i32, mode: u32): i32
+extern fn close(fd: i32): i32
+extern fn write(fd: i32, text: str, size: usize): isize
+fn launch(argv: Vec<str>, env: Map<str,str>, log: str): child_process.Child {
+    let command = "exec"
+    for arg in argv { command = command + " " + util.quote(arg) }
+    command = command + " >>" + util.quote(log) + " 2>&1"
+    let all = tool.envArgs(env)
+    all.push("sh"); all.push("-c"); all.push(command)
+    return child_process.spawn("env", all, child_process.Options("", 300000, 1048576, Vec<u8>()))
+}
+fn stop(child: child_process.Child) { if !child.ready() { child.kill() }; child.wait() }
+fn env(base: str, root: str): Map<str,str> {
+    let env = Map<str,str>()
+    env.set("XDG_RUNTIME_DIR", base + "/runtime")
+    env.set("XDG_CONFIG_HOME", base + "/config")
+    env.set("PATH", path.dirname(process.execPath()) + ":" + root + "/build/wsl/bin:" + root + "/bin:" + process.getenv("PATH"))
+    env.set("GTK_USE_PORTAL", "0")
+    env.set("DEV_OS_LOGIN", "0")
+    env.set("WLR_HEADLESS_OUTPUTS", "1")
+    return env
+}
+fn start(base: str, root: str, extras: Map<str,str>): Session {
+    fs.mkdirSync(base + "/runtime", true)
+    tool.chmod(base + "/runtime", "700")
+    fs.mkdirSync(base + "/config", true)
+    let environment = env(base, root)
+    for fieldName in json.keys(json.value(extras)) { environment.set(fieldName, extras.get(fieldName)) }
+    let log = base + "/session.log"
+    tool.write(log, "")
+    let child = launch(Vec<str>("sh", root + "/bin/dev-os-session", "--headless"), environment, log)
+    return Session(root, base, base + "/runtime", log, environment, child)
+}
+fn waitReady(session: Session) {
+    tool.waitFor(fn(): bool {
+        tool.require(!session.child.ready(), "Session exited:\n" + util.read(session.log))
+        return strings.contains(util.read(session.log), "Dev OS shell ready")
+    }, 30000, "Timed out starting desktop:\n" + session.log)
+}
+fn fields(file: str): Vec<str> {
+    let raw = fs.read_bytes(file)
+    let values = Vec<str>()
+    let bytes = Vec<u8>()
+    for byte in raw {
+        if byte == 0 { values.push(encoding.decode(bytes, "utf8")); bytes.clear() }
+        else { bytes.push(byte) }
+    }
+    if bytes.len() > 0 { values.push(encoding.decode(bytes, "utf8")) }
+    return values
+}
+fn processIds(runtime: str, executable: str): Vec<i64> {
+    let found = Vec<i64>()
+    for pid in fs.readdirSync("/proc") {
+        if !digits(pid) { continue }
+        let outcome = result.attempt(fn(): bool {
+            let args = fields("/proc/" + pid + "/cmdline")
+            let variables = fields("/proc/" + pid + "/environ")
+            let command = false
+            let owned = false
+            for arg in args { if strings.contains(arg, executable) { command = true } }
+            for variable in variables { if strings.equal(variable, "XDG_RUNTIME_DIR=" + runtime) { owned = true } }
+            return owned && command
+        })
+        if result.unwrapOr(outcome, false) { found.push(json.int(json.parse(pid))) }
+    }
+    return found
+}
+fn digits(value: str): bool {
+    if strings.equal(value, "") { return false }
+    for i in 0..strings.charLength(value) { if !strings.contains("0123456789", strings.charAt(value, i)) { return false } }
+    return true
+}
+fn environment(session: Session): Map<str,str> {
+    let ids = processIds(session.runtime, session.root + "/dist/main.js")
+    tool.require(ids.len() == 1, "Private shell environment unavailable.")
+    let env = session.env
+    for variable in fields("/proc/" + json.stringify(ids[0]) + "/environ") {
+        let parts = strings.split(variable, "=")
+        if parts.len() < 2 { continue }
+        let fieldName = parts[0]
+        let value = strings.substring(variable, strings.charLength(fieldName) + 1, strings.charLength(variable))
+        env.set(fieldName, value)
+    }
+    return env
+}
+fn cleanup(session: Session) {
+    stop(session.child)
+    let unmount = util.which("fusermount3")
+    if strings.equal(unmount, "") { unmount = util.which("fusermount") }
+    if !strings.equal(unmount, "") { tool.run(Vec<str>(unmount, "-uz", session.runtime + "/doc"), Map<str,str>(), "", 5000) }
+}
+fn withSession(name: str, extras: Map<str,str>, body: fn(Session): void) {
+    tool.scope("devos-" + name + "-", fn(base: str) {
+        let session: Session = start(base, tool.root(), extras)
+        let outcome = result.run(fn() { waitReady(session); body(session) })
+        cleanup(session)
+        result.unwrap(outcome)
+    })
+}
+fn remote(session: Session, env: Map<str,str>, command: str) { tool.checked(Vec<str>("sh", session.root + "/bin/dev-os-shell", command), env, "", 15000) }
+fn screenshot(env: Map<str,str>, file: str) { fs.mkdirSync(path.dirname(file), true); tool.checked(Vec<str>("grim", file), env, "", 10000) }
+fn key(env: Map<str,str>, argv: Vec<str>) {
+    let command = Vec<str>("wtype")
+    for arg in argv { command.push(arg) }
+    tool.checked(command, env, "", 10000)
+}
+fn marker(session: Session, name: str) {
+    tool.waitFor(fn(): bool {
+        tool.require(!fs.existsSync(session.base + "/fixture-failed"), util.read(session.base + "/fixture-failed"))
+        tool.require(!fs.existsSync(session.base + "/failed"), util.read(session.base + "/failed"))
+        return fs.existsSync(session.base + "/" + name)
+    }, 15000, "Timed out waiting for " + name + "; see " + session.log)
+}
+fn input(program: str, base: str, env: Map<str,str>): Input {
+    let fifo = base + "/input.fifo"
+    tool.exec(Vec<str>("mkfifo", "-m", "600", fifo))
+    let fd: i32 = -1
+    unsafe { fd = open(fifo, 2 | 0x80000, 0) }
+    tool.require(fd >= 0, "Cannot open private input FIFO.")
+    let log = base + "/input.log"
+    tool.write(log, "")
+    let child = launch(Vec<str>("sh", "-c", "exec " + util.quote(program) + " <" + util.quote(fifo)), env, log)
+    return Input(child, fd, log, 0)
+}
+fn send(input: Input, command: str): Input {
+    let expected: i64 = tool.count(tool.read(input.log), "ok\n") + 1
+    let line = command + "\n"
+    unsafe { tool.require(write(input.fd, line, strings.len(line)) == strings.len(line) as isize, "Input pipe failed.") }
+    input.count = expected
+    tool.waitFor(fn(): bool { return tool.count(tool.read(input.log), "ok\n") >= expected }, 5000, "Virtual input timed out.")
+    return input
+}
+fn sendRaw(input: Input, command: str) {
+    let line = command + "\n"
+    unsafe { tool.require(write(input.fd, line, strings.len(line)) == strings.len(line) as isize, "Input pipe failed.") }
+}
+fn events(log: str): json.Value {
+    let events = json.array()
+    for line in strings.split(util.read(log), "\n") {
+        if json.valid(line) { events = json.push(events, json.parse(line)) }
+    }
+    return events
+}
+fn closeInput(input: Input) { unsafe { close(input.fd) }; stop(input.child) }
+fn compilePointer(build: str): str {
+    let root = tool.root()
+    fs.mkdirSync(build, true)
+    let protocol = root + "/native/protocols/wlr-virtual-pointer-unstable-v1.xml"
+    tool.exec(Vec<str>("wayland-scanner", "client-header", protocol, build + "/virtual-pointer.h"))
+    tool.exec(Vec<str>("wayland-scanner", "private-code", protocol, build + "/virtual-pointer.c"))
+    let flags = strings.split(strings.trim(tool.exec(Vec<str>("pkg-config", "--cflags", "--libs", "wayland-client"))), " ")
+    let argv = Vec<str>("cc", "-std=c11", "-O2", "-I" + build, root + "/tools/setup/pointer-session.c", build + "/virtual-pointer.c")
+    for flag in flags { if !strings.equal(flag, "") { argv.push(flag) } }
+    argv.push("-o"); argv.push(build + "/pointer")
+    tool.exec(argv)
+    return build + "/pointer"
+}
+fn native(name: str, variable: str, xml: str, timeout: i64) {
+    tool.scope("devos-" + name + "-", fn(base: str) {
+        let root = tool.root()
+        let build = root + "/build/" + name
+        fs.mkdirSync(build, true)
+        fs.mkdirSync(base + "/runtime", true)
+        tool.chmod(base + "/runtime", "700")
+        tool.write(base + "/config/rc.xml", xml)
+        let env = env(base, root)
+        env.set("WLR_BACKENDS", "headless"); env.set("WLR_RENDERER", "pixman")
+        env.set("GDK_BACKEND", "wayland"); env.set("LABWC_UPDATE_ACTIVATION_ENV", "0")
+        env.set(variable, base)
+        env.set("XDG_DATA_DIRS", root + "/data:/usr/local/share:/usr/share")
+        env.set("DISPLAY", "__DEVOS_UNSET__"); env.set("WAYLAND_DISPLAY", "__DEVOS_UNSET__")
+        env.set("DEV_OS_TASK_VIEW", "1"); env.set("DEV_OS_WINDOW_ANIMATIONS", "1")
+        let compositor = root + "/build/wsl/bin/labwc"
+        if !fs.is_file(compositor) { compositor = "labwc" }
+        let log = build + "/session.log"
+        tool.write(log, "")
+        let child: child_process.Child = launch(Vec<str>("dbus-run-session", "--", compositor, "-C", base + "/config", "-s", "gjs -m " + util.quote(root + "/dist/" + name + "-test.js")), env, log)
+        let outcome = result.run(fn() {
+            tool.waitFor(fn(): bool { return fs.existsSync(base + "/passed") || fs.existsSync(base + "/failed") || child.ready() }, timeout, "Native test timed out: " + log)
+            tool.require(fs.existsSync(base + "/passed"), util.read(log))
+        })
+        stop(child)
+        result.unwrap(outcome)
+    })
+}

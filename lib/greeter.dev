@@ -1,0 +1,150 @@
+# greetd authorizes sessions; desktop identity selection never bypasses PAM.
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/time"
+use "std/process"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/unix.dev" as unix
+use "../lib/accounts.dev" as accounts
+struct State { flow: json.Value, enrollment: json.Value }
+struct Reply { state: State, value: json.Value }
+fn empty(): State { return State(json.null_value(), json.null_value()) }
+fn exchange(fd: i32, request: json.Value): json.Value {
+    let payload = encoding.encode(json.stringify(request), "utf8")
+    let length = payload.len() as u32
+    # greetd IPC uses a native-endian 32-bit length followed by UTF-8 JSON.
+    let packet = Vec<u8>()
+    unsafe {
+        let header = unix.malloc(4)
+        util.require(header as bool, "Out of memory.")
+        let pointer = header as *u32
+        pointer[0] = length
+        for i in 0..4 { packet.push(header[i]) }
+        unix.free(header as *void)
+    }
+    for byte in payload { packet.push(byte) }
+    let deadline = time.now_ms() + 45000
+    unix.write(fd, packet, deadline)
+    let header = unix.receive(fd, 4, deadline)
+    let size: u32 = 0
+    unsafe {
+        let buffer = unix.malloc(4)
+        util.require(buffer as bool, "Out of memory.")
+        for i in 0..4 { buffer[i] = header[i] }
+        let pointer = buffer as *u32
+        size = pointer[0]
+        unix.free(buffer as *void)
+    }
+    util.require(size <= 1048576, "Invalid login manager response.")
+    return json.parse(encoding.decode(unix.receive(fd, size as i64, deadline), "utf8"))
+}
+fn authenticate(fd: i32, username: str, credential: str): json.Value {
+    let response = exchange(fd, {type: "create_session", username: username})
+    let sent = false
+    for i in 0..12 {
+        if !strings.equal(util.text(util.get(response, "type")), "auth_message") { break }
+        let kind = util.text(util.get(response, "auth_message_type"))
+        let answer = json.null_value()
+        if strings.equal(kind, "secret") && !sent { answer = json.value(credential); sent = true }
+        else if !strings.equal(kind, "info") && !strings.equal(kind, "error") {
+            exchange(fd, {type: "cancel_session"})
+            result.raise("This authentication prompt requires an interactive PAM greeter.")
+        }
+        response = exchange(fd, json.set({type: "post_auth_message_response"}, "response", answer))
+    }
+    util.require(strings.equal(util.text(util.get(response, "type")), "success"), "Sign-in failed. Check the selected Linux user and its password or linked GitHub account.")
+    let command = strings.equal(username, "root") ? "/usr/libexec/devos-live-root-session" : "/usr/bin/devos-desktop"
+    let result = exchange(fd, {type: "start_session", cmd: [command], env: ["DEV_OS_LOGIN=0"]})
+    util.require(strings.equal(util.text(util.get(result, "type")), "success"), "The login manager could not start this user session.")
+    return {started: true}
+}
+fn login(username: str, credential: str): json.Value {
+    let fd = unix.open(process.getenv("GREETD_SOCK"))
+    let outcome = result.attempt(fn(): json.Value { return authenticate(fd, username, credential) })
+    unix.shutdown(fd)
+    return result.unwrap(outcome)
+}
+fn inventory(): json.Value {
+    let users = accounts.catalog()
+    let live = accounts.liveRoot()
+    if live {
+        let all = json.array()
+        all = json.push(all, {username: "root", name: "Root (Live USB)", uid: 0, home: "/root"})
+        for i in 0..(json.len(users) as i64) { all = json.push(all, json.at(users, i)) }
+        users = all
+    }
+    return json.set({liveRoot: live, firstSetup: accounts.firstSetup()}, "users", users)
+}
+fn handle(state: State, request: json.Value): Reply {
+    util.require(strings.equal(json.kind(request), "object"), "Invalid login request.")
+    let action = util.text(util.get(request, "action"))
+    if strings.equal(action, "get") { return Reply(state, inventory()) }
+    if strings.equal(action, "enroll-create") {
+        let provider = util.text(util.get(request, "provider"))
+        let payload = {action: "create-user", provider: provider, username: util.text(util.get(request, "username")), name: util.text(util.get(request, "name")), password: util.text(util.get(request, "password"))}
+        if strings.equal(provider, "github") {
+            util.require(!json.is_null(state.enrollment) && util.monotonic() < util.number(util.get(state.enrollment, "expires")), "Verify your GitHub account again before creating the OS user.")
+            payload = json.set(payload, "token", util.get(state.enrollment, "token"))
+        }
+        let result = accounts.privileged(payload, accounts.firstSetup())
+        state.enrollment = json.null_value()
+        let response = json.set(inventory(), "created", true)
+        return Reply(state, json.set(response, "username", util.get(result, "username")))
+    }
+    if strings.equal(action, "create-user") { accounts.privileged(request, accounts.firstSetup()); return Reply(state, inventory()) }
+    if strings.equal(action, "guest") { let value = login("devos", "DEVOS_GUEST"); state.flow = json.null_value(); return Reply(state, value) }
+    if strings.equal(action, "password") {
+        let username = util.text(util.get(request, "username"))
+        if strings.equal(username, "root") { util.require(accounts.liveRoot(), "Root sign-in is only available on the Live USB.") }
+        else { accounts.human(username) }
+        let value = login(username, util.text(util.get(request, "password")))
+        state.flow = json.null_value()
+        return Reply(state, value)
+    }
+    if strings.equal(action, "cancel") { return Reply(empty(), json.object()) }
+    if strings.equal(action, "begin") || strings.equal(action, "enroll-begin") {
+        let username = util.text(util.get(request, "username"))
+        if strings.equal(action, "begin") {
+            let account = accounts.human(username)
+            let binding = util.get(util.get(accounts.registry(), "bindings"), username)
+            util.require(!json.is_null(binding) && util.number(util.get(binding, "uid")) == util.number(util.get(account, "uid")), "Sign in with your local password first, then link GitHub in Settings → Accounts.")
+        } else { state.enrollment = json.null_value() }
+        let client = util.text(util.get(util.readJson(accounts.root() + "/config/accounts.json"), "clientId"))
+        let response = accounts.api("https://github.com/login/device/code", {client_id: client}, "")
+        if util.failed(response) { result.raise(util.text(util.get(response, "error_description"))) }
+        let interval = util.number(util.get(response, "interval"))
+        if interval < 5 { interval = 5 }
+        state.flow = {enroll: strings.equal(action, "enroll-begin"), username: username, client: client, device: util.text(util.get(response, "device_code")), expires: util.monotonic() + util.number(util.get(response, "expires_in")), next: util.monotonic() + interval, interval: interval}
+        return Reply(state, {code: util.text(util.get(response, "user_code")), interval: interval})
+    }
+    if strings.equal(action, "poll") || strings.equal(action, "enroll-poll") {
+        let flow = state.flow
+        util.require(!json.is_null(flow) && util.monotonic() < util.number(util.get(flow, "expires")), "GitHub sign-in expired. Please try again.")
+        if util.monotonic() < util.number(util.get(flow, "next")) { return Reply(state, {pending: true, interval: util.number(util.get(flow, "interval"))}) }
+        let response = accounts.api("https://github.com/login/oauth/access_token", {client_id: util.text(util.get(flow, "client")), device_code: util.text(util.get(flow, "device")), grant_type: "urn:ietf:params:oauth:grant-type:device_code"}, "")
+        let error = util.text(util.get(response, "error"))
+        if strings.equal(error, "authorization_pending") || strings.equal(error, "slow_down") {
+            let interval = util.number(util.get(flow, "interval")) + (strings.equal(error, "slow_down") ? 5 : 0)
+            flow = json.set(flow, "interval", interval)
+            flow = json.set(flow, "next", util.monotonic() + interval)
+            state.flow = flow
+            return Reply(state, {pending: true, interval: interval})
+        }
+        state.flow = json.null_value()
+        let token = util.text(util.get(response, "access_token"))
+        util.require(!strings.equal(token, ""), "GitHub sign-in failed or was denied.")
+        if util.boolean(util.get(flow, "enroll")) {
+            let verified = accounts.api("https://api.github.com/user", json.null_value(), token)
+            let id = util.number(util.get(verified, "id"))
+            let login = util.text(util.get(verified, "login"))
+            util.require(id > 0 && !strings.equal(login, ""), "GitHub did not verify this account.")
+            state.enrollment = {token: token, expires: util.monotonic() + 600}
+            return Reply(state, {verified: true, github: login, githubId: id, username: accounts.githubUsername(login)})
+        }
+        return Reply(state, login(util.text(util.get(flow, "username")), "DEVOS_GITHUB:" + token))
+    }
+    result.raise("Unknown login action.")
+    return Reply(state, json.object())
+}

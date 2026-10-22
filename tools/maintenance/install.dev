@@ -1,0 +1,62 @@
+#!/usr/bin/env d
+# Install the desktop under an external prefix; preserve user configuration.
+use "std/fs"
+use "std/path"
+use "std/os"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "../lib/tool.dev" as tool
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d install.dev -- [--prefix DIR]"); return 0 }
+    tool.require(strings.equal(process.platform(), "linux"), "Run installation on Linux or WSL.")
+    let root: str = tool.resolve(tool.root())
+    let prefix = tool.option("--prefix", os.homedir() + "/.local")
+    if strings.startsWith(prefix, "~/") { prefix = os.homedir() + strings.substring(prefix, 1, strings.charLength(prefix)) }
+    prefix = tool.resolve(prefix)
+    tool.require(!strings.equal(prefix, root) && !strings.startsWith(prefix, root + "/"), "Use an install prefix outside the source tree.")
+    tool.require(!strings.contains(prefix, "\n") && !strings.contains(prefix, "\r"), "The prefix cannot contain newlines.")
+    tool.exec(Vec<str>("sh", root + "/tools/setup/bootstrap-lock.sh"))
+    tool.exec(Vec<str>("sh", root + "/tools/setup/bootstrap-window-tracker.sh"))
+    for name in Vec<str>("main", "supervisor", "react-gtk", "panel-view", "launcher-view", "background-view") {
+        tool.require(fs.is_file(root + "/dist/" + name + ".js"), "Run npm ci and npm run build before installing.")
+    }
+    for directory in fs.readdirSync(root + "/extensions") {
+        let manifest = root + "/extensions/" + directory + "/extension.json"
+        if !fs.is_file(manifest) { continue }
+        let value = json.parse(tool.read(manifest))
+        if strings.equal(util.text(util.get(value, "kind")), "ui") {
+            let entry = util.text(util.get(value, "entry"))
+            tool.require(strings.equal(path.basename(entry), entry) && fs.is_file(root + "/dist/" + entry), "Missing UI bundle: " + entry)
+        }
+    }
+    for name in Vec<str>("index.html", "app.js", "app.css", "editor.worker.js", "ts.worker.js", "json.worker.js", "css.worker.js", "html.worker.js") {
+        tool.require(fs.is_file(root + "/dist/editor/" + name), "Monaco assets missing. Run npm run build.")
+    }
+    let destination = prefix + "/share/dev-os"
+    fs.mkdirSync(destination, true)
+    for name in Vec<str>("src", "data", "config", "dist", "extensions", "lib") { tool.copy(root + "/" + name + "/.", destination + "/" + name) }
+    fs.mkdirSync(destination + "/native", true)
+    tool.copy(root + "/build/native/dev-os-window-tracker", destination + "/native/dev-os-window-tracker")
+    tool.chmod(destination + "/native/dev-os-window-tracker", "755")
+    for name in fs.readdirSync(root + "/native") { if strings.endsWith(name, ".dev") { tool.copy(root + "/native/" + name, destination + "/native/" + name) } }
+    fs.mkdirSync(prefix + "/lib", true)
+    for name in fs.readdirSync(root + "/lib") { if strings.endsWith(name, ".dev") { tool.copy(root + "/lib/" + name, prefix + "/lib/" + name) } }
+    fs.mkdirSync(prefix + "/bin", true)
+    for name in fs.readdirSync(root + "/bin") { tool.copy(root + "/bin/" + name, prefix + "/bin/" + name); tool.chmod(prefix + "/bin/" + name, "755") }
+    let executable = prefix + "/bin/dev-os-session"
+    let quoted = strings.replaceAll(executable, "\\", "\\\\\\\\")
+    quoted = strings.replaceAll(quoted, "\"", "\\\"")
+    quoted = strings.replaceAll(quoted, "`", "\\`")
+    quoted = strings.replaceAll(quoted, "$", "\\$")
+    quoted = strings.replaceAll(quoted, "%", "%%")
+    let template = tool.read(root + "/data/wayland-sessions/dev-os.desktop")
+    template = strings.replaceAll(template, "\nExec=dev-os-session\n", "\nExec=\"" + quoted + "\"\n")
+    template = strings.replaceAll(template, "TryExec=dev-os-session\n", "TryExec=" + executable + "\n")
+    tool.write(prefix + "/share/wayland-sessions/dev-os.desktop", template)
+    print("Installed Dev OS to " + prefix)
+    print("Start: " + executable + " --nested")
+    return 0
+}
+return tool.main(main)

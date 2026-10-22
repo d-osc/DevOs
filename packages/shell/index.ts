@@ -122,7 +122,12 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         if (this.startupError) { printerr(this.startupError); return 1; }
         const command = args[0] ?? 'shell';
         switch (command) {
-        case 'launcher': case 'logout': case 'settings': this.invoke(command); break;
+        case 'app-store': case 'disk-manager': case 'task-manager': case 'launcher': case 'overlays-hide': case 'logout': case 'settings': case 'task-view': case 'task-view-show': case 'task-view-hide': this.invoke(command); break;
+        case 'wifi': this.invoke('settings.wifi'); break;
+        case 'network': this.invoke('settings.network'); break;
+        case 'language': this.invoke('settings.language'); break;
+        case 'time': this.invoke('settings.time'); break;
+        case 'system': case 'display': case 'sound': case 'power': case 'storage': case 'about': this.invoke(`settings.${command}`); break;
         case 'reload': return this.reloadConfig() ? 0 : 1;
         case 'terminal': case 'files': case 'lock': return this.runCommand(command) ? 0 : 1;
         case 'editor': {

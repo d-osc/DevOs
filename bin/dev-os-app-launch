@@ -1,0 +1,92 @@
+#!/usr/bin/env d
+# Launch a desktop entry in its own user cgroup without changing its Exec line.
+use "std/args"
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/crypto"
+use "std/encoding"
+use "std/uuid"
+use "std/path"
+use "../lib/posix.dev" as posix
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn hexPrefix(data: Vec<u8>, count: i64): str {
+    let digits = "0123456789abcdef"
+    let out = ""
+    for i in 0..count {
+        let value = data[i] as i64
+        out = out + strings.charAt(digits, value / 16) + strings.charAt(digits, value % 16)
+    }
+    return out
+}
+
+fn quote(value: str): str {
+    return "'" + strings.replaceAll(value, "'", "'\\''") + "'"
+}
+
+fn managedBus(): bool {
+    let bus = "/run/user/" + uidText() + "/bus"
+    if !fs.existsSync(bus) { return false }
+    posix.setEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + bus)
+    let output = child_process.execFileSync("systemctl", Vec<str>("--user", "show-environment"), child_process.options())
+    return output.success
+}
+
+fn uidText(): str {
+    let uid = posix.uid()
+    return "${uid}"
+}
+
+fn main(): i32 {
+    if args.len() != 2 {
+        print("DevOs app launch: Expected desktop ID and desktop file")
+        return 1
+    }
+    let appId = args.get(0)
+    let filename = args.get(1)
+    if !strings.startsWith(filename, "/") || !fs.existsSync(filename) || !strings.endsWith(filename, ".desktop") {
+        print("DevOs app launch: Invalid desktop entry")
+        return 1
+    }
+    if !managedBus() {
+        print("DevOs: user manager unavailable; opening app without memory ranking.")
+        return posix.shell("exec gio launch " + quote(filename))
+    }
+    let key = hexPrefix(crypto.hash("sha256", encoding.encode(strings.toLowerCase(appId), "utf8")), 12)
+    let random = strings.substring(strings.replaceAll(uuid.v4(), "-", ""), 0, 32)
+    let unit = "devos-app-" + key + "-" + random + ".service"
+    let names = Vec<str>("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_DATA_DIRS", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "HOME", "PATH",
+        "LANG", "LC_ALL", "DEV_OS_ROOT", "DEV_OS_SHELL", "WLR_RENDERER",
+        "LIBGL_ALWAYS_SOFTWARE", "GTK_THEME")
+    let command = ("exec systemd-run --user --quiet --collect --service-type=exec --expand-environment=no" +
+        " --slice=app.slice --unit=" + quote(unit) +
+        " --property=ExitType=cgroup --property=MemoryAccounting=yes")
+    let envParts = ""
+    for i in 0..(names.len() as i64) {
+        let value = envValue(names[i])
+        if !strings.equal(value, "") { envParts = envParts + " --setenv=" + quote(names[i] + "=" + value) }
+    }
+    command = command + envParts + " -- gio launch " + quote(filename)
+    return posix.shell(command)
+}
+
+fn envValue(name: str): str {
+    return posix.envValue(name)
+}
+return main()

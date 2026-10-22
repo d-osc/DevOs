@@ -3,6 +3,15 @@
 System extension สำหรับเลือก GTK icon theme ของ Dev OS shell
 ตั้งค่าผ่าน Settings → Theme icons → Apply
 
+หน้าใหม่แสดง preview ไอคอนจริงจาก GTK theme ที่เลือกและตัวอย่าง Material files
+โดยใช้ IconTheme แยก จึงไม่เปลี่ยนไอคอนจริงระหว่างทดลองเลือก มีรายการธีมที่ติดตั้ง
+ค้นหาและ Refresh หลังเพิ่มธีมในเครื่องได้ รวมถึง Apply/Reset และตัวเลือกใช้ session theme
+หากธีมที่บันทึกไว้หายไป จะแสดง preview ของ session theme และให้เลือกธีมที่ติดตั้งก่อน Apply
+ไอคอน symbolic ใน preview ใช้สีตาม style context เพื่อให้อ่านได้บนพื้นหลังมืด
+
+ทดสอบด้วย `npm run build` และ `gjs -m dist/icons-settings-test.js` ใน Linux ที่รองรับ GTK
+ครอบคลุม preview แยกจากค่าจริง, Apply/Reset, ค้นหา/รีเฟรช, Material icons และ session fallback
+
 - **Icon theme name**: ชื่อโฟลเดอร์ของธีมที่ติดตั้ง ค่าเริ่มต้น `Adwaita`
 - **Use the session icon theme**: ใช้ธีมที่ GTK กำหนดตอนเริ่ม session
 - **Material file and folder icons**: ใช้ไอคอนสีจาก Material Icon Theme ใน Files, Quick Open และแท็บ Editor (เปิดเป็นค่าเริ่มต้น)

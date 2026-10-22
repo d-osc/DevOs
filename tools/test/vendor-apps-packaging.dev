@@ -1,0 +1,74 @@
+#!/usr/bin/env d
+# Validate pinned vendor archives and real recipe installs in temporary roots.
+use "std/args"
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/regex"
+use "../lib/tool.dev" as tool
+use "../lib/feed.dev" as feed
+fn capture(pattern: str, text: str): str {
+    let matcher = regex.compile(pattern, "s")
+    let captures = matcher.captures(text)
+    matcher.close()
+    tool.require(captures.len() > 1, "Recipe field missing: " + pattern)
+    return captures[1]
+}
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d vendor-apps-packaging.dev -- CACHE_DIRECTORY"); return 0 }
+    tool.require(args.len() == 1, "Supply Chrome/VS Code vendor archive cache.")
+    let cache = args.get(0)
+    let results = json.array()
+    for app in Vec<str>("chrome", "code") {
+        let recipeName = strings.equal(app, "chrome") ? "devos-chrome_155.0.8059.84.bb" : "devos-vscode_1.142.0.bb"
+        let recipe = tool.read(tool.root() + "/distro/oe/meta-devos/recipes-apps/vendor/" + recipeName)
+        let install: str = capture("do_install\\(\\) \\{\\n(.*?)\\n\\}", recipe)
+        for arch in Vec<str>("arm64", "amd64") {
+            let override = strings.equal(arch, "arm64") ? "aarch64" : "x86-64"
+            let archive: str = cache + "/" + app + "-" + arch + ".deb"
+            let expected = capture("VENDOR_SHA256:" + override + " = \"([a-f0-9]+)\"", recipe)
+            let actual: str = feed.sha(archive)
+            tool.require(strings.equal(actual, expected), app + "/" + arch + ": checksum mismatch.")
+            tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("dpkg-deb", "-f", archive, "Architecture"))), arch), "Incorrect vendor architecture.")
+            tool.scope("devos-app-package-", fn(base: str) {
+                let source = base + "/source"
+                let target = base + "/image"
+                let build = base + "/build"
+                tool.exec(Vec<str>("dpkg-deb", "-x", archive, source)); fs.mkdirSync(build, true)
+                if strings.equal(app, "code") {
+                    let helper = cache + "/apply-seccomp-" + arch
+                    let bytes = fs.read_bytes(helper)
+                    tool.require(bytes.len() >= 20 && bytes[0] == 127 && bytes[1] == 69 && bytes[2] == 76 && bytes[3] == 70 && bytes[5] == 1, "Invalid seccomp ELF header.")
+                    let machine = bytes[18] as i64 + (bytes[19] as i64) * 256
+                    tool.require(machine == (strings.equal(arch, "arm64") ? 183 : 62), "Incorrect seccomp target architecture.")
+                    tool.copy(helper, build + "/apply-seccomp")
+                }
+                let env = Map<str,str>()
+                env.set("S", source); env.set("D", target); env.set("B", build)
+                env.set("bindir", "/usr/bin"); env.set("datadir", "/usr/share"); env.set("libdir", "/usr/lib")
+                env.set("VSCODE_ARCH", strings.equal(arch, "arm64") ? "arm64" : "x64")
+                let body = strings.replaceAll(install, "$" + "{@os.path.relpath(d.getVar('libdir') + '/devos-vscode', d.getVar('datadir'))}", "../lib/devos-vscode")
+                tool.shell(body, env)
+                let binary = strings.equal(app, "chrome") ? "opt/google/chrome/chrome" : "usr/share/code/code"
+                let sandbox = strings.equal(app, "chrome") ? "opt/google/chrome/chrome-sandbox" : "usr/share/code/chrome-sandbox"
+                tool.require(fs.is_file(target + "/" + binary), "Missing main executable.")
+                tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%a", target + "/" + sandbox))), "4755"), "Sandbox permissions lost.")
+                tool.require(!fs.existsSync(target + "/etc"), "Unexpected vendor repository/cron configuration.")
+                if strings.equal(app, "code") {
+                    tool.require(fs.is_file(target + "/usr/share/code/bin/code") && fs.is_file(target + "/usr/share/mime/packages/code-workspace.xml") && !fs.existsSync(target + "/usr/bin/code"), "Invalid VS Code installation layout.")
+                    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("readlink", target + "/usr/share/code"))), "../lib/devos-vscode"), "Invalid code symlink.")
+                    let helper = target + "/usr/lib/devos-vscode/resources/app/node_modules/@vscode/sandbox-runtime/vendor/seccomp/" + env.get("VSCODE_ARCH") + "/apply-seccomp"
+                    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%a", helper))), "755"), "Incorrect seccomp helper permissions.")
+                } else {
+                    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("readlink", target + "/usr/bin/google-chrome-stable"))), "/opt/google/chrome/google-chrome"), "Invalid Chrome launcher.")
+                    tool.require(!fs.existsSync(target + "/opt/google/chrome/libqt5_shim.so") && !fs.existsSync(target + "/opt/google/chrome/libqt6_shim.so"), "Unexpected Qt shims.")
+                }
+            })
+            results = json.push(results, {app: app, arch: arch, sha256: actual})
+            print("PASS: " + app + "/" + arch + " checksum, recipe install, executable and sandbox")
+        }
+    }
+    tool.jsonWrite(tool.root() + "/build/vendor-apps-install-check.json", results)
+    return 0
+}
+return tool.main(main)

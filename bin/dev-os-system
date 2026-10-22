@@ -1,0 +1,304 @@
+#!/usr/bin/env d
+# System information, native settings launchers and power profiles for DevOs.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/io"
+use "std/os"
+use "std/process"
+use "std/args"
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command + " 2>/dev/null"), child_process.options())
+    return decodeText(output.stdout)
+}
+
+fn readTrimmed(path: str): str {
+    if !fs.existsSync(path) { return "" }
+    return strings.trim(fs.readFileSync(path, "utf8"))
+}
+
+fn fieldOf(text: str, key: str, separator: str): str {
+    let lines = strings.split(text, "\n")
+    for i in 0..(lines.len() as i64) {
+        let at = strings.indexOf(lines[i], separator)
+        if at > 0 {
+            let name = strings.trim(strings.substring(lines[i], 0, at))
+            if strings.equal(name, key) {
+                return strings.trim(strings.replaceAll(strings.substring(lines[i], at + 1, strings.charLength(lines[i])), "\"", ""))
+            }
+        }
+    }
+    return ""
+}
+
+fn isWsl(): bool {
+    if !fs.existsSync("/proc/sys/kernel/osrelease") { return false }
+    return strings.contains(strings.toLowerCase(fs.readFileSync("/proc/sys/kernel/osrelease", "utf8")), "microsoft")
+}
+
+fn jsonText(value: json.Value): str {
+    if strings.equal(json.kind(value), "string") { return json.string(value) }
+    return ""
+}
+
+fn optGet(value: json.Value, key: str): json.Value {
+    if json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+
+fn powerProperties(name: str, path: str): json.Value {
+    let output = capture("busctl call org.freedesktop.UPower " + path + " org.freedesktop.DBus.Properties GetAll s " + name)
+    return json.set(json.object(), "raw", output)
+}
+
+fn powerProfileState(): json.Value {
+    let result = json.set(json.object(), "available", false)
+    result = json.set(result, "active", "")
+    result = json.set(result, "profiles", json.array())
+    result = json.set(result, "degraded", "")
+    result = json.set(result, "error", "")
+    let probe = capture("busctl call org.freedesktop.UPower /org/freedesktop/UPower/PowerProfiles org.freedesktop.DBus.Properties GetAll s org.freedesktop.UPower.PowerProfiles")
+    let fallback = false
+    if strings.equal(strings.trim(probe), "") {
+        probe = capture("busctl call org.freedesktop.UPower /net/hadess/PowerProfiles org.freedesktop.DBus.Properties GetAll s net.hadess.PowerProfiles")
+        fallback = strings.equal(strings.trim(probe), "")
+    }
+    if strings.equal(strings.trim(probe), "") {
+        return json.set(result, "error", "Power profiles unavailable: busctl call failed.")
+    }
+    let profiles = json.array()
+    for candidate in 0..3 {
+        let name = "power-saver"
+        if candidate == 1 { name = "balanced" }
+        if candidate == 2 { name = "performance" }
+        if strings.contains(probe, "\"" + name + "\"") { profiles = json.push(profiles, name) }
+    }
+    result = json.set(result, "available", true)
+    result = json.set(result, "profiles", profiles)
+    let activeAt = strings.indexOf(probe, "ActiveProfile")
+    if activeAt >= 0 {
+        let rest = strings.substring(probe, activeAt, strings.charLength(probe))
+        let quote = strings.indexOf(rest, "\"")
+        if quote >= 0 {
+            let after = strings.substring(rest, quote + 1, strings.charLength(rest))
+            let endQuote = strings.indexOf(after, "\"")
+            if endQuote >= 0 { result = json.set(result, "active", strings.substring(after, 0, endQuote)) }
+        }
+    }
+    return result
+}
+
+fn batteries(): json.Value {
+    let result = json.array()
+    if !fs.existsSync("/sys/class/power_supply") { return result }
+    let names = fs.readdirSync("/sys/class/power_supply")
+    for i in 0..(names.len() as i64) {
+        let base = "/sys/class/power_supply/" + names[i]
+        if !strings.equal(readTrimmed(base + "/type"), "Battery") { continue }
+        let capacity = readTrimmed(base + "/capacity")
+        let percent = json.null_value()
+        if !strings.equal(capacity, "") && strings.charLength(capacity) > 0 && strings.contains("0123456789", strings.charAt(capacity, 0)) {
+            let value = intOf(capacity)
+            if value < 0 { value = 0 }
+            if value > 100 { value = 100 }
+            percent = json.value(value)
+        }
+        let model = readTrimmed(base + "/model_name")
+        let status = readTrimmed(base + "/status")
+        let item = json.set(json.object(), "name", strings.equal(model, "") ? names[i] : model)
+        item = json.set(item, "status", strings.equal(status, "") ? "Unknown" : status)
+        item = json.set(item, "percent", percent)
+        result = json.push(result, item)
+    }
+    return result
+}
+
+fn intOf(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        if !strings.contains("0123456789", ch) { break }
+        let digit = 0
+        let digits = "0123456789"
+        for d in 0..10 {
+            if strings.equal(strings.charAt(digits, d), ch) { digit = d }
+        }
+        value = value * 10 + digit
+    }
+    return value
+}
+
+fn storageEntries(): json.Value {
+    let result = json.array()
+    let seen = ""
+    for i in 0..2 {
+        let path = "/"
+        if i == 1 { path = os.homedir() }
+        let device = strings.trim(capture("stat -c %d " + path))
+        if strings.equal(device, "") || strings.contains(seen, " " + device + " ") { continue }
+        seen = seen + " " + device + " "
+        let dfLine = strings.trim(capture("df -k -P " + path + " | tail -1"))
+        let parts = strings.split(dfLine, " ")
+        let numbers = Vec<str>()
+        for p in 0..(parts.len() as i64) {
+            if !strings.equal(parts[p], "") { numbers.push(parts[p]) }
+        }
+        if numbers.len() < 4 { continue }
+        let item = json.set(json.object(), "path", path)
+        item = json.set(item, "total", json.value(intOf(numbers[1]) * 1024))
+        item = json.set(item, "used", json.value(intOf(numbers[2]) * 1024))
+        item = json.set(item, "free", json.value(intOf(numbers[3]) * 1024))
+        result = json.push(result, item)
+    }
+    return result
+}
+
+fn toolAvailable(tool: str): bool {
+    return !strings.equal(strings.trim(capture("command -v " + tool)), "")
+}
+
+fn inventory(): json.Value {
+    let wsl = isWsl()
+    let meminfo = fs.readFileSync("/proc/meminfo", "utf8")
+    let cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8")
+    let release = fs.readFileSync("/etc/os-release", "utf8")
+    let root = process.getenv("DEV_OS_ROOT")
+    if strings.equal(root, "") { root = "/usr/share/dev-os" }
+    let build = json.object()
+    if fs.existsSync(root + "/dist/build-info.json") {
+        build = json.parse(fs.readFileSync(root + "/dist/build-info.json", "utf8"))
+    }
+    let memTotal = fieldOf(meminfo, "MemTotal", ":")
+    let memValue = intOf(memTotal) * 1024
+    let cpuModel = fieldOf(cpuinfo, "model name", ":")
+    if strings.equal(cpuModel, "") { cpuModel = fieldOf(cpuinfo, "Processor", ":") }
+    let machine = strings.trim(capture("uname -m"))
+    if strings.equal(cpuModel, "") { cpuModel = machine }
+    let hostname = strings.trim(capture("hostname"))
+    let kernel = strings.trim(capture("uname -r"))
+    let sessionType = process.getenv("XDG_SESSION_TYPE")
+    if strings.equal(sessionType, "") { sessionType = "unknown" }
+    let power = wsl ? json.set(json.set(json.set(json.set(json.object(), "available", false), "active", ""), "profiles", json.array()), "error", "") : powerProfileState()
+    let tools = json.set(json.object(), "display", toolAvailable("wdisplays"))
+    tools = json.set(tools, "sound", toolAvailable("pavucontrol"))
+    let state = json.set(json.object(), "hostManaged", wsl)
+    state = json.set(state, "hostname", hostname)
+    state = json.set(state, "os", fieldOf(release, "PRETTY_NAME", "="))
+    if strings.equal(json.string(optGet(state, "os")), "") { state = json.set(state, "os", "Linux") }
+    state = json.set(state, "kernel", kernel)
+    state = json.set(state, "architecture", machine)
+    state = json.set(state, "cpu", cpuModel)
+    state = json.set(state, "processors", json.value(os.availableParallelism()))
+    state = json.set(state, "memory", json.value(memValue))
+    state = json.set(state, "session", sessionType)
+    state = json.set(state, "desktopBuild", build)
+    state = json.set(state, "storage", storageEntries())
+    state = json.set(state, "batteries", batteries())
+    state = json.set(state, "power", power)
+    state = json.set(state, "tools", tools)
+    state = json.set(state, "hostSettings", wsl && fs.existsSync("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"))
+    return state
+}
+
+fn hostPage(page: str): str {
+    if strings.equal(page, "display") { return "display" }
+    if strings.equal(page, "sound") { return "sound" }
+    if strings.equal(page, "power") { return "powersleep" }
+    if strings.equal(page, "storage") { return "storagesense" }
+    if strings.equal(page, "about") { return "about" }
+    return ""
+}
+
+fn openPage(page: str, host: bool): str {
+    let mapped = hostPage(page)
+    if strings.equal(mapped, "") { return "Unknown system settings page." }
+    if host {
+        if !isWsl() { return "Windows settings are unavailable." }
+        let rc = capture("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -Command \"Start-Process 'ms-settings:" + mapped + "'\"")
+        return ""
+    }
+    let tool = ""
+    if strings.equal(page, "display") { tool = "wdisplays" }
+    if strings.equal(page, "sound") { tool = "pavucontrol" }
+    if !strings.equal(tool, "") {
+        if !toolAvailable(tool) { return "The configuration tool is not installed. It is included in the DevOs desktop image." }
+        posix.shell(tool + " >/dev/null 2>&1 &")
+    }
+    return ""
+}
+
+use "../lib/posix.dev" as posix
+
+fn selectProfile(profile: str): str {
+    if !strings.equal(profile, "power-saver") && !strings.equal(profile, "balanced") && !strings.equal(profile, "performance") {
+        return "This power profile is unavailable."
+    }
+    let probe = capture("busctl call org.freedesktop.UPower /org/freedesktop/UPower/PowerProfiles org.freedesktop.DBus.Properties GetAll s org.freedesktop.UPower.PowerProfiles")
+    let name = "org.freedesktop.UPower.PowerProfiles"
+    let path = "/org/freedesktop/UPower/PowerProfiles"
+    if strings.equal(strings.trim(probe), "") {
+        probe = capture("busctl call org.freedesktop.UPower /net/hadess/PowerProfiles org.freedesktop.DBus.Properties GetAll s net.hadess.PowerProfiles")
+        name = "net.hadess.PowerProfiles"
+        path = "/net/hadess/PowerProfiles"
+    }
+    if !strings.contains(probe, "\"" + profile + "\"") { return "This power profile is unavailable." }
+    let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.UPower", path,
+        "org.freedesktop.DBus.Properties", "Set", "ssv", name, "ActiveProfile", "s", profile), child_process.options())
+    if !output.success { return "This power profile is unavailable." }
+    return ""
+}
+
+fn main(): i32 {
+    let raw = io.read_line()
+    if strings.equal(strings.trim(raw), "") { return fail("Invalid system settings request.") }
+    let request = json.parse(raw)
+    let action = ""
+    if json.has(request, "action") { action = jsonText(json.get(request, "action")) }
+    if strings.equal(action, "get") {
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", inventory())))
+        return 0
+    }
+    if strings.equal(action, "open") {
+        let host = false
+        if json.has(request, "host") { host = json.bool(json.get(request, "host")) }
+        let page = ""
+        if json.has(request, "page") { page = jsonText(json.get(request, "page")) }
+        let error = openPage(page, host)
+        if !strings.equal(error, "") { return fail(error) }
+        print(json.stringify(json.set(json.object(), "ok", true)))
+        return 0
+    }
+    if strings.equal(action, "power") {
+        if isWsl() { return fail("Windows manages power profiles in WSL.") }
+        let profile = ""
+        if json.has(request, "profile") { profile = jsonText(json.get(request, "profile")) }
+        let error = selectProfile(profile)
+        if !strings.equal(error, "") { return fail(error) }
+        print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", inventory())))
+        return 0
+    }
+    return fail("Unsupported system settings action.")
+}
+
+fn fail(message: str): i32 {
+    print(json.stringify(json.set(json.set(json.object(), "ok", false), "error", message)))
+    return 1
+}
+return main()

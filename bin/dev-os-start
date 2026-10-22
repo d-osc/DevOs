@@ -5,5 +5,7 @@ if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; e
 export DEV_OS_ROOT="$root"
 export DEV_OS_SHELL="$base/bin/dev-os-shell"
 . "$base/bin/dev-os-runtime-env"
-exec gjs -m "$root/dist/supervisor.js"
-
+if [ "${DEV_OS_LOGIN:-0}" = 1 ]; then
+    gjs -m "$root/dist/login.js"
+fi
+exec d "$base/bin/dev-os-system-run" -- gjs -m "$root/dist/supervisor.js"

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+: "${HOME:?Session home directory is missing}"
+logdir=${XDG_STATE_HOME:-$HOME/.local/state}/devos
+mkdir -p "$logdir"
+# Clear text left on the login VT before Wayland takes over.
+if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
+exec >>"$logdir/devos-greeter.log" 2>&1
+# The QEMU TCG runner exposes a 2D virtio GPU without accelerated EGL.
+case " $(cat /proc/cmdline) " in
+    *' devos.renderer=pixman '*) export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1 ;;
+esac
+export DEV_OS_ROOT=/usr/share/dev-os
+export GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland
+export XDG_DATA_DIRS=/usr/share/dev-os/data:/usr/local/share:/usr/share
+if [ "${1:-}" = --ui ]; then
+    polkit-gnome-authentication-agent-1 &
+    agent=$!
+    trap 'kill "$agent" 2>/dev/null || true' EXIT
+    gjs -m /usr/share/dev-os/dist/login.js
+    kill "$agent" 2>/dev/null || true
+    exec labwc --exit
+fi
+exec dbus-run-session -- labwc -C /usr/share/dev-os/config/greeter -s '/usr/bin/devos-greeter --ui'

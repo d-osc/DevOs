@@ -1,0 +1,5 @@
+[Desktop Entry]
+# DevOs provides com.microsoft.VSCode.desktop with its native Wayland launcher.
+Type=Application
+Name=Visual Studio Code
+Hidden=true

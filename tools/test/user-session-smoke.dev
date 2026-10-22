@@ -1,0 +1,23 @@
+#!/usr/bin/env d
+use "std/args"
+use "std/json"
+use "std/process"
+use "std/result"
+use "../../lib/posix.dev" as posix
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d user-session-smoke.dev -- ROOT EXPECTED_UID"); return 0 }
+    tool.require(args.len() == 2, "Supply runtime root and expected UID.")
+    let root: str = tool.resolve(args.get(0))
+    let expected = json.int(json.parse(args.get(1)))
+    tool.require(posix.uid() as i64 == expected && expected >= 1000, "Run as the selected non-root user.")
+    tool.scope("devos-user-test-", fn(base: str) {
+        let session: smoke.Session = smoke.start(base, root, Map<str,str>())
+        let outcome = result.run(fn() { smoke.waitReady(session); print("PASS: independent DevOs desktop booted as UID " + json.stringify(posix.uid()) + " with HOME=" + process.getenv("HOME")) })
+        smoke.cleanup(session)
+        result.unwrap(outcome)
+    })
+    return 0
+}
+return tool.main(main)

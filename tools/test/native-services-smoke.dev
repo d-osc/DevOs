@@ -1,0 +1,40 @@
+#!/usr/bin/env d
+# Exercise the real GTK sudo prompt in a disposable Wayland session.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/child_process"
+use "std/time"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+fn prompt(session: smoke.Session, pointer: smoke.Input, accept: bool) {
+    let env: Map<str,str> = smoke.environment(session)
+    let output = session.base + (accept ? "/askpass-accept" : "/askpass-cancel")
+    let child = smoke.launch(Vec<str>("d", session.root + "/native/devos-account-askpass.dev", "--", "Administrator password:"), env, output)
+    let outcome = result.run(fn() {
+        ui.windowCount(env, "Administrator authentication", 1)
+        tool.require(ui.window(env, "focus", ui.title(env, "Administrator authentication"), ""), "Cannot focus askpass dialog.")
+        time.sleep_ms(500)
+        smoke.screenshot(env, session.root + "/build/test-results/askpass-prompt.png")
+        if accept {
+            ui.click(pointer, 550, 370, "left")
+            time.sleep_ms(300)
+            smoke.key(env, Vec<str>("-s", "300", "-d", "40", "fixture-password"))
+            ui.click(pointer, 760, 420, "left")
+        } else { ui.click(pointer, 630, 420, "left") }
+        tool.waitFor(fn(): bool { return child.ready() }, 10000, "Askpass dialog did not finish.")
+        let status = child.wait()
+        tool.require(status.code == (accept ? 0 : 1), "Incorrect askpass exit status:\n" + tool.read(output))
+        tool.require(strings.equal(tool.read(output), accept ? "fixture-password\n" : ""), "Askpass protocol output mismatch.")
+    })
+    if result.isErr(outcome) { tool.copy(output, session.root + "/build/test-results/askpass-output.log"); result.run(fn() { smoke.stop(child) }); result.unwrap(outcome) }
+}
+fn main(): i32 {
+    if tool.has("--help") { print("Test native DevLang askpass accept/cancel over headless Wayland."); return 0 }
+    ui.withPointer("native-services", Map<str,str>(), fn(session: smoke.Session, env: Map<str,str>, pointer: smoke.Input) { prompt(session, pointer, true); prompt(session, pointer, false) })
+    print("PASS: DevLang GTK askpass accepts via private stdout and cancels without output")
+    return 0
+}
+return tool.main(main)

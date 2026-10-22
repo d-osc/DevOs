@@ -1,0 +1,57 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+fn main(): i32 {
+    if tool.has("--help") { print("Check real compositor app icons and window menus in a private session."); return 0 }
+    tool.scope("devos-app-icons-", fn(base: str) {
+        let data = base + "/data"
+        fs.mkdirSync(data, true); ui.makeIcon(data + "/app.png")
+        tool.write(data + "/applications/org.devos.IconFixture.desktop", "[Desktop Entry]\nType=Application\nName=Icon Fixture\nExec=foot\nIcon=" + data + "/app.png\nStartupWMClass=dev-os-icon-alias\n")
+        let extras = Map<str,str>(); extras.set("XDG_DATA_DIRS", data + ":/usr/local/share:/usr/share")
+        ui.withPointer("screenshots-app-icons", extras, fn(session: smoke.Session, env: Map<str,str>, pointer: smoke.Input) {
+            let screens = session.root + "/build/screenshots-app-icons"
+            let icons = json.object()
+            for appId in Vec<str>("foot", "org.devos.IconFixture", "dev-os-icon-alias", "dev-os-no-icon") {
+                let title: str = "Icon smoke " + appId
+                let client: child_process.Child = smoke.launch(Vec<str>("foot", "--app-id=" + appId, "--title=" + title, "sh", "-c", "sleep 120"), env, session.log)
+                let outcome = result.run(fn() {
+                    tool.waitFor(fn(): bool { return ui.window(env, "find", title, "") }, 12000, "Icon fixture did not map.")
+                    tool.require(ui.window(env, "maximize", title, "") && ui.window(env, "focus", title, ""), "Cannot focus icon fixture.")
+                    time.sleep_ms(500)
+                    let p = ui.move(pointer, 1000, 600)
+                    let file = screens + "/" + appId + ".png"
+                    smoke.screenshot(env, file)
+                    let pixels = ui.pixels(file, 3, 3, 20, 23)
+                    let red = 0
+                    let unique = Map<str,bool>()
+                    for i in 0..(json.len(pixels) as i64) {
+                        let pixel = json.at(pixels, i)
+                        unique.set(json.stringify(pixel), true)
+                        if json.int(json.at(pixel, 0)) > 200 && json.int(json.at(pixel, 1)) < 100 && json.int(json.at(pixel, 2)) < 100 { red = red + 1 }
+                    }
+                    if strings.equal(appId, "org.devos.IconFixture") || strings.equal(appId, "dev-os-icon-alias") { tool.require(red >= 100, "Header must display the .desktop icon.") }
+                    else { tool.require(unique.len() > 10, "Header must show an icon, not a flat dot.") }
+                    tool.jsonWrite(session.base + "/icon-" + appId + ".json", pixels)
+                    p = ui.click(p, 13, 12, "left"); time.sleep_ms(150)
+                    smoke.key(env, Vec<str>("-k", "Down", "-k", "Return")); ui.state(env, title, "minimized")
+                    tool.require(ui.window(env, "focus", title, ""), "Cannot restore icon fixture."); ui.state(env, title, "activated")
+                    p = ui.click(p, 500, 12, "right"); time.sleep_ms(150)
+                    smoke.key(env, Vec<str>("-k", "Down", "-k", "Return")); ui.state(env, title, "minimized")
+                })
+                smoke.stop(client); result.unwrap(outcome)
+                print("PASS: " + appId + " icon, icon menu and header right-click")
+            }
+            tool.require(!strings.equal(tool.read(session.base + "/icon-foot.json"), tool.read(session.base + "/icon-dev-os-no-icon.json")), "Known apps must use their own icon.")
+            tool.require(!strings.contains(tool.read(session.log), "CRITICAL"), tool.read(session.log))
+        })
+    })
+    return 0
+}
+return tool.main(main)

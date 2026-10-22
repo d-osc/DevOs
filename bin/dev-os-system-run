@@ -1,0 +1,52 @@
+#!/usr/bin/env d
+# Keep the native DevOs shell and its shared app process out of swap.
+use "std/fs"
+use "std/args"
+use "std/strings"
+use "std/uuid"
+use "std/process"
+use "../lib/posix.dev" as posix
+
+fn uidText(): str {
+    let uid = posix.uid()
+    return "${uid}"
+}
+
+fn quote(value: str): str {
+    return "'" + strings.replaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+fn main(): i32 {
+    if args.len() < 1 {
+        print("DevOs: missing system application command")
+        return 1
+    }
+    let sessionBus = process.getenv("DBUS_SESSION_BUS_ADDRESS")
+    let bus = "/run/user/" + uidText() + "/bus"
+    posix.setEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + bus)
+    let managed = false
+    if fs.existsSync(bus) {
+        let probe = posix.shell("systemctl --user show-environment >/dev/null 2>&1")
+        managed = probe == 0
+    }
+    let joined = ""
+    for i in 0..(args.len() as i64) { joined = joined + " " + quote(args.get(i)) }
+    if !managed {
+        posix.setEnv("DBUS_SESSION_BUS_ADDRESS", sessionBus)
+        print("DevOs: user manager unavailable; system RAM policy cannot be applied.")
+        return status(posix.shell("exec " + joined))
+    }
+    let busArg = strings.len(sessionBus) > 0 ? sessionBus : ""
+    let scopeId = strings.substring(strings.replaceAll(uuid.v4(), "-", ""), 0, 12)
+    let command = ("exec systemd-run --user --scope --quiet --collect --slice=app.slice" +
+        " --unit=devos-system-" + scopeId + ".scope --property=MemoryAccounting=yes --property=MemorySwapMax=0" +
+        " --property=MemoryLow=256M -- /usr/bin/env")
+    if !strings.equal(busArg, "") {
+        command = command + " " + quote("DBUS_SESSION_BUS_ADDRESS=" + busArg) + joined
+    } else {
+        command = command + " -u DBUS_SESSION_BUS_ADDRESS" + joined
+    }
+    return status(posix.shell(command))
+}
+fn status(value: i32): i32 { return value < 0 ? 1 : ((value & 127) != 0 ? 128 + (value & 127) : value >> 8) }
+return main()

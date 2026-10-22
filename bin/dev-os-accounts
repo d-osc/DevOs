@@ -1,0 +1,10 @@
+#!/usr/bin/env d
+use "std/io"
+use "std/json"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/accounts.dev" as accounts
+let outcome = result.attempt(fn(): json.Value { return accounts.execute(json.parse(io.read_line())) })
+if result.isErr(outcome) { print(json.stringify(util.error(result.message(outcome)))); return 1 }
+print(json.stringify(json.set(result.unwrap(outcome), "ok", true)))
+return 0

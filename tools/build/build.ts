@@ -94,10 +94,11 @@ function checkTypes(emit = false): void {
 const options: BuildOptions = {
     absWorkingDir: root,
     entryPoints: {...libraryEntries(), ...uiEntries(), 'react-gtk': 'packages/core/compat.ts',
+        'wifi-native-test': 'tests/wifi-native.test.tsx',
         'panel-view': 'packages/compat/panel-view.tsx', 'react-demo': 'examples/Counter.tsx',
-        'launcher-view': 'packages/compat/launcher-view.tsx', 'background-view': 'packages/compat/background-view.tsx',
-        'lock-test': 'tests/lock.test.ts', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'desktop-ui-test': 'tests/desktop-ui.test.tsx', 'performance-test': 'tests/performance.test.tsx',
-        main: 'src/main.ts', supervisor: 'packages/supervisor/entry.ts', 'config-test': 'tests/config.test.ts',
+        'launcher-view': 'packages/compat/launcher-view.tsx', 'background-view': 'packages/compat/background-view.tsx', 'launcher-native-test': 'tests/launcher-native.test.ts', 'desktop-animation-native-test': 'tests/desktop-animation-native.test.ts',
+        'system-settings-test': 'tests/system-settings.test.tsx', 'time-settings-test': 'tests/time-settings.test.tsx', 'panel-language-test': 'tests/panel-language.test.tsx', 'language-settings-test': 'tests/language-settings.test.tsx', 'task-view-native-test': 'tests/task-view-native.test.ts', 'task-view-test': 'tests/task-view.test.tsx', 'files-settings-test': 'tests/files-settings.test.tsx', 'icons-settings-test': 'tests/icons-settings.test.tsx', 'theme-settings-test': 'tests/theme-settings.test.tsx', 'terminal-settings-test': 'tests/terminal-settings.test.tsx', 'settings-preferences-test': 'tests/settings-preferences.test.tsx', 'panel-settings-test': 'tests/panel-settings.test.tsx', 'launcher-settings-test': 'tests/launcher-settings.test.tsx', 'clock-settings-test': 'tests/clock-settings.test.tsx', 'panel-menu-native-test': 'tests/panel-menu-native.test.ts', 'background-menu-native-test': 'tests/background-menu-native.test.ts', 'background-test': 'tests/background.test.tsx', 'bluetooth-ui-test': 'tests/bluetooth-ui.test.tsx', 'wifi-test': 'tests/wifi.test.ts', 'lock-test': 'tests/lock.test.ts', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'desktop-ui-test': 'tests/desktop-ui.test.tsx', 'live-editor-test': 'tests/live-editor.test.ts', 'performance-test': 'tests/performance.test.tsx',
+        'app-store-test': 'tests/app-store.test.tsx', 'disk-manager-test': 'tests/disk-manager.test.tsx', 'task-manager-test': 'tests/task-manager.test.tsx', 'os-login-test': 'tests/os-login.test.tsx', 'accounts-settings-test': 'tests/accounts-settings.test.tsx', 'login': 'src/login.tsx', main: 'src/main.ts', supervisor: 'packages/supervisor/entry.ts', 'config-test': 'tests/config.test.ts',
         'extensions-test': 'tests/extensions.test.ts', 'updates-test': 'tests/updates.test.ts', 'updates-live-test': 'tests/updates-live.test.ts', 'store-test': 'tests/store.test.ts', 'version-request-test': 'tests/version-request.test.ts'},
     // Desktop UI tests use the same external React runtime as every view.
     outdir: resolve(root, 'dist'), bundle: true, splitting: true, format: 'esm', platform: 'neutral',
@@ -125,13 +126,15 @@ const editorOptions: BuildOptions = {
         'json.worker': 'node_modules/monaco-editor/esm/vs/language/json/json.worker.js',
         'css.worker': 'node_modules/monaco-editor/esm/vs/language/css/css.worker.js',
         'html.worker': 'node_modules/monaco-editor/esm/vs/language/html/html.worker.js'},
-    outdir: resolve(root, 'dist/editor'), bundle: true, format: 'iife', platform: 'browser',
+    // Preserve Monaco's lazy language imports instead of inlining every language
+    // into the first script parsed on a cold Live USB boot.
+    outdir: resolve(root, 'dist/editor'), bundle: true, format: 'esm', splitting: true, platform: 'browser',
     target: 'safari16', jsx: 'automatic', minify: true, loader: {'.ttf': 'file'},
     metafile: true,
     define: {'process.env.NODE_ENV': '"production"'}, logLevel: 'info',
 };
 mkdirSync(resolve(root, 'dist/editor'), {recursive: true});
-writeFileSync(resolve(root, 'dist/editor/index.html'), '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script src="app.js"></script></body></html>');
+writeFileSync(resolve(root, 'dist/editor/index.html'), '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>');
 if (process.argv.includes('--watch')) {
     const editorSession = await context(editorOptions); await editorSession.watch();
     const session = await context(options); await session.watch();

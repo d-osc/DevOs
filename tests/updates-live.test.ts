@@ -5,7 +5,7 @@ import System from 'system';
 import {Updates, run, type UpdateTransport} from '@dev-os/updates';
 
 
-// Run only through tools/test/update-smoke.py: an isolated root, real GitHub API and
+// Run only through tools/test/update-smoke.dev: an isolated root, real GitHub API and
 // the production HTTPS downloader. Never change the current user's selection.
 const base = ARGV[0];
 if (!base || !/^\/tmp\/dev-os-live-update-[A-Za-z0-9_-]+$/.test(base)) throw new Error('A private live-update test directory is required');

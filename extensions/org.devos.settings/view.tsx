@@ -13,7 +13,20 @@ export interface SettingsServices {
     saveCore(value: unknown): void;
     applied(): void;
     openSettingsFile?(id: string): void;
+    openFiles?(): void;
+    switchUser?(username?: string): void;
 }
+import {NetworkSettings} from './network-view.js';
+import {BluetoothDevicesSettings} from './bluetooth-view.js';
+import {LanguageSettings} from './language-view.js';
+import {TimeSettings} from './time-view.js';
+import {SystemSettings} from './system-view.js';
+import {AccountsSettings} from './accounts-view.js';
+import {isSystemPage} from './system.js';
+import {ClockSettings} from '../org.devos.clock/settings-view.js';
+import {SettingsPreferences} from './settings-view.js';
+import {settingsOptions, settingsStartPage} from './options.js';
+
 type Draft = Record<string, string | boolean>;
 const commandKeys = ['terminal', 'files', 'lock', 'autostart'];
 function draft(values: SettingsValues): Draft {
@@ -48,6 +61,9 @@ const pageIcons: Record<string, string> = {
     'org.devos.theme': 'applications-graphics-symbolic',
     'org.devos.updates': 'software-update-available-symbolic',
     'org.devos.store': 'application-x-addon-symbolic',
+    'org.devos.appstore': 'system-software-install-symbolic',
+    'org.devos.diskmanager': 'drive-harddisk-symbolic',
+    'org.devos.taskmanager': 'utilities-system-monitor-symbolic',
 };
 const sectionIcons: Record<string, string> = {
     appearance: 'applications-graphics-symbolic', panel: 'preferences-system-time-symbolic', session: 'system-run-symbolic',
@@ -164,8 +180,8 @@ function Editor({title, description, icon, sections, values, enabled, error, cor
         </Box>
     </Box>;
 }
-function SettingsView({services}: {services: SettingsServices}) {
-    const [selected, select] = useState('core');
+export function SettingsView({services, initialPage = 'system', onPageChanged}: {services: SettingsServices; initialPage?: string; onPageChanged?(page: string): void}) {
+    const [selected, select] = useState(initialPage);
     const [revision, refresh] = useState(0);
     const [notice, setNotice] = useState('');
     const [query, setQuery] = useState('');
@@ -179,10 +195,11 @@ function SettingsView({services}: {services: SettingsServices}) {
     const page = info ? {title: info.manifest.name, description: info.manifest.description,
         sections: info.manifest.settings, values: info.state.values, enabled: info.manifest.system ? undefined : info.state.enabled, error: info.error} :
         {title: 'Desktop', description: 'Personalize your workspace, panel and session.', ...core};
-    const choose = (id: string) => { select(id); setNotice(''); };
+    const options = settingsOptions(catalog.find(item => item.manifest.id === 'org.devos.settings')?.state.values);
+    const choose = (id: string) => { select(id); onPageChanged?.(id); setNotice(''); };
     const CustomPage = services.pages?.get(selected);
     return <Box expand fill>
-        <Box className="settings-sidebar" orientation="vertical" spacing={14} widthRequest={220}>
+        <Box className={`settings-sidebar ${options.compactNavigation ? 'settings-sidebar-compact' : ''}`} orientation="vertical" spacing={14} widthRequest={220}>
             <Box spacing={10} marginBottom={4}>
                 <Box className="settings-brand" widthRequest={36} heightRequest={36}>
                     <Image iconName="preferences-system-symbolic" pixelSize={20} expand />
@@ -196,15 +213,20 @@ function SettingsView({services}: {services: SettingsServices}) {
                 onChanged={entry => setQuery(entry.get_text())} />
             <Box orientation="vertical" spacing={6}>
                 <Label className="settings-eyebrow" xalign={0} marginBottom={4}>PREFERENCES</Label>
-                <Button id="settings-nav-core" className={`settings-nav ${selected === 'core' ? 'settings-nav-active' : ''}`} onClicked={() => choose('core')}>
-                    <Box spacing={10}><Image iconName={pageIcons.core} pixelSize={17} /><Label xalign={0} expand>Desktop</Label></Box>
+                <Button id="settings-nav-accounts" className={`settings-nav ${selected === 'accounts' ? 'settings-nav-active' : ''}`} onClicked={() => choose('accounts')}><Box spacing={10}><Image iconName="avatar-default-symbolic" pixelSize={17} /><Label xalign={0} expand>Accounts</Label></Box></Button>
+                <Button id="settings-nav-system" className={`settings-nav ${isSystemPage(selected) || ['core', 'language', 'time'].includes(selected) ? 'settings-nav-active' : ''}`} onClicked={() => choose('system')}><Box spacing={10}><Image iconName="computer-symbolic" pixelSize={17} /><Label xalign={0} expand>System</Label></Box></Button>
+                <Button id="settings-nav-network" className={`settings-nav ${['network', 'wifi'].includes(selected) ? 'settings-nav-active' : ''}`} onClicked={() => choose('network')}>
+                    <Box spacing={10}><Image iconName="network-workgroup-symbolic" pixelSize={17} /><Label xalign={0} expand>Network &amp; Internet</Label></Box>
+                </Button>
+                <Button id="settings-nav-bluetooth" className={`settings-nav ${selected === 'bluetooth' ? 'settings-nav-active' : ''}`} onClicked={() => choose('bluetooth')}>
+                    <Box spacing={10}><Image iconName="bluetooth-symbolic" pixelSize={17} /><Label xalign={0} expand>Bluetooth &amp; Devices</Label></Box>
                 </Button>
             </Box>
             <Box spacing={6}>
                 <Label className="settings-eyebrow" xalign={0} expand>EXTENSIONS</Label>
                 <Label className="settings-nav-count">{filtered.length}</Label>
             </Box>
-            <ScrolledWindow expand fill minContentHeight={200} hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
+            <ScrolledWindow expand fill minContentHeight={120} hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
                 <Box orientation="vertical" spacing={5}>
                     {filtered.map(item => <Button key={item.manifest.id} id={`settings-nav-${item.manifest.id}`}
                         className={`settings-nav ${selected === item.manifest.id ? 'settings-nav-active' : ''}`}
@@ -225,13 +247,9 @@ function SettingsView({services}: {services: SettingsServices}) {
                 <Image iconName="preferences-desktop-symbolic" pixelSize={15} />
                 <Label className="settings-description" xalign={0} expand ellipsize={Pango.EllipsizeMode.END}>{services.getCore().name}</Label>
             </Box>
-            {services.openSettingsFile && <Button id="settings-open-json" tooltip="Open this page's settings file in Editor" onClicked={() => {
-                try { services.openSettingsFile!(selected); setNotice('Settings file opened in Editor'); }
-                catch (error) { setNotice(String(error)); }
-            }}><Box spacing={8}><Image iconName="text-x-script-symbolic" pixelSize={15} /><Label>Open settings JSON</Label></Box></Button>}
             {CustomPage && notice && <Label className="settings-description" xalign={0} wrap>{notice}</Label>}
         </Box>
-        {CustomPage ? <CustomPage key={selected} /> : <Editor key={`${selected}/${revision}`} {...page} icon={pageIcons[selected] ?? 'application-x-addon-symbolic'} core={!info} notice={notice}
+        {selected === 'accounts' ? <AccountsSettings switchUser={services.switchUser} /> : isSystemPage(selected) ? <SystemSettings page={selected} navigate={choose} openFiles={services.openFiles} /> : selected === 'time' ? <TimeSettings showClock={() => choose('org.devos.clock')} /> : selected === 'language' ? <LanguageSettings /> : selected === 'org.devos.settings' ? <SettingsPreferences preferences={services.extensions} /> : selected === 'org.devos.clock' ? <ClockSettings preferences={services.extensions} fallback={services.getCore().clock_format} applied={services.applied} /> : selected === 'bluetooth' ? <BluetoothDevicesSettings /> : selected === 'network' || selected === 'wifi' ? <NetworkSettings page={selected} navigate={choose} /> : CustomPage ? <CustomPage key={selected} /> : <Editor key={`${selected}/${revision}`} {...page} icon={pageIcons[selected] ?? 'application-x-addon-symbolic'} core={!info} notice={notice}
             apply={(enabled, values) => {
                 if (info) services.extensions.update(info.manifest.id, enabled, values);
                 else {
@@ -248,7 +266,13 @@ export function mountSettings(window: Gtk.ApplicationWindow, services: SettingsS
     const header = mountWindowHeader(window, {title: 'Settings', iconName: 'preferences-system-symbolic',
         windowIconName: 'preferences-system', iconId: 'settings-window-icon'});
     let generation = 0;
-    const show = () => { root.render(<SettingsView key={++generation} services={services} />); window.show(); window.present(); };
+    let lastPage = 'system';
+    const show = (page?: string) => {
+        const values = services.extensions.list().find(item => item.manifest.id === 'org.devos.settings')?.state.values ?? {};
+        const target = settingsStartPage(values, lastPage, page);
+        lastPage = target;
+        root.render(<SettingsView key={++generation} services={services} initialPage={target} onPageChanged={value => {lastPage = value;}} />); window.show(); window.present();
+    };
     show();
     return {show, destroy: () => { root.unmount(); header.destroy(); }};
 }

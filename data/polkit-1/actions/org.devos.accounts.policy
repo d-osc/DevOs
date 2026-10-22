@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>DevOs</vendor>
+  <action id="org.devos.accounts.manage">
+    <description>Manage DevOs users</description>
+    <message>Administrator authentication is required to manage Linux users and GitHub bindings.</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/devos-account-admin</annotate>
+  </action>
+  <action id="org.devos.accounts.setup">
+    <description>Set up the first DevOs administrator</description>
+    <message>Create the first local DevOs administrator.</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>yes</allow_inactive><allow_active>yes</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/devos-account-setup</annotate>
+  </action>
+</policyconfig>

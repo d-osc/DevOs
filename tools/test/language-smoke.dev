@@ -1,0 +1,67 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/child_process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn snapshot(tracker: smoke.Input, count: i64, active: i64) {
+    tool.waitFor(fn(): bool {
+        let desktops = json.array()
+        let layouts = json.array()
+        let passed = false
+        let events = smoke.events(tracker.log)
+        for i in 0..(json.len(events) as i64) {
+            let event = json.at(events, i)
+            let kind = util.text(util.get(event, "type"))
+            if strings.equal(kind, "desktop-begin") { desktops = json.array(); layouts = json.array() }
+            else if strings.equal(kind, "desktop") { desktops = json.push(desktops, event) }
+            else if strings.equal(kind, "keyboard-layout") { layouts = json.push(layouts, event) }
+            else if strings.equal(kind, "desktop-done") {
+                let selected = active < 0
+                for j in 0..(json.len(layouts) as i64) {
+                    let layout = json.at(layouts, j)
+                    if util.number(util.get(layout, "index")) == active && util.boolean(util.get(layout, "active")) { selected = true }
+                }
+                passed = json.len(desktops) as i64 == count && selected
+                if active >= 0 { passed = passed && json.len(layouts) == 2 && strings.contains(util.text(util.get(json.at(layouts, 1), "name")), "Thai") }
+            }
+        }
+        return passed
+    }, 5000, "Desktop/keyboard snapshot unavailable.")
+}
+fn main(): i32 {
+    if tool.has("--help") { print("Check Language reload, native layout selection and preservation of five desktops."); return 0 }
+    smoke.withSession("language", Map<str,str>(), fn(session: smoke.Session) {
+        let env: Map<str,str> = smoke.environment(session)
+        let tracker: smoke.Input = smoke.input(session.root + "/build/native/dev-os-window-tracker", session.base, env)
+        let outcome = result.run(fn() {
+            smoke.sendRaw(tracker, "create-desktop")
+            snapshot(tracker, 5, -1)
+            for shortcut in Vec<str>("super-space", "ctrl-shift", "alt-shift") {
+                let settings = {layouts: ["us", "th"], shortcut: shortcut}
+                let response = json.parse(tool.checked(Vec<str>("d", session.root + "/bin/dev-os-language", "--", "save"), env, json.stringify(settings) + "\n", 30000))
+                tool.require(util.boolean(util.get(response, "applied")) && !session.child.ready(), "Language settings did not apply.")
+                let xml = tool.read(env.get("DEV_OS_COMPOSITOR_CONFIG") + "/rc.xml")
+                tool.require(strings.contains(xml, "<desktops number=\"5\">"), "Live reload lost desktops:\n" + xml)
+                tool.require(strings.contains(xml, "key=\"W-space\"") != strings.equal(shortcut, "super-space"), "Launcher shortcut conflict.")
+                snapshot(tracker, 5, -1)
+            }
+            snapshot(tracker, 5, 0)
+            smoke.sendRaw(tracker, "layout 1"); snapshot(tracker, 5, 1)
+            smoke.sendRaw(tracker, "layout 999"); snapshot(tracker, 5, 1)
+            smoke.remote(session, env, "language"); time.sleep_ms(1000)
+            smoke.screenshot(env, session.root + "/build/language-native/language.png")
+            tool.require(!strings.contains(util.read(session.log), "Failed to create xkb keymap"), "XKB reload failed.")
+            tool.copy(session.log, session.root + "/build/language-native/session.log")
+        })
+        smoke.closeInput(tracker)
+        result.unwrap(outcome)
+    })
+    print("PASS: Language page, live reload, native EN/TH selection, invalid index protection and five desktops preserved")
+    return 0
+}
+return tool.main(main)

@@ -1,0 +1,56 @@
+#!/usr/bin/env d
+# Collect failures without aborting the remaining regression suites.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn check(name: str, command: Vec<str>, env: Map<str,str>, folder: str): bool {
+    let outcome = result.attempt(fn(): bool {
+        let output = tool.run(command, env, "", 300000)
+        let text = encoding.decode(output.stdout, "utf8") + encoding.decode(output.stderr, "utf8")
+        tool.write(folder + "/" + name + ".log", text)
+        tool.jsonWrite(folder + "/" + name + ".result.json", {name: name, passed: output.success, exitCode: output.code, timedOut: output.timedOut})
+        print((output.success ? "PASS " : "FAIL ") + name)
+        return output.success
+    })
+    if result.isErr(outcome) { tool.write(folder + "/" + name + ".log", result.message(outcome)); tool.jsonWrite(folder + "/" + name + ".result.json", {name: name, passed: false}); print("FAIL " + name); return false }
+    return result.unwrap(outcome)
+}
+fn main(): i32 {
+    let root = tool.root()
+    let folder = tool.option("--output", root + "/build/native-migration-results")
+    fs.mkdirSync(folder, true)
+    let failures = Vec<str>()
+    let environment = Map<str,str>()
+    environment.set("DEVLANG_BIN", util.which("d"))
+    for file in fs.readdirSync(root + "/tests") {
+        if tool.has("--gjs-only") { continue }
+        if !strings.endsWith(file, ".test.py") { continue }
+        if !strings.equal(tool.option("--suite", file), file) { continue }
+        if tool.has("--native-only") && !strings.equal(file, "os-accounts.test.py") && !strings.equal(file, "app-store.test.py") && !strings.equal(file, "native-services.test.py") { continue }
+        if !check(file, Vec<str>("python3", root + "/tests/" + file), environment, folder) { failures.push(file) }
+    }
+    if tool.has("--native-only") { return failures.len() == 0 ? 0 : 1 }
+    if tool.has("--python-only") { tool.jsonWrite(folder + "/python-failures.json", json.value(failures)); return failures.len() == 0 ? 0 : 1 }
+    # Display-dependent fixtures run against an isolated compositor.
+    smoke.withSession("regressions", Map<str,str>(), fn(session: smoke.Session) {
+        let env = smoke.environment(session)
+        let failed = Vec<str>()
+        for file in fs.readdirSync(root + "/dist") {
+            if !strings.equal(tool.option("--suite", file), file) { continue }
+            if !strings.endsWith(file, "-test.js") || strings.endsWith(file, "-native-test.js") || strings.equal(file, "live-editor-test.js") || strings.equal(file, "updates-live-test.js") || strings.equal(file, "performance-test.js") { continue }
+            if !check(file, Vec<str>("gjs", "-m", root + "/dist/" + file), env, folder) { failed.push(file) }
+        }
+        tool.jsonWrite(folder + "/gjs-failures.json", json.value(failed))
+    })
+    let gjsFailed = json.parse(tool.read(folder + "/gjs-failures.json"))
+    for i in 0..(json.len(gjsFailed) as i64) { failures.push(json.string(json.at(gjsFailed, i))) }
+    tool.jsonWrite(folder + "/failures.json", json.value(failures))
+    print("Regression logs: " + folder)
+    return failures.len() == 0 ? 0 : 1
+}
+return tool.main(main)

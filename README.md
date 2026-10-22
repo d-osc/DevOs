@@ -1,5 +1,13 @@
 # Dev OS — Wayland Desktop Environment Base
 
+เตรียม Live USB ARM64: ดู [Live USB](docs/live-usb.md) และใช้ `.\live-usb.ps1 prepare`.
+มี profile Snapdragon X2 / UX3407NA และตัวสร้าง USB image แบบทดลองแล้ว ยังต้องทดสอบบูตบนเครื่องจริง.
+
+ฐาน OS อิสระที่ build จาก Linux kernel upstream และ userspace จาก source อยู่ใน
+[distro/](distro/README.md): ใช้ `.\distro.ps1 base` และ `.\distro.ps1 base-test`
+เพื่อสร้าง/ทดสอบฐาน ARM64 ใน QEMU โดยไม่ใช้ Ubuntu rootfs ส่วน desktop image
+มีชุด build ของ DevOs แยกต่างหาก ฐาน console ที่บูตผ่านยังไม่ใช่ desktop image สำเร็จรูป.
+
 ฐาน Desktop Environment แบบ native บน **Linux / Wayland** ใช้ **labwc (wlroots)**
 จัดการหน้าต่างและอุปกรณ์ input ส่วน desktop shell เขียนด้วย **TypeScript / GJS + GTK 3 + gtk-layer-shell**
 แยกเป็นโมดูลเพื่อเปลี่ยนหน้าตาและเพิ่มความสามารถต่อได้ง่าย
@@ -29,17 +37,23 @@ polkit agent และ desktop portals ในตัว
 
 ## เริ่มบน Linux
 
+ตรวจอุปกรณ์และไดรเวอร์ได้ด้วย `sh bin/dev-os-shell drivers` หรือ `.\dev.ps1 drivers`
+บน Windows/WSL โดยไม่ต้อง build ก่อน รองรับ JSON และ `--fix` สำหรับโหลดโมดูล
+ที่ติดตั้งอยู่แล้ว ดูขอบเขตและวิธีแก้ไขใน [docs/drivers.md](docs/drivers.md).
+
 แนะนำ Ubuntu 24.04 หรือ Linux ที่มี labwc >= 0.7, GJS >= 1.74,
 GLib >= 2.80, GTK >= 3.24 และ gtk-layer-shell >= 0.6
-runtime ของ shell และ session ใช้ GJS กับ shell scripts ไม่ต้องใช้ Python, Node.js หรือ npm
-Python ใช้เฉพาะเครื่องมือ install / smoke test และย้าย config เก่าเท่านั้น
+runtime ของ shell และ session ใช้ GJS, shell scripts และ DevLang `d` 0.5.5 ขึ้นไป
+desktop helpers ใน `bin/` และบริการจัดการบัญชี/PAM/App Store ใน `native/` ใช้ DevLang
+ส่วนเครื่องมือ install / smoke test / ย้าย config ใน `tools/` ใช้ DevLang ทั้งหมด
+Node.js กับ npm ใช้ตอน build
 ขั้นตอน build ใช้ Node.js 22.18+ (สาย 22) หรือ 24+ และ npm;
 bundle ที่ได้รันด้วย GJS ได้โดยไม่ต้องมี Node.js หรือ TypeScript compiler
 
 ```sh
 sudo apt update
 sudo apt install labwc gjs gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 \
-  dbus-daemon util-linux gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0 foot xdg-utils thunar \
+  dbus-daemon util-linux gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0 xdg-utils thunar \
   build-essential pkg-config libwayland-dev libwayland-bin curl tar coreutils
 sudo sh tools/setup/bootstrap-lock.sh
 
@@ -59,6 +73,10 @@ bin/dev-os-session --nested
 หรือปิดหน้าต่าง compositor ในโหมด nested
 
 ## เริ่มจาก Windows / WSLg
+
+ตั้งค่าเครือข่ายได้ที่ **Settings → Network & Internet → Wi-Fi** หรือปุ่ม Wi-Fi ใน Quick settings ดู [docs/wifi.md](docs/wifi.md).
+
+รองรับ Windows ARM64 / Snapdragon ผ่าน Ubuntu WSL2 ดูการเตรียม dependencies และ Chrome ใน [docs/wsl-arm64.md](docs/wsl-arm64.md).
 
 โปรเจกต์นี้อยู่ใน Windows แต่ runtime ของ Wayland ต้องอยู่ใน Linux
 `dev.ps1` ใช้ WSL distribution ชื่อ `Ubuntu` และ WSLg
@@ -167,7 +185,9 @@ labwc 0.7.1 แบบปิด XWayland ไว้ใน `build/wsl/bin/` สำ�
 
 | คีย์ | การทำงาน |
 | --- | --- |
-| Super + Space | เปิด/ปิด launcher |
+| Super / Windows | กดแล้วปล่อยเพื่อเปิด/ปิด Applications |
+| Super + Space | เปิด/ปิด Applications (ปุ่มลัดเสริม) |
+| Super + Tab | เปิด/ปิด Task View เพื่อเลือกหน้าต่าง |
 | Super + Enter | เปิด terminal |
 | Super + E | เปิดไฟล์ |
 | Super + L | เรียก lock screen |
@@ -175,14 +195,29 @@ labwc 0.7.1 แบบปิด XWayland ไว้ใน `build/wsl/bin/` สำ�
 | Super + 1–4 | สลับ workspace |
 | Super + Shift + 1–4 | ย้ายหน้าต่างไป workspace |
 | Super + Left / Right | Snap หน้าต่างซ้าย/ขวา |
-| Super + Up | Maximize / restore |
+| Super + Z | เปิด Snap Layouts: ครึ่งจอ, สี่มุม, สามคอลัมน์ และกว้าง/แคบ |
+| Super + Down | ย่อหน้าต่างที่กำลังใช้งานลง panel |
+| Super + Up | ขยายหน้าต่างเต็มพื้นที่ทำงาน |
 | Alt + Tab | สลับหน้าต่าง |
 | Alt + F4 | ปิดหน้าต่าง |
 | Super + ลากเมาส์ซ้าย/ขวา | ย้าย/ปรับขนาดหน้าต่าง |
 
 ใน launcher ใช้ ↑ / ↓ เลือกแอป, Enter เปิด และ Esc ปิด
+ใน Snap Layouts ใช้ลูกศรเลือกตำแหน่ง, Enter จัดหน้าต่าง และ Esc ปิดเมนู
+รูปแบบ Snap ใช้พื้นที่ทำงานของจอที่หน้าต่างอยู่ โดยเว้นพื้นที่ panel ไว้
 บน Windows คีย์ที่ใช้ Super บางรายการอาจถูก Windows จับก่อน;
 ปุ่มบน panel ใช้ได้เช่นกัน
+
+## ท่าทางทัชแพด 3 นิ้ว
+
+| ท่าทาง | การทำงาน |
+| --- | --- |
+| ปัดขึ้น | เปิด Task View |
+| ปัดลง | ย่อแอปที่ใช้งานอยู่ |
+| ปัดซ้าย/ขวา | สลับ workspace |
+
+เปิดใช้ด้วย `DEV_OS_TASK_VIEW=1` ใน `dev-os-session` (ค่าเริ่มต้นเปิดอยู่)
+รายละเอียดอยู่ใน [docs/task-view.md](docs/task-view.md)
 
 ## ตั้งค่า
 
@@ -220,7 +255,7 @@ cp config/config.json ~/.config/dev-os/config.json
 หากมี config จากเวอร์ชัน Python ที่ `~/.config/dev-os/config.toml` อยู่แล้ว:
 
 ```sh
-python3 tools/maintenance/migrate-config.py
+d tools/maintenance/migrate-config.dev --
 ```
 
 ตัวแปลงเก็บ TOML ต้นฉบับไว้ และไม่เขียนทับ JSON ที่มีอยู่แล้ว
@@ -232,14 +267,14 @@ python3 tools/maintenance/migrate-config.py
 
 ```sh
 npm run build
-python3 tools/maintenance/install.py --prefix ~/.local
+d tools/maintenance/install.dev -- --prefix ~/.local
 ~/.local/bin/dev-os-session --nested
 ```
 
 หากต้องการให้ Dev OS เป็นตัวเลือกที่หน้า login:
 
 ```sh
-sudo python3 tools/maintenance/install.py --prefix /usr/local
+sudo d tools/maintenance/install.dev -- --prefix /usr/local
 ```
 
 ตัวติดตั้งสร้าง `/usr/local/share/wayland-sessions/dev-os.desktop`
@@ -258,6 +293,19 @@ sudo install -m 644 /usr/local/share/wayland-sessions/dev-os.desktop \
 ## Settings และ extensions
 
 เปิด Settings จากปุ่มบน panel, footer ของ launcher หรือ `bin/dev-os-shell settings`
+
+หน้า **Launcher** มี preview และตั้งค่าความกว้างเมนู ขนาดไอคอน ความหนาแน่นรายการ
+คำอธิบายแอป ปุ่มลัด workspace และการจำคำค้น พร้อม Apply/Reset.
+ดูรายละเอียดใน [docs/launcher.md](docs/launcher.md).
+
+หน้า **Background** มี preview, พื้นหลัง DevOs / สีล้วน / รูปภาพ, เลือกไฟล์และ
+Fill/Fit/Stretch พร้อม Apply ใช้กับทุกจอ และ Reset เพื่อทิ้งค่าที่ยังไม่บันทึก.
+ดูรายละเอียดใน [docs/background.md](docs/background.md).
+
+หน้า **Bluetooth & Devices** แสดง Bluetooth adapters, อุปกรณ์ที่จับคู่/เชื่อมต่อ,
+USB และ input พร้อมทางเข้า Mouse & touchpad, Keyboard และ Printers.
+บน Linux ใช้ BlueZ; บน WSL เปิด Windows Settings สำหรับอุปกรณ์ของ host.
+ดูขอบเขตและวิธีทดสอบใน [docs/bluetooth.md](docs/bluetooth.md).
 UI เป็น React + GTK ทั้งหมด มีหมวด Desktop และฟอร์มที่สร้างจาก `extension.json`
 Clock extension เป็นตัวอย่างที่เปิด/ปิด ปรับรูปแบบเวลา และแสดงวินาทีบน panel ได้
 กด Apply เพื่อ validate บันทึก และ reload shell
@@ -283,9 +331,9 @@ Build และตัวโหลดอ่าน manifest อัตโนมั�
 npm run build
 gjs -m dist/config-test.js # config และ app search tests 13 รายการ + imports ของ UI
 gjs -m dist/extensions-test.js # extension schema, persistence, UI lifecycle และ JSON loader 12 รายการ
-python3 tools/test/check.py     # เพิ่มตรวจ syntax ของ development tools และ XML
+d tools/test/check.dev --     # เพิ่มตรวจ syntax ของ development tools และ XML
 bin/dev-os-session --check
-python3 tools/test/smoke.py --screenshots build/screenshots
+d tools/test/smoke.dev -- --screenshots build/screenshots
 ```
 
 Smoke test ใช้ `labwc`, `dbus-run-session` และ `grim` (เมื่อเลือกบันทึกภาพ):
@@ -382,11 +430,11 @@ Files เปิดแท็บด้วย + หรือ Ctrl+T, ปิดด�
 ถ้าย้ายแท็บสุดท้ายออก หน้าต่างต้นทางจะปิด; หน้าต่างที่แยกยังมีรายการบน panel และปิดตาม extension lifecycle.
 WSL ใช้ `tools/setup/patches/labwc-tab-drag-focus.patch` และ `labwc-tab-drag-escape.patch` เพื่อแก้ focus และการยกเลิก DnD ใน labwc 0.7.1;
 `dev.ps1 run` เตรียม compositor ส่วนตัวให้อัตโนมัติเมื่อยังไม่มี fix นี้.
-ทดสอบลากด้วยเมาส์จริงได้หลัง `tools/setup/bootstrap-pointer-test.sh` ด้วย `python3 tools/test/tab-drag-smoke.py`.
+ทดสอบลากด้วยเมาส์จริงได้หลัง `tools/setup/bootstrap-pointer-test.sh` ด้วย `d tools/test/tab-drag-smoke.dev --`.
 Header ที่ compositor วาดใช้ไอคอนแอปขนาด 16 px จาก `app_id` และ `Icon` ใน `.desktop`
 ผ่าน `tools/setup/patches/labwc-app-icons.patch`; หากหาไม่พบใช้ไอคอนแอปทั่วไปของ Adwaita.
 คลิกไอคอนหรือคลิกขวาที่ header ยังเปิดเมนูหน้าต่างเดิม.
-`dev.ps1 run` build patch นี้ให้อัตโนมัติ; ทดสอบได้ด้วย `python3 tools/test/app-icons-smoke.py`
+`dev.ps1 run` build patch นี้ให้อัตโนมัติ; ทดสอบได้ด้วย `d tools/test/app-icons-smoke.dev --`
 หลังเตรียม pointer tools เช่นเดียวกับการทดสอบลากแท็บ.
 ตั้งค่า `terminal: ["dev-os-terminal"]` เพื่อใช้ตัวนี้; ค่าเดิม `["foot"]` ใช้ Terminal ใหม่เช่นกัน.
 ถ้าต้องการ foot ภายนอกโดยตรงใช้ `["foot", "--app-id=foot"]`; คำสั่งภายนอกอื่นยังทำงานตามเดิม.
@@ -396,7 +444,9 @@ Header ที่ compositor วาดใช้ไอคอนแอปขนา�
 
 VS Code ใช้แพ็กเกจ Linux `code` จาก Microsoft และเปิดจากเมนู Applications ได้.
 `bin/code` เลือก Wayland ใน DE และรองรับ `code .` จาก Terminal รวมถึง session บน WSL.
-รายการ `data/applications/com.microsoft.VSCode.desktop` จะแสดงเมื่อติดตั้ง `/usr/bin/code` แล้วเท่านั้น.
+อิมเมจ DevOs desktop รวม Google Chrome และ VS Code เวอร์ชัน Linux มาด้วยแล้วผ่านสูตร OpenEmbedded
+ที่ตรึงเวอร์ชันและ SHA-256 สำหรับ ARM64/x64; ดู [Bundled apps](docs/bundled-apps.md).
+`dev.ps1 run` เตรียมทั้งสองแอปบน WSL ให้อัตโนมัติด้วย เมนู VS Code ใช้ตัวเปิด Wayland ของ DevOs.
 
 Editor ของระบบใช้ Monaco + WebKitGTK และ header แบบแท็บร่วมกับ Terminal.
 เปิดจาก Applications → Editor หรือ `dev-os-editor file.ts`; ใช้ Ctrl+O / Ctrl+S และลากแท็บแยกหรือรวมหน้าต่างได้.

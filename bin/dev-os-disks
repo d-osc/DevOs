@@ -1,0 +1,82 @@
+#!/usr/bin/env d
+# Read-only Linux disk inventory.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+
+fn decodeText(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn optGet(value: json.Value, key: str): json.Value {
+    if json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+
+fn hasMount(device: json.Value): bool {
+    let points = optGet(device, "mountpoints")
+    if strings.equal(json.kind(points), "array") {
+        for i in 0..(json.len(points) as i64) {
+            if !strings.equal(jsonText(json.at(points, i)), "") { return true }
+        }
+    }
+    let children = optGet(device, "children")
+    if strings.equal(json.kind(children), "array") {
+        for i in 0..(json.len(children) as i64) {
+            if hasMount(json.at(children, i)) { return true }
+        }
+    }
+    return false
+}
+
+fn jsonText(value: json.Value): str {
+    if strings.equal(json.kind(value), "string") { return json.string(value) }
+    return ""
+}
+
+fn blockedReason(device: json.Value): str {
+    let ro = optGet(device, "ro")
+    if strings.equal(json.kind(ro), "bool") && json.bool(ro) { return "Read-only device" }
+    if hasMount(device) { return "In use: unmount its filesystems and deactivate swap first. Use a live session for the system disk." }
+    return ""
+}
+
+fn main(): i32 {
+    let columns = "NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,MOUNTPOINTS,RO,MODEL,TRAN,PTTYPE,FSAVAIL,FSUSED,UUID"
+    let output = child_process.execFileSync("lsblk", Vec<str>("--json", "--bytes", "--output", columns), child_process.options())
+    if !output.success {
+        print(json.stringify(json.set(json.object(), "error", "lsblk is not installed (util-linux).")))
+        return 1
+    }
+    let data = json.parse(decodeText(output.stdout))
+    let all = optGet(data, "blockdevices")
+    let devices = json.array()
+    for i in 0..(json.len(all) as i64) {
+        let row = json.at(all, i)
+        let kind = jsonText(optGet(row, "type"))
+        let size = 0
+        let sizeValue = optGet(row, "size")
+        if strings.equal(json.kind(sizeValue), "number") { size = json.int(sizeValue) }
+        if (strings.equal(kind, "disk") || strings.equal(kind, "loop")) && size > 0 {
+            devices = json.push(devices, json.set(row, "blocked", blockedReason(row)))
+        }
+    }
+    let osrelease = fs.readFileSync("/proc/sys/kernel/osrelease", "utf8")
+    let result = json.set(json.object(), "devices", devices)
+    result = json.set(result, "wsl", strings.contains(strings.toLowerCase(osrelease), "microsoft"))
+    print(json.stringify(json.set(result, "ok", true)))
+    return 0
+}
+return main()

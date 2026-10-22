@@ -1,0 +1,8 @@
+#!/usr/bin/env d
+use "std/json"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/drivers.dev" as drivers
+let outcome = result.attempt(fn(): i32 { return drivers.main() })
+if result.isErr(outcome) { print(json.stringify(util.error(result.message(outcome)))); return 2 }
+return result.unwrap(outcome)

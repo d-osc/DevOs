@@ -7,8 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <wayland-client.h>
 #include "foreign-toplevel.h"
+#include "devos-workspaces.h"
 
 /* Protocol transport only. State, grouping and all UI live in TypeScript. */
 struct window {
@@ -17,12 +19,15 @@ struct window {
     unsigned id;
     char *title, *app_id;
     bool active, minimized;
+    unsigned desktop;
+    bool sticky;
 };
 static struct window *windows;
 static struct wl_seat *seat;
 static struct zwlr_foreign_toplevel_manager_v1 *manager;
 static unsigned next_id = 1;
 static bool running = true;
+static struct devos_workspace_manager_v1 *workspaces;
 
 static void string(const char *value) {
     putchar('"');
@@ -57,7 +62,7 @@ static void done(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle) {
     (void)handle; struct window *w = data;
     printf("{\"type\":\"window\",\"id\":%u,\"title\":", w->id); string(w->title);
     printf(",\"appId\":"); string(w->app_id);
-    printf(",\"active\":%s,\"minimized\":%s}\n", w->active ? "true" : "false", w->minimized ? "true" : "false");
+    printf(",\"active\":%s,\"minimized\":%s,\"desktop\":%u,\"sticky\":%s}\n", w->active ? "true" : "false", w->minimized ? "true" : "false", w->desktop, w->sticky ? "true" : "false");
     fflush(stdout);
 }
 static void closed(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle) {
@@ -84,11 +89,39 @@ static void finished(void *data, struct zwlr_foreign_toplevel_manager_v1 *value)
 static const struct zwlr_foreign_toplevel_manager_v1_listener manager_listener = {.toplevel = toplevel, .finished = finished};
 static void capabilities(void *data, struct wl_seat *value, uint32_t caps) { (void)data; (void)value; (void)caps; }
 static const struct wl_seat_listener seat_listener = {.capabilities = capabilities};
+static void desktop_begin(void *data, struct devos_workspace_manager_v1 *manager_) {
+    (void)data; printf("{\"type\":\"desktop-begin\",\"canCreate\":%s,\"canRemove\":%s}\n", devos_workspace_manager_v1_get_version(manager_) >= 2 ? "true" : "false", devos_workspace_manager_v1_get_version(manager_) >= 3 ? "true" : "false");
+}
+static void desktop_item(void *data, struct devos_workspace_manager_v1 *manager_, uint32_t id, const char *name, uint32_t active) {
+    (void)data; (void)manager_; printf("{\"type\":\"desktop\",\"id\":%u,\"name\":", id); string(name);
+    printf(",\"active\":%s}\n", active ? "true" : "false");
+}
+static void desktop_window(void *data, struct devos_workspace_manager_v1 *manager_, uint32_t handle, uint32_t id, uint32_t sticky) {
+    (void)data; (void)manager_;
+    for (struct window *w = windows; w; w = w->next) if (wl_proxy_get_id((struct wl_proxy *)w->handle) == handle) {
+        if (w->desktop != id || w->sticky != (sticky != 0)) {w->desktop = id; w->sticky = sticky != 0; done(w, w->handle);}
+        return;
+    }
+}
+static void desktop_done(void *data, struct devos_workspace_manager_v1 *manager_) {
+    (void)data; (void)manager_; puts("{\"type\":\"desktop-done\"}"); fflush(stdout);
+}
+static void keyboard_layout(void *data, struct devos_workspace_manager_v1 *manager_, uint32_t index, const char *name, uint32_t active) {
+    (void)data; (void)manager_;
+    printf("{\"type\":\"keyboard-layout\",\"index\":%u,\"name\":", index); string(name);
+    printf(",\"active\":%s}\n", active ? "true" : "false");
+}
+static const struct devos_workspace_manager_v1_listener workspace_listener = {
+    .begin = desktop_begin, .desktop = desktop_item, .window = desktop_window, .done = desktop_done, .keyboard_layout = keyboard_layout,
+};
 static void global(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version) {
     (void)data;
     if (!strcmp(interface, zwlr_foreign_toplevel_manager_v1_interface.name)) {
         manager = wl_registry_bind(registry, name, &zwlr_foreign_toplevel_manager_v1_interface, version < 3 ? version : 3);
         zwlr_foreign_toplevel_manager_v1_add_listener(manager, &manager_listener, NULL);
+    } else if (!strcmp(interface, devos_workspace_manager_v1_interface.name)) {
+        workspaces = wl_registry_bind(registry, name, &devos_workspace_manager_v1_interface, version < 4 ? version : 4);
+        devos_workspace_manager_v1_add_listener(workspaces, &workspace_listener, NULL);
     } else if (!seat && !strcmp(interface, wl_seat_interface.name)) {
         seat = wl_registry_bind(registry, name, &wl_seat_interface, 1);
         wl_seat_add_listener(seat, &seat_listener, NULL);
@@ -97,13 +130,21 @@ static void global(void *data, struct wl_registry *registry, uint32_t name, cons
 static void removed(void *data, struct wl_registry *registry, uint32_t name) { (void)data; (void)registry; (void)name; }
 static const struct wl_registry_listener registry_listener = {.global = global, .global_remove = removed};
 static void command(const char *line) {
-    char action[16]; unsigned id;
+    char action[16]; unsigned id, desktop;
+    if (sscanf(line, "%15s", action) != 1) return;
+    if (!strcmp(action, "create-desktop")) {if (workspaces && devos_workspace_manager_v1_get_version(workspaces) >= 2) devos_workspace_manager_v1_create(workspaces); return;}
     if (sscanf(line, "%15s %u", action, &id) != 2) return;
+    if (!strcmp(action, "layout")) {if (workspaces && devos_workspace_manager_v1_get_version(workspaces) >= 4) devos_workspace_manager_v1_set_layout(workspaces, id); return;}
+    if (!strcmp(action, "remove-desktop")) {if (workspaces && devos_workspace_manager_v1_get_version(workspaces) >= 3) devos_workspace_manager_v1_remove(workspaces, id); return;}
+    if (!strcmp(action, "desktop")) {if (workspaces) devos_workspace_manager_v1_activate(workspaces, id); return;}
     for (struct window *w = windows; w; w = w->next) if (w->id == id) {
         if (!strcmp(action, "activate") && seat) {
             zwlr_foreign_toplevel_handle_v1_unset_minimized(w->handle);
             zwlr_foreign_toplevel_handle_v1_activate(w->handle, seat);
         } else if (!strcmp(action, "minimize")) zwlr_foreign_toplevel_handle_v1_set_minimized(w->handle);
+        else if (!strcmp(action, "close")) zwlr_foreign_toplevel_handle_v1_close(w->handle);
+        else if (!strcmp(action, "move") && workspaces && sscanf(line, "%15s %u %u", action, &id, &desktop) == 3)
+            devos_workspace_manager_v1_move_window(workspaces, wl_proxy_get_id((struct wl_proxy *)w->handle), desktop);
         return;
     }
 }
@@ -117,16 +158,23 @@ int main(void) {
         wl_display_disconnect(display); return 1;
     }
     puts("{\"type\":\"ready\"}"); fflush(stdout);
-    char input[256]; size_t used = 0;
+    char input[256]; size_t used = 0; int64_t next_desktop_refresh = 0;
     while (running) {
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) { running = false; break; }
         }
         if (!running) break;
+        int timeout = -1;
+        if (workspaces) {
+            struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+            int64_t milliseconds = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+            if (milliseconds >= next_desktop_refresh) {devos_workspace_manager_v1_refresh(workspaces); next_desktop_refresh = milliseconds + 250;}
+            timeout = (int)(next_desktop_refresh - milliseconds);
+        }
         int flushed = wl_display_flush(display);
         if (flushed < 0 && errno != EAGAIN) { wl_display_cancel_read(display); break; }
         struct pollfd fds[] = {{.fd = wl_display_get_fd(display), .events = POLLIN | (flushed < 0 ? POLLOUT : 0)}, {.fd = STDIN_FILENO, .events = POLLIN}};
-        if (poll(fds, 2, -1) < 0) { wl_display_cancel_read(display); if (errno == EINTR) continue; break; }
+        if (poll(fds, 2, timeout) < 0) { wl_display_cancel_read(display); if (errno == EINTR) continue; break; }
         if (fds[0].revents & POLLIN) { if (wl_display_read_events(display) < 0) break; }
         else wl_display_cancel_read(display);
         if (wl_display_dispatch_pending(display) < 0 || fds[0].revents & (POLLERR | POLLHUP)) break;
@@ -140,6 +188,7 @@ int main(void) {
         } else if (fds[1].revents & (POLLERR | POLLHUP)) break;
     }
     while (windows) { struct window *w = windows; windows = w->next; zwlr_foreign_toplevel_handle_v1_destroy(w->handle); free(w->title); free(w->app_id); free(w); }
+    if (workspaces) devos_workspace_manager_v1_destroy(workspaces);
     zwlr_foreign_toplevel_manager_v1_destroy(manager); wl_seat_destroy(seat); wl_registry_destroy(registry); wl_display_disconnect(display);
     return 0;
 }

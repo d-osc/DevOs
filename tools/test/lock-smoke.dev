@@ -1,0 +1,56 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/posix.dev" as posix
+use "../../lib/desktop.dev" as util
+fn lockers(runtime: str): Vec<i64> {
+    let ids = smoke.processIds(runtime, "swaylock")
+    let top = Vec<i64>()
+    for id in ids {
+        let stat = util.read("/proc/" + json.stringify(id) + "/stat")
+        if strings.equal(stat, "") { continue }
+        let fields = strings.split(tool.after(stat, ") "), " ")
+        let parent = json.int(json.parse(fields[1]))
+        let nested = false
+        for candidate in ids { if candidate == parent { nested = true } }
+        if !nested { top.push(id) }
+    }
+    return top
+}
+fn waitLocked(runtime: str, expected: bool) { tool.waitFor(fn(): bool { return (lockers(runtime).len() > 0) == expected }, 15000, "Lock state did not change.") }
+fn main(): i32 {
+    if tool.has("--help") { print("Test session locking in a disposable two-output compositor."); return 0 }
+    let extras = Map<str,str>(); extras.set("WLR_HEADLESS_OUTPUTS", "2")
+    smoke.withSession("lock", extras, fn(session: smoke.Session) {
+        let env: Map<str,str> = smoke.environment(session)
+        let shellPid = smoke.processIds(session.runtime, session.root + "/dist/main.js")[0]
+        smoke.remote(session, env, "lock"); waitLocked(session.runtime, true); time.sleep_ms(1000)
+        tool.require(lockers(session.runtime).len() == 1, "Duplicate locker.")
+        smoke.remote(session, env, "lock")
+        tool.require(lockers(session.runtime).len() == 1, "Duplicate lock requests must reuse locker.")
+        let screens = session.root + "/build/test-results"
+        fs.mkdirSync(screens, true)
+        for output in Vec<str>("HEADLESS-1", "HEADLESS-2") { tool.checked(Vec<str>("grim", "-o", output, screens + "/lock-screen-" + output + ".png"), env, "", 10000) }
+        tool.require(posix.send(lockers(session.runtime)[0], posix.SIGUSR1()), "Could not recover private test locker.")
+        waitLocked(session.runtime, false)
+        smoke.key(env, Vec<str>("-M", "logo", "-k", "l", "-m", "logo"))
+        waitLocked(session.runtime, true); time.sleep_ms(1000)
+        tool.require(posix.send(shellPid, posix.SIGSTOP()), "Could not suspend private shell.")
+        let outcome = result.run(fn() {
+            time.sleep_ms(300)
+            tool.require(lockers(session.runtime).len() > 0, "Locker must run independently of shell responsiveness.")
+            posix.send(lockers(session.runtime)[0], posix.SIGUSR1()); waitLocked(session.runtime, false)
+        })
+        posix.send(shellPid, posix.SIGCONT())
+        result.unwrap(outcome)
+        tool.require(!strings.contains(util.read(session.log), "JS ERROR"), util.read(session.log))
+    })
+    print("PASS: native lock on two outputs, deduplication, unlock/Super+L relock and independent locker")
+    return 0
+}
+return tool.main(main)

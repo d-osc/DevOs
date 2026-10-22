@@ -1,0 +1,273 @@
+use "std/fs"
+use "std/strings"
+use "std/args"
+use "std/path"
+use "std/module"
+
+# Dev OS three-finger Task View / desktop / minimize gesture installer.
+# Requires the DevLang runtime (`d`) on the build host.
+# All touched labwc sources are ASCII, so byte offsets and scalar indices match.
+
+fn fail(label: str): i32 {
+    print("patch-task-view-gesture: " + label)
+    return 1
+}
+
+fn countOf(text: str, needle: str): i32 {
+    return (strings.split(text, needle).len() - 1) as i32
+}
+
+fn charLen(text: str): i64 {
+    return strings.charLength(text)
+}
+
+fn sliceFrom(text: str, from: i64): str {
+    return strings.substring(text, from, charLen(text))
+}
+
+fn indexOfFrom(text: str, from: i64, needle: str): i64 {
+    if from < 0 || from > charLen(text) { return -1 }
+    let rel = strings.indexOf(sliceFrom(text, from), needle)
+    if rel < 0 { return -1 }
+    return from + rel
+}
+
+# Removes [startPattern .. first endPattern after it]; no-op when absent.
+fn removeSpan(text: str, startPattern: str, endPattern: str): str {
+    let start = strings.indexOf(text, startPattern)
+    if start < 0 { return text }
+    let after = start + (strings.len(startPattern) as i64)
+    let endRel = strings.indexOf(sliceFrom(text, after), endPattern)
+    if endRel < 0 { return text }
+    let end = after + endRel + (strings.len(endPattern) as i64)
+    return strings.substring(text, 0, start) + sliceFrom(text, end)
+}
+
+fn writeChanged(path: str, contents: str) {
+    if !fs.existsSync(path) || !strings.equal(readText(path), contents) {
+        fs.writeFileSync(path, contents)
+    }
+}
+
+# Matches Python text-mode semantics: normalize CRLF/CR to LF on read.
+fn readText(path: str): str {
+    let raw = fs.readFileSync(path, "utf8")
+    return strings.replaceAll(strings.replaceAll(raw, "\r\n", "\n"), "\r", "\n")
+}
+
+fn joinLines(parts: Vec<str>): str {
+    return "\n" + strings.join(parts, "\n")
+}
+
+fn main(): i32 {
+    if args.len() < 1 {
+        return fail("usage: d patch-task-view-gesture.dev -- <labwc-source>")
+    }
+    let source = args.get(0)
+    let here = path.dirname(module.entry())
+    let gesturesPath = path.join(source, "src/input/gestures.c")
+    let seatHeaderPath = path.join(source, "include/labwc.h")
+    let text = readText(gesturesPath)
+    if strings.contains(text, "dev-os-shell task-view-hide") {
+        text = strings.replaceAll(text, "dev-os-shell task-view-hide", "dev-os-shell overlays-hide")
+        fs.writeFileSync(gesturesPath, text)
+    }
+    let header = readText(seatHeaderPath)
+
+    writeChanged(path.join(source, "include/input/devos-task-view.h"), readText(path.join(here, "devos-task-view.h")))
+
+    let animation = readText(path.join(here, "devos-desktop-animation.h"))
+    let modern = strings.contains(header, "session_lock_manager")
+    if modern {
+        let withIncludes = strings.replaceAll(animation, "#include \"labwc.h\"", "#include \"labwc.h\"\n#include \"output.h\"\n#include \"session-lock.h\"")
+        let replacedNode = strings.replaceAll(withIncludes, "node == &server->view_tree->node || node == &server->view_tree_always_on_top->node\n        || node == &server->view_tree_always_on_bottom->node", "node == &server->workspace_tree->node")
+        let withCurrent = strings.replaceAll(replacedNode, "DEVOS_SLIDE_CURRENT", modern ? "server->workspaces.current" : "server->workspace_current")
+        let slideLocked = modern ? "(slide->server->session_lock_manager && slide->server->session_lock_manager->locked)" : "(slide->server->session_lock != NULL || slide->server->seat.active_client_while_inhibited)"
+        writeChanged(path.join(source, "include/input/devos-desktop-animation.h"), strings.replaceAll(withCurrent, "DEVOS_SLIDE_LOCKED", slideLocked))
+    } else {
+        let withCurrent = strings.replaceAll(animation, "DEVOS_SLIDE_CURRENT", "server->workspace_current")
+        let slideLocked = "(slide->server->session_lock != NULL || slide->server->seat.active_client_while_inhibited)"
+        writeChanged(path.join(source, "include/input/devos-desktop-animation.h"), strings.replaceAll(withCurrent, "DEVOS_SLIDE_LOCKED", slideLocked))
+    }
+
+    let windowAnimationRaw = readText(path.join(here, "devos-window-animation.c"))
+    let windowAnimation = windowAnimationRaw
+    if modern {
+        windowAnimation = strings.replaceAll(windowAnimation, "view_get_string_prop(watch->view, \"app_id\")", "watch->view->app_id")
+    }
+    let windowLocked = modern ? "(animation->server->session_lock_manager && animation->server->session_lock_manager->locked)" : "(animation->server->session_lock || animation->server->seat.active_client_while_inhibited)"
+    let viewLocked = modern ? "(view->server->session_lock_manager && view->server->session_lock_manager->locked)" : "(view->server->session_lock || view->server->seat.active_client_while_inhibited)"
+    let windowDescriptor = modern ? "node_descriptor_create(&animation->wrapper->node, LAB_NODE_VIEW, view, NULL)" : "node_descriptor_create(&animation->wrapper->node, LAB_NODE_DESC_VIEW, view)"
+    windowAnimation = strings.replaceAll(windowAnimation, "DEVOS_WINDOW_LOCKED", windowLocked)
+    windowAnimation = strings.replaceAll(windowAnimation, "DEVOS_VIEW_LOCKED", viewLocked)
+    windowAnimation = strings.replaceAll(windowAnimation, "DEVOS_WINDOW_DESCRIPTOR", windowDescriptor)
+    writeChanged(path.join(source, "src/devos-window-animation.c"), windowAnimation)
+
+    let mesonPath = path.join(source, "src/meson.build")
+    let mesonText = readText(mesonPath)
+    if !strings.contains(mesonText, "'devos-window-animation.c'") {
+        fs.writeFileSync(mesonPath, strings.replace(mesonText, "labwc_sources = files(", "labwc_sources = files(\n  'devos-window-animation.c',"))
+    }
+
+    let commonPath = path.join(source, "src/view-impl-common.c")
+    let commonText = readText(commonPath)
+    if !strings.contains(commonText, "DEVOS_WINDOW_ANIMATION_PATCH") {
+        commonText = strings.replace(commonText, "#include \"view.h\"", "#include \"view.h\"\n/* DEVOS_WINDOW_ANIMATION_PATCH */\nvoid devos_window_open(struct view *view);\nvoid devos_window_close(struct view *view);")
+        let mapAnchor = "\twlr_log(WLR_DEBUG, \"[map]"
+        if countOf(commonText, mapAnchor) != 1 { return fail("view-impl-common.c [map] anchor") }
+        commonText = strings.replace(commonText, mapAnchor, "\tdevos_window_open(view);\n" + mapAnchor)
+        let unmapAnchor = "view_impl_unmap(struct view *view)\n{"
+        if countOf(commonText, unmapAnchor) != 1 { return fail("view-impl-common.c unmap anchor") }
+        fs.writeFileSync(commonPath, strings.replace(commonText, unmapAnchor, unmapAnchor + "\n\tdevos_window_close(view);"))
+    }
+
+    let viewPath = path.join(source, "src/view.c")
+    let viewText = readText(viewPath)
+    if !strings.contains(viewText, "DEVOS_WINDOW_WATCH_PATCH") {
+        viewText = strings.replace(viewText, "#include \"view.h\"", "#include \"view.h\"\n/* DEVOS_WINDOW_WATCH_PATCH */\nvoid devos_window_watch(struct view *view, struct wlr_surface *surface);\nvoid devos_window_close(struct view *view);\nvoid devos_window_forget(struct view *view);")
+        let connectAnchor = "view_connect_map(struct view *view, struct wlr_surface *surface)\n{"
+        if !modern {
+            if countOf(viewText, connectAnchor) != 1 { return fail("view.c connect_map anchor") }
+            viewText = strings.replace(viewText, connectAnchor, connectAnchor + "\n\tdevos_window_watch(view, surface);")
+        }
+        let destroyAnchor = "view_destroy(struct view *view)\n{"
+        if countOf(viewText, destroyAnchor) != 1 { return fail("view.c destroy anchor") }
+        fs.writeFileSync(viewPath, strings.replace(viewText, destroyAnchor, destroyAnchor + "\n\tdevos_window_close(view);\n\tdevos_window_forget(view);"))
+    }
+
+    let workspacePath = path.join(source, "src/workspaces.c")
+    let workspaceText = readText(workspacePath)
+    if !strings.contains(workspaceText, "DEVOS_SLIDE_PATCH") {
+        workspaceText = strings.replace(workspaceText, "#include \"workspaces.h\"", "#include \"workspaces.h\"\n/* DEVOS_SLIDE_PATCH */\n#include \"input/devos-desktop-animation.h\"")
+        let switchAnchor = "workspaces_switch_to(struct workspace *target, bool update_focus)\n{"
+        if countOf(workspaceText, switchAnchor) != 1 { return fail("workspaces.c switch anchor") }
+        workspaceText = strings.replace(workspaceText, switchAnchor, switchAnchor + "\n\tdevos_slide_finish();")
+        let osdAnchor = "\t/* And finally show the OSD */"
+        if countOf(workspaceText, osdAnchor) != 1 { return fail("workspaces.c OSD anchor") }
+        workspaceText = strings.replace(workspaceText, osdAnchor, "\tdevos_workspaces_changed(server);\n" + osdAnchor)
+        fs.writeFileSync(workspacePath, workspaceText)
+    }
+    if !strings.contains(workspaceText, "\tdevos_window_animations_finish(server);") {
+        workspaceText = strings.replaceAll(workspaceText, "\tdevos_window_animations_finish(target->server);\n", "")
+        workspaceText = strings.replaceAll(workspaceText, "\tdevos_slide_finish();\n", "")
+        let disableAnchor = "\t/* Disable the old workspace */"
+        if countOf(workspaceText, disableAnchor) != 1 { return fail("workspaces.c disable anchor") }
+        fs.writeFileSync(workspacePath, strings.replace(workspaceText, disableAnchor, "\tdevos_window_animations_finish(server);\n\tdevos_slide_finish();\n" + disableAnchor))
+    }
+
+    if strings.contains(text, "DEVOS_DESKTOP_SWIPE_PATCH") && !strings.contains(text, "devos_workspace_swipe(target,") {
+        text = strings.replace(text, "workspaces_switch_to(target, !overview);", "devos_workspace_swipe(target, !overview, action == DEVOS_SWIPE_NEXT_DESKTOP ? 1 : -1);")
+        text = strings.replace(text, "#include \"workspaces.h\"", "#include \"workspaces.h\"\nvoid devos_workspace_swipe(struct workspace *target, bool update_focus, int direction);")
+        fs.writeFileSync(gesturesPath, text)
+    }
+
+    if strings.contains(text, "DEVOS_TASK_VIEW_PATCH") {
+        if !strings.contains(header, "struct devos_task_view_swipe devos_task_view;") { return fail("seat header missing swipe state") }
+        if strings.contains(text, "DEVOS_DESKTOP_SWIPE_PATCH") {
+            if strings.contains(text, "DEVOS_SWIPE_MINIMIZE") {
+                if !strings.contains(text, "dev-os-shell overlays-hide") {
+                    let minimizeAnchor = "\t} else if (action == DEVOS_SWIPE_MINIMIZE) {\n"
+                    if countOf(text, minimizeAnchor) != 1 { return fail("overlays-hide upgrade anchor") }
+                    text = strings.replace(text, minimizeAnchor, minimizeAnchor + "\t\tspawn_async_no_shell(\"dev-os-shell overlays-hide\");\n")
+                    fs.writeFileSync(gesturesPath, text)
+                }
+                print("Dev OS desktop gestures already installed")
+                return 0
+            }
+            let old = "\tif (action == DEVOS_SWIPE_TASK_VIEW) {\n\t\tspawn_async_no_shell(\"dev-os-shell task-view-show\");\n\t} else if (action != DEVOS_SWIPE_NONE) {"
+            let addMinimize = Vec<str>(
+                "\tif (action == DEVOS_SWIPE_TASK_VIEW) {",
+                "\t\tspawn_async_no_shell(\"dev-os-shell task-view-show\");",
+                "\t} else if (action == DEVOS_SWIPE_MINIMIZE) {",
+                "\t\tspawn_async_no_shell(\"dev-os-shell overlays-hide\");",
+                "\t\tif (!seat->focused_layer) {",
+                "\t\t\tstruct view *view = seat->server->active_view;",
+                "\t\t\tif (view) { view_minimize(view, true); }",
+                "\t\t}",
+                "\t} else if (action != DEVOS_SWIPE_NONE) {")
+            if countOf(text, old) != 1 { return fail("upgrade dispatch anchor") }
+            text = strings.replace(text, old, strings.join(addMinimize, "\n"))
+            if !strings.contains(text, "#include \"view.h\"") {
+                if countOf(text, "#include \"session-lock.h\"") != 1 { return fail("upgrade session-lock include anchor") }
+                text = strings.replace(text, "#include \"session-lock.h\"", "#include \"session-lock.h\"\n#include \"view.h\"")
+            }
+            fs.writeFileSync(gesturesPath, text)
+            print("Upgraded Dev OS desktop gestures with three-finger minimize")
+            return 0
+        }
+    }
+
+    let locked = modern ? "(seat->server->session_lock_manager && seat->server->session_lock_manager->locked)" : "(seat->server->session_lock != NULL)"
+    let allowedBase = "!" + locked + " && !seat->drag.active && seat->server->input_mode == LAB_INPUT_STATE_PASSTHROUGH"
+    let allowed = strings.contains(header, "active_client_while_inhibited") ? allowedBase + " && !seat->active_client_while_inhibited" : allowedBase
+
+    if !strings.contains(text, "DEVOS_TASK_VIEW_PATCH") {
+        text = "/* DEVOS_TASK_VIEW_PATCH: compositor owns the global swipe; no raw device access. */\n#include <stdbool.h>\n#include <stdlib.h>\n#include <string.h>\n#include \"common/spawn.h\"\n#include \"session-lock.h\"\n" + text
+    }
+    let begin = "\twlr_pointer_gestures_v1_send_swipe_begin("
+    if countOf(text, begin) != 1 { return fail("swipe_begin anchor") }
+    if !strings.contains(text, "devos_task_view_begin(") {
+        text = strings.replace(text, begin, "\tconst char *enabled = getenv(\"DEV_OS_TASK_VIEW\");\n\tdevos_task_view_begin(&seat->devos_task_view, event->fingers, event->time_msec,\n\t\tenabled && !strcmp(enabled, \"1\") && " + allowed + ");\n" + begin)
+    }
+    let update = "\twlr_pointer_gestures_v1_send_swipe_update("
+    if countOf(text, update) != 1 { return fail("swipe_update anchor") }
+    if !strings.contains(text, "devos_task_view_update(") {
+        text = strings.replace(text, update, "\tdevos_task_view_update(&seat->devos_task_view, event->dx, event->dy);\n" + update)
+    }
+    let end = "\twlr_pointer_gestures_v1_send_swipe_end("
+    if countOf(text, end) != 1 { return fail("swipe_end anchor") }
+
+    text = removeSpan(text, "\tbool task_view = devos_task_view_end(", ";\n")
+    text = strings.replaceAll(text, " || task_view", "")
+    text = strings.replaceAll(text, "\n\tif (task_view) { spawn_async_no_shell(\"dev-os-shell task-view-show\"); }", "")
+    text = strings.replace(text, end, "\tenum devos_swipe_action action = devos_task_view_end(&seat->devos_task_view, event->time_msec, event->cancelled,\n\t\t" + allowed + ");\n" + end)
+
+    let current = strings.contains(header, "session_lock_manager") ? "seat->server->workspaces.current" : "seat->server->workspace_current"
+    let dispatch = joinLines(Vec<str>(
+            "\tif (action == DEVOS_SWIPE_TASK_VIEW) {",
+            "\t\tspawn_async_no_shell(\"dev-os-shell task-view-show\");",
+            "\t} else if (action == DEVOS_SWIPE_MINIMIZE) {",
+            "\t\tspawn_async_no_shell(\"dev-os-shell overlays-hide\");",
+            "\t\tif (!seat->focused_layer) {",
+            "\t\t\tstruct view *view = seat->server->active_view;",
+            "\t\t\tif (view) { view_minimize(view, true); }",
+            "\t\t}",
+            "\t} else if (action != DEVOS_SWIPE_NONE) {",
+            "\t\tstruct workspace *current = " + current + ";",
+            "\t\tstruct workspace *target = current ? workspaces_find(current,",
+            "\t\t\taction == DEVOS_SWIPE_NEXT_DESKTOP ? \"right\" : \"left\", false) : NULL;",
+            "\t\tif (target) {",
+            "\t\t\tbool overview = seat->focused_layer != NULL;",
+            "\t\t\tdevos_workspace_swipe(target, !overview, action == DEVOS_SWIPE_NEXT_DESKTOP ? 1 : -1);",
+            "\t\t\tif (overview) { workspaces_osd_hide(seat); }",
+            "\t\t}",
+            "\t}"))
+
+    let sendAnchor = strings.indexOf(text, end)
+    let cancelledAt = indexOfFrom(text, sendAnchor, "event->cancelled")
+    if cancelledAt < 0 { return fail("event->cancelled anchor") }
+    let afterCancelled = cancelledAt + (strings.len("event->cancelled") as i64)
+    if !strings.equal(strings.substring(text, afterCancelled, afterCancelled + 2), ");") { return fail("cancelled close-paren anchor") }
+    let insertion = " || action != DEVOS_SWIPE_NONE" + ");" + dispatch
+    text = strings.substring(text, 0, afterCancelled) + insertion + sliceFrom(text, afterCancelled + 2)
+
+    if !strings.contains(text, "#include \"view.h\"") {
+        if countOf(text, "#include \"session-lock.h\"") != 1 { return fail("session-lock include anchor") }
+        text = strings.replace(text, "#include \"session-lock.h\"", "#include \"session-lock.h\"\n#include \"view.h\"")
+    }
+
+    let listenerAnchor = "\tstruct wl_listener swipe_end;"
+    if countOf(header, listenerAnchor) != 1 { return fail("seat swipe_end listener anchor") }
+    if !strings.contains(header, "struct devos_task_view_swipe devos_task_view;") {
+        header = strings.replace(header, listenerAnchor, listenerAnchor + "\n\tstruct devos_task_view_swipe devos_task_view;")
+        header = "#include \"input/devos-task-view.h\"\n" + header
+    }
+
+    text = "/* DEVOS_DESKTOP_SWIPE_PATCH */\n#include \"workspaces.h\"\nvoid devos_workspace_swipe(struct workspace *target, bool update_focus, int direction);\n" + text
+    fs.writeFileSync(gesturesPath, text)
+    fs.writeFileSync(seatHeaderPath, header)
+    print("Installed Dev OS three-finger Task View and desktop swipes")
+    return 0
+}
+if args.len() == 1 && strings.equal(args.get(0), "--validate") { return 0 }
+return main()

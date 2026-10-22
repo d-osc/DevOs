@@ -1,0 +1,44 @@
+#!/usr/bin/env d
+# Transfer ownership only of a validated, freshly staged WSL runtime.
+use "std/args"
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/regex"
+use "../../lib/accounts.dev" as accounts
+use "../../lib/posix.dev" as posix
+use "../lib/tool.dev" as tool
+extern fn getpwnam(name: str): *accounts.Passwd
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d prepare-wsl-user.dev -- USER /tmp/dev-os-runtime-ID"); return 0 }
+    tool.require(args.len() == 2 && posix.euid() == 0, "Run as root with USER and staged directory.")
+    let username = args.get(0)
+    let pattern = regex.compile("^[a-z][a-z0-9_-]{0,30}$", "")
+    let valid = pattern.test(username)
+    pattern.close()
+    tool.require(valid, "Invalid user setup request.")
+    let uid: u32 = 0
+    let gid: u32 = 0
+    unsafe {
+        let pointer = getpwnam(username)
+        tool.require(pointer as bool, "Unknown Linux user.")
+        uid = pointer[0].uid; gid = pointer[0].gid
+    }
+    tool.require(uid >= 1000 && uid < 65534 && !strings.equal(username, "devos-greeter") && !strings.equal(username, "nobody"), "Select a regular Linux desktop user.")
+    let stage = args.get(1)
+    let stagePattern = regex.compile("^/tmp/dev-os-runtime-[A-Za-z0-9]+$", "")
+    let allowed = stagePattern.test(stage)
+    stagePattern.close()
+    tool.require(allowed && strings.equal(tool.resolve(stage), stage) && fs.is_dir(stage), "Unsafe staged runtime directory.")
+    tool.require(!tool.run(Vec<str>("test", "-L", stage), Map<str,str>(), "", 5000).success, "Staged runtime must not be a symlink.")
+    let owner = json.stringify(uid) + ":" + json.stringify(gid)
+    tool.exec(Vec<str>("chown", "-hR", "--", owner, stage))
+    let runtime = "/run/user/" + json.stringify(uid)
+    if !fs.existsSync(runtime) { fs.mkdirSync(runtime, true); tool.chmod(runtime, "700"); tool.exec(Vec<str>("chown", owner, runtime)) }
+    tool.require(!tool.run(Vec<str>("test", "-L", runtime), Map<str,str>(), "", 5000).success, "Unsafe user runtime symlink.")
+    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%u", runtime))), json.stringify(uid)), "The selected user runtime directory has unsafe ownership.")
+    print(uid)
+    return 0
+}
+return tool.main(main)

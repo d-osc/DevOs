@@ -5,12 +5,12 @@ import System from 'system';
 import {ROOT, VERSION, loadConfig} from '@dev-os/config';
 import {remoteCommand} from '@dev-os/runtime/remote';
 
-const commands = ['shell', 'launcher', 'terminal', 'files', 'editor', 'lock', 'logout', 'reload', 'settings', 'doctor'];
+const commands = ['shell', 'launcher', 'overlays-hide', 'task-view', 'task-view-show', 'task-view-hide', 'task-manager', 'disk-manager', 'app-store', 'terminal', 'files', 'editor', 'lock', 'logout', 'reload', 'settings', 'language', 'time', 'system', 'display', 'sound', 'power', 'storage', 'about', 'network', 'wifi', 'doctor'];
 
 async function main(args: string[]): Promise<number> {
     if (args.includes('--version')) { print(VERSION); return 0; }
     if (args.includes('--help') || args.includes('-h')) {
-        print(`Usage: dev-os-shell [${commands.join(' | ')}] [--json]\n       dev-os-shell editor [file ...]`);
+        print(`Usage: dev-os-shell [${commands.join(' | ')}] [--json]\n       dev-os-shell editor [file ...]\n       dev-os-shell drivers [--json] [--fix] (Python 3; no build required)`);
         return 0;
     }
     const command = args[0] ?? 'shell';
@@ -28,6 +28,8 @@ async function main(args: string[]): Promise<number> {
     }
     const remoteStatus = remoteCommand([command, ...args.slice(1)]);
     if (remoteStatus !== undefined) return remoteStatus;
+    // Hiding an absent overview must not start a new desktop process.
+    if (command === 'task-view-hide' || command === 'overlays-hide') return 0;
     GLib.setenv('GDK_BACKEND', 'wayland', true);
     if (!['core', 'extensions', 'updates', 'runtime', 'services', 'compat', 'config', 'shell', 'supervisor-lib', 'react-gtk', 'panel-view', 'launcher-view', 'background-view'].every(name =>
         GLib.file_test(`${ROOT}/dist/${name}.js`, GLib.FileTest.IS_REGULAR)))

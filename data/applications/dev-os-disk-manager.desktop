@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Disk Manager
+Comment=Inspect disks and partitions
+Exec=dev-os-shell disk-manager
+TryExec=dev-os-shell
+Icon=drive-harddisk
+Categories=System;Filesystem;
+Terminal=false

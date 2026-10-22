@@ -1,0 +1,142 @@
+#!/bin/sh
+# Read-only USB root; diagnostics write only to this image's UUID-selected ESP.
+export PATH=/bin:/sbin
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+exec </dev/console >/dev/console 2>&1
+mkdir -p /run /lower /newroot
+mount -t tmpfs -o mode=0755 tmpfs /run || exec sh
+mkdir -p /run/live
+status() {
+    echo "DEVOS LIVE: $*"
+    echo "DEVOS LIVE: $*" >>/run/live/boot.log
+}
+save_logs() {
+    [ -n "$logdir" ] || return 0
+    cp /run/live/boot.log "$logdir/boot.log"
+    [ ! -f /run/live/probe.log ] || cp /run/live/probe.log "$logdir/probe.log"
+    dmesg >"$logdir/kernel.log"
+    sync
+}
+rescue() {
+    status "STOP: $*"
+    save_logs
+    echo 'Recent module probes:'
+    [ ! -f /run/live/probe.log ] || tail -n 30 /run/live/probe.log
+    echo 'Detected block devices:'
+    cat /proc/partitions
+    exec sh
+}
+status '[1/6] initramfs started'
+modprobe overlay 2>/dev/null || true
+uuid=; esp_uuid=; logdir=
+for option in $(cat /proc/cmdline); do
+    case "$option" in
+        devos.live.uuid=*) uuid=${option#*=} ;;
+        devos.live.esp_uuid=*) esp_uuid=${option#*=} ;;
+    esac
+done
+[ -n "$uuid" ] || rescue 'Missing Live USB filesystem UUID'
+attach_logs() {
+    [ -z "$logdir" ] && [ -n "$esp_uuid" ] || return 0
+    esp=$(findfs "UUID=$esp_uuid" 2>/dev/null) || return 0
+    modprobe nls_iso8859_1 2>/dev/null || true
+    modprobe vfat 2>/dev/null || true
+    mkdir -p /run/live/esp
+    mount -t vfat -o rw,nosuid,nodev,noexec,umask=0077 "$esp" /run/live/esp || return 0
+    if [ ! -f /run/live/esp/EFI/BOOT/BOOTAA64.EFI ]; then
+        umount /run/live/esp; return 0
+    fi
+    logdir=/run/live/esp/DEVOS-LOGS/$(cat /proc/sys/kernel/random/boot_id)
+    mkdir -p "$logdir"
+    status 'USB log storage connected'
+    save_logs
+}
+
+# The old synchronous scan could block finding an already available rootfs
+# behind an unrelated driver's probe. Keep USB discovery responsive and bounded.
+status '[2/6] discovering USB rootfs (maximum 120 seconds)'
+(
+    trap 'exit 0' TERM INT
+    # The fixed USB-A host needs its regulator/PHY chain before storage can
+    # appear. Do this before probing unrelated display, audio and PCI devices.
+    for module in qcom_rpmh_regulator qcom_refgen_regulator phy_qcom_m31_eusb2 \
+        phy_qcom_qmp_usb dwc3_qcom xhci_plat_hcd usb_storage uas; do
+        [ ! -f /run/live/stop-loader ] || exit 0
+        echo "BOOT MODULE: $module" >>/run/live/probe.log
+        timeout -k 1 5 modprobe "$module" >>/run/live/probe.log 2>&1 || true
+    done
+    while [ ! -f /run/live/stop-loader ]; do
+        find /sys/devices -name modalias -type f -exec cat {} \; 2>/dev/null >/run/live/aliases
+        while read -r alias; do
+            [ ! -f /run/live/stop-loader ] || exit 0
+            echo "PROBE: $alias" >>/run/live/probe.log
+            timeout -k 1 5 modprobe "$alias" >>/run/live/probe.log 2>&1 || true
+        done </run/live/aliases
+        sleep 1
+    done
+) &
+loader=$!
+device=
+for attempt in $(seq 1 120); do
+    device=$(findfs "UUID=$uuid" 2>/dev/null)
+    attach_logs
+    [ -n "$device" ] && break
+    case "$attempt" in *0|*5) status "Waiting for USB: ${attempt}s"; save_logs ;; esac
+    sleep 1
+done
+: >/run/live/stop-loader
+kill "$loader" 2>/dev/null || true
+[ -n "$device" ] || rescue 'Live USB not found; check USB controller/PHY drivers'
+status "[3/6] found USB rootfs: $device"
+mount -t ext4 -o ro,noload "$device" /lower || rescue 'Cannot mount USB root read-only'
+mkdir -p /run/live/upper /run/live/work /run/live/lower
+mount --move /lower /run/live/lower || rescue 'Cannot preserve lower mount'
+mount -t overlay -o lowerdir=/run/live/lower,upperdir=/run/live/upper,workdir=/run/live/work overlay /newroot || rescue 'Cannot create overlay'
+status '[4/6] RAM overlay ready'
+mkdir -p /newroot/run /newroot/dev /newroot/proc /newroot/sys
+# Autologin applies only to this boot's RAM overlay. The underlying image's
+# account passwords and normal greetd configuration stay untouched.
+mkdir -p /newroot/etc/greetd /newroot/usr/libexec /run/devos-live
+echo root >/run/devos-live/root-session-enabled
+# Apply the Live-only password to the RAM overlay, preserving other accounts.
+root_password_hash=$(cat /live/root-password.hash)
+[ -n "$root_password_hash" ] || rescue 'Missing Live root password hash'
+root_password_written=0
+while IFS= read -r line; do
+    case "$line" in
+        root:*) fields=${line#root:}; fields=${fields#*:}; echo "root:$root_password_hash:$fields"; root_password_written=1 ;;
+        *) echo "$line" ;;
+    esac
+done </newroot/etc/shadow >/newroot/etc/shadow.live
+[ "$root_password_written" = 1 ] || rescue 'Cannot set Live root password'
+chmod 600 /newroot/etc/shadow.live
+mv /newroot/etc/shadow.live /newroot/etc/shadow
+unset root_password_hash
+
+cp /live/greetd-root.toml /newroot/etc/greetd/config.toml || rescue 'Cannot configure Live root session'
+cp /live/root-session /newroot/usr/libexec/devos-live-root-session || rescue 'Cannot install Live root session'
+chmod 755 /newroot/usr/libexec/devos-live-root-session
+# Upstream PipeWire user units skip root; override only root's Live profile.
+for unit in pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket; do
+    directory=/newroot/root/.config/systemd/user/$unit.d
+    mkdir -p "$directory"
+    cp /live/pipewire-root.conf "$directory/10-devos-live-root.conf" || rescue 'Cannot configure Live root audio'
+done
+status 'Live default user: root (automatic desktop login)'
+if [ -n "$esp_uuid" ]; then
+    mkdir -p /newroot/usr/libexec /newroot/etc/systemd/system/multi-user.target.wants
+    cp /diagnostics/collector /newroot/usr/libexec/devos-live-diagnostics
+    chmod 755 /newroot/usr/libexec/devos-live-diagnostics
+    cp /diagnostics/collector.service /newroot/etc/systemd/system/devos-live-diagnostics.service
+    ln -s ../devos-live-diagnostics.service /newroot/etc/systemd/system/multi-user.target.wants/devos-live-diagnostics.service
+fi
+status '[5/6] starting systemd; GUI service diagnostics enabled'
+save_logs
+mount --move /run /newroot/run
+mount --move /dev /newroot/dev
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+echo 'DEVOS_LIVE_OVERLAY_READY: [6/6] switching to DevOs root'
+exec switch_root /newroot /sbin/init

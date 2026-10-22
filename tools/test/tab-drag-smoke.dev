@@ -1,0 +1,39 @@
+#!/usr/bin/env d
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+fn main(): i32 {
+    if tool.has("--help") { print("Drag Files and Terminal tabs between native windows."); return 0 }
+    ui.withPointer("screenshots-tab-drag", Map<str,str>(), fn(session: smoke.Session, env: Map<str,str>, pointer: smoke.Input) {
+        let screens = session.root + "/build/screenshots-tab-drag"
+        for command in Vec<str>("files", "terminal") {
+            let label = strings.equal(command, "files") ? "Dev OS Files" : "Dev OS Terminal"
+            smoke.remote(session, env, command); ui.windowCount(env, label, 1); time.sleep_ms(500)
+            let title = ui.title(env, label)
+            for action in Vec<str>("maximize", "focus") { tool.require(ui.window(env, action, title, ""), "Window action failed.") }
+            time.sleep_ms(400)
+            pointer = ui.click(pointer, 184, 16, "left"); time.sleep_ms(600)
+            smoke.screenshot(env, screens + "/" + command + "-before.png")
+            pointer = ui.drag(pointer, env, 240, 16, 900, 350, false)
+            ui.windowCount(env, label, 2); smoke.screenshot(env, screens + "/" + command + "-detached.png")
+            pointer = ui.drag(pointer, env, strings.equal(command, "files") ? 230 : 270, strings.equal(command, "files") ? 32 : 62, 100, 16, false)
+            ui.windowCount(env, label, 1); smoke.screenshot(env, screens + "/" + command + "-merged.png")
+            pointer = ui.drag(pointer, env, 240, 16, 900, 350, true)
+            tool.require(tool.count(ui.windows(env), label) == 1, "Escape must not detach a tab.")
+            print("PASS: " + label + " pointer detach, merge and Escape cancellation")
+            if strings.equal(command, "terminal") {
+                tool.require(ui.window(env, "minimize", ui.title(env, "Dev OS Files"), ""), "Cannot minimize Files.")
+                pointer = ui.click(pointer, 1228, 16, "left"); time.sleep_ms(400)
+                pointer = ui.drag(pointer, env, 440, 62, 1240, 400, false)
+                ui.windowCount(env, label, 2)
+                smoke.screenshot(env, screens + "/terminal-desktop-detach.png")
+                print("PASS: dropping on the desktop detaches the tab")
+            }
+        }
+        ui.cleanLog(session)
+    })
+    return 0
+}
+return tool.main(main)

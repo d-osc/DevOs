@@ -1,0 +1,48 @@
+#!/usr/bin/env d
+use "std/args"
+use "std/json"
+use "std/process"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "../../lib/unix.dev" as unix
+use "../lib/qmp.dev" as qmp
+use "../lib/tool.dev" as tool
+fn main(): i32 {
+    if tool.has("--help") { print("Usage: d devos-qmp.dev -- [capture FILE|quit|serial|tty|vt N|type TEXT|status]"); return 0 }
+    let work = process.getenv("DEVOS_LIVE_WORK")
+    if strings.equal(work, "") { work = "/var/tmp/devos-live-build" }
+    let fd: i32 = unix.open(work + "/qemu-live-qmp.sock")
+    let outcome = result.run(fn() {
+        qmp.line(fd)
+        qmp.command(fd, "qmp_capabilities", json.null_value())
+        let action = args.len() > 0 ? args.get(0) : "status"
+        let value = json.object()
+        if strings.equal(action, "capture") { tool.require(args.len() == 2, "Specify output filename."); value = qmp.command(fd, "screendump", {filename: work + "/artifacts/" + args.get(1), format: "png"}) }
+        else if strings.equal(action, "quit") { value = qmp.command(fd, "quit", json.null_value()) }
+        else if strings.equal(action, "serial") { value = qmp.command(fd, "chardev-change", {id: "serial0", backend: {type: "socket", data: {addr: {type: "unix", data: {path: work + "/guest-serial.sock"}}, server: true, wait: false}}}) }
+        else if strings.equal(action, "tty") { value = qmp.command(fd, "human-monitor-command", {"command-line": "sendkey ctrl-alt-f3"}) }
+        else if strings.equal(action, "vt") {
+            tool.require(args.len() == 2, "Specify virtual terminal 1–6.")
+            let number = json.int(json.parse(args.get(1)))
+            tool.require(number >= 1 && number <= 6, "Virtual terminal must be 1–6.")
+            value = qmp.command(fd, "human-monitor-command", {"command-line": "sendkey ctrl-alt-f" + json.stringify(number)})
+        } else if strings.equal(action, "type") {
+            tool.require(args.len() == 2, "Specify text to type into the test VM.")
+            let text = args.get(1) + "\n"
+            for i in 0..strings.charLength(text) {
+                let key = strings.charAt(text, i)
+                if strings.equal(key, " ") { key = "spc" } else if strings.equal(key, "-") { key = "minus" } else if strings.equal(key, ".") { key = "dot" } else if strings.equal(key, "/") { key = "slash" } else if strings.equal(key, "\n") { key = "ret" }
+                qmp.command(fd, "human-monitor-command", {"command-line": "sendkey " + key + " 10"})
+                time.sleep_ms(60)
+            }
+            print("Typed into the test VM console.")
+            return
+        } else { value = qmp.command(fd, "query-status", json.null_value()) }
+        print(json.stringify(value))
+    })
+    unix.shutdown(fd)
+    result.unwrap(outcome)
+    return 0
+}
+return tool.main(main)

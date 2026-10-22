@@ -1,7 +1,7 @@
 {
   "id": "org.devos.launcher",
   "name": "Launcher",
-  "description": "Base application launcher and session controls.",
+  "description": "Application launcher layout, search and workspace shortcuts.",
   "version": "1.0.0",
   "apiVersion": 1,
   "kind": "ui",
@@ -10,5 +10,14 @@
   "order": 10,
   "settingsVersion": 1,
   "enabledByDefault": true,
-  "settings": []
+  "settings": [{"id": "layout", "title": "Launcher layout", "fields": [
+    {"key": "appView", "title": "All applications view", "type": "string", "default": "list"},
+    {"key": "workspaceApps", "title": "Workspace apps", "type": "string", "default": "[\"builtin:terminal\",\"builtin:files\",\"builtin:editor\"]"},
+    {"key": "menuWidth", "title": "Search width", "type": "number", "default": 600, "min": 420, "max": 900, "integer": true},
+    {"key": "iconSize", "title": "App icon size", "type": "number", "default": 28, "min": 20, "max": 40, "integer": true},
+    {"key": "compactRows", "title": "Compact app rows", "type": "boolean", "default": false},
+    {"key": "showWorkspace", "title": "Show workspace shortcuts", "type": "boolean", "default": true},
+    {"key": "showDescriptions", "title": "Show app descriptions", "type": "boolean", "default": true},
+    {"key": "rememberSearch", "title": "Remember the last search", "type": "boolean", "default": false}
+  ]}]
 }

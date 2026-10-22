@@ -1,0 +1,31 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/child_process"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn main(): i32 {
+    if tool.has("--help") { print("Read-only System pages smoke [--desktop-tests]."); return 0 }
+    smoke.withSession("system", Map<str,str>(), fn(session: smoke.Session) {
+        let env = smoke.environment(session)
+        let response = json.parse(tool.checked(Vec<str>("d", session.root + "/bin/dev-os-system"), env, "{\"action\":\"get\"}\n", 30000))
+        let state = util.get(response, "state")
+        tool.require(util.boolean(util.get(response, "ok")) && !strings.equal(util.text(util.get(state, "kernel")), "") && json.len(util.get(state, "storage")) > 0, "Incomplete system inventory.")
+        let artifacts = session.root + "/build/system-native"
+        tool.jsonWrite(artifacts + "/inventory.json", state)
+        if tool.has("--desktop-tests") { tool.checked(Vec<str>("gjs", "-m", session.root + "/dist/desktop-ui-test.js"), env, "", 60000) }
+        for page in Vec<str>("system", "display", "sound", "power", "storage", "about") {
+            smoke.remote(session, env, page)
+            time.sleep_ms(600)
+            smoke.screenshot(env, artifacts + "/" + page + ".png")
+        }
+        tool.require(!session.child.ready() && !strings.contains(util.read(session.log), "JS ERROR"), "Session failed.")
+        tool.copy(session.log, artifacts + "/session.log")
+    })
+    print("PASS: System, Display, Sound, Power, Storage and About; no settings changed")
+    return 0
+}
+return tool.main(main)

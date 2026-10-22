@@ -1,0 +1,32 @@
+#!/usr/bin/env d
+use "std/fs"
+use "std/json"
+use "std/process"
+use "std/strings"
+use "../lib/tool.dev" as tool
+fn main(): i32 {
+    if tool.has("--help") { print("Validate private VTE runtime lookup for ARM64/x64."); return 0 }
+    for machine in Vec<str>("aarch64", "x86_64") {
+        for inherited in Vec<bool>(false, true) {
+            tool.scope("devos-runtime-test-", fn(base: str) {
+                let tools = base + "/tools"
+                tool.write(tools + "/uname", "#!/bin/sh\nprintf '%s\\n' " + machine + "\n")
+                tool.chmod(tools + "/uname", "755")
+                let project = base + "/checkout"
+                let vte = project + "/build/wsl/vte/usr/lib/" + machine + "-linux-gnu"
+                tool.write(vte + "/girepository-1.0/Vte-2.91.typelib", "")
+                let foreign = strings.equal(machine, "aarch64") ? "x86_64" : "aarch64"
+                tool.write(project + "/build/wsl/vte/usr/lib/" + foreign + "-linux-gnu/girepository-1.0/Vte-2.91.typelib", "")
+                let env = Map<str,str>()
+                env.set("PATH", tools + ":" + project + "/build/wsl/bin:/usr/bin:/bin")
+                env.set("root", inherited ? base + "/updated-release" : project)
+                for key in Vec<str>("DEV_OS_VTE_RUNTIME", "GI_TYPELIB_PATH", "LD_LIBRARY_PATH") { env.set(key, "__DEVOS_UNSET__") }
+                let output = tool.checked(Vec<str>("sh", "-c", ". \"$1\"; . \"$1\"; printf '%s\\n' \"$DEV_OS_VTE_RUNTIME\" \"$GI_TYPELIB_PATH\" \"$LD_LIBRARY_PATH\"", "test", tool.root() + "/bin/dev-os-runtime-env"), env, "", 10000)
+                tool.require(strings.equal(output, vte + "\n" + vte + "/girepository-1.0\n" + vte + "\n"), "Private VTE lookup failed for " + machine)
+            })
+        }
+    }
+    print("PASS: ARM64/x64 private VTE lookup and inherited runtime recovery")
+    return 0
+}
+return tool.main(main)

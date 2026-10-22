@@ -1,0 +1,252 @@
+# Desktop account identity, GitHub device flow and the existing privileged service boundary.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/path"
+use "std/module"
+use "std/http"
+use "std/url"
+use "std/result"
+use "std/encoding"
+use "../lib/desktop.dev" as util
+use "../lib/posix.dev" as posix
+
+# Linux libc passwd ABI, including NSS accounts; no dependency on getent.
+struct Passwd { name: *u8, password: *u8, uid: u32, gid: u32, gecos: *u8, home: *u8, shell: *u8 }
+extern fn setpwent()
+extern fn getpwent(): *Passwd
+extern fn endpwent()
+fn cString(pointer: *u8): str {
+    let bytes = Vec<u8>()
+    unsafe {
+        if !(pointer as bool) { return "" }
+        let i = 0
+        while pointer[i] != 0 { bytes.push(pointer[i]); i = i + 1 }
+    }
+    return encoding.decode(bytes, "utf8")
+}
+
+fn root(): str {
+    let configured = process.getenv("DEV_OS_ROOT")
+    if !strings.equal(configured, "") { return configured }
+    let base = path.dirname(path.dirname(module.entry()))
+    return fs.is_dir(base + "/config") ? base : base + "/share/dev-os"
+}
+fn api(endpoint: str, data: json.Value, token: str): json.Value {
+    let headers = Map<str,str>()
+    headers.set("Accept", "application/json")
+    headers.set("User-Agent", "DevOs-Accounts")
+    if !strings.equal(token, "") { headers.set("Authorization", "Bearer " + token) }
+    let body = ""
+    let method = "GET"
+    if !json.is_null(data) {
+        method = "POST"
+        headers.set("Content-Type", "application/x-www-form-urlencoded")
+        let params = url.searchParams("")
+        for key in json.keys(data) { params.set(key, util.text(util.get(data, key))) }
+        body = params.toString()
+        params.close()
+    }
+    let response = http.request(method, endpoint, headers, body, 20000)
+    util.require(response.ok, "GitHub request failed. Check the connection and try again.")
+    let value = json.parse(response.body)
+    util.require(strings.equal(json.kind(value), "object"), "Invalid GitHub response.")
+    return value
+}
+fn registry(): json.Value {
+    let file = "/var/lib/devos/accounts.json"
+    if !fs.existsSync(file) { return {bindings: {}, provisioned: false} }
+    let info = strings.split(util.command("stat", Vec<str>("-c", "%F:%u:%a", file)), ":")
+    util.require(info.len() == 3, "Cannot inspect account registry permissions.")
+    util.require(strings.equal(info[0], "regular file") && strings.equal(info[1], "0"), "Unsafe account registry permissions.")
+    let mode = info[2]
+    let n = strings.charLength(mode)
+    util.require(n >= 3, "Unsafe account registry permissions.")
+    let group = strings.charAt(mode, n - 2)
+    let other = strings.charAt(mode, n - 1)
+    util.require(!strings.contains("2367", group) && !strings.contains("2367", other), "Unsafe account registry permissions.")
+    return json.parse(util.read(file))
+}
+fn users(): json.Value {
+    unsafe { setpwent() }
+    let outcome = result.attempt(fn(): json.Value {
+        let all = json.array()
+        unsafe {
+            while true {
+                let pointer = getpwent()
+                if !(pointer as bool) { break }
+                let account = pointer[0]
+                let uid = account.uid as i64
+                let username = cString(account.name)
+                if uid < 1000 || uid >= 65534 || strings.equal(username, "devos-greeter") { continue }
+                let shell = cString(account.shell)
+                if strings.equal(shell, "/bin/false") || strings.equal(shell, "/sbin/nologin") || strings.equal(shell, "/usr/sbin/nologin") { continue }
+                let name = strings.split(cString(account.gecos), ",")[0]
+                all = json.push(all, {username: username, name: strings.equal(name, "") ? username : name, uid: uid, home: cString(account.home)})
+            }
+        }
+        return all
+    })
+    unsafe { endpwent() }
+    return result.unwrap(outcome)
+}
+fn catalog(): json.Value {
+    let data = registry()
+    let all = users()
+    let found = json.array()
+    for i in 0..(json.len(all) as i64) {
+        let user = json.at(all, i)
+        let binding = util.get(util.get(data, "bindings"), util.text(util.get(user, "username")))
+        if !json.is_null(binding) && util.number(util.get(binding, "uid")) == util.number(util.get(user, "uid")) {
+            user = json.set(user, "github", util.get(binding, "login"))
+            user = json.set(user, "githubId", util.get(binding, "id"))
+        }
+        found = json.push(found, user)
+    }
+    return found
+}
+fn firstSetup(): bool {
+    let release = util.read("/etc/os-release")
+    let devos = false
+    for line in strings.split(release, "\n") {
+        if strings.equal(strings.trim(line), "ID=devos") || strings.equal(strings.trim(line), "ID=\"devos\"") { devos = true }
+    }
+    if !devos || util.boolean(util.get(registry(), "provisioned")) { return false }
+    let all = users()
+    for i in 0..(json.len(all) as i64) { if !strings.equal(util.text(util.get(json.at(all, i), "username")), "devos") { return false } }
+    return true
+}
+fn human(username: str): json.Value {
+    util.require(!strings.equal(username, "devos") && !strings.equal(username, "root") && !strings.equal(username, "nobody") && !strings.equal(username, "devos-greeter"), "Select a regular personal Linux user.")
+    let all = users()
+    for i in 0..(json.len(all) as i64) {
+        let user = json.at(all, i)
+        if strings.equal(util.text(util.get(user, "username")), username) { return user }
+    }
+    result.raise("Select a regular personal Linux user.")
+    return json.object()
+}
+fn liveRoot(): bool {
+    let file = "/run/devos-live/root-session-enabled"
+    if !fs.existsSync(file) { return false }
+    let info = strings.split(util.command("stat", Vec<str>("-c", "%F:%u:%a", file)), ":")
+    if info.len() != 3 || !strings.equal(info[0], "regular file") || !strings.equal(info[1], "0") { return false }
+    let n = strings.charLength(info[2])
+    if n < 3 { return false }
+    if strings.contains("2367", strings.charAt(info[2], n - 2)) || strings.contains("2367", strings.charAt(info[2], n - 1)) { return false }
+    return strings.equal(util.read(file), "root")
+}
+fn githubUsername(login: str): str {
+    let name = ""
+    let lower = strings.toLowerCase(login)
+    for i in 0..strings.charLength(lower) {
+        let ch = strings.charAt(lower, i)
+        name = name + (strings.contains("abcdefghijklmnopqrstuvwxyz0123456789-", ch) ? ch : "-")
+    }
+    if strings.equal(name, "") || !strings.contains("abcdefghijklmnopqrstuvwxyz", strings.charAt(name, 0)) || strings.equal(name, "root") || strings.equal(name, "devos") || strings.equal(name, "devos-greeter") || strings.equal(name, "nobody") { name = "gh-" + name }
+    if strings.charLength(name) > 31 { name = strings.substring(name, 0, 31) }
+    while strings.endsWith(name, "-") { name = strings.substring(name, 0, strings.charLength(name) - 1) }
+    return name
+}
+fn privileged(request: json.Value, setup: bool): json.Value {
+    let helper = setup ? "/usr/libexec/devos-account-setup" : "/usr/libexec/devos-account-admin"
+    util.require(fs.is_file(helper), "Linux user management is not installed. Install the DevOs account service first.")
+    let program = "pkexec"
+    let argv = Vec<str>(helper)
+    if util.wsl() {
+        let askpass = "/usr/libexec/devos-account-askpass"
+        util.require(fs.is_file(askpass), "Install the updated DevOs account service to enable the WSL administrator prompt.")
+        posix.setEnv("SUDO_ASKPASS", askpass)
+        program = "sudo"
+        argv = Vec<str>("-A", "--", helper)
+    }
+    let response = util.run(program, argv, json.stringify(request), 180000)
+    let raw = util.output(response)
+    let value = json.valid(raw) ? json.parse(raw) : json.object()
+    if !response.success {
+        let message = util.text(util.get(value, "error"))
+        if strings.equal(message, "") { message = util.wsl() ? "WSL administrator authentication failed. Enter the password of the current WSL sudo user, not the new OS password." : "Administrator authentication was cancelled or denied." }
+        result.raise(message)
+    }
+    return value
+}
+fn save(file: str, value: json.Value) { util.require(util.atomic(file, value), "Could not save account settings.") }
+fn execute(request: json.Value): json.Value {
+    util.require(strings.equal(json.kind(request), "object"), "Invalid account request.")
+    let configHome = process.getenv("XDG_CONFIG_HOME")
+    if strings.equal(configHome, "") { configHome = process.getenv("HOME") + "/.config" }
+    let config = configHome + "/dev-os/accounts.json"
+    let runtime = process.getenv("XDG_RUNTIME_DIR")
+    util.require(!strings.equal(runtime, ""), "A Linux user session is required.")
+    let folder = runtime + "/dev-os-accounts"
+    fs.mkdirSync(folder, true)
+    util.command("chmod", Vec<str>("700", folder))
+    let pending = folder + "/pending.json"
+    let identity = folder + "/identity.json"
+    let action = util.text(util.get(request, "action"))
+    if strings.equal(action, "") { action = "get" }
+    let settings = util.readJson(config)
+    let defaults = util.readJson(root() + "/config/accounts.json")
+    let client = util.text(util.get(settings, "clientId"))
+    if !json.has(settings, "clientId") { client = util.text(util.get(defaults, "clientId")) }
+    # An explicitly empty environment override disables device flow.
+    let env = process.env()
+    if env.contains("DEV_OS_GITHUB_CLIENT_ID") { client = env.get("DEV_OS_GITHUB_CLIENT_ID") }
+    if strings.equal(action, "create-user") { privileged(request, firstSetup()) }
+    else if strings.equal(action, "unlink") { privileged({action: "unlink"}, false); save(identity, {provider: "guest", name: "Guest"}) }
+    else if strings.equal(action, "configure") {
+        client = strings.trim(util.text(util.get(request, "clientId")))
+        util.require(strings.charLength(client) <= 128, "Enter the OAuth App client ID, not a client secret.")
+        for i in 0..strings.charLength(client) { util.require(strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", strings.charAt(client, i)), "Enter the OAuth App client ID, not a client secret.") }
+        save(config, {clientId: client})
+    } else if strings.equal(action, "guest") || strings.equal(action, "signout") {
+        util.remove(pending)
+        save(identity, {provider: "guest", name: "Guest"})
+    } else if strings.equal(action, "cancel") { util.remove(pending) }
+    else if strings.equal(action, "begin") {
+        util.require(!strings.equal(client, ""), "Configure a GitHub OAuth App client ID with Device Flow enabled first.")
+        let response = api("https://github.com/login/device/code", {client_id: client}, "")
+        if util.failed(response) { result.raise(util.text(util.get(response, "error_description"))) }
+        let interval = util.number(util.get(response, "interval"))
+        if interval < 5 { interval = 5 }
+        save(pending, {client: client, device: util.text(util.get(response, "device_code")), expires: util.now() + util.number(util.get(response, "expires_in")), next: util.now() + interval, interval: interval, link: util.boolean(util.get(request, "link"))})
+        return {code: util.text(util.get(response, "user_code")), url: "https://github.com/login/device", interval: interval}
+    } else if strings.equal(action, "poll") {
+        let flow = util.readJson(pending)
+        if json.len(flow) == 0 || util.now() >= util.number(util.get(flow, "expires")) { util.remove(pending); result.raise("Sign-in expired or was cancelled. Start again.") }
+        if util.now() < util.number(util.get(flow, "next")) { return {pending: true, interval: util.number(util.get(flow, "interval"))} }
+        let response = api("https://github.com/login/oauth/access_token", {client_id: util.text(util.get(flow, "client")), device_code: util.text(util.get(flow, "device")), grant_type: "urn:ietf:params:oauth:grant-type:device_code"}, "")
+        let error = util.text(util.get(response, "error"))
+        if strings.equal(error, "authorization_pending") || strings.equal(error, "slow_down") {
+            let interval = util.number(util.get(flow, "interval")) + (strings.equal(error, "slow_down") ? 5 : 0)
+            flow = json.set(flow, "interval", interval)
+            flow = json.set(flow, "next", util.now() + interval)
+            save(pending, flow)
+            return {pending: true, interval: interval}
+        }
+        util.remove(pending)
+        let token = util.text(util.get(response, "access_token"))
+        util.require(strings.equal(error, "") && !strings.equal(token, ""), "GitHub sign-in failed or was denied.")
+        let user = api("https://api.github.com/user", json.null_value(), token)
+        util.require(util.number(util.get(user, "id")) > 0 && !strings.equal(util.text(util.get(user, "login")), ""), "GitHub returned an invalid account.")
+        if util.boolean(util.get(flow, "link")) { privileged({action: "link", token: token}, false) }
+        let name = util.text(util.get(user, "name"))
+        if strings.equal(name, "") { name = util.text(util.get(user, "login")) }
+        save(identity, {provider: "github", name: name, login: util.text(util.get(user, "login")), id: util.number(util.get(user, "id"))})
+    } else { util.require(strings.equal(action, "get"), "Unknown account action.") }
+    let who = util.readJson(identity)
+    if json.len(who) == 0 { who = {provider: "guest", name: "Guest"} }
+    let response = json.set({clientId: client}, "identity", who)
+    if fs.is_file(root() + "/native/devos_accounts_system.dev") {
+        let username = util.command("id", Vec<str>("-un"))
+        let data = registry()
+        let binding = util.get(util.get(data, "bindings"), username)
+        if !json.is_null(binding) && util.number(util.get(binding, "uid")) != posix.uid() as i64 { binding = json.null_value() }
+        let system = {available: fs.is_file("/usr/libexec/devos-account-admin"), currentUser: username, firstSetup: firstSetup()}
+        system = json.set(system, "binding", binding)
+        system = json.set(system, "users", catalog())
+        response = json.set(response, "system", system)
+    }
+    return response
+}

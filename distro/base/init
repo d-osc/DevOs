@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs -o mode=1777 tmpfs /tmp
+mount -t tmpfs -o mode=0755 tmpfs /run
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+hostname devos
+printf '\nDevOs independent Linux base\n'
+cat /etc/os-release
+printf 'Kernel: '; uname -r
+printf 'Userspace: BusyBox + musl, built from upstream source\n'
+case " $(cat /proc/cmdline) " in
+    *' devos.smoke=1 '*)
+        test -c /dev/console
+        test -r /proc/version
+        test -d /sys/devices
+        test -x /bin/busybox
+        test "$(sed -n 's/^ID=//p' /etc/os-release)" = devos
+        printf 'DEVOS_BASE_SMOKE_PASS\n'
+        sync
+        poweroff -f
+        ;;
+esac
+printf '\nConsole recovery base. The graphical desktop is a separate image.\n'
+while :; do
+    setsid cttyhack /bin/sh || true
+done

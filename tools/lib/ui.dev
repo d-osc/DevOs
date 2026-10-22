@@ -1,0 +1,77 @@
+# Common native UI operations. Pixel inspection uses the desktop's GdkPixbuf API.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "std/encoding"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../../lib/desktop.dev" as util
+fn withPointer(name: str, extras: Map<str,str>, body: fn(smoke.Session,Map<str,str>,smoke.Input): void) {
+    smoke.withSession(name, extras, fn(session: smoke.Session) {
+        let env: Map<str,str> = smoke.environment(session)
+        let pointer: smoke.Input = smoke.input("dev-os-test-pointer-session", session.base, env)
+        let outcome = result.run(fn() { body(session, env, pointer) })
+        smoke.closeInput(pointer)
+        fs.mkdirSync(session.root + "/build/" + name, true)
+        tool.copy(session.log, session.root + "/build/" + name + "/session.log")
+        result.unwrap(outcome)
+    })
+}
+fn move(pointer: smoke.Input, x: i64, y: i64): smoke.Input {
+    pointer = smoke.send(pointer, "move -10000 -10000")
+    return smoke.send(pointer, "move " + json.stringify(x) + " " + json.stringify(y))
+}
+fn click(pointer: smoke.Input, x: i64, y: i64, button: str): smoke.Input {
+    pointer = move(pointer, x, y)
+    time.sleep_ms(150)
+    return smoke.send(pointer, "click " + button)
+}
+fn drag(pointer: smoke.Input, env: Map<str,str>, x: i64, y: i64, endX: i64, endY: i64, cancel: bool): smoke.Input {
+    pointer = move(pointer, x, y)
+    pointer = smoke.send(pointer, "down left")
+    time.sleep_ms(100)
+    pointer = smoke.send(pointer, "move 0 30")
+    time.sleep_ms(200)
+    pointer = smoke.send(pointer, "move " + json.stringify(endX - x) + " " + json.stringify(endY - y - 30))
+    pointer = smoke.send(pointer, "move 1 0")
+    time.sleep_ms(300)
+    if cancel { smoke.key(env, Vec<str>("-s", "250", "-k", "Escape", "-s", "200")) }
+    pointer = smoke.send(pointer, "up left")
+    time.sleep_ms(500)
+    return pointer
+}
+fn windows(env: Map<str,str>): str { return tool.checked(Vec<str>("dev-os-test-pointer", "window", "list"), env, "", 10000) }
+fn window(env: Map<str,str>, action: str, title: str, state: str): bool {
+    let argv = Vec<str>("dev-os-test-pointer", "window", action, "title:" + title)
+    if !strings.equal(state, "") { argv.push("state:" + state) }
+    return tool.run(argv, env, "", 10000).success
+}
+fn title(env: Map<str,str>, label: str): str {
+    for line in strings.split(windows(env), "\n") { if strings.contains(line, label) { return tool.after(line, ": ") } }
+    result.raise("Window title missing: " + label)
+    return ""
+}
+fn windowCount(env: Map<str,str>, label: str, count: i64) {
+    tool.waitFor(fn(): bool { return tool.count(windows(env), label) == count }, 12000, "Window count mismatch: " + label)
+}
+fn state(env: Map<str,str>, title: str, state: str) {
+    tool.waitFor(fn(): bool { return window(env, "find", title, state) }, 12000, "Window state mismatch: " + title + " " + state)
+}
+fn cleanLog(session: smoke.Session) {
+    let text = util.read(session.log)
+    for marker in Vec<str>("JS ERROR", "Gtk-CRITICAL", "Gjs-CRITICAL") { tool.require(!strings.contains(text, marker), text) }
+}
+fn pixels(file: str, x: i64, y: i64, width: i64, height: i64): json.Value {
+    let code = "const {GdkPixbuf}=imports.gi;const p=GdkPixbuf.Pixbuf.new_from_file(ARGV[0]);const data=p.get_pixels();const stride=p.get_rowstride(),channels=p.get_n_channels();const out=[];for(let y=+ARGV[2];y<+ARGV[2]+ +ARGV[4];y++)for(let x=+ARGV[1];x<+ARGV[1]+ +ARGV[3];x++){const i=y*stride+x*channels;out.push([data[i],data[i+1],data[i+2]]);}print(JSON.stringify(out));"
+    return json.parse(tool.exec(Vec<str>("gjs", "-c", code, file, json.stringify(x), json.stringify(y), json.stringify(width), json.stringify(height))))
+}
+fn makeIcon(file: str) {
+    tool.exec(Vec<str>("gjs", "-c", "const {GdkPixbuf}=imports.gi;const p=GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB,true,8,16,16);p.fill(0xf04632ff);p.savev(ARGV[0],'png',[],[]);", file))
+}
+fn bright(file: str): bool {
+    let code = "const {GdkPixbuf}=imports.gi;const p=GdkPixbuf.Pixbuf.new_from_file(ARGV[0]),a=p.get_pixels(),s=p.get_rowstride(),c=p.get_n_channels();let n=0;for(let y=90;y<Math.min(600,p.height);y++)for(let x=125;x<Math.min(1100,p.width);x++){let i=y*s+x*c;if(Math.max(a[i],a[i+1],a[i+2])>120)n++;}print(n>80);"
+    return strings.equal(strings.trim(tool.exec(Vec<str>("gjs", "-c", code, file))), "true")
+}

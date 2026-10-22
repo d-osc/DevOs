@@ -1,6 +1,6 @@
 import {
     Gtk, Gdk, Gio, GLib, Pango,
-    React, Box, Label, Button, Image,
+    React, Box, Label, Button, Image, Spinner,
     createRoot, useLayoutEffect, useRef, useState, type Root,
     type UIExtension, type UIContext
 } from '@dev-os/core';
@@ -49,6 +49,9 @@ function EditorPage({tab, assets}: {tab: EditorTab; assets: Promise<EditorAssets
             <Button id="editor-replace" tooltip="Replace · Ctrl + H" sensitive={tab.surface?.ready === true} onClicked={() => find(true)}><Image iconName="edit-find-replace-symbolic" pixelSize={14} /></Button>
             <Button id="editor-settings" tooltip="Open editor settings JSON" onClicked={() => { void tab.owner.openSettings(); }}><Image iconName="preferences-system-symbolic" pixelSize={14} /></Button>
         </Box>
+        {!tab.surface?.ready && !tab.surface?.error && <Box id="editor-startup" spacing={12} borderWidth={16}>
+            <Spinner active /><Label xalign={0}>Preparing Editor… You can still move or close this window.</Label>
+        </Box>}
         <Box id="editor-monaco" ref={host} expand hexpand vexpand />
         <Box className="editor-status" spacing={14}>
             <Label className={document.error || tab.surface?.error ? 'error' : 'subtle'} xalign={0} expand ellipsize={Pango.EllipsizeMode.END}>

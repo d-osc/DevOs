@@ -10,14 +10,97 @@
   "order": 25,
   "settingsVersion": 1,
   "enabledByDefault": true,
-  "settings": [{
-    "id": "browser",
-    "title": "File browser",
-    "fields": [
-      {"key": "homeDirectory", "title": "Start folder", "type": "string", "default": "~", "description": "Local path. ~ opens your home folder."},
-      {"key": "gridView", "title": "Start with icon grid", "type": "boolean", "default": false},
-      {"key": "showHidden", "title": "Show hidden files", "type": "boolean", "default": false},
-      {"key": "searchExcludedDirectories", "title": "Search: excluded folders", "type": "string", "default": ".git,node_modules,dist,build,.venv,vendor,.cache", "description": "Comma-separated directory names skipped by Quick Open. Applies when opening a new search."}
-    ]
-  }]
+  "settings": [
+    {
+      "id": "browser",
+      "title": "File browser",
+      "fields": [
+        {
+          "key": "homeDirectory",
+          "title": "Start folder",
+          "type": "string",
+          "default": "~",
+          "description": "Local path. ~ opens your home folder."
+        },
+        {
+          "key": "gridView",
+          "title": "Start with icon grid",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "key": "showHidden",
+          "title": "Show hidden files",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "key": "searchExcludedDirectories",
+          "title": "Search: excluded folders",
+          "type": "string",
+          "default": ".git,node_modules,dist,build,.venv,vendor,.cache",
+          "description": "Comma-separated directory names skipped by Quick Open. Applies when opening a new search."
+        }
+      ]
+    },
+    {
+      "id": "contextMenu",
+      "fields": [
+        {
+          "title": "Enable right-click menu",
+          "key": "contextEnabled",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show Open in context menu",
+          "key": "contextOpen",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show Rename in context menu",
+          "key": "contextRename",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show CopyPath in context menu",
+          "key": "contextCopyPath",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show NewFolder in context menu",
+          "key": "contextNewFolder",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show Terminal in context menu",
+          "key": "contextTerminal",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show Refresh in context menu",
+          "key": "contextRefresh",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "Show Hidden in context menu",
+          "key": "contextHidden",
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "title": "Right-click context menu"
+    },
+    {
+      "id": "customContextMenu",
+      "title": "Custom context actions",
+      "fields": [{"key": "contextCustomItems", "title": "Custom menu actions", "type": "string", "default": "[]", "description": "Custom action definitions managed in Settings → Files. Built-in actions remain separate."}]
+    }
+  ]
 }

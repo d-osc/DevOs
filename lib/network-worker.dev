@@ -1,0 +1,27 @@
+# Launched by dev-os-network-linux with the system GIO shared library loaded.
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../lib/desktop.dev" as util
+use "../lib/dbus.dev" as dbus
+use "../lib/network.dev" as network
+fn main(): i32 {
+    let request = util.parse(io.read_line())
+    if util.failed(request) { print(json.stringify(request)); return 1 }
+    let bus = dbus.open()
+    let outcome = result.attempt(fn(): json.Value { return network.execute(bus, request) })
+    dbus.close(bus)
+    if result.isErr(outcome) {
+        let message = result.message(outcome)
+        let secret = util.text(util.get(request, "password"))
+        if !strings.equal(secret, "") { message = strings.replaceAll(message, secret, "[redacted]") }
+        print(json.stringify(util.error(message)))
+        return 1
+    }
+    print(json.stringify(result.unwrap(outcome)))
+    return 0
+}
+let outcome = result.attempt(fn(): i32 { return main() })
+if result.isErr(outcome) { print(json.stringify(util.error("NetworkManager is unavailable on this Linux system."))); return 1 }
+return result.unwrap(outcome)

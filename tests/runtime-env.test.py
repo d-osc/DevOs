@@ -1,5 +1,6 @@
 """Validate optional dependency paths before GJS starts and across handoffs."""
 import os
+import platform
 from pathlib import Path
 import subprocess
 import tempfile
@@ -8,7 +9,7 @@ helper = Path(__file__).resolve().parents[1] / 'bin/dev-os-runtime-env'
 with tempfile.TemporaryDirectory(prefix='dev-os-runtime-env-') as temporary:
     base = Path(temporary)
     source = base / 'source with spaces'
-    library = source / 'build/wsl/vte/usr/lib/x86_64-linux-gnu'
+    library = source / f'build/wsl/vte/usr/lib/{platform.machine()}-linux-gnu'
     (library / 'girepository-1.0').mkdir(parents=True)
     (library / 'girepository-1.0/Vte-2.91.typelib').touch()
     tools = source / 'build/wsl/bin'

@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<labwc_config>
+  <core><decoration>server</decoration></core>
+  <theme><cornerRadius>12</cornerRadius></theme>
+  <keyboard />
+  <mouse />
+</labwc_config>

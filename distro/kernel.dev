@@ -1,0 +1,160 @@
+# Snapshot the sibling DevOsLinuxKernel inputs without changing its checkout.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/process"
+use "std/os"
+use "../lib/posix.dev" as posix
+use "../lib/devstr.dev" as devstr
+
+fn defaultProject(): str { return "/mnt/c/Users/ondev/Projects/DevOsLinuxKernel" }
+
+fn sha256File(path: str): str {
+    let output = child_process.execFileSync("sha256sum", Vec<str>(path), child_process.options())
+    if !output.success { return "" }
+    return strings.substring(decode(output.stdout), 0, 64)
+}
+
+fn decode(bytes: Vec<u8>): str {
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let ch = bytes[i]
+        if ch >= 0x20 && ch < 0x7f { out = out + asciiChar(ch) }
+        else { if ch == 0x0a { out = out + "\n" } }
+    }
+    return out
+}
+
+fn asciiChar(code: u8): str {
+    let chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    return strings.charAt(chars, (code - 0x20) as i64)
+}
+
+fn captureOutput(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command), child_process.options())
+    return decode(output.stdout)
+}
+
+fn snapshot(destination: str, projectArg: str): json.Value {
+    let project = projectArg
+    if strings.equal(project, "") {
+        project = process.getenv("DEVOS_KERNEL_PROJECT")
+        if strings.equal(project, "") { project = defaultProject() }
+    }
+    let common = fs.readFileSync(project + "/scripts/common.sh", "utf8")
+    let anchor = "export KERNEL_VERSION=\""
+    let at = strings.indexOf(common, anchor)
+    if at < 0 {
+        print("Cannot read the DevOsLinuxKernel kernel version.")
+        return json.null_value()
+    }
+    let start = at + (strings.len(anchor) as i64)
+    let end = devstr.byteIndexOf(devstr.byteSlice(common, start, devstr.byteLength(common)), "\"") as i64
+    let version = devstr.byteSlice(common, start, start + end)
+    let home = os.homedir()
+    let work = process.getenv("DEVOS_KERNEL_WORK")
+    if strings.equal(work, "") { work = home + "/devos" }
+    let archiveName = process.getenv("DEVOS_KERNEL_ARCHIVE")
+    let archive = archiveName
+    if strings.equal(archive, "") { archive = work + "/downloads/linux-" + version + ".tar.xz" }
+    let config = project + "/output/kernel-" + version + "-aarch64.config"
+    let image = project + "/output/devos-Image-" + version + "-aarch64"
+    let fragment = project + "/config/kernel-fragment.config"
+    for i in 0..4 {
+        let path = archive
+        if i == 1 { path = config }
+        if i == 2 { path = image }
+        if i == 3 { path = fragment }
+        if !fs.existsSync(path) || fs.size(path) == 0 {
+            print("Missing " + path + ". Build DevOsLinuxKernel for aarch64 first, or set DEVOS_KERNEL_WORK/DEVOS_KERNEL_ARCHIVE.")
+            return json.null_value()
+        }
+    }
+    let makefile = captureOutput("tar -xJf " + archive + " linux-" + version + "/Makefile -O")
+    let partsOk = true
+    let components = Vec<str>()
+    for i in 0..3 {
+        let key = "VERSION"
+        if i == 1 { key = "PATCHLEVEL" }
+        if i == 2 { key = "SUBLEVEL" }
+        let line = findLine(makefile, key)
+        if strings.equal(line, "") { partsOk = false } else { components.push(line) }
+    }
+    if !partsOk || !strings.equal(strings.join(components, "."), version) {
+        print("Kernel archive version differs from the selected project.")
+        return json.null_value()
+    }
+    let copying = "pending"
+    let md5 = captureOutput("tar -xJf " + archive + " linux-" + version + "/COPYING -O | md5sum | cut -d\\  -f1")
+    copying = strings.trim(md5)
+    if strings.indexOf(fs.readFileSync(config, "utf8"), "CONFIG_ARM64=y") < 0 {
+        print("The distro requires an ARM64 kernel configuration.")
+        return json.null_value()
+    }
+    let magicBytes = childMagic(image)
+    if !strings.equal(magicBytes, "65 82 77 100") {
+        print("The project output is not an ARM64 Linux Image.")
+        return json.null_value()
+    }
+    let banner = captureOutput("grep -aom1 \"Linux version [0-9][A-Za-z0-9.+_-]*\" " + image)
+    banner = strings.trim(strings.replaceAll(banner, "Linux version ", ""))
+    if !strings.startsWith(banner, version + "-devos") {
+        print("The project Image does not identify the expected DevOs kernel release.")
+        return json.null_value()
+    }
+    let revision = captureOutput("git -C " + project + " rev-parse HEAD")
+    revision = strings.trim(revision)
+    fs.mkdirSync(destination, true)
+    copyIfChanged(archive, destination + "/devos-linux.tar.xz")
+    copyIfChanged(config, destination + "/devos-kernel.config")
+    copyIfChanged(image, destination + "/devos-kernel-Image")
+    copyIfChanged(fragment, destination + "/devos-kernel-fragment.config")
+    let record = json.set(json.object(), "project", project)
+    record = json.set(record, "revision", revision)
+    record = json.set(record, "version", version)
+    record = json.set(record, "release", banner)
+    record = json.set(record, "architecture", "aarch64")
+    record = json.set(record, "archive", archive)
+    record = json.set(record, "archive_sha256", sha256File(archive))
+    record = json.set(record, "config_sha256", sha256File(config))
+    record = json.set(record, "fragment_sha256", sha256File(fragment))
+    record = json.set(record, "image_sha256", sha256File(image))
+    record = json.set(record, "license_md5", copying)
+    fs.writeFileSync(destination + "/devos-kernel.json", json.pretty(record) + "\n")
+    return record
+}
+
+fn childMagic(image: str): str {
+    let out = child_process.execFileSync("sh", Vec<str>("-c", "dd if=" + image + " bs=1 skip=56 count=4 2>/dev/null | od -An -tu1 | tr -s \" \" | tr -d \"\\n\""), child_process.options())
+    let text = decode(out.stdout)
+    return strings.trim(text)
+}
+
+fn findLine(makefile: str, key: str): str {
+    let lines = strings.split(makefile, "\n")
+    for i in 0..(lines.len() as i64) {
+        let line = lines[i]
+        if strings.startsWith(line, key + " ") || strings.startsWith(line, key + "\t") {
+            let eq = strings.indexOf(line, "=")
+            if eq < 0 { return "" }
+            return trimDigits(strings.substring(line, eq + 1, strings.charLength(line)))
+        }
+    }
+    return ""
+}
+
+fn trimDigits(text: str): str {
+    let out = ""
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        if strings.contains("0123456789", ch) { out = out + ch }
+    }
+    return out
+}
+
+fn copyIfChanged(origin: str, target: str): bool {
+    if fs.existsSync(target) && strings.equal(sha256File(target), sha256File(origin)) { return false }
+    posix.shell("cp -f " + origin + " " + target)
+    return true
+}

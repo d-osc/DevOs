@@ -1,0 +1,31 @@
+#!/usr/bin/env d
+# Download checksum-pinned virtual pointer sources; extract only validated TAR paths.
+use "std/fs"
+use "std/path"
+use "std/args"
+use "std/http"
+use "std/strings"
+use "../lib/tool.dev" as tool
+use "../lib/feed.dev" as feed
+fn main(): i32 {
+    if tool.has("--help") { print("Prepare checksum-pinned wlrctl 0.2.2 source for bootstrap-pointer-test.sh."); return 0 }
+    let base = tool.root() + "/build/wsl"
+    fs.mkdirSync(base, true)
+    let archive = base + "/wlrctl_0.2.2.orig.tar.gz"
+    if !fs.is_file(archive) {
+        let response = http.get("https://archive.ubuntu.com/ubuntu/pool/universe/w/wlrctl/wlrctl_0.2.2.orig.tar.gz")
+        tool.require(response.ok && fs.write_bytes(archive, response.bytes), "Could not download wlrctl sources.")
+    }
+    tool.require(strings.equal(feed.sha(archive), "9d0654e0a3df08162ec893cde95fb0c46a708df22f3df4629c81e0d37ca87901"), "Unexpected wlrctl source checksum.")
+    let source = base + "/wlrctl-source"
+    if !fs.is_file(source + "/wlrctl-0.2.2/pointer.c") {
+        # GNU tar refuses traversal when member names are validated before extraction.
+        for name in strings.split(tool.exec(Vec<str>("tar", "-tzf", archive)), "\n") {
+            tool.require(!strings.startsWith(name, "/") && !strings.contains("/" + name + "/", "/../"), "Unsafe archive member.")
+        }
+        fs.mkdirSync(source, true)
+        tool.exec(Vec<str>("tar", "--no-same-owner", "-xzf", archive, "-C", source))
+    }
+    return 0
+}
+return tool.main(main)

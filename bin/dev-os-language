@@ -1,0 +1,328 @@
+#!/usr/bin/env d
+# Persist DevOs keyboard languages and prepare/reload this session's labwc config.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "std/args"
+use "std/io"
+use "std/os"
+use "std/process"
+use "std/regex"
+use "std/result"
+use "std/encoding"
+use "../lib/posix.dev" as posix
+use "../lib/desktop.dev" as util
+
+fn decodeText(bytes: Vec<u8>): str {
+    return encoding.decode(bytes, "utf8")
+}
+
+fn capture(command: str): str {
+    let output = child_process.execFileSync("sh", Vec<str>("-c", command + " 2>/dev/null"), child_process.options())
+    return decodeText(output.stdout)
+}
+
+fn optGet(value: json.Value, key: str): json.Value {
+    if json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+
+fn jsonText(value: json.Value): str {
+    if strings.equal(json.kind(value), "string") { return json.string(value) }
+    return ""
+}
+
+fn layoutIds(): Vec<str> { return Vec<str>("us", "th", "gb", "de", "fr", "es") }
+
+fn shortcutIds(): Vec<str> { return Vec<str>("alt-shift", "super-space", "ctrl-shift", "caps-lock") }
+
+fn shortcutOption(id: str): str {
+    if strings.equal(id, "alt-shift") { return "grp:alt_shift_toggle" }
+    if strings.equal(id, "super-space") { return "grp:win_space_toggle" }
+    if strings.equal(id, "ctrl-shift") { return "grp:ctrl_shift_toggle" }
+    if strings.equal(id, "caps-lock") { return "grp:caps_toggle" }
+    return ""
+}
+
+fn containsItem(items: Vec<str>, value: str): bool {
+    for i in 0..(items.len() as i64) {
+        if strings.equal(items[i], value) { return true }
+    }
+    return false
+}
+
+fn layoutsJson(): json.Value {
+    let data = json.array()
+    let ids = layoutIds()
+    let names = Vec<str>("English (US)", "ไทย — Thai (Kedmanee)", "English (UK)", "Deutsch — German", "Français — French", "Español — Spanish")
+    let samples = Vec<str>("The quick brown fox", "สวัสดี ภาษาไทย", "The quick brown fox", "Guten Tag", "Bonjour", "Hola")
+    for i in 0..(ids.len() as i64) {
+        let item = json.set(json.object(), "id", ids[i])
+        item = json.set(item, "name", names[i])
+        item = json.set(item, "sample", samples[i])
+        data = json.push(data, item)
+    }
+    return data
+}
+
+fn shortcutsJson(): json.Value {
+    let data = json.array()
+    let ids = shortcutIds()
+    let names = Vec<str>("Alt + Shift", "Super + Space", "Ctrl + Shift", "Caps Lock")
+    for i in 0..(ids.len() as i64) {
+        let item = json.set(json.object(), "id", ids[i])
+        item = json.set(item, "name", names[i])
+        item = json.set(item, "option", shortcutOption(ids[i]))
+        data = json.push(data, item)
+    }
+    return data
+}
+
+fn validate(value: json.Value): json.Value {
+    if !strings.equal(json.kind(value), "object") { return json.null_value() }
+    if !json.has(value, "layouts") || !json.has(value, "shortcut") { return json.null_value() }
+    let layouts = json.get(value, "layouts")
+    if !strings.equal(json.kind(layouts), "array") { return json.null_value() }
+    let count = json.len(layouts)
+    if count < 1 || count > 4 { return json.null_value() }
+    let known = layoutIds()
+    for i in 0..(count as i64) {
+        let item = json.at(layouts, i)
+        if !strings.equal(json.kind(item), "string") { return json.null_value() }
+        let id = json.string(item)
+        if !containsItem(known, id) { return json.null_value() }
+        for j in 0..(count as i64) {
+            if j != i && strings.equal(json.string(json.at(layouts, j)), id) { return json.null_value() }
+        }
+    }
+    let shortcut = jsonText(json.get(value, "shortcut"))
+    if !containsItem(shortcutIds(), shortcut) { return json.null_value() }
+    let result = json.set(json.object(), "layouts", layouts)
+    return json.set(result, "shortcut", shortcut)
+}
+
+fn defaults(): json.Value {
+    let layouts = json.array()
+    layouts = json.push(layouts, "us")
+    layouts = json.push(layouts, "th")
+    let result = json.set(json.object(), "layouts", layouts)
+    return json.set(result, "shortcut", "alt-shift")
+}
+
+fn preferencesPath(): str {
+    let config = process.getenv("XDG_CONFIG_HOME")
+    if strings.equal(config, "") { config = os.homedir() + "/.config" }
+    return config + "/dev-os/language.json"
+}
+
+fn load(): json.Value {
+    let path = preferencesPath()
+    if !fs.existsSync(path) { return validate(defaults()) }
+    let outcome = result.attempt(fn(): json.Value { return validate(json.parse(fs.readFileSync(path, "utf8"))) })
+    return result.unwrapOr(outcome, json.null_value())
+}
+
+fn atomicWrite(target: str, text: str) {
+    util.require(util.atomicText(target, text), "Could not save language settings.")
+}
+
+fn desktopSnapshot(): json.Value {
+    let root = process.getenv("DEV_OS_ROOT")
+    if strings.equal(root, "") { root = "/usr/share/dev-os" }
+    let tracker = ""
+    if fs.existsSync(root + "/native/dev-os-window-tracker") { tracker = root + "/native/dev-os-window-tracker" }
+    else {
+        if fs.existsSync(root + "/build/native/dev-os-window-tracker") { tracker = root + "/build/native/dev-os-window-tracker" }
+    }
+    if strings.equal(tracker, "") { return json.null_value() }
+    let options = child_process.options()
+    options.timeoutMs = 2000
+    let output = child_process.execFileSync(tracker, Vec<str>(), options)
+    let text = decodeText(output.stdout)
+    let desktops = json.array()
+    let lines = strings.split(text, "\n")
+    for i in 0..(lines.len() as i64) {
+        let line = strings.trim(lines[i])
+        if strings.equal(line, "") { continue }
+        let event = json.parse(line)
+        let kind = jsonText(optGet(event, "type"))
+        if strings.equal(kind, "desktop-begin") { desktops = json.array() }
+        if strings.equal(kind, "desktop") { desktops = json.push(desktops, jsonText(optGet(event, "name"))) }
+        if strings.equal(kind, "desktop-done") {
+            if json.len(desktops) == 0 { return json.null_value() }
+            return desktops
+        }
+    }
+    return json.null_value()
+}
+
+fn filterEnvironment(environment: str): str {
+    let lines = strings.split(environment, "\n")
+    let kept = ""
+    for i in 0..(lines.len() as i64) {
+        let line = lines[i]
+        if strings.startsWith(strings.trim(line), "XKB_DEFAULT_LAYOUT=") { continue }
+        if strings.startsWith(strings.trim(line), "XKB_DEFAULT_VARIANT=") { continue }
+        if strings.startsWith(strings.trim(line), "XKB_DEFAULT_OPTIONS=") { continue }
+        kept = kept + line + "\n"
+    }
+    return kept
+}
+
+fn inheritedOptions(): str {
+    let raw = process.getenv("XKB_DEFAULT_OPTIONS")
+    let parts = strings.split(raw, ",")
+    let kept = ""
+    for i in 0..(parts.len() as i64) {
+        let item = strings.trim(parts[i])
+        if strings.equal(item, "") || strings.startsWith(item, "grp:") { continue }
+        kept = kept + (strings.equal(kept, "") ? "" : ",") + item
+    }
+    return kept
+}
+
+fn xmlEscape(text: str): str {
+    let out = strings.replaceAll(text, "&", "&amp;")
+    out = strings.replaceAll(out, "<", "&lt;")
+    return strings.replaceAll(out, ">", "&gt;")
+}
+
+fn replaceDesktops(xml: str, desktops: json.Value): str {
+    let namesBlock = "\n"
+    for i in 0..(json.len(desktops) as i64) {
+        namesBlock = namesBlock + "    <name>" + xmlEscape(json.string(json.at(desktops, i))) + "</name>\n  "
+    }
+    let replacement = "<desktops number=\"${json.len(desktops)}\">\n  <names>" + namesBlock + "</names>\n  </desktops>"
+    let pattern = regex.compile("<desktops[\\s\\S]*?</desktops>|<desktops[^>]*/>", "")
+    let result = pattern.replace(xml, replacement)
+    pattern.close()
+    return result
+}
+
+fn removeSpaceKeybind(xml: str): str {
+    let pattern = regex.compile("[ \\t]*<keybind key=\"[Ww]-[Ss]pace\">[\\s\\S]*?</keybind>[ \\t]*\\n?", "")
+    let result = pattern.replace(xml, "")
+    pattern.close()
+    return result
+}
+
+fn configure(directory: str, value: json.Value, desktops: json.Value) {
+    let base = strings.trim(fs.readFileSync(directory + "/.devos-base", "utf8"))
+    let environment = ""
+    if fs.existsSync(base + "/environment") { environment = fs.readFileSync(base + "/environment", "utf8") }
+    environment = filterEnvironment(environment)
+    let layouts = json.get(value, "layouts")
+    let layoutList = ""
+    let variantList = ""
+    for i in 0..(json.len(layouts) as i64) {
+        let id = json.string(json.at(layouts, i))
+        layoutList = layoutList + (strings.equal(layoutList, "") ? "" : ",") + id
+        variantList = variantList + (strings.equal(variantList, "") ? "" : ",") + "basic"
+    }
+    let inherited = inheritedOptions()
+    let option = shortcutOption(jsonText(json.get(value, "shortcut")))
+    let options = strings.equal(inherited, "") ? option : inherited + "," + option
+    environment = environment + "\nXKB_DEFAULT_LAYOUT=" + layoutList + "\nXKB_DEFAULT_VARIANT=" + variantList + "\nXKB_DEFAULT_OPTIONS=" + options + "\n"
+    let xml = fs.readFileSync(base + "/rc.xml", "utf8")
+    if !json.is_null(desktops) { xml = replaceDesktops(xml, desktops) }
+    if strings.equal(jsonText(json.get(value, "shortcut")), "super-space") && json.len(layouts) > 1 {
+        xml = removeSpaceKeybind(xml)
+    }
+    atomicWrite(directory + "/environment", environment)
+    atomicWrite(directory + "/rc.xml", xml + "\n")
+}
+
+fn main(): i32 {
+    let action = ""
+    let base = ""
+    let i = 0
+    let argc = args.len() as i64
+    while i < argc {
+        if strings.equal(args.get(i), "get") || strings.equal(args.get(i), "save") || strings.equal(args.get(i), "prepare") { action = args.get(i) }
+        if strings.equal(args.get(i), "--base") && i + 1 < argc { base = args.get(i + 1); i = i + 1 }
+        i = i + 1
+    }
+    if strings.equal(action, "prepare") {
+        if strings.equal(base, "") || !fs.existsSync(base + "/rc.xml") { return fail("Missing compositor base configuration.") }
+        let value = load()
+        if json.is_null(value) { value = validate(defaults()) }
+        let runtime = process.getenv("XDG_RUNTIME_DIR")
+        let directory = util.command("mktemp", Vec<str>("-d", runtime + "/dev-os-labwc-XXXXXX"))
+        util.require(!strings.equal(directory, ""), "Could not prepare compositor configuration.")
+        let copied = util.run("cp", Vec<str>("-a", base + "/.", directory + "/"), "", 10000)
+        util.require(copied.success, "Could not copy compositor configuration.")
+        atomicWrite(directory + "/.devos-base", util.command("readlink", Vec<str>("-f", base)) + "\n")
+        configure(directory, value, json.null_value())
+        print(directory)
+        return 0
+    }
+    if strings.equal(action, "get") {
+        let value = load()
+        let warning = ""
+        if json.is_null(value) { value = validate(defaults()); warning = "Saved language preferences could not be read. Apply to replace them with your choices." }
+        let result = json.set(json.object(), "ok", true)
+        result = json.set(result, "settings", value)
+        result = json.set(result, "layouts", layoutsJson())
+        result = json.set(result, "shortcuts", shortcutsJson())
+        result = json.set(result, "warning", warning)
+        print(json.stringify(result))
+        return 0
+    }
+    if strings.equal(action, "save") {
+        let raw = io.read_line()
+        let value = validate(json.parse(raw))
+        if json.is_null(value) { return fail("Expected keyboard languages and a shortcut.") }
+        let runtime = process.getenv("DEV_OS_COMPOSITOR_CONFIG")
+        let applied = false
+        if !strings.equal(runtime, "") && fs.existsSync(runtime + "/.devos-base") {
+            let pidText = process.getenv("LABWC_PID")
+            if isDigits(pidText) && !strings.equal(pidText, "") {
+                let pid = digitsOf(pidText)
+                if posix.send(pid, 0) {
+                    configure(runtime, value, desktopSnapshot())
+                    atomicWrite(preferencesPath(), json.pretty(value) + "\n")
+                    posix.send(pid, posix.SIGHUP())
+                    applied = true
+                }
+            }
+        }
+        if !applied { atomicWrite(preferencesPath(), json.pretty(value) + "\n") }
+        let result = json.set(json.object(), "ok", true)
+        result = json.set(result, "settings", value)
+        result = json.set(result, "applied", applied)
+        print(json.stringify(result))
+        return 0
+    }
+    return fail("Usage: dev-os-language get | save | prepare --base DIR")
+}
+
+fn isDigits(text: str): bool {
+    if strings.equal(text, "") { return false }
+    for i in 0..strings.charLength(text) {
+        if !strings.contains("0123456789", strings.charAt(text, i)) { return false }
+    }
+    return true
+}
+
+fn digitsOf(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        let d = 0
+        let digits = "0123456789"
+        for x in 0..10 {
+            if strings.equal(strings.charAt(digits, x), ch) { d = x }
+        }
+        value = value * 10 + d
+    }
+    return value
+}
+
+fn fail(message: str): i32 {
+    print(json.stringify(json.set(json.set(json.object(), "ok", false), "error", message)))
+    return 1
+}
+let outcome = result.attempt(fn(): i32 { return main() })
+if result.isErr(outcome) { return fail(result.message(outcome)) }
+return result.unwrap(outcome)

@@ -101,11 +101,11 @@ Rollback เลือกรุ่นก่อนหน้า; Check release + Up
 ```sh
 npm run build
 gjs -m dist/store-test.js
-python3 tools/test/smoke.py
+d tools/test/smoke.dev --
 ```
 
 Store integration tests ใช้ network fixture และ tar จริง ตรวจ install/update/rollback,
 loader ของ user UI, settings persistence, corrupt downloads, disable/uninstall และ base protection.
 ไม่ได้สร้างหรือ publish GitHub extension repo ตัวอย่างให้อัตโนมัติ.
 หลัง package ตัวอย่างแล้ว ตั้ง `DEV_OS_STORE_TEST_PACKAGE` เป็น absolute path ของ tar
-เพื่อทดสอบ packager artifact และ shared React hooks เพิ่มด้วย `store-test.js` และ `tools/test/smoke.py`.
+เพื่อทดสอบ packager artifact และ shared React hooks เพิ่มด้วย `store-test.js` และ `tools/test/smoke.dev`.
