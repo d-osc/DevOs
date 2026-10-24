@@ -21,6 +21,19 @@ class ImageToolchainTests(unittest.TestCase):
                      'nodejs', 'nodejs-npm', 'rust', 'cargo'):
             self.assertIn(name, packages)
 
+    def test_image_installs_sudo_and_curl_with_ca_certificates(self):
+        packages = image_install()
+        for name in ('sudo', 'curl', 'ca-certificates'):
+            self.assertIn(name, packages)
+
+    def test_wheel_group_may_use_sudo(self):
+        recipe = (ROOT / 'distro/oe/meta-devos/recipes-devos/session/devos-session.bb').read_text()
+        rule = (ROOT / 'distro/oe/meta-devos/recipes-devos/session/files/10-devos-wheel.sudoers').read_text()
+        self.assertRegex(rule, r'(?m)^%wheel\s+ALL=\(ALL:ALL\)\s+ALL$')
+        self.assertIn('file://10-devos-wheel.sudoers', recipe)
+        self.assertIn('install -m0440', recipe)
+        self.assertIn('${sysconfdir}/sudoers.d/10-devos-wheel', recipe)
+
     def test_layers_providing_nodejs_are_enabled(self):
         prepare = PREPARE.read_text()
         self.assertIn('/openembedded-core/meta ', prepare)

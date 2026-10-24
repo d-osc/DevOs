@@ -1,0 +1,2 @@
+# Administrators (group wheel, the same group polkit treats as admin) may use sudo; root is covered by the stock sudoers.
+%wheel ALL=(ALL:ALL) ALL

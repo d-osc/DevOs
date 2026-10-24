@@ -77,7 +77,7 @@ fn checks(): i32 {
     tool.checked(Vec<str>("gjs", "-m", session + "/dist/wifi-native-test.js"), environment, "", 30000)
     report("DEVOS_LIVE_INSTALLED_WIFI_PASS: installed helper and native UI")
     let tools = tool.checked(Vec<str>("/bin/bash", "--login", "-ic", "cd; printf '%s\\n' \"$" + "{PS1@P}\"; git --version; devospm --version; dev --version"), audio, "", 20000)
-    tool.require(strings.contains(tools, "root@devos:~#") && strings.contains(tools, "git version") && tool.count(tools, "dev 0.5.0") == 2, "Default terminal prompt/tools failed.")
+    tool.require(strings.contains(tools, "root@devos:~#") && strings.contains(tools, "git version") && tool.count(tools, "dev 0.6.1") == 2, "Default terminal prompt/tools failed.")
     report("DEVOS_LIVE_DEFAULT_TOOLS_PASS: root prompt, Git, devospm and dev alias")
     tool.exec(Vec<str>("systemctl", "is-active", "devos-zram.service", "devos-memory.service"))
     tool.require(strings.contains(tool.read("/proc/swaps"), "/dev/zram"), "Compressed swap is not active.")

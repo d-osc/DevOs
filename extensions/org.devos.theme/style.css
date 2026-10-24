@@ -433,7 +433,7 @@ window#settings .app-titlebar button:hover { background: @dv_s4; }
 #settings .updates-command { background: @dv_s0; border: 1px solid @dv_line2; border-radius: 7px; padding: 10px; font-family: monospace; font-size: 11px; color: @dv_accent_fg; }
 window#files { background: @dv_s0; color: @dv_fg; }
 .app-titlebar {
-  background: @dv_s1; color: @dv_fg_strong; border-bottom: 1px solid @dv_accent_t4;
+  background: @dv_s1; color: @dv_fg_strong; border-bottom: 1px solid @dv_border;
   border-radius: 8px 8px 0 0; padding: 5px 8px; box-shadow: none; min-height: 24px;
 }
 #files .app-titlebar button, #settings .app-titlebar button, .app-titlebar button { background: transparent; border-color: transparent; padding: 4px 6px; }
@@ -881,3 +881,20 @@ window#snap { background: transparent; }
 #installer .installer-navigation { margin-top: 16px; }
 #installer progressbar trough { background: @dv_s3; min-height: 9px; border: 0; border-radius: 8px; }
 #installer progressbar progress { background: @dv_accent; min-height: 9px; border-radius: 8px; }
+/* Faint hairlines: every surface gets a 1px edge in the foreground at a few percent. Borders keep their width
+   (or are inset shadows), so nothing changes size. */
+window#settings, window#files, window#terminal, window#editor, window#task-manager, window#disk-manager, window#app-store, window.media-window { border: 1px solid @dv_border; }
+window#panel { border-color: @dv_border; }
+window#panel.panel-top { border-bottom-color: @dv_border; }
+.app-titlebar.tabbed-titlebar, #editor .app-titlebar.tabbed-titlebar, window#settings .app-titlebar { border-bottom-color: @dv_border; }
+menu, .popup menu, popover.background, popover contents, tooltip.background { border: 1px solid @dv_border; }
+.panel-popup, #panel .panel-popup { border-color: @dv_border; }
+#settings .settings-sidebar, #files .files-sidebar, #installer .installer-sidebar, .app-store-sidebar { border-color: @dv_border_soft; }
+#settings .settings-action-bar, #settings .settings-page-header, #files .files-toolbar, #files .files-statusbar, #editor .editor-status, .app-store-topbar { border-color: @dv_border_soft; }
+#settings .settings-card, #settings .wifi-radio-card, #settings .wifi-connection, #settings .wifi-network-list, #settings .power-mode, #settings .power-empty,
+.task-stat, .disk-summary, .disk-partition, .app-store-card, #app-store button.app-store-app, #installer .installer-info-card, #snap-panel .snap-group-card, #snap-panel button.snap-layout-card { border-color: @dv_border; }
+#settings .settings-card-header, #settings .field-divider, #settings .wifi-row-divider, #settings button.network-category-divider { border-color: @dv_border_soft; }
+#settings entry, #files entry, #launcher entry, #installer .installer-body entry, #task-manager entry, #app-store entry, #settings spinbutton { border-color: @dv_border; }
+#settings button, #files button, #task-manager button, #disk-manager button, #app-store button, #installer .installer-body button, .media-window .media-content button, .panel-popup button { border-color: @dv_border; }
+.panel-popup .alert-card, .panel-popup .device-tile, #settings .audio-empty, #settings .power-unavailable, #settings .touchpad-option, #launcher .launcher-workspace-item, #launcher .launcher-app-icon, #settings .about-card, #files .quick-search-notice { box-shadow: inset 0 0 0 1px @dv_border_soft; }
+#launcher row, #files row, #files flowboxchild, #launcher flowboxchild, #settings .settings-nav, #settings .wifi-network-row, button.task-process { border-color: @dv_border_soft; }

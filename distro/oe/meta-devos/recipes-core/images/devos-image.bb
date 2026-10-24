@@ -9,7 +9,7 @@ IMAGE_INSTALL = "packagegroup-core-boot kernel-modules os-release devos-shell de
     network-manager-applet gnome-control-center \
     coreutils cups git devos-pm devlang gh bluez5 bluez5-noinst-tools pipewire pipewire-pulse wireplumber devos-x2-wireless-firmware devos-x2-audio-topology alsa-ucm-conf \
     polkit polkit-gnome kmod pciutils usbutils iproute2 iw rfkill wireless-regdb-static \
-    adwaita-icon-theme shared-mime-info xdg-utils ca-certificates fontconfig \
+    adwaita-icon-theme shared-mime-info xdg-utils ca-certificates sudo curl fontconfig \
     ttf-dejavu-sans ttf-tlwg xkeyboard-config tzdata devos-chrome devos-vscode \
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libcamera libcamera-gst v4l-utils alsa-utils \
     wlr-randr wlopm power-profiles-daemon \
