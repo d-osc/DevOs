@@ -14,6 +14,6 @@ IMAGE_INSTALL = "packagegroup-core-boot kernel-modules os-release devos-shell de
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libcamera libcamera-gst v4l-utils alsa-utils \
     wlr-randr wlopm power-profiles-daemon \
     util-linux-lsblk e2fsprogs e2fsprogs-resize2fs e2fsprogs-e2fsck dosfstools ntfs-3g ntfsprogs btrfs-tools xfsprogs \
-    python3 python3-pip python3-venv python3-ensurepip nodejs nodejs-npm rust cargo"
+    python3 python3-pip python3-venv python3-ensurepip nvm rust cargo"
 IMAGE_FSTYPES = "ext4 tar.zst"
 IMAGE_ROOTFS_EXTRA_SPACE = "524288"

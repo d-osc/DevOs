@@ -17,7 +17,7 @@ links, no audible bell, scrolling on typing and no forced scrolling on output.
 New tabs use a login Bash when the account shell is `/bin/sh`, with the standard
 `username@hostname:directory` prompt. Root uses `#`; normal accounts use `$`.
 Custom account shells are preserved, and user startup files can override the
-prompt. Live images use hostname `devos` and include Git plus the local
+prompt. Live images use hostname `devos` and include Git, `nvm` (Node.js is installed per user with `nvm install --lts`; nvm loads on first use of `nvm`, `node`, `npm` or `npx`) plus the local
 DevOsPM CLI as `devospm` and `dev`. Package-manager payloads are built from the
 sibling DevOsPM project with its locked dependencies and carry source/binary
 checksums. Live home/profile changes remain in the RAM overlay.

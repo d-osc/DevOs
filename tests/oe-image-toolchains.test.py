@@ -18,7 +18,7 @@ class ImageToolchainTests(unittest.TestCase):
     def test_image_installs_git_and_toolchains(self):
         packages = image_install()
         for name in ('git', 'python3', 'python3-pip', 'python3-venv', 'python3-ensurepip',
-                     'nodejs', 'nodejs-npm', 'rust', 'cargo'):
+                     'nvm', 'rust', 'cargo'):
             self.assertIn(name, packages)
 
     def test_image_installs_sudo_and_curl_with_ca_certificates(self):
@@ -39,6 +39,24 @@ class ImageToolchainTests(unittest.TestCase):
         self.assertIn('/openembedded-core/meta ', prepare)
         self.assertIn('/meta-openembedded/meta-oe ', prepare)
         self.assertIn('meta-openembedded', (ROOT / 'distro/oe/sources.lock').read_text())
+
+    def test_image_ships_nvm_not_nodejs(self):
+        packages = image_install()
+        self.assertNotIn('nodejs', packages)
+        self.assertNotIn('nodejs-npm', packages)
+        self.assertFalse((ROOT / 'distro/oe/meta-devos/recipes-devtools/nodejs').exists())
+        recipe = (ROOT / 'distro/oe/meta-devos/recipes-devtools/nvm/nvm_0.40.8.bb').read_text()
+        self.assertIn('7c5b2c4c78e6447b518860ead1f365056e9a03b3562903439bb401607b05a2ef', recipe)
+        self.assertIn('${datadir}/nvm', recipe)
+        for dep in ('bash', 'curl', 'git', 'ca-certificates', 'tar', 'xz'):
+            self.assertRegex(recipe, r'RDEPENDS:\$\{PN\}[^\n]*\b' + dep + r'\b')
+
+    def test_nvm_profile_loads_lazily_for_interactive_bash(self):
+        profile = (ROOT / 'distro/oe/meta-devos/recipes-devtools/nvm/files/devos-nvm.sh').read_text()
+        self.assertIn('NVM_DIR="${NVM_DIR:-$HOME/.nvm}"', profile)
+        self.assertIn('*i*)', profile)
+        for name in ('nvm', 'node', 'npm', 'npx'):
+            self.assertIn(name + '() { __devos_nvm_load;', profile)
 
     def test_console_base_is_unchanged(self):
         for path in (ROOT / 'distro/base').rglob('*'):

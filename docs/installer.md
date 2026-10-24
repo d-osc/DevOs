@@ -2,7 +2,8 @@
 
 The Live USB can install Dev OS onto the computer's internal disk (ARM64 UEFI). Open
 **Install Dev OS** in the launcher, or run `dev-os-shell installer`. It works only from the Live
-session, because it erases a whole disk.
+session, because it erases a whole disk. The installed system does not carry the installer: the helper removes
+`dev-os-install`, its launcher entry, its extension and its bundle from the new disk after copying.
 
 ## What it does
 
