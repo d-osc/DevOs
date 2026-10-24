@@ -23,6 +23,14 @@ for iteration in $(seq 1 60); do
         systemctl status bluetooth --no-pager -l
         echo '=== Sound cards ==='
         cat /proc/asound/cards
+        echo '=== Audio PCM devices ==='
+        cat /proc/asound/pcm
+        /usr/bin/timeout 5 arecord -l
+        echo '=== Audio profiles and sources (Live root session) ==='
+        /usr/bin/timeout 5 env XDG_RUNTIME_DIR=/run/user/0 PULSE_SERVER=unix:/run/user/0/pulse/native pactl list cards
+        /usr/bin/timeout 5 env XDG_RUNTIME_DIR=/run/user/0 PULSE_SERVER=unix:/run/user/0/pulse/native pactl list sources short
+        echo '=== ALSA HiFi configuration ==='
+        /usr/bin/timeout 5 alsaucm -c hw:0 list _verbs
         echo '=== Deferred drivers ==='
         cat /sys/kernel/debug/devices_deferred
         echo '=== Backlight devices ==='
@@ -35,6 +43,25 @@ for iteration in $(seq 1 60); do
     mv "$destination/bluetooth.txt.new" "$destination/bluetooth.txt"
     journalctl -b _UID=0 --user-unit=pipewire.service --user-unit=pipewire-pulse.service --user-unit=wireplumber.service --no-pager -n 1000 >"$destination/audio.txt.new" 2>&1
     mv "$destination/audio.txt.new" "$destination/audio.txt"
+    # Per-layer speaker verdict; repeated once a minute so late WirePlumber/UCM state is captured.
+    [ $((iteration % 12)) -ne 1 ] || /usr/libexec/devos-audio-report "$destination/audio-report.txt"
+    [ $((iteration % 12)) -ne 1 ] || /usr/libexec/devos-camera-report "$destination/camera-report.txt"
+    [ $((iteration % 12)) -ne 1 ] || /usr/libexec/devos-battery-report "$destination/battery-report.txt"
+    # Per-layer hotspot verdict. The live attempt drops the Wi-Fi client for ~15 s, so it runs once
+    # (about 2 minutes after boot) and only when DEVOS-LOGS/HOTSPOT-TRY exists on the log partition.
+    if [ $((iteration % 12)) -eq 1 ]; then
+        /usr/libexec/devos-hotspot-report "$destination/hotspot-report.txt"
+        if [ "$iteration" -eq 25 ] && [ -e /run/live/esp/DEVOS-LOGS/HOTSPOT-TRY ]; then /usr/libexec/devos-hotspot-report --try "$destination/hotspot-try.txt"; fi
+    fi
+    # Per-layer Bluetooth verdict; the bounded air scan runs once (about a minute after boot) so it never disturbs pairing later.
+    # Two scans (about 1 and 3 minutes after boot) go to their own files, so the later scan-less
+    # reports that overwrite bluetooth-report.txt cannot erase the scan evidence.
+    if [ $((iteration % 12)) -eq 1 ]; then
+        case "$iteration" in
+            13|37) DEVOS_BT_SCAN=1 /usr/libexec/devos-bluetooth-report "$destination/bluetooth-scan-$iteration.txt" ;;
+        esac
+        DEVOS_BT_SCAN=0 /usr/libexec/devos-bluetooth-report "$destination/bluetooth-report.txt"
+    fi
     for source in /run/devos-live/root-session.log /root/.local/state/devos/logs/*.log; do
         [ ! -f "$source" ] || cp "$source" "$destination/$(basename "$source")"
     done

@@ -1,0 +1,30 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/fs"
+use "../lib/desktop.dev" as util
+use "../lib/dbus.dev" as dbus
+use "../lib/network-settings.dev" as network
+fn main(): i32 {
+    let request = util.parse(io.read_line())
+    let bus = dbus.open()
+    let outcome = result.attempt(fn(): json.Value { return network.execute(bus, request) })
+    dbus.close(bus)
+    if result.isErr(outcome) {
+        let message = result.message(outcome)
+        let secret = util.text(util.get(request, "password"))
+        if !strings.equal(secret, "") {
+            let quoted = json.stringify(secret)
+            message = strings.replaceAll(message, strings.substring(quoted, 1, strings.charLength(quoted) - 1), "[redacted]")
+            message = strings.replaceAll(message, secret, "[redacted]")
+        }
+        let action = util.text(util.get(request, "action"))
+        if strings.startsWith(action, "hotspot-") { result.run(fn() { fs.writeFileSync("/run/devos-hotspot-last-error.json", json.stringify({action: action, error: message})) }) }
+        print(json.stringify(util.error(message))); return 1
+    }
+    print(json.stringify(result.unwrap(outcome))); return 0
+}
+let outcome = result.attempt(fn(): i32 { return main() })
+if result.isErr(outcome) { print(json.stringify(util.error("NetworkManager is unavailable. Check the system network service."))); return 1 }
+return result.unwrap(outcome)

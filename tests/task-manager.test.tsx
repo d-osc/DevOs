@@ -1,6 +1,7 @@
-import {Gtk, Gdk, GLib, React, createRoot} from '@dev-os/core';
+import {testTheme} from './theme-helper.js';
+import {Gtk, Gdk, GLib, React, Label, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {TaskManager} from '../extensions/org.devos.taskmanager/extension.js';
+import {TaskManager, sameState, ROW_LIMIT} from '../extensions/org.devos.taskmanager/extension.js';
 import {TaskManagerSettings} from '../extensions/org.devos.taskmanager/settings.js';
 import {Processes, type ProcessControls} from '../extensions/org.devos.taskmanager/processes.js';
 Gtk.init(null);
@@ -15,7 +16,7 @@ async function test() {
     backend.destroy();
     const controls: ProcessControls = {async load() {return {...live, processes: [{pid: 123, name: 'Demo', user: 'alice', uid: 1000, state: 'S', cpu: 25, memory: 12345678, start: 'abc', canStop: true}]};}, async stop(item, force) {if (item.pid !== 123 || force) throw new Error('Wrong stop target'); stopped = true;}, destroy() {}};
     const window = new Gtk.OffscreenWindow(); window.name = 'task-manager'; window.set_default_size(900, 680); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = (name: string) => widgets(window).find(widget => widget.name === name)!;
     try {
@@ -40,6 +41,31 @@ async function test() {
         const settingsScreenshot=GLib.getenv('DEV_OS_TASK_SETTINGS_SCREENSHOT');if(settingsScreenshot)window.get_pixbuf()!.savev(settingsScreenshot,'png',[],[]);
         failed=true;(find('task-settings-refresh') as Gtk.Button).clicked();await wait();if(!find('task-settings-error'))throw new Error('Sampler error must be visible');
         failed=false;(find('task-settings-refresh') as Gtk.Button).clicked();await wait();if(find('task-settings-error')||loads!==3)throw new Error('Snapshot refresh must recover');
+        // Throttling: no sampling while suspended (interval 0), sampling resumes when it is re-enabled.
+        window.name = 'task-manager'; let sampled = 0;
+        const row = (pid: number, cpu: number) => ({pid, name: `P${pid}`, user: 'alice', uid: 1000, state: 'S', cpu, memory: 1048576 * pid, start: `s${pid}`, canStop: true});
+        let table = Array.from({length: 40}, (_, index) => row(index + 1, 1));
+        const counting: ProcessControls = {async load() {sampled++; return {...live, processes: table.map(item => ({...item}))};}, async stop() {}, destroy() {}};
+        root.render(<TaskManager controls={counting} interval={0}/>); await wait(); await wait();
+        if (sampled !== 0) throw new Error('A suspended Task Manager must not sample');
+        root.render(<TaskManager controls={counting} interval={50}/>); await wait(); await wait(); await wait();
+        if (sampled < 3) throw new Error(`Sampling must resume and repeat, got ${sampled}`);
+        root.render(<TaskManager controls={counting} interval={0}/>); await wait(); const frozen = sampled; await wait(); await wait();
+        if (sampled !== frozen) throw new Error('Sampling must stop again when suspended');
+        // Diffing: unchanged samples keep the same row widgets; a changed value updates a row in place.
+        const rows = () => widgets(window).filter(widget => widget instanceof Gtk.Button && widget.get_style_context().has_class('task-process'));
+        root.render(<TaskManager controls={counting} interval={50}/>); await wait(); await wait();
+        const before = rows(); if (before.length !== 40) throw new Error(`Expected 40 rows, got ${before.length}`);
+        await wait(); await wait(); if (rows().some((widget, index) => widget !== before[index])) throw new Error('Unchanged samples must not rebuild rows');
+        table = table.map(item => item.pid === 7 ? {...item, cpu: 55} : item); await wait(); await wait(); await wait();
+        const after = rows(); if (after.length !== 40 || after.filter((widget, index) => widget !== before[index]).length > 0 && after.length !== before.length) throw new Error('Changed sample must update rows');
+        if (!widgets(window).some(widget => widget instanceof Gtk.Label && widget.label === '55.0%')) throw new Error('Changed CPU value not rendered');
+        // Large lists are capped.
+        table = Array.from({length: ROW_LIMIT + 50}, (_, index) => row(index + 1, 0)); await wait(); await wait(); await wait();
+        if (rows().length !== ROW_LIMIT) throw new Error(`Row cap not applied, got ${rows().length}`);
+        const base = {...live, processes: [row(1, 1), row(2, 2)]};
+        if (!sameState(base, {...base, processes: base.processes.map(item => ({...item}))}) || sameState(base, {...base, processes: [row(1, 1), row(2, 3)]}) || sameState(null, base)) throw new Error('sameState comparison wrong');
+        root.render(<Label>done</Label>); await wait();
     } finally {root.unmount(); window.destroy(); Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default()!, css);}
     print('PASS: real process bridge, selection, confirmation, end task and search');
 }

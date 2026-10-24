@@ -13,11 +13,17 @@ import struct
 import subprocess
 import tempfile
 import uuid
+from board_audio import validate_proof as validate_audio_proof
 
 HERE=Path(__file__).resolve().parent
+PROFILES=HERE.parents[1]/'profiles'
+BOARD_PROFILE='asus/ux3407na'
 DEFAULT_IMAGES=Path('/var/tmp/devos-oe/build/tmp/deploy/images/qemuarm64')
+WIFI_BOARD='ath12k/QCC2072/hw1.0/board.bin'
 REQUIRED_APPLETS={'mount','modprobe','switch_root','sh','find','findfs','seq','cat','mkdir','sleep',
     'cp','chmod','ln','readlink','dmesg','timeout','kill','umount','sync','mv','tail','echo','true','false','test','['}
+# Used by the hardware profile tool when this BusyBox provides them.
+OPTIONAL_APPLETS={'tr','uname'}
 
 def run(*args):
     return subprocess.run(list(map(str,args)),check=True,capture_output=True,text=True).stdout
@@ -54,6 +60,7 @@ def kernel_bundle(path):
         file=(path/name).resolve()
         if not file.is_relative_to(path) or not file.is_file() or digest(file)!=expected:
             raise ValueError(f'Invalid kernel bundle input: {name}')
+    validate_audio_proof(path,record)
     release=kernel_release(regular(path/'Image'))
     if release!=record['release']: raise ValueError('Kernel bundle release mismatch')
     dtb=regular(path/'board.dtb').read_bytes()
@@ -68,6 +75,17 @@ def kernel_bundle(path):
     if not (modules/'modules.dep').is_file(): raise ValueError('Missing matching X2 kernel modules')
     return record,modules
 
+def wifi_calibration(record):
+    if WIFI_BOARD not in record.get('files',{}):
+        raise ValueError('Missing UX3407NA Wi-Fi calibration board.bin. Collect a fresh bundle with distro/usb/stage-x2-firmware.ps1; the old DSP-only bundle cannot initialize QCC2072.')
+    wireless=record.get('wireless',{})
+    if (not isinstance(wireless,dict) or wireless.get('pci')!='17cb:1112' or wireless.get('subsystem')!='105b:e14f'
+            or wireless.get('boardData')!=WIFI_BOARD
+            or not isinstance(wireless.get('sourceInfSHA256'),str)
+            or not re.fullmatch('[0-9a-f]{64}',wireless['sourceInfSHA256'])):
+        raise ValueError('Wi-Fi calibration must have the verified UX3407NA PCI/subsystem and OEM INF provenance')
+    return record['files'][WIFI_BOARD]
+
 def firmware_bundle(path):
     path=path.resolve();record=json.loads((path/'manifest.json').read_text())
     if record.get('board')!='asus-ux3407na': raise ValueError('Wrong firmware board')
@@ -79,6 +97,10 @@ def firmware_bundle(path):
         board_elf = name == 'ath12k/QCC2072/hw1.0/board.bin' and regular(file).read_bytes()[:4] == b'\x7fELF'
         if not file.is_relative_to(path) or (file.suffix not in ('.mbn','.elf','.jsn') and not board_elf) or digest(regular(file))!=expected:
             raise ValueError(f'Invalid board firmware file: {name}')
+    wifi_calibration(record)
+    board=regular(path/WIFI_BOARD).read_bytes()
+    if len(board)<64 or board[:4]!=b'\x7fELF':
+        raise ValueError('Expected the OEM QCC2072 board calibration ELF, not a generic board database')
     return record
 
 def install_modules(rootfs,modules,output,target=None):
@@ -109,6 +131,14 @@ def install_modules(rootfs,modules,output,target=None):
     proof=base/'qcom/glymur/ASUSTeK/UX3407NA/qcadsp8480.mbn' if target else base/'modules.dep'
     if 'Inode:' not in run('debugfs','-R',f'stat {proof}',rootfs):
         raise ValueError('Matching modules were not written into rootfs')
+    if target:
+        # Check the bytes in the private ext4 image, not just the source bundle.
+        # debugfs write does not replace an existing file, so existence alone
+        # could leave an older/mismatched board calibration undetected.
+        staged=output/'staged-wifi-board.bin'
+        run('debugfs','-R',f'dump {quote(base/WIFI_BOARD)} {quote(staged)}',rootfs)
+        if not staged.is_file() or digest(staged)!=digest(modules/WIFI_BOARD):
+            raise ValueError('QCC2072 board calibration was not staged correctly into the private rootfs')
 
 def cpio(tree,output):
     """Write newc without root privileges, preserving modules and symlinks."""
@@ -141,7 +171,7 @@ def install_boot_tools(tree,busybox):
     destination=tree/'bin/busybox'
     if destination.exists(): destination.unlink()  # copied trees may use hardlinks
     shutil.copyfile(busybox,destination);destination.chmod(0o755)
-    for applet in REQUIRED_APPLETS:
+    for applet in REQUIRED_APPLETS|(OPTIONAL_APPLETS&applets):
         link=tree/'bin'/applet
         if link.exists() or link.is_symlink(): link.unlink()
         link.symlink_to('busybox')
@@ -153,7 +183,7 @@ def install_boot_tools(tree,busybox):
     if init.exists(): init.unlink()
     shutil.copyfile(HERE/'init',init);init.chmod(0o755)
     (tree/'diagnostics').mkdir(exist_ok=True)
-    for source,name in (('collector','collector'),('collector.service','collector.service')):
+    for source,name in (('collector','collector'),('collector.service','collector.service'),('audio-report','audio-report'),('camera-report','camera-report'),('battery-report','battery-report'),('hotspot-report','hotspot-report'),('bluetooth-report','bluetooth-report'),('bluetooth-recover','bluetooth-recover'),('bluetooth-recover.service','bluetooth-recover.service')):
         target=tree/'diagnostics'/name
         if target.exists(): target.unlink()
         shutil.copyfile(HERE/source,target)
@@ -162,6 +192,19 @@ def install_boot_tools(tree,busybox):
         target=tree/'live'/name
         if target.exists(): target.unlink()
         shutil.copyfile(HERE/name,target)
+    # Hardware identification and the profile tree that the init selects from.
+    tool=tree/'live/devos-hwprofile'
+    if tool.exists() or tool.is_symlink(): tool.unlink()
+    shutil.copyfile(PROFILES/'devos-hwprofile',tool);tool.chmod(0o755)
+    profiles=tree/'live/profiles'
+    if profiles.exists(): shutil.rmtree(profiles)
+    shutil.copytree(PROFILES,profiles,ignore=shutil.ignore_patterns('kernel','devos-hwprofile','__pycache__'))
+
+def profile_kernel_args(profile=BOARD_PROFILE):
+    """Kernel arguments of a model profile merged over its form factor and the generic layer."""
+    with tempfile.TemporaryDirectory(prefix='devos-profile-') as tmp:
+        run('sh',PROFILES/'devos-hwprofile','compose',profile,Path(tmp)/'merged')
+        return ' '.join((Path(tmp)/'merged/kernel.args').read_text().split())
 
 def diagnose(args):
     record=check(args.output);destination=args.output.with_name(args.output.name+'-diagnostic')
@@ -196,14 +239,60 @@ def stage_regulatory_database(rootfs, tree):
             raise ValueError(f'Empty regulatory firmware: {name}')
     return True
 
+def profile_early_firmware(profile=BOARD_PROFILE,prefix='qca/'):
+    """Profile firmware.list entries the kernel requests before switch_root (Bluetooth)."""
+    listing=PROFILES/profile/'firmware.list'
+    if not listing.is_file(): return []
+    names=[l.strip() for l in listing.read_text().splitlines() if l.strip() and not l.lstrip().startswith('#')]
+    return [n for n in names if n.startswith(prefix) and '..' not in n.split('/')]
+
+def stage_bluetooth_firmware(rootfs, tree, names=None):
+    # The QCA controller probes from the initramfs (hci_uart/btqca load while the
+    # USB root is still being discovered) and btqca requests its patch/NVM exactly
+    # once. The files exist only in the rootfs, so stage them here as well.
+    names=profile_early_firmware() if names is None else names
+    staged=[]
+    for name in names:
+        source=f'/usr/lib/firmware/{name}'
+        if 'Inode:' not in run('debugfs','-R',f'stat {source}',rootfs):
+            raise ValueError(f'Bluetooth firmware {name} is not in the rootfs; rebuild the image with devos-x2-wireless-firmware')
+        target=tree/'lib/firmware'/name
+        target.parent.mkdir(parents=True,exist_ok=True)
+        run('debugfs','-R',f'dump {source} "{target}"',rootfs)
+        if not regular(target).stat().st_size:
+            raise ValueError(f'Empty Bluetooth firmware: {name}')
+        staged.append(name)
+    return staged
+
+def stage_camera_modules(rootfs, bundle, output):
+    """Read back patched modules from the image, not just the input bundle."""
+    proof=bundle/'camera-fixes.json'
+    if not proof.is_file(): return []
+    shutil.copyfile(proof,output/'camera-fixes.json')
+    staged=['camera-fixes.json']
+    modules=json.loads(proof.read_text())['patchedModules']
+    for name,expected in modules.items():
+        path=Path(name)
+        if not name.startswith('modules/lib/modules/') or '..' in path.parts:
+            raise ValueError('Unsafe camera module path')
+        source='/usr/'+str(path.relative_to('modules'))
+        target=output/('staged-camera-'+path.name)
+        run('debugfs','-R',f'dump {source} "{target}"',rootfs)
+        if digest(regular(target))!=expected:
+            raise ValueError('Camera module read-back checksum mismatch: '+name)
+        staged.append(target.name)
+    return staged
+
 def prepare(args):
     firmware_record=firmware_bundle(args.firmware) if args.firmware else None
+    if args.kernel_bundle and not firmware_record:
+        raise ValueError('The UX3407NA kernel bundle requires --firmware with verified OEM Wi-Fi calibration')
     rootfs=args.rootfs
     if rootfs is None:
         candidates=[p for p in args.images.glob('devos-image*.ext4') if p.is_file()]
         if not candidates: raise ValueError('Build DevOs desktop first: .\\distro.ps1 desktop-build')
         rootfs=max(candidates,key=lambda p:p.stat().st_mtime)
-    bundle_record=None;bundle_modules=None
+    bundle_record=None;bundle_modules=None;camera_files=[]
     if args.kernel_bundle:
         bundle_record,bundle_modules=kernel_bundle(args.kernel_bundle)
     rootfs=regular(rootfs); kernel=regular(args.kernel_bundle/'Image' if args.kernel_bundle else args.kernel or args.images/'Image')
@@ -228,6 +317,8 @@ def prepare(args):
         shutil.copyfile(args.kernel_bundle/'board.dtb',output/'board.dtb')
         shutil.copyfile(args.kernel_bundle/'manifest.json',output/'kernel-provenance.json')
         shutil.copyfile(args.kernel_bundle/'kernel.config',output/'kernel.config')
+        shutil.copyfile(args.kernel_bundle/'board-fixes.json',output/'board-audio-provenance.json')
+        camera_files=stage_camera_modules(output/'rootfs.ext4',args.kernel_bundle,output)
     if firmware_record:
         install_modules(output/'rootfs.ext4',args.firmware,output,target='/usr/lib/firmware')
         shutil.copyfile(args.firmware/'manifest.json',output/'firmware-provenance.json')
@@ -248,24 +339,40 @@ def prepare(args):
     if firmware_record:
         shutil.copytree(args.firmware,tree/'lib/firmware',symlinks=False)
     regulatory_database = stage_regulatory_database(output/'rootfs.ext4', tree)
+    bluetooth_firmware = stage_bluetooth_firmware(output/'rootfs.ext4', tree) if bundle_record else []
     cpio(tree,output/'initramfs.cpio.gz')
     manifest={'schemaVersion':1,'board':'asus-ux3407na','architecture':'aarch64','liveDefaultUser':'root',
         'release':release,'filesystemUuid':filesystem_uuid,'hardwareReady':False,'imageReady':bool(bundle_record),
         'reason':('X2 kernel/DTB/modules integrated. Experimental USB candidate; physical UX3407NA boot and device testing pending.' if bundle_record else 'Snapdragon X2 board kernel/Device Tree integration is pending; this is a staging bundle, not a bootable USB image.'),
         'files':{name:digest(output/name) for name in ('Image','rootfs.ext4','initramfs.cpio.gz','os-release')}}
     manifest['regulatoryDatabaseInInitramfs'] = regulatory_database
+    manifest['bluetoothFirmwareInInitramfs'] = bluetooth_firmware
     if bundle_record:
-        manifest['files'].update({name:digest(output/name) for name in ('board.dtb','kernel-provenance.json','kernel.config')})
-    if firmware_record: manifest['files']['firmware-provenance.json']=digest(output/'firmware-provenance.json')
+        manifest['files'].update({name:digest(output/name) for name in ('board.dtb','kernel-provenance.json','kernel.config','board-audio-provenance.json')})
+        manifest['files'].update({name:digest(output/name) for name in camera_files})
+    if firmware_record:
+        manifest['files']['firmware-provenance.json']=digest(output/'firmware-provenance.json')
+        manifest['files']['staged-wifi-board.bin']=digest(output/'staged-wifi-board.bin')
     manifest['limitations']=['Physical-machine boot not yet tested','OEM DSP firmware staged' if firmware_record else 'OEM DSP firmware not staged','Wi-Fi/BT calibration, audio and suspend not validated']
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print(f'Prepared: {output}\n{manifest["reason"]}\nNo USB drive was written.',flush=True)
 
 def check(output):
+    if not (output/'manifest.json').is_file():
+        raise ValueError(f'Staging is missing or incomplete: {output}/manifest.json. Run prepare successfully first. For a -diagnostic directory, run diagnose on the prepared base directory first; renaming a variable does not create staging.')
     record=json.loads((output/'manifest.json').read_text())
     for name,expected in record['files'].items():
         if Path(name).name!=name: raise ValueError('Unsafe manifest filename')
         if digest(regular(output/name))!=expected: raise ValueError(f'Checksum mismatch: {name}')
+    if record.get('imageReady') and record.get('board')=='asus-ux3407na':
+        if 'board-audio-provenance.json' not in record['files']:
+            raise ValueError('Old UX3407NA staging lacks the matching microphone/audio routing correction. Prepare a fresh corrected board bundle and staging directory.')
+        validate_audio_proof(output, record, 'board-audio-provenance.json')
+        if not {'firmware-provenance.json','staged-wifi-board.bin'} <= record['files'].keys():
+            raise ValueError('Old UX3407NA staging lacks verified Wi-Fi calibration. Run prepare again with a complete OEM firmware bundle into a new directory.')
+        expected=wifi_calibration(json.loads((output/'firmware-provenance.json').read_text()))
+        if record['files']['staged-wifi-board.bin']!=expected:
+            raise ValueError('Staged Wi-Fi calibration does not match OEM provenance')
     image=output/'devos-live-arm64-ux3407na.img'
     if image.exists(): verify_image(output,record)
     print('PASS: staged files and checksums\n'+record['reason'])
@@ -342,7 +449,7 @@ def build(output):
     # All writes are to newly created regular files, never /dev devices.
     with tempfile.TemporaryDirectory(prefix='usb-pack-',dir=output) as tmp:
         tmp=Path(tmp); efi=tmp/'BOOTAA64.EFI'; esp=tmp/'esp.fat'
-        cmdline=f'console=tty0 rdinit=/init clk_ignore_unused pd_ignore_unused arm64.nopauth devos.live.uuid={record["filesystemUuid"]} devos.renderer=pixman'
+        cmdline=f'console=tty0 rdinit=/init {profile_kernel_args()} devos.live.uuid={record["filesystemUuid"]} devos.renderer=pixman'
         if record.get('bootDiagnostics'):
             esp_id=record['espVolumeId'];esp_uuid=esp_id[:4]+'-'+esp_id[4:]
             cmdline+=f' devos.live.esp_uuid={esp_uuid} loglevel=3 panic=0 systemd.show_status=false systemd.log_target=journal vt.global_cursor_default=0'
@@ -354,11 +461,22 @@ def build(output):
             f'--uname={record["release"]}',
             f'--cmdline={cmdline}',
             f'--output={efi}')
-        mib=1024*1024; esp_size=max(256*mib,((efi.stat().st_size+64*mib+mib-1)//mib)*mib)
+        # The same kernel, initramfs and DTB with a cmdline that boots an installed system from its own root
+        # (LABEL=devos-root, no Live overlay). `dev-os-install` copies this to the internal disk's ESP.
+        installed=tmp/'INSTALLED.EFI'
+        installed_cmdline=f'console=tty0 rdinit=/init {profile_kernel_args()} devos.root=LABEL=devos-root devos.renderer=pixman loglevel=3'
+        run('ukify','build','--efi-arch=aa64',f'--stub={stub}',
+            f'--linux={output}/Image',f'--initrd={output}/initramfs.cpio.gz',
+            f'--devicetree={output}/board.dtb',f'--os-release=@{output}/os-release',
+            f'--uname={record["release"]}',
+            f'--cmdline={installed_cmdline}',
+            f'--output={installed}')
+        mib=1024*1024; esp_size=max(256*mib,((efi.stat().st_size+installed.stat().st_size+64*mib+mib-1)//mib)*mib)
         fat_options=['-i',record['espVolumeId']] if record.get('bootDiagnostics') else []
         run('mkfs.vfat','-C','-F','32','-n','DEVOS_EFI',*fat_options,esp,esp_size//1024)
-        run('mmd','-i',esp,'::/EFI','::/EFI/BOOT')
+        run('mmd','-i',esp,'::/EFI','::/EFI/BOOT','::/EFI/DEVOS')
         run('mcopy','-i',esp,efi,'::/EFI/BOOT/BOOTAA64.EFI')
+        run('mcopy','-i',esp,installed,'::/EFI/DEVOS/INSTALLED.EFI')
         root_offset=mib+esp_size
         size=root_offset+((output/'rootfs.ext4').stat().st_size+mib-1)//mib*mib+mib
         partial=tmp/'disk.img'
@@ -389,7 +507,7 @@ def export(output,destination):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode',choices=('prepare','check','build','export','diagnose'))
+    parser.add_argument('mode',choices=('prepare','check','build','export','diagnose','firmware-check'))
     parser.add_argument('--output',type=Path,default=Path('/var/tmp/devos-usb/staged'))
     parser.add_argument('--images',type=Path,default=DEFAULT_IMAGES)
     parser.add_argument('--kernel',type=Path);parser.add_argument('--rootfs',type=Path)
@@ -399,7 +517,11 @@ def main():
     parser.add_argument('--busybox',type=Path,default=Path('/var/tmp/devos-usb/busybox-build/busybox'))
     args=parser.parse_args()
     try:
-        if args.mode=='diagnose': diagnose(args)
+        if args.mode=='firmware-check':
+            if not args.firmware: raise ValueError('Specify --firmware')
+            firmware_bundle(args.firmware)
+            print('PASS: board firmware checksums and exact UX3407NA QCC2072 calibration; no image built or USB written')
+        elif args.mode=='diagnose': diagnose(args)
         elif args.mode=='export':
             if not args.export_directory: raise ValueError('Specify --export-directory')
             export(args.output,args.export_directory)

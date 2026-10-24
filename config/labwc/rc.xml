@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <labwc_config>
-  <core><gap>12</gap></core>
+  <core><gap>4</gap></core>
   <theme>
     <name>DevOS</name>
     <cornerRadius>8</cornerRadius>
@@ -9,6 +9,8 @@
   <focus><followMouse>no</followMouse><raiseOnFocus>yes</raiseOnFocus></focus>
   <desktops number="4"><popupTime>700</popupTime></desktops>
   <regions>
+    <region name="devos-half-left" x="0%" y="0%" width="50%" height="100%" />
+    <region name="devos-half-right" x="50%" y="0%" width="50%" height="100%" />
     <region name="devos-quarter-top-left" x="0%" y="0%" width="50%" height="50%" />
     <region name="devos-quarter-top-right" x="50%" y="0%" width="50%" height="50%" />
     <region name="devos-quarter-bottom-left" x="0%" y="50%" width="50%" height="50%" />
@@ -47,9 +49,9 @@
     <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
     <keybind key="W-Up"><action name="Maximize" /></keybind>
     <keybind key="W-Down"><action name="Iconify" /></keybind>
-    <keybind key="W-z"><action name="ShowMenu" menu="devos-snap-layouts" /></keybind>
+    <keybind key="W-z"><action name="Execute" command="dev-os-shell snap-layouts" /></keybind>
   </keyboard>
   <mouse><default /></mouse>
-  <libinput><device category="touchpad"><tap>yes</tap><naturalScroll>yes</naturalScroll></device></libinput>
+  <libinput><device category="touchpad"><tap>yes</tap><tapButtonMap>lrm</tapButtonMap><tapAndDrag>yes</tapAndDrag><dragLock>no</dragLock><scrollMethod>twofinger</scrollMethod><naturalScroll>yes</naturalScroll></device></libinput>
 </labwc_config>
 

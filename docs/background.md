@@ -3,8 +3,8 @@
 Open Settings → Background. The page provides a preview, DevOs design / Solid
 color / Picture, a local picture chooser, color presets and Fill / Fit / Stretch.
 Apply saves the settings and updates every monitor. Reset discards the draft.
-The existing Desktop background color remains in use until you turn off
-“Use Desktop background color” or choose a color preset.
+The base color follows the Dark or Light theme until you turn off
+“Use theme background color” or choose a color preset.
 
 Right-click the desktop → Desktop widgets, or open Settings → Background →
 Desktop widgets. Add or remove Clock, Date and Note, choose top-left or top-right
@@ -28,7 +28,7 @@ supported yet. All widgets start disabled. Removing a note retains its text so
 it can be added again later.
 
 Preferences are saved in the `org.devos.background` extension settings file;
-the core config schema and existing Desktop color remain compatible. Picture
+the core config schema remains compatible (the old `accent` and `background` keys are read and ignored). Picture
 decoding is asynchronous and bounded to 4096 pixels per axis, preserving image
 orientation. Small pictures are not enlarged during decoding. Paths remain local
 file references: keep the picture in a persistent location. If a saved picture

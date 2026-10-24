@@ -15,6 +15,7 @@ status() {
 save_logs() {
     [ -n "$logdir" ] || return 0
     cp /run/live/boot.log "$logdir/boot.log"
+    [ ! -f /run/devos-hw/identity.json ] || cp /run/devos-hw/identity.json /run/devos-hw/selection.json "$logdir/"
     [ ! -f /run/live/probe.log ] || cp /run/live/probe.log "$logdir/probe.log"
     dmesg >"$logdir/kernel.log"
     sync
@@ -30,14 +31,32 @@ rescue() {
 }
 status '[1/6] initramfs started'
 modprobe overlay 2>/dev/null || true
-uuid=; esp_uuid=; logdir=
+uuid=; esp_uuid=; logdir=; hw_force=; root_spec=
 for option in $(cat /proc/cmdline); do
     case "$option" in
         devos.live.uuid=*) uuid=${option#*=} ;;
         devos.live.esp_uuid=*) esp_uuid=${option#*=} ;;
+        devos.hw=*) hw_force=${option#*=} ;;
+        # An installed system boots straight from its own root (LABEL=... or UUID=...), without the Live overlay.
+        devos.root=*) root_spec=${option#*=} ;;
     esac
 done
-[ -n "$uuid" ] || rescue 'Missing Live USB filesystem UUID'
+# Identify this machine, then select and merge its hardware profile layers
+# (generic -> form factor -> exact model). Unknown machines get the generic
+# profile; a failure here must never stop the boot.
+export DEVOS_HW_FORCE=$hw_force
+if [ -x /live/devos-hwprofile ] && /live/devos-hwprofile boot /run/devos-hw >/run/live/hwprofile.log 2>&1; then
+    while IFS= read -r hw_line; do status "$hw_line"; done </run/devos-hw/message
+else
+    status 'DEVOS HW: hardware identification failed; using built-in defaults'
+fi
+# Tool diagnostics (stderr) always go into the saved boot log.
+[ ! -s /run/live/hwprofile.log ] || while IFS= read -r hw_line; do echo "DEVOS HW LOG: $hw_line" >>/run/live/boot.log; done </run/live/hwprofile.log
+early_modules=$(cat /run/devos-hw/early.modules 2>/dev/null)
+[ -n "$early_modules" ] || early_modules='qcom_rpmh_regulator qcom_refgen_regulator phy_qcom_m31_eusb2 phy_qcom_qmp_usb dwc3_qcom xhci_plat_hcd usb_storage uas'
+[ -n "$uuid" ] || [ -n "$root_spec" ] || rescue 'Missing Live USB filesystem UUID'
+find_spec="UUID=$uuid"
+[ -z "$root_spec" ] || find_spec=$root_spec
 attach_logs() {
     [ -z "$logdir" ] && [ -n "$esp_uuid" ] || return 0
     esp=$(findfs "UUID=$esp_uuid" 2>/dev/null) || return 0
@@ -59,10 +78,10 @@ attach_logs() {
 status '[2/6] discovering USB rootfs (maximum 120 seconds)'
 (
     trap 'exit 0' TERM INT
-    # The fixed USB-A host needs its regulator/PHY chain before storage can
-    # appear. Do this before probing unrelated display, audio and PCI devices.
-    for module in qcom_rpmh_regulator qcom_refgen_regulator phy_qcom_m31_eusb2 \
-        phy_qcom_qmp_usb dwc3_qcom xhci_plat_hcd usb_storage uas; do
+    # The selected hardware profile lists the modules that bring up the USB
+    # host (the X2's fixed USB-A port needs its regulator/PHY chain first).
+    # Do this before probing unrelated display, audio and PCI devices.
+    for module in $early_modules; do
         [ ! -f /run/live/stop-loader ] || exit 0
         echo "BOOT MODULE: $module" >>/run/live/probe.log
         timeout -k 1 5 modprobe "$module" >>/run/live/probe.log 2>&1 || true
@@ -80,7 +99,7 @@ status '[2/6] discovering USB rootfs (maximum 120 seconds)'
 loader=$!
 device=
 for attempt in $(seq 1 120); do
-    device=$(findfs "UUID=$uuid" 2>/dev/null)
+    device=$(findfs "$find_spec" 2>/dev/null)
     attach_logs
     [ -n "$device" ] && break
     case "$attempt" in *0|*5) status "Waiting for USB: ${attempt}s"; save_logs ;; esac
@@ -90,6 +109,23 @@ done
 kill "$loader" 2>/dev/null || true
 [ -n "$device" ] || rescue 'Live USB not found; check USB controller/PHY drivers'
 status "[3/6] found USB rootfs: $device"
+if [ -n "$root_spec" ]; then
+    # Installed system: mount the real root read-write and start systemd directly. Nothing Live-specific
+    # (RAM overlay, root autologin, diagnostics) applies. The hardware profile is re-applied for this machine.
+    mount -t ext4 -o rw "$device" /newroot || rescue 'Cannot mount the installed root filesystem'
+    status '[4/6] installed system root mounted'
+    mkdir -p /newroot/run /newroot/dev /newroot/proc /newroot/sys
+    if [ -f /run/devos-hw/profile.conf ]; then
+        /live/devos-hwprofile apply /newroot /run/devos-hw >>/run/live/boot.log 2>&1 || status 'DEVOS HW: could not apply the hardware profile'
+    fi
+    status '[5/6] starting systemd'
+    mount --move /run /newroot/run
+    mount --move /dev /newroot/dev
+    mount --move /proc /newroot/proc
+    mount --move /sys /newroot/sys
+    echo 'DEVOS_INSTALLED_ROOT_READY: [6/6] switching to the installed DevOs root'
+    exec switch_root /newroot /sbin/init
+fi
 mount -t ext4 -o ro,noload "$device" /lower || rescue 'Cannot mount USB root read-only'
 mkdir -p /run/live/upper /run/live/work /run/live/lower
 mount --move /lower /run/live/lower || rescue 'Cannot preserve lower mount'
@@ -115,6 +151,14 @@ chmod 600 /newroot/etc/shadow.live
 mv /newroot/etc/shadow.live /newroot/etc/shadow
 unset root_password_hash
 
+# Install the selected hardware profile (modprobe/udev/systemd/audio settings)
+# into the RAM overlay, and keep the tool and profiles for dev-os-drivers.
+if [ -f /run/devos-hw/profile.conf ]; then
+    /live/devos-hwprofile apply /newroot /run/devos-hw >>/run/live/boot.log 2>&1 || status 'DEVOS HW: could not apply the hardware profile'
+    mkdir -p /newroot/usr/share/devos /newroot/usr/bin
+    cp -R /live/profiles /newroot/usr/share/devos/profiles 2>/dev/null || true
+    cp /live/devos-hwprofile /newroot/usr/bin/devos-hwprofile 2>/dev/null && chmod 755 /newroot/usr/bin/devos-hwprofile
+fi
 cp /live/greetd-root.toml /newroot/etc/greetd/config.toml || rescue 'Cannot configure Live root session'
 cp /live/root-session /newroot/usr/libexec/devos-live-root-session || rescue 'Cannot install Live root session'
 chmod 755 /newroot/usr/libexec/devos-live-root-session
@@ -125,9 +169,27 @@ for unit in pipewire.service pipewire.socket pipewire-pulse.service pipewire-pul
     cp /live/pipewire-root.conf "$directory/10-devos-live-root.conf" || rescue 'Cannot configure Live root audio'
 done
 status 'Live default user: root (automatic desktop login)'
+# Bluetooth controller setup that failed for missing firmware is retried once.
+mkdir -p /newroot/usr/libexec /newroot/etc/systemd/system/bluetooth.service.wants
+cp /diagnostics/bluetooth-recover /newroot/usr/libexec/devos-bluetooth-recover
+chmod 755 /newroot/usr/libexec/devos-bluetooth-recover
+cp /diagnostics/bluetooth-recover.service /newroot/etc/systemd/system/devos-bluetooth-recover.service
+ln -sf ../devos-bluetooth-recover.service /newroot/etc/systemd/system/bluetooth.service.wants/devos-bluetooth-recover.service
+cp /diagnostics/bluetooth-report /newroot/usr/libexec/devos-bluetooth-report
+chmod 755 /newroot/usr/libexec/devos-bluetooth-report
+cp /diagnostics/battery-report /newroot/usr/libexec/devos-battery-report
+chmod 755 /newroot/usr/libexec/devos-battery-report
+cp /diagnostics/hotspot-report /newroot/usr/libexec/devos-hotspot-report
+chmod 755 /newroot/usr/libexec/devos-hotspot-report
+mkdir -p /newroot/usr/bin
+ln -sf ../libexec/devos-hotspot-report /newroot/usr/bin/devos-hotspot-report
 if [ -n "$esp_uuid" ]; then
     mkdir -p /newroot/usr/libexec /newroot/etc/systemd/system/multi-user.target.wants
     cp /diagnostics/collector /newroot/usr/libexec/devos-live-diagnostics
+    cp /diagnostics/audio-report /newroot/usr/libexec/devos-audio-report
+    chmod 755 /newroot/usr/libexec/devos-audio-report
+    cp /diagnostics/camera-report /newroot/usr/libexec/devos-camera-report
+    chmod 755 /newroot/usr/libexec/devos-camera-report
     chmod 755 /newroot/usr/libexec/devos-live-diagnostics
     cp /diagnostics/collector.service /newroot/etc/systemd/system/devos-live-diagnostics.service
     ln -s ../devos-live-diagnostics.service /newroot/etc/systemd/system/multi-user.target.wants/devos-live-diagnostics.service

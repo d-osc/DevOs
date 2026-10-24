@@ -1,6 +1,6 @@
 import {
     Gio, GLib
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 
 export function shellApplicationId(): string {
     const display = GLib.getenv('WAYLAND_DISPLAY') ?? 'default';

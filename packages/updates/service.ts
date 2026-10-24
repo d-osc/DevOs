@@ -1,7 +1,10 @@
 import {
-    readJson, Listeners, Gio, GLib, Soup,
+    readJson, Listeners, Gio, GLib,
     removeTree, writeJson
 } from '@dev-os/core';
+import {Soup} from '@dev-os/core/soup';
+import {run, historyAt, type History, type Installed} from './installed.js';
+export {run, historyAt};
 import {VERSION, ROOT} from '@dev-os/config';
 import {repository, version, parseRelease, newer, platform, validateArchive, type Release} from './protocol.js';
 import {parseSwaylockRelease, parseSwaylockVersion, type DependencyUpdate} from './dependencies.js';
@@ -12,34 +15,9 @@ export interface UpdateState {
     running: string; installed: string; managed: boolean; previous: string | null; checked: string;
     swaylock: DependencyUpdate;
 }
-interface Installed {key: string; version: string; repository: string; platform: string;}
-interface History {current: Installed | null; previous: Installed | null;}
 export interface UpdateTransport {
     get(url: string, cancel: Gio.Cancellable): Promise<{status: number; body: unknown}>;
     download(release: Release, path: string, cancel: Gio.Cancellable): Promise<void>;
-}
-export function run(args: string[], cancel: Gio.Cancellable, timeoutSeconds = 60): Promise<string> {
-    return new Promise((resolve, reject) => {
-        let process: Gio.Subprocess;
-        try { process = Gio.Subprocess.new(args, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE); }
-        catch (error) { reject(error); return; }
-        const cancelled = cancel.connect(() => process.force_exit());
-        const timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, timeoutSeconds, () => { process.force_exit(); return GLib.SOURCE_REMOVE; });
-        let timedOut = false;
-        // The timeout is also tracked to avoid removing an already-fired GLib source.
-        GLib.Source.set_name_by_id(timeout, 'dev-os-update-process');
-        const source = GLib.MainContext.default().find_source_by_id(timeout);
-        process.communicate_utf8_async(null, cancel, (_source, result) => {
-            if (source && !source.is_destroyed()) source.destroy(); else timedOut = true;
-            cancel.disconnect(cancelled);
-            try {
-                const [, stdout, stderr] = process.communicate_utf8_finish(result);
-                if (timedOut) throw new Error('Update operation timed out. Try again.');
-                if (!process.get_successful()) throw new Error(stderr?.trim() || `${args[0]} failed`);
-                resolve(stdout?.trimEnd() ?? '');
-            } catch (error) { reject(error); }
-        });
-    });
 }
 export class GitHubTransport implements UpdateTransport {
     private session = new Soup.Session({timeout: 20, user_agent: 'DevOS-Updater'});
@@ -62,23 +40,6 @@ export class GitHubTransport implements UpdateTransport {
         await run(['curl', '--fail', '--location', '--silent', '--show-error', '--proto', '=https', '--proto-redir', '=https',
             '--connect-timeout', '15', '--max-time', '300', '--max-filesize', String(release.size), '--output', path, release.url], cancel, 310);
     }
-}
-export function historyAt(root: string): History {
-    if (!GLib.file_test(`${root}/history.json`, GLib.FileTest.EXISTS)) return {current: null, previous: null};
-    const history = readJson<History>(`${root}/history.json`);
-    if (!history || !Object.hasOwn(history, 'current') || !Object.hasOwn(history, 'previous')) throw new Error('Invalid installed update history');
-    for (const record of [history.current, history.previous]) {
-        if (record === null) continue;
-        if (!record || typeof record !== 'object' || !['linux-x64', 'linux-arm64'].includes(record.platform))
-            throw new Error('Invalid installed update history');
-        if (!/^\d+\.\d+\.\d+-[a-f0-9]{12}$/.test(record.key) || !record.key.startsWith(`${version(record.version)}-`))
-            throw new Error('Invalid installed update history');
-        repository(record.repository);
-        const metadata = readJson<Record<string, unknown>>(`${root}/releases/${record.key}/release.json`);
-        if (metadata.format !== 1 || metadata.version !== record.version || metadata.platform !== record.platform)
-            throw new Error('Installed release metadata does not match update history');
-    }
-    return history;
 }
 export {removeTree} from '@dev-os/core';
 export class Updates {

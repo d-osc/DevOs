@@ -12,8 +12,8 @@ function call(method: string, parameters: GLib.Variant | null): Promise<GLib.Var
     });
 }
 export async function powerCapabilities(): Promise<Record<PowerAction, boolean>> {
-    const result = {sleep: false, restart: false, shutdown: false};
-    await Promise.all((Object.keys(methods) as PowerAction[]).map(async action => {
+    const result = {sleep: !!GLib.find_program_in_path('dev-os-shell') && !!GLib.find_program_in_path('swaylock'), restart: false, shutdown: false};
+    await Promise.all((['restart', 'shutdown'] as const).map(async action => {
         try {
             const [status] = (await call(`Can${methods[action]}`, null)).deep_unpack() as [string];
             result[action] = status === 'yes' || status === 'challenge';
@@ -22,5 +22,16 @@ export async function powerCapabilities(): Promise<Record<PowerAction, boolean>>
     return result;
 }
 export async function requestPower(action: PowerAction): Promise<void> {
+    if (action === 'sleep') {
+        const process = Gio.Subprocess.new(['dev-os-shell', 'lock'], Gio.SubprocessFlags.STDERR_PIPE);
+        await new Promise<void>((resolve, reject) => process.communicate_utf8_async(null, null, (source, result) => {
+            try {
+                const [, , error] = source!.communicate_utf8_finish(result);
+                if (!process.get_successful()) throw new Error(error || 'Could not lock the screen');
+                resolve();
+            } catch (error) { reject(error); }
+        }));
+        return;
+    }
     await call(methods[action], new GLib.Variant('(b)', [true]));
 }

@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot, Box} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {PanelLanguage, PanelLanguageChoices, keyboardLabel} from '../extensions/org.devos.panel/view.js';
@@ -12,7 +13,7 @@ async function verify() {
     const controls: WindowControls = {state: [], get keyboardLayouts() {return layouts;}, subscribe(listener) {listeners.add(listener); return () => {listeners.delete(listener);};}, activate() {}, toggle() {}, setKeyboardLayout(index) {chosen = index; layouts = layouts.map(layout => ({...layout, active: layout.index === index})); listeners.forEach(listener => listener());}};
     const window = new Gtk.Window(); window.set_default_size(320, 280);
     const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     try {

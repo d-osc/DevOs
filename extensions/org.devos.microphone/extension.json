@@ -1,0 +1,14 @@
+{
+  "entry": "org.devos.microphone.js",
+  "name": "Microphone",
+  "settings": [],
+  "order": 28,
+  "description": "Native Microphone capture using Linux media drivers",
+  "settingsVersion": 1,
+  "apiVersion": 1,
+  "system": true,
+  "id": "org.devos.microphone",
+  "kind": "ui",
+  "version": "1.0.0",
+  "enabledByDefault": true
+}

@@ -36,6 +36,19 @@ capture() {
 }
 printf 'Model: %s\nCaptured UTC: %s\n' "$model" "$(date -u +%FT%TZ)" > "$output/summary.txt"
 capture kernel uname -a
+# Machine identity and the hardware profile the Live boot selected (profiles/).
+hwtool=
+for candidate in /usr/bin/devos-hwprofile "${DEVOS_SOURCE_ROOT:-/nonexistent}/profiles/devos-hwprofile" "$(dirname "$0")/../../profiles/devos-hwprofile"; do
+    if [ -r "$candidate" ]; then hwtool=$candidate; break; fi
+done
+if [ -n "$hwtool" ]; then
+    capture hardware-identity sh "$hwtool" identify
+    capture hardware-profile sh "$hwtool" select
+else printf '%s\n' 'devos-hwprofile not found' > "$output/hardware-identity.txt"; fi
+if [ -d /run/devos-hw ]; then
+    mkdir -m 700 -- "$output/boot-hardware-profile"
+    cp /run/devos-hw/identity.json /run/devos-hw/selection.json /run/devos-hw/profile.conf "$output/boot-hardware-profile/" 2>/dev/null || true
+fi
 capture os cat /etc/os-release
 capture pci lspci -nnk
 capture usb lsusb
@@ -49,6 +62,43 @@ capture bluetooth-controllers bluetoothctl list
 capture bluetooth-status bluetoothctl show
 capture mounts findmnt -rn -o SOURCE,TARGET,FSTYPE,OPTIONS
 capture kernel-log dmesg
+capture camera-list cam -l
+capture camera-v4l2 v4l2-ctl --list-devices
+capture camera-libcamera-plugin gst-inspect-1.0 libcamerasrc
+capture camera-kernel-config sh -c '
+    if [ -r /proc/config.gz ]; then zcat /proc/config.gz
+    elif [ -r "/boot/config-$(uname -r)" ]; then cat "/boot/config-$(uname -r)"
+    else printf "%s\n" "Kernel configuration unavailable"; exit 1; fi |
+    grep -E "CONFIG_(VIDEO_OV02C10|VIDEO_QCOM_CAMSS|I2C_QCOM_CCI|PHY_QCOM_MIPI_CSI2|CLK_GLYMUR_CAMCC|MFD_QCOM_PM8008|REGULATOR_QCOM_PM8008|DMABUF_HEAPS|UDMABUF)"
+'
+{
+    printf '%s\n' 'Camera nodes and permissions (no image capture):'
+    ls -l /dev/media* /dev/video* /dev/v4l-subdev* /dev/dma_heap/* /dev/udmabuf 2>/dev/null || true
+    printf '\n%s\n' 'Bound sensor/CCI/ISP drivers:'
+    for device in /sys/bus/i2c/devices/* /sys/bus/platform/devices/*; do
+        [ -L "$device/driver" ] || continue
+        driver=$(readlink "$device/driver")
+        case "$driver" in *ov02c10*|*camss*|*cci*|*csiphy*|*pm8008*|*pm8010*)
+            printf '%s -> %s\n' "$device" "$driver" ;;
+        esac
+    done
+    printf '\n%s\n' 'Camera device-tree nodes and status:'
+    find /sys/firmware/devicetree/base -type d \( -name 'camera@*' -o -name 'cci@*' -o -name 'camss@*' -o -name 'csiphy@*' \) 2>/dev/null |
+    while IFS= read -r node; do
+        printf '%s\n' "$node"
+        for property in compatible status; do
+            if [ -r "$node/$property" ]; then
+                printf '  %s: ' "$property"
+                tr '\000' ' ' < "$node/$property"
+                printf '\n'
+            fi
+        done
+    done
+} > "$output/camera-hardware.txt" 2>&1
+for media in /dev/media*; do
+    [ -c "$media" ] || continue
+    capture "camera-graph-${media##*/}" media-ctl -d "$media" -p
+done
 {
     for base in /lib/firmware/ath12k/QCC2072/hw1.0 /lib/firmware/updates/ath12k/QCC2072/hw1.0 /lib/firmware/qcom/glymur/ASUSTeK/UX3407NA; do
         if [ -d "$base" ]; then

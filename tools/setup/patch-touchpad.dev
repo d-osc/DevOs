@@ -1,0 +1,56 @@
+# Upgrade the existing DevOs compositor patches to the 3/4-finger touchpad map.
+use "std/fs"
+use "std/path"
+use "std/args"
+use "std/module"
+use "std/strings"
+use "std/result"
+fn read(file: str): str { return strings.replaceAll(fs.readFileSync(file, "utf8"), "\r\n", "\n") }
+fn replaceOnce(text: str, needle: str, value: str): str {
+    if strings.split(text, needle).len() != 2 { result.raise("Touchpad patch anchor missing or ambiguous: " + needle) }
+    return strings.replace(text, needle, value)
+}
+fn main(): i32 {
+    if args.len() != 1 { result.raise("Usage: d patch-touchpad.dev -- <labwc-source>") }
+    let source = args.get(0)
+    let headerPath = path.join(source, "include/labwc.h")
+    let header = read(headerPath)
+    let modern = strings.contains(header, "session_lock_manager")
+    let locked = modern ? "(seat->server->session_lock_manager && seat->server->session_lock_manager->locked)" : "(seat->server->session_lock != NULL)"
+    let allowed = "!" + locked + " && !seat->drag.active && seat->server->input_mode == LAB_INPUT_STATE_PASSTHROUGH"
+    if strings.contains(header, "active_client_while_inhibited") { allowed = allowed + " && !seat->active_client_while_inhibited" }
+    let here = path.dirname(module.entry())
+    fs.writeFileSync(path.join(source, "include/input/devos-touchpad.h"), strings.replaceAll(read(path.join(here, "devos-touchpad.h")), "DEVOS_TOUCHPAD_ALLOWED", allowed))
+    if !strings.contains(header, "devos_tap_pointer;") {
+        header = replaceOnce(header, "struct devos_task_view_swipe devos_task_view;", "struct devos_task_view_swipe devos_task_view;\n\tstruct wlr_pointer *devos_tap_pointer;")
+        fs.writeFileSync(headerPath, header)
+    }
+    let cursorPath = path.join(source, "src/input/cursor.c")
+    let cursor = read(cursorPath)
+    if !strings.contains(cursor, "devos_touchpad_button(seat, event)") {
+        cursor = "#include \"input/devos-touchpad.h\"\n" + cursor
+        # The helper requires the complete seat/pointer types from the normal includes.
+        cursor = strings.replace(cursor, "#include \"input/devos-touchpad.h\"\n", "")
+        let anchor = "static void\nhandle_button("
+        cursor = replaceOnce(cursor, anchor, "#include \"input/devos-touchpad.h\"\n\n" + anchor)
+        cursor = replaceOnce(cursor, "\tstruct wlr_pointer_button_event *event = data;", "\tstruct wlr_pointer_button_event *event = data;\n\tif (devos_touchpad_button(seat, event)) { idle_manager_notify_activity(seat->seat); return; }")
+        fs.writeFileSync(cursorPath, cursor)
+    }
+    let gesturePath = path.join(source, "src/input/gestures.c")
+    let text = read(gesturePath)
+    if !strings.contains(text, "DEVOS_TOUCHPAD_MAP_V2") {
+        text = replaceOnce(text, "\twlr_pointer_gestures_v1_send_swipe_begin(", "\tif (seat->devos_task_view.active) { return; }\n\twlr_pointer_gestures_v1_send_swipe_begin(")
+        text = replaceOnce(text, "\twlr_pointer_gestures_v1_send_swipe_update(", "\tif (seat->devos_task_view.active) { return; }\n\twlr_pointer_gestures_v1_send_swipe_update(")
+        text = replaceOnce(text, "\tenum devos_swipe_action action = devos_task_view_end(", "\tbool owned = seat->devos_task_view.active;\n\tenum devos_swipe_action action = devos_task_view_end(")
+        let end = "\twlr_pointer_gestures_v1_send_swipe_end(seat->pointer_gestures,\n\t\tseat->seat, event->time_msec, event->cancelled || action != DEVOS_SWIPE_NONE);"
+        text = replaceOnce(text, end, "\tif (!owned) {\n\t" + end + "\n\t}")
+        let dispatch = "\t} else if (action != DEVOS_SWIPE_NONE) {"
+        let branches = "\t} else if (action == DEVOS_SWIPE_RESTORE) {\n\t\tspawn_async_no_shell(\"dev-os-shell overlays-hide\");\n\t\tspawn_async_no_shell(\"dev-os-shell window-restore\");\n\t} else if (action == DEVOS_SWIPE_NEXT_WINDOW) {\n\t\tspawn_async_no_shell(\"dev-os-shell window-next\");\n\t} else if (action == DEVOS_SWIPE_PREVIOUS_WINDOW) {\n\t\tspawn_async_no_shell(\"dev-os-shell window-previous\");\n\t} else if (action == DEVOS_SWIPE_NEXT_DESKTOP || action == DEVOS_SWIPE_PREVIOUS_DESKTOP) {"
+        text = replaceOnce(text, dispatch, branches)
+        fs.writeFileSync(gesturePath, "/* DEVOS_TOUCHPAD_MAP_V2 */\n" + text)
+    }
+    print("PASS: DevOs 3/4-finger touchpad mappings installed")
+    return 0
+}
+if args.len() == 1 && strings.equal(args.get(0), "--validate") { return 0 }
+return main()

@@ -1,0 +1,112 @@
+From: Dev OS <devos@localhost>
+Subject: [PATCH] Render an opt-in date and time on the secure lock background
+
+Upstream-Status: Inappropriate [Dev OS wallpaper integration]
+
+--- a/main.c
++++ b/main.c
+@@ -181,6 +181,24 @@ void damage_state(struct swaylock_state *state) {
+ 	}
+ }
+ 
++// Refresh the background without replacing the secure lock surface.
++static void devos_clock_tick(void *data) {
++	static time_t last_minute = 0;
++	time_t minute = time(NULL) / 60;
++	struct swaylock_state *state = data;
++	if (minute == last_minute) {
++		loop_add_timer(state->eventloop, 1000, devos_clock_tick, state);
++		return;
++	}
++	last_minute = minute;
++	struct swaylock_surface *surface;
++	wl_list_for_each(surface, &state->surfaces, link) {
++		surface->last_buffer_width = 0;
++	}
++	damage_state(state);
++	loop_add_timer(state->eventloop, 1000, devos_clock_tick, state);
++}
++
+ static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
+ 		int32_t x, int32_t y, int32_t width_mm, int32_t height_mm,
+ 		int32_t subpixel, const char *make, const char *model,
+@@ -1257,6 +1275,9 @@ int main(int argc, char **argv) {
+ 	sa.sa_flags = SA_RESTART;
+ 	sigaction(SIGUSR1, &sa, NULL);
+ 
++	if (getenv("DEV_OS_LOCK_CLOCK") && strcmp(getenv("DEV_OS_LOCK_CLOCK"), "1") == 0) {
++		loop_add_timer(state.eventloop, 1000, devos_clock_tick, &state);
++	}
+ 	state.run_display = true;
+ 	while (state.run_display) {
+ 		errno = 0;
+--- a/render.c
++++ b/render.c
+@@ -1,4 +1,6 @@
+ #include <math.h>
++#include <time.h>
++#include <string.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <wayland-client.h>
+@@ -10,6 +12,52 @@
+ #define M_PI 3.14159265358979323846
+ const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;
+ 
++// Clock colors come from the Dev OS theme as RRGGBB; the black cover always keeps light text.
++static void devos_clock_color(cairo_t *cairo, int line) {
++	const char *value = getenv(line == 0 ? "DEV_OS_LOCK_CLOCK_COLOR" : "DEV_OS_LOCK_CLOCK_MUTED");
++	char *end = NULL;
++	long rgb = value && strlen(value) == 6 ? strtol(value, &end, 16) : -1;
++	if (rgb < 0 || !end || *end != '\0') {
++		cairo_set_source_rgb(cairo, line == 0 ? .93 : .58,
++			line == 0 ? .96 : .68, line == 0 ? .98 : .74);
++		return;
++	}
++	cairo_set_source_rgb(cairo, ((rgb >> 16) & 255) / 255.0,
++		((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0);
++}
++
++// Opt-in clock for the Dev OS wallpaper; authentication stays in swaylock.
++static void render_devos_clock(cairo_t *cairo, int width, int height) {
++	const char *enabled = getenv("DEV_OS_LOCK_CLOCK");
++	if (!enabled || strcmp(enabled, "1") != 0) {
++		return;
++	}
++	time_t now = time(NULL);
++	struct tm local;
++	if (!localtime_r(&now, &local)) {
++		return;
++	}
++	char text[128];
++	double scale = fmin(width / 1920.0, height / 1080.0);
++	cairo_save(cairo);
++	cairo_translate(cairo, (width - 1920 * scale) / 2,
++		(height - 1080 * scale) / 2);
++	cairo_scale(cairo, scale, scale);
++	for (int line = 0; line < 2; ++line) {
++		strftime(text, sizeof(text), line == 0 ? "%H:%M" : "%A, %d %B %Y", &local);
++		cairo_select_font_face(cairo, "Sans", CAIRO_FONT_SLANT_NORMAL,
++			line == 0 ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
++		cairo_set_font_size(cairo, line == 0 ? 68 : 20);
++		devos_clock_color(cairo, line);
++		cairo_text_extents_t extents;
++		cairo_text_extents(cairo, text, &extents);
++		cairo_move_to(cairo, 960 - extents.width / 2 - extents.x_bearing,
++			line == 0 ? 139 : 180);
++		cairo_show_text(cairo, text);
++	}
++	cairo_restore(cairo);
++}
++
+ static void set_color_for_state(cairo_t *cairo, struct swaylock_state *state,
+ 		struct swaylock_colorset *colorset) {
+ 	if (state->input_state == INPUT_STATE_CLEAR) {
+@@ -88,6 +136,7 @@ void render(struct swaylock_surface *surface) {
+ 			render_background_image(cairo, surface->image,
+ 				state->args.mode, buffer_width, buffer_height);
+ 		}
++		render_devos_clock(cairo, buffer_width, buffer_height);
+ 		cairo_restore(cairo);
+ 		cairo_identity_matrix(cairo);
+ 

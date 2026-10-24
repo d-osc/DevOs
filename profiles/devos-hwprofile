@@ -1,0 +1,585 @@
+#!/bin/sh
+# Dev OS hardware identification and profile selection.
+#
+#   devos-hwprofile identify           machine identity as JSON (works anywhere)
+#   devos-hwprofile facts              the same facts as key=value lines
+#   devos-hwprofile select [--facts F] choose profile layers, print JSON
+#   devos-hwprofile merge DIR          select + merge layers into DIR
+#   devos-hwprofile compose VENDOR/MODEL DIR  merge one model's layers (build time, no hardware)
+#   devos-hwprofile boot [DIR]         identify + select + merge (early Live boot)
+#   devos-hwprofile apply ROOT [DIR]   install the merged profile into ROOT
+#   devos-hwprofile show [DIR]         one-line summary of a merged profile
+#
+# Pure POSIX sh so it runs inside the Live initramfs (BusyBox ash) as well as
+# on the installed system. Offline only; missing fields are never fatal.
+# Test hooks: DEVOS_HW_ROOT (fixture prefix for /sys and /proc),
+# DEVOS_HW_ARCH, DEVOS_PROFILES_DIR, DEVOS_HW_RUN. DEVOS_HW_FORCE=generic|vendor/model
+# overrides matching (the Live kernel command line option devos.hw=...).
+set -u
+set -f
+NL='
+'
+UPPER=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+LOWER=abcdefghijklmnopqrstuvwxyz
+# The Live initramfs BusyBox has no printf applet or builtin, no `command`, and an
+# echo that cannot suppress its newline. Provide the small printf subset used here
+# (%s, %%, \n); its output always ends with exactly one newline, which is harmless
+# in the command substitutions and JSON/list/config files this tool writes.
+if ! type printf >/dev/null 2>&1; then
+    printf() {
+        _pf=$1; shift; _po=
+        while [ -n "$_pf" ]; do
+            case $_pf in
+                '%s'*) _po=$_po${1-}; [ $# -eq 0 ] || shift; _pf=${_pf#??} ;;
+                '%%'*) _po=$_po%; _pf=${_pf#??} ;;
+                '\n'*) _po=$_po$NL; _pf=${_pf#??} ;;
+                *) _pr=${_pf#?}; _po=$_po${_pf%"$_pr"}; _pf=$_pr ;;
+            esac
+        done
+        echo "${_po%"$NL"}"
+    }
+fi
+ROOT=${DEVOS_HW_ROOT:-}
+RUN=${DEVOS_HW_RUN:-/run/devos-hw}
+LISTS='early.modules modules.load modules.blacklist kernel.args firmware.list quirks.list'
+
+# ---- text helpers ---------------------------------------------------------
+map_case() { # FROM TO TEXT -> TEXT with FROM letters replaced by TO letters
+    _s=$3; _o=
+    while [ -n "$_s" ]; do
+        _r=${_s#?}; _c=${_s%"$_r"}
+        case $1$_c in
+            "$UPPER"[A-Z]|"$LOWER"[a-z])
+                _f=$1; _t=$2
+                while [ -n "$_f" ] && [ "${_f%"${_f#?}"}" != "$_c" ]; do _f=${_f#?}; _t=${_t#?}; done
+                [ -n "$_f" ] && _c=${_t%"${_t#?}"}
+                ;;
+        esac
+        _o=$_o$_c; _s=$_r
+    done
+    printf '%s' "$_o"
+}
+lc() { map_case "$UPPER" "$LOWER" "$1"; }
+uc() { map_case "$LOWER" "$UPPER" "$1"; }
+trim() {
+    _t=$1
+    _t=${_t#"${_t%%[![:space:]]*}"}
+    _t=${_t%"${_t##*[![:space:]]}"}
+    printf '%s' "$_t"
+}
+slug() { # lowercase; runs of anything but [a-z0-9.,+_] become one '-'
+    _s=$(lc "$1"); _o=; _dash=1
+    while [ -n "$_s" ]; do
+        _r=${_s#?}; _c=${_s%"$_r"}
+        case $_c in
+            [a-z0-9.,+_]) _o=$_o$_c; _dash=0 ;;
+            *) [ "$_dash" = 1 ] || _o=$_o-; _dash=1 ;;
+        esac
+        _s=$_r
+    done
+    printf '%s' "${_o%-}"
+}
+json_str() {
+    _s=$1; _o=
+    while [ -n "$_s" ]; do
+        _r=${_s#?}; _c=${_s%"$_r"}
+        case $_c in
+            '"') _o=$_o'\"' ;;
+            '\') _o=$_o'\\' ;;
+            [[:cntrl:]]) _o="$_o " ;;
+            *) _o=$_o$_c ;;
+        esac
+        _s=$_r
+    done
+    printf '"%s"' "$_o"
+}
+json_list() { # newline- or space-separated words -> JSON array
+    _o=; _first=1
+    for _w in $1; do
+        [ "$_first" = 1 ] || _o=$_o,
+        _o=$_o$(json_str "$_w"); _first=0
+    done
+    printf '[%s]' "$_o"
+}
+incr() { # decimal increment without $((..)), which the Live BusyBox lacks
+    _n=${1:-0}; _p=
+    while :; do
+        case $_n in
+            '') printf '1%s' "$_p"; return ;;
+            *0) printf '%s1%s' "${_n%0}" "$_p"; return ;;
+            *1) printf '%s2%s' "${_n%1}" "$_p"; return ;;
+            *2) printf '%s3%s' "${_n%2}" "$_p"; return ;;
+            *3) printf '%s4%s' "${_n%3}" "$_p"; return ;;
+            *4) printf '%s5%s' "${_n%4}" "$_p"; return ;;
+            *5) printf '%s6%s' "${_n%5}" "$_p"; return ;;
+            *6) printf '%s7%s' "${_n%6}" "$_p"; return ;;
+            *7) printf '%s8%s' "${_n%7}" "$_p"; return ;;
+            *8) printf '%s9%s' "${_n%8}" "$_p"; return ;;
+            *9) _p=0$_p; _n=${_n%9} ;;
+        esac
+    done
+}
+shquote() { # single-quote a value for a shell-sourceable env file
+    _s=$1; _o=
+    while :; do
+        case $_s in
+            *\'*) _o=$_o${_s%%\'*}"'\\''"; _s=${_s#*\'} ;;
+            *) _o=$_o$_s; break ;;
+        esac
+    done
+    printf "'%s'" "$_o"
+}
+rd() { # first line of a file, empty when unreadable
+    _v=
+    [ -r "$1" ] && { IFS= read -r _v <"$1" || true; } 2>/dev/null
+    printf '%s' "$_v"
+}
+rd_nul() { # NUL-separated strings (device tree) -> one per line
+    [ -r "$1" ] || return 0
+    if type tr >/dev/null 2>&1; then tr '\000' '\n' <"$1"; echo; else cat "$1"; echo; fi 2>/dev/null
+}
+clean() { # DMI value: trimmed, placeholder strings become empty
+    _v=$(trim "$1")
+    case $(lc "$_v") in
+        ''|'to be filled by o.e.m.'|'to be filled by o.e.m'|'default string'|'system product name'|'system version'|'system manufacturer'|'not specified'|'not applicable'|'none'|'n/a'|'unknown'|'o.e.m.'|'default'|'type1productconfigid'|'123456789'|'0123456789')
+            _v= ;;
+    esac
+    printf '%s' "$_v"
+}
+vendor_slug() {
+    _v=$(slug "$1")
+    case $_v in
+        asus|asustek*|asus-*) _v=asus ;;
+        hewlett*|hp|hp-*) _v=hp ;;
+        dell*) _v=dell ;;
+        lenovo*) _v=lenovo ;;
+        microsoft*) _v=microsoft ;;
+        samsung*) _v=samsung ;;
+        acer*) _v=acer ;;
+        apple*) _v=apple ;;
+        google*) _v=google ;;
+        qemu|bochs|innotek*|xen|vmware*|parallels*|'red-hat'*) ;;
+        *)  # drop corporate suffixes: "foo-inc.", "foo-corporation"
+            _v=${_v%%-inc*}; _v=${_v%%-corp*}; _v=${_v%%-co.*}; _v=${_v%%-ltd*}; _v=${_v%%-computer*}; _v=${_v%%-electronics*}
+            ;;
+    esac
+    printf '%s' "$_v"
+}
+
+# ---- identification -------------------------------------------------------
+collect_facts() {
+    dmi=$ROOT/sys/class/dmi/id
+    sys_vendor=$(clean "$(rd "$dmi/sys_vendor")")
+    product_name=$(clean "$(rd "$dmi/product_name")")
+    product_family=$(clean "$(rd "$dmi/product_family")")
+    product_version=$(clean "$(rd "$dmi/product_version")")
+    board_vendor=$(clean "$(rd "$dmi/board_vendor")")
+    board_name=$(clean "$(rd "$dmi/board_name")")
+    bios_vendor=$(clean "$(rd "$dmi/bios_vendor")")
+    bios_version=$(clean "$(rd "$dmi/bios_version")")
+    bios_date=$(clean "$(rd "$dmi/bios_date")")
+    chassis_type=$(trim "$(rd "$dmi/chassis_type")")
+    case $chassis_type in ''|*[!0-9]*) chassis_type= ;; esac
+
+    has_dmi=0; [ -d "$dmi" ] && has_dmi=1
+    dtdir=$ROOT/sys/firmware/devicetree/base
+    [ -d "$dtdir" ] || dtdir=$ROOT/proc/device-tree
+    has_dt=0; [ -d "$dtdir" ] && has_dt=1
+    warnings=
+    [ "$has_dmi" = 1 ] || warnings="${warnings}no-dmi-sysfs "
+    [ "$has_dt" = 1 ] || warnings="${warnings}no-devicetree "
+    dt_model=; dt_compatible=; dt_chassis=; dt_soc=
+    if [ -d "$dtdir" ]; then
+        dt_model=$(clean "$(rd_nul "$dtdir/model" | { IFS= read -r l; printf '%s' "$l"; })")
+        dt_chassis=$(lc "$(trim "$(rd_nul "$dtdir/chassis-type" | { IFS= read -r l; printf '%s' "$l"; })")")
+        for _e in $(rd_nul "$dtdir/compatible"); do
+            _e=$(slug "$_e"); [ -n "$_e" ] || continue
+            dt_compatible=${dt_compatible:+$dt_compatible }$_e
+            dt_soc=$_e
+        done
+        if ! type tr >/dev/null 2>&1; then dt_soc=; warnings="${warnings}dt-compatible-unsplit "; fi
+    fi
+
+    arch=${DEVOS_HW_ARCH:-}
+    [ -n "$arch" ] || arch=$(rd "$ROOT/proc/sys/kernel/arch")
+    [ -n "$arch" ] || arch=$(uname -m 2>/dev/null || true)
+    cpu_model=; cpu_cores=0; _impl=; _part=
+    if [ -r "$ROOT/proc/cpuinfo" ]; then
+        while IFS= read -r _l || [ -n "$_l" ]; do
+            case $_l in
+                processor*:*) cpu_cores=$(incr "$cpu_cores") ;;
+                'model name'*:*|Hardware*:*|Model*:*) [ -n "$cpu_model" ] || cpu_model=$(clean "${_l#*:}") ;;
+                'CPU implementer'*:*) [ -n "$_impl" ] || _impl=$(trim "${_l#*:}") ;;
+                'CPU part'*:*) [ -n "$_part" ] || _part=$(trim "${_l#*:}") ;;
+            esac
+        done <"$ROOT/proc/cpuinfo"
+        [ -n "$cpu_model" ] || { [ -z "$_impl" ] || cpu_model="arm implementer $_impl part $_part"; }
+    fi
+    # The Live BusyBox has no uname: an ARM implementer in cpuinfo means arm64 here.
+    [ -n "$arch" ] || { [ -z "$_impl" ] || arch=aarch64; }
+    [ -n "$arch" ] || arch=unknown
+
+    tablet_switch=0
+    set +f
+    for _in in "$ROOT"/sys/class/input/input*; do
+        [ -d "$_in" ] || continue
+        case $(lc "$(rd "$_in/name")") in *'tablet mode'*|*tablet-mode*|*'tablet_mode'*) tablet_switch=1 ;; esac
+        _sw=$(trim "$(rd "$_in/capabilities/sw")"); _sw=${_sw##* }
+        case $_sw in ''|*[!0-9a-fA-F]*) ;; *) case ${_sw} in *[2367abefABEF]) tablet_switch=1 ;; esac ;; esac
+    done
+    set -f
+    battery=0
+    set +f
+    for _ps in "$ROOT"/sys/class/power_supply/*; do
+        [ "$(rd "$_ps/type")" = Battery ] && battery=1
+    done
+    set -f
+
+    # Vendor/model: DMI first, then board fields, then the device tree.
+    vendor_raw=${sys_vendor:-$board_vendor}
+    model_raw=${product_name:-$board_name}
+    firmware_type=unknown
+    [ -n "$sys_vendor$product_name$board_name" ] && firmware_type=dmi
+    if [ -z "$vendor_raw$model_raw" ] && [ -n "$dt_compatible" ]; then
+        _first=${dt_compatible%% *}
+        vendor_raw=${_first%%,*}
+        model_raw=${_first#*,}
+        [ "$model_raw" != "$_first" ] || model_raw=
+        firmware_type=devicetree
+    elif [ -n "$dt_compatible" ] && [ "$firmware_type" = unknown ]; then
+        firmware_type=devicetree
+    fi
+    vendor=$(vendor_slug "$vendor_raw")
+    model=$(slug "$model_raw")
+    machine_id=unknown
+    [ -z "$vendor$model" ] || machine_id=${vendor:-unknown}/${model:-unknown}
+
+    # Form factor.
+    form_factor=unknown; form_factor_source=none
+    case $chassis_type in
+        30|31|32) form_factor=2-in-1; form_factor_source=chassis_type ;;
+        8|9|10|14) form_factor=laptop; form_factor_source=chassis_type ;;
+        3|4|5|6|7|13|15|16|17|23|24|25|34|35|36) form_factor=desktop; form_factor_source=chassis_type ;;
+    esac
+    case $dt_chassis in
+        convertible|tablet|detachable) form_factor=2-in-1; form_factor_source=devicetree ;;
+        laptop) [ "$form_factor" != unknown ] || { form_factor=laptop; form_factor_source=devicetree; } ;;
+        desktop|server) [ "$form_factor" != unknown ] || { form_factor=desktop; form_factor_source=devicetree; } ;;
+    esac
+    if [ "$tablet_switch" = 1 ] && { [ "$form_factor" = laptop ] || [ "$form_factor" = unknown ]; }; then
+        form_factor=2-in-1; form_factor_source=tablet-mode-switch
+    elif [ "$form_factor" = unknown ] && [ "$battery" = 1 ]; then
+        form_factor=laptop; form_factor_source=battery-hint
+    fi
+}
+
+# Facts as key=value lines, in a stable order.
+emit_facts() {
+    for _k in arch vendor model machine_id form_factor form_factor_source firmware_type sys_vendor product_name \
+        product_family product_version board_vendor board_name bios_vendor bios_version bios_date chassis_type \
+        dt_model dt_compatible dt_soc cpu_model cpu_cores tablet_switch battery; do
+        eval "_v=\$$_k"
+        printf '%s=%s\n' "$_k" "$_v"
+    done
+}
+
+# What was actually read, for the boot log and identity.json when matching fails.
+raw_values() {
+    echo "arch=$arch dmi_sysfs=$has_dmi sys_vendor=[$sys_vendor] product_name=[$product_name] board_name=[$board_name] chassis_type=[$chassis_type] devicetree=$has_dt dt_model=[$dt_model] dt_compatible=[$dt_compatible] warnings=[${warnings% }]"
+}
+
+emit_identity_json() {
+    _bool_ts=false; [ "$tablet_switch" = 1 ] && _bool_ts=true
+    _bool_bat=false; [ "$battery" = 1 ] && _bool_bat=true
+    _ct=null; [ -z "$chassis_type" ] || _ct=$chassis_type
+    printf '{"schema":1,"arch":%s,"machine_id":%s,"vendor":%s,"model":%s,"form_factor":%s,"form_factor_source":%s,' \
+        "$(json_str "$arch")" "$(json_str "$machine_id")" "$(json_str "$vendor")" "$(json_str "$model")" \
+        "$(json_str "$form_factor")" "$(json_str "$form_factor_source")"
+    printf '"firmware_type":%s,"dmi":{"sys_vendor":%s,"product_name":%s,"product_family":%s,"product_version":%s,' \
+        "$(json_str "$firmware_type")" "$(json_str "$sys_vendor")" "$(json_str "$product_name")" \
+        "$(json_str "$product_family")" "$(json_str "$product_version")"
+    printf '"board_vendor":%s,"board_name":%s,"chassis_type":%s,"bios":{"vendor":%s,"version":%s,"date":%s}},' \
+        "$(json_str "$board_vendor")" "$(json_str "$board_name")" "$_ct" \
+        "$(json_str "$bios_vendor")" "$(json_str "$bios_version")" "$(json_str "$bios_date")"
+    printf '"devicetree":{"model":%s,"chassis_type":%s,"compatible":%s},' \
+        "$(json_str "$dt_model")" "$(json_str "$dt_chassis")" "$(json_list "$dt_compatible")"
+    printf '"cpu":{"model":%s,"cores":%s,"soc":%s},"tablet_mode_switch":%s,"battery":%s,"warnings":%s,"read":%s}\n' \
+        "$(json_str "$cpu_model")" "$cpu_cores" "$(json_str "$dt_soc")" "$_bool_ts" "$_bool_bat" "$(json_list "$warnings")" "$(json_str "$(raw_values)")"
+}
+
+# ---- profile selection ----------------------------------------------------
+profiles_dir() {
+    for _d in "${DEVOS_PROFILES_DIR:-}" /usr/share/devos/profiles /live/profiles "${0%/*}" ; do
+        [ -n "$_d" ] && [ -d "$_d/generic" ] && { printf '%s' "$_d"; return 0; }
+    done
+    return 1
+}
+
+init_facts() {
+    for _k in arch vendor model machine_id sys_vendor product_name product_family product_version board_vendor \
+        board_name bios_vendor bios_version bios_date chassis_type dt_model dt_compatible dt_chassis dt_soc cpu_model; do
+        eval "$_k="
+    done
+    warnings=
+    has_dmi=0; has_dt=0; warnings=
+    cpu_cores=0; tablet_switch=0; battery=0; form_factor=unknown; form_factor_source=none; firmware_type=unknown
+}
+
+load_facts_file() {
+    init_facts
+    while IFS= read -r _l || [ -n "$_l" ]; do
+        case $_l in
+            [a-z_]*=*) _k=${_l%%=*}; case $_k in *[!a-z_]*) continue ;; esac
+                eval "$_k=\${_l#*=}" ;;
+        esac
+    done <"$1"
+    if [ -z "$machine_id" ] && [ -n "$vendor$model" ]; then machine_id=${vendor:-unknown}/${model:-unknown}; fi
+    [ -n "$machine_id" ] || machine_id=unknown
+}
+
+fact_value() { eval "printf '%s' \"\${$1:-}\""; }
+
+rule_matches() { # match line -> 0 when every key=glob predicate holds
+    for _tok in $1; do
+        case $_tok in
+            [a-z_]*=*) ;;
+            *) return 1 ;;
+        esac
+        _key=${_tok%%=*}; _pat=$(lc "${_tok#*=}")
+        case $_key in *[!a-z_]*) return 1 ;; esac
+        # Form factor and tablet switch are matched on normalised values.
+        _val=$(lc "$(fact_value "$_key")")
+        _slugged=$(slug "$_val")
+        case $_key in
+            vendor|model|machine_id|form_factor|arch|chassis_type|cpu_cores|tablet_switch|battery|dt_compatible|dt_soc) ;;
+            *) _val=$_slugged ;;
+        esac
+        # shellcheck disable=SC2254
+        case $_val in $_pat) ;; *) return 1 ;; esac
+    done
+    return 0
+}
+
+select_profiles() {
+    PROFILES=$(profiles_dir) || { echo "devos-hwprofile: no profile directory found" >&2; return 1; }
+    MODEL_DIR=; MODEL_RULE=; MODEL_SCORE=0
+    _force=${DEVOS_HW_FORCE:-}
+    case $_force in *..*|/*) _force= ;; esac
+    set +f
+    for _m in "$PROFILES"/*/*/match; do
+        [ "$_force" != generic ] || break
+        [ -f "$_m" ] || continue
+        _dir=${_m%/match}; _rel=${_dir#"$PROFILES"/}
+        case $_rel in generic/*|form-factors/*) continue ;; esac
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _line=$(trim "${_line%%#*}")
+            [ -n "$_line" ] || continue
+            if (set -f; rule_matches "$_line"); then
+                _u=; for _t in $_line; do _u=${_u}x; done; _n=${#_u}
+                if [ "$_n" -gt "$MODEL_SCORE" ]; then MODEL_DIR=$_rel; MODEL_RULE=$_line; MODEL_SCORE=$_n; fi
+            fi
+        done <"$_m"
+    done
+    set -f
+    if [ -n "$_force" ] && [ "$_force" != generic ] && [ -f "$PROFILES/$_force/profile.conf" ]; then
+        MODEL_DIR=$_force; MODEL_RULE=forced-by-devos.hw
+    fi
+    _ff=$form_factor
+    if [ "$_force" = generic ]; then MODEL_DIR=; _ff=unknown
+    elif [ "$_ff" = unknown ] && [ -n "$MODEL_DIR" ]; then _ff=$(conf_get "$PROFILES/$MODEL_DIR/profile.conf" form_factor); fi
+    case $_ff in
+        laptop) FF_DIR=form-factors/laptop ;;
+        desktop) FF_DIR=form-factors/desktop ;;
+        2-in-1) FF_DIR=form-factors/convertible ;;
+        *) FF_DIR= ;;
+    esac
+    [ -z "$FF_DIR" ] || [ -d "$PROFILES/$FF_DIR" ] || FF_DIR=
+    LAYERS=generic
+    [ -z "$FF_DIR" ] || LAYERS="$LAYERS $FF_DIR"
+    [ -z "$MODEL_DIR" ] || LAYERS="$LAYERS $MODEL_DIR"
+    if [ -n "$MODEL_DIR" ]; then PROFILE_KIND=model; PROFILE_NAME=$MODEL_DIR
+    elif [ -n "$FF_DIR" ]; then PROFILE_KIND=form-factor; PROFILE_NAME=$FF_DIR
+    else PROFILE_KIND=generic; PROFILE_NAME=generic; fi
+    [ "$form_factor" != unknown ] || form_factor=${_ff:-unknown}
+}
+
+selection_message() {
+    case $PROFILE_KIND in
+        model) echo "DEVOS HW: $machine_id ($form_factor) -> model profile $MODEL_DIR" ;;
+        form-factor) echo "DEVOS HW: unrecognised machine $machine_id; using $form_factor form-factor profile on the generic base" ;;
+        *) echo "DEVOS HW: unrecognised machine $machine_id (form factor $form_factor); using the generic profile" ;;
+    esac
+}
+
+emit_selection_json() {
+    _layers=; _first=1
+    for _l in $LAYERS; do
+        [ "$_first" = 1 ] || _layers=$_layers,
+        _kind=model
+        case $_l in generic) _kind=generic ;; form-factors/*) _kind=form-factor ;; esac
+        _layers=$_layers$(printf '{"kind":%s,"path":%s}' "$(json_str "$_kind")" "$(json_str "$_l")")
+        _first=0
+    done
+    printf '{"schema":1,"machine_id":%s,"form_factor":%s,"profile":%s,"profile_kind":%s,"matched_rule":%s,"layers":[%s],"message":%s,"read":%s}\n' \
+        "$(json_str "$machine_id")" "$(json_str "$form_factor")" "$(json_str "$PROFILE_NAME")" "$(json_str "$PROFILE_KIND")" \
+        "$(json_str "$MODEL_RULE")" "$_layers" "$(json_str "$(selection_message)")" "$(json_str "$(raw_values)")"
+}
+
+# ---- merging --------------------------------------------------------------
+list_add() { # ACC ENTRY -> ACC without ENTRY, then with it appended
+    _acc=; _seen=0
+    while IFS= read -r _e; do
+        [ -n "$_e" ] || continue
+        [ "$_e" = "$2" ] && { _seen=1; _acc=$_acc$_e$NL; continue; }
+        _acc=$_acc$_e$NL
+    done <<EOF
+$1
+EOF
+    [ "$_seen" = 1 ] || _acc=$_acc$2$NL
+    printf '%s' "$_acc"
+}
+list_remove() {
+    _acc=
+    while IFS= read -r _e; do
+        [ -n "$_e" ] && [ "$_e" != "$2" ] && _acc=$_acc$_e$NL
+    done <<EOF
+$1
+EOF
+    printf '%s' "$_acc"
+}
+conf_set() { # ACC KEY VALUE
+    _acc=
+    while IFS= read -r _e; do
+        [ -n "$_e" ] || continue
+        case $_e in "$2="*) ;; *) _acc=$_acc$_e$NL ;; esac
+    done <<EOF
+$1
+EOF
+    printf '%s' "$_acc$2=$3$NL"
+}
+
+merge_into() { # OUTDIR
+    _out=$1
+    mkdir -p "$_out/files" || return 1
+    for _name in $LISTS; do
+        _acc=
+        for _l in $LAYERS; do
+            [ -f "$PROFILES/$_l/$_name" ] || continue
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _line=$(trim "${_line%%#*}")
+                [ -n "$_line" ] || continue
+                case $_line in
+                    -*) _acc=$(list_remove "$_acc" "$(trim "${_line#-}")") ;;
+                    *) _acc=$(list_add "$_acc" "$_line") ;;
+                esac
+            done <"$PROFILES/$_l/$_name"
+        done
+        if [ -n "$_acc" ]; then printf '%s\n' "$_acc" >"$_out/$_name"; else : >"$_out/$_name"; fi
+    done
+    _conf=
+    for _l in $LAYERS; do
+        [ -f "$PROFILES/$_l/profile.conf" ] || continue
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _line=$(trim "${_line%%#*}")
+            case $_line in
+                [a-z_]*=*) _k=$(trim "${_line%%=*}"); case $_k in *[!a-z0-9_]*) continue ;; esac
+                    _conf=$(conf_set "$_conf" "$_k" "$(trim "${_line#*=}")") ;;
+            esac
+        done <"$PROFILES/$_l/profile.conf"
+        [ ! -d "$PROFILES/$_l/files" ] || cp -R "$PROFILES/$_l/files/." "$_out/files/" || return 1
+    done
+    _conf=$(conf_set "$_conf" selected_profile "$PROFILE_NAME")
+    _conf=$(conf_set "$_conf" selected_kind "$PROFILE_KIND")
+    _conf=$(conf_set "$_conf" machine_id "$machine_id")
+    _conf=$(conf_set "$_conf" form_factor "$form_factor")
+    printf '%s\n' "$_conf" >"$_out/profile.conf"
+    : >"$_out/profile.env"
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        printf 'DEVOS_HW_%s=%s\n' "$(uc "${_line%%=*}")" "$(shquote "${_line#*=}")" >>"$_out/profile.env"
+    done <"$_out/profile.conf"
+    emit_identity_json >"$_out/identity.json"
+    emit_selection_json >"$_out/selection.json"
+    selection_message >"$_out/message"
+    [ "$PROFILE_KIND" = model ] || echo "DEVOS HW: no model rule matched; values read: $(raw_values)" >>"$_out/message"
+}
+
+# ---- apply ----------------------------------------------------------------
+safe_rel() { # relative path allowed to be written by a profile
+    case $1 in
+        /*|*..*|'') return 1 ;;
+        etc/*|usr/lib/udev/*|usr/lib/modprobe.d/*|usr/lib/modules-load.d/*|usr/lib/systemd/*|usr/share/alsa/*|usr/share/wireplumber/*|usr/share/pipewire/*|usr/share/devos/*) return 0 ;;
+    esac
+    return 1
+}
+
+apply_profile() { # TARGET [DIR]
+    _target=$1; _dir=${2:-$RUN}
+    [ -d "$_target" ] && [ -f "$_dir/profile.conf" ] || { echo "devos-hwprofile: nothing to apply" >&2; return 1; }
+    _count=
+    if [ -d "$_dir/files" ]; then
+        _list=$(cd "$_dir/files" && find . 2>/dev/null)
+        for _f in $_list; do
+            _rel=${_f#./}
+            [ -f "$_dir/files/$_rel" ] || [ -L "$_dir/files/$_rel" ] || continue
+            if [ -L "$_dir/files/$_rel" ] || ! safe_rel "$_rel"; then
+                echo "devos-hwprofile: skipped unsafe profile file: $_rel" >&2; continue
+            fi
+            _parent=${_rel%/*}
+            mkdir -p "$_target/$_parent" && cp "$_dir/files/$_rel" "$_target/$_rel" && _count=${_count}x
+        done
+    fi
+    mkdir -p "$_target/etc/modprobe.d" "$_target/etc/modules-load.d" "$_target/etc/devos"
+    if [ -s "$_dir/modules.blacklist" ]; then
+        { echo '# Generated by devos-hwprofile from the selected hardware profile.'
+          while IFS= read -r _m; do [ -z "$_m" ] || echo "blacklist $_m"; done <"$_dir/modules.blacklist"
+        } >"$_target/etc/modprobe.d/50-devos-hwprofile.conf"
+    fi
+    if [ -s "$_dir/modules.load" ]; then
+        { echo '# Generated by devos-hwprofile from the selected hardware profile.'
+          while IFS= read -r _m; do [ -z "$_m" ] || echo "$_m"; done <"$_dir/modules.load"
+        } >"$_target/etc/modules-load.d/50-devos-hwprofile.conf"
+    fi
+    cp "$_dir/profile.env" "$_target/etc/devos/hardware-profile.env" 2>/dev/null || true
+    echo "DEVOS HW: applied profile $(conf_get "$_dir/profile.conf" selected_profile) (${#_count} profile files)"
+}
+
+conf_get() { # FILE KEY
+    while IFS= read -r _l; do case $_l in "$2="*) printf '%s' "${_l#*=}"; return 0 ;; esac; done <"$1"
+}
+
+# ---- commands -------------------------------------------------------------
+cmd=${1:-identify}
+[ $# -eq 0 ] || shift
+case $cmd in
+    identify) collect_facts; emit_identity_json ;;
+    facts) collect_facts; emit_facts ;;
+    select)
+        if [ "${1:-}" = --facts ] && [ -n "${2:-}" ]; then
+            [ -r "$2" ] || { echo "devos-hwprofile: cannot read $2" >&2; exit 2; }
+                        load_facts_file "$2"
+        else collect_facts; fi
+        select_profiles || exit 1
+        emit_selection_json ;;
+    merge)
+        [ -n "${1:-}" ] || { echo "usage: devos-hwprofile merge DIR" >&2; exit 2; }
+        collect_facts; select_profiles || exit 1; merge_into "$1" || exit 1; cat "$1/message" ;;
+    boot)
+        collect_facts; select_profiles || exit 1; merge_into "${1:-$RUN}" || exit 1
+        # Fail loudly instead of leaving empty result files (e.g. a missing shell applet).
+        [ -s "${1:-$RUN}/identity.json" ] && [ -s "${1:-$RUN}/selection.json" ] || { echo "devos-hwprofile: identity output is empty" >&2; exit 1; }
+        cat "${1:-$RUN}/message" ;;
+    apply)
+        [ -n "${1:-}" ] || { echo "usage: devos-hwprofile apply ROOT [DIR]" >&2; exit 2; }
+        apply_profile "$1" "${2:-}" || exit 1 ;;
+    compose)
+        [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo "usage: devos-hwprofile compose VENDOR/MODEL DIR" >&2; exit 2; }
+        [ -f "$(profiles_dir)/$1/match" ] || { echo "devos-hwprofile: no such model profile: $1" >&2; exit 2; }
+        init_facts; vendor=${1%%/*}; model=${1#*/}; machine_id=$1
+        DEVOS_HW_FORCE=$1; select_profiles || exit 1; merge_into "$2" || exit 1; cat "$2/message" ;;
+    show)
+        _d=${1:-$RUN}
+        [ -f "$_d/message" ] && cat "$_d/message" || { echo "DEVOS HW: no profile selected (run: devos-hwprofile boot)"; exit 1; } ;;
+    -h|--help|help) sed -n '2,19p' "$0" 2>/dev/null || true ;;
+    *) echo "devos-hwprofile: unknown command: $cmd" >&2; exit 2 ;;
+esac

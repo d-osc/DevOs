@@ -1,0 +1,70 @@
+{
+  "sourceVersion": "Ubuntu Concept linux-qcom-x1e 7.3.0-22.22",
+  "patches": [
+    {
+      "file": "0001-camss-glymur.patch",
+      "sha256": "53402054728a2abefdef809a90f0fa493cf8927152143397b2bfdeab218afd81"
+    },
+    {
+      "file": "pm8010-1.patch",
+      "sha256": "ec2211f8ca7e8959618ee5b0f3974dc4714502aeb277e4366ab42865ae07451c"
+    },
+    {
+      "file": "pm8010-2.patch",
+      "sha256": "c6554ce1d461d35208635e97f4adf987f871f1299d78456164c233c0bf765632"
+    },
+    {
+      "file": "pm8010-3.patch",
+      "sha256": "4087d9fe53a59d2c3d5d2b726105e2a70865befe608b49f9a68c6e5b2209e374"
+    },
+    {
+      "file": "pm8010-4.patch",
+      "sha256": "be316a58815667e6ce544d1f095bd3da940978d96859dca5a813f80427236c29"
+    },
+    {
+      "file": "pm8010-5.patch",
+      "sha256": "94dabf6f2f4d3aae0fe4a9bc51fa38fe7f458428f350516880614e0934e57072"
+    },
+    {
+      "file": "pm8010-6.patch",
+      "sha256": "458ed4686a29a33e5acd6b7e7c7222f545ebcc40366b2e43eda643eccdd44a62"
+    },
+    {
+      "file": "pm8010-7.patch",
+      "sha256": "56b35065ea76132d62c79a987f1f724ed3fb6779632ef6513a1c3786e1da89a9"
+    },
+    {
+      "file": "soc-camera-1.patch",
+      "sha256": "223765e6edf67734c0056aca06f58d26819b5bca279760e5c6772848a4417ac0"
+    },
+    {
+      "file": "soc-camera-2.patch",
+      "sha256": "30454e1b55d174e336f7da95d7ade7c311c89093324ee8882101e8c18bef37d1"
+    },
+    {
+      "file": "soc-camera-3.patch",
+      "sha256": "ec38e607f509ca0277a3a253bea7e4c419def2b3ef6179961f274b677a03564d"
+    },
+    {
+      "file": "0002-camss-glymur-phy-resources.patch",
+      "sha256": "152bac27fe52f50bc505b7c66d19f2055f41bd0e1e69ab4b4d63f2c8850baefc"
+    }
+  ],
+  "sourceFiles": {
+    "Documentation/devicetree/bindings/mfd/qcom,pm8008.yaml": "ed72310f12d62129c095b9f3730a4385438d5f7cea2fea939f283af6f4c03daa",
+    "arch/arm64/boot/dts/qcom/glymur.dtsi": "5b6169152b2773dbd771af53fd06a27d325c8b49f4ed6a46d6eaf8b108f285a2",
+    "drivers/media/platform/qcom/camss/camss.c": "659749f029218f570385746159e2075ee0d554957e35ca674ca2f967b23c679c",
+    "drivers/mfd/qcom-pm8008.c": "b6ab95daabd1bb8705b1ae1da17622f3906e9a4d07273fd1710e95e77ba3f3c3",
+    "drivers/regulator/qcom-pm8008-regulator.c": "7b5c44e332fcea988122a05ecb5c18d8c3dad226d23cac02fc8399b0b160a9da"
+  },
+  "boardCameraGraphIncluded": false,
+  "hardwareTested": false,
+  "sources": [
+    "https://lore.kernel.org/all/20260925-glymur_camss-v4-0-d7c2983d6d7b@oss.qualcomm.com/",
+    "https://lore.kernel.org/all/20261014-pm8010_i2c_support-v2-0-b395d2b3f668@oss.qualcomm.com/",
+    "https://lore.kernel.org/all/20261015-glymur_camss_dts-v2-0-e7b1f403146f@oss.qualcomm.com/"
+  ],
+  "rebases": {
+    "soc-camera-2.patch": "Only trailing hunk context changed from sdc2_default_state to qup_uart14_default; all added CCI definitions unchanged."
+  }
+}

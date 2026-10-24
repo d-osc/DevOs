@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
@@ -21,9 +22,9 @@ async function verify() {
     const gtk = Gtk.Settings.get_for_screen(display.get_default_screen()), original = gtk.gtk_icon_theme_name;
     let registered = false;
     const cleanup = icons.activate({display, preferences, onReload: () => () => {}, registerSettingsPage: () => {registered = true; return () => {};}});
-    const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1100);
+    const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1500);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(display.get_default_screen(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     try {
@@ -44,6 +45,19 @@ async function verify() {
         find<Gtk.Switch>('icons-use-session').set_active(true); find<Gtk.Button>('icons-settings-apply').emit('clicked');
         assert(gtk.gtk_icon_theme_name === original, 'Session theme applies the original session choice');
         find<Gtk.Switch>('icons-material-files').set_active(true);
+        find<Gtk.Button>('icons-pack-graphite').emit('clicked');
+        assert(find<Gtk.Button>('icons-style-thin').has_focus || !find<Gtk.Button>('icons-style-solid').sensitive, 'Styles missing from a pack are disabled');
+        assert(find<Gtk.Button>('icons-style-thin').sensitive && !find<Gtk.Button>('icons-style-regular').sensitive, 'Graphite offers only thin');
+        find<Gtk.Button>('icons-settings-apply').emit('clicked');
+        const saved = preferences.get('org.devos.icons').state.values;
+        assert(saved.basePack === 'graphite' && saved.baseStyle === 'thin', 'Pack and style persist');
+        find<Gtk.Button>('icons-pack-sharp-duotone').emit('clicked'); find<Gtk.Button>('icons-style-light').emit('clicked');
+        find<Gtk.Button>('icons-settings-apply').emit('clicked');
+        assert(preferences.get('org.devos.icons').state.values.basePack === 'sharp-duotone' && preferences.get('org.devos.icons').state.values.baseStyle === 'light', 'Changing pack and style applies');
+        find<Gtk.Switch>('icons-base-enabled').set_active(false); find<Gtk.Button>('icons-settings-apply').emit('clicked');
+        assert(preferences.get('org.devos.icons').state.values.baseIcons === false && !find<Gtk.Button>('icons-pack-classic').sensitive, 'Base icons can be turned off');
+        find<Gtk.Switch>('icons-base-enabled').set_active(true);
+        find<Gtk.Button>('icons-pack-classic').emit('clicked'); find<Gtk.Button>('icons-style-solid').emit('clicked');
         const screenshot = GLib.getenv('DEV_OS_TEST_SCREENSHOT');
         if (screenshot) {await wait(); window.get_pixbuf()!.savev(screenshot, 'png', [], []);}
         preferences.update('org.devos.icons', true, {themeName: 'missing-preview-theme', useSystemTheme: false});

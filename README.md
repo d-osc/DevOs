@@ -231,8 +231,6 @@ cp config/config.json ~/.config/dev-os/config.json
 ```json
 {
   "name": "My Desktop",
-  "accent": "#88e0c0",
-  "background": "#101b25",
   "panel_height": 36,
   "clock_format": "%a %d %b  ·  %H:%M",
   "terminal": ["dev-os-terminal"],

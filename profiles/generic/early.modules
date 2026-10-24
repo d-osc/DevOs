@@ -1,0 +1,5 @@
+# Loaded from the initramfs while looking for the Live USB. Missing modules are ignored.
+xhci_pci
+xhci_plat_hcd
+usb_storage
+uas

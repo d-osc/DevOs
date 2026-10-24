@@ -1,0 +1,45 @@
+From: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+
+Some designs integrate the PMIC with the interrupt pin left
+unconnected, deliberately. That of course compromises some
+functionality, but the core function of programming the voltage
+regulators remains there.
+
+Signed-off-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Acked-by: Rob Herring (Arm) <robh@kernel.org>
+Co-developed-by: Jishnu Prakash <jishnu.prakash@oss.qualcomm.com>
+Signed-off-by: Jishnu Prakash <jishnu.prakash@oss.qualcomm.com>
+---
+ Documentation/devicetree/bindings/mfd/qcom,pm8008.yaml | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/mfd/qcom,pm8008.yaml b/Documentation/devicetree/bindings/mfd/qcom,pm8008.yaml
+index 2701aa755f31..3c0febc8152b 100644
+--- a/Documentation/devicetree/bindings/mfd/qcom,pm8008.yaml
++++ b/Documentation/devicetree/bindings/mfd/qcom,pm8008.yaml
+@@ -90,7 +90,6 @@ properties:
+ required:
+   - compatible
+   - reg
+-  - interrupts
+   - vdd-l1-l2-supply
+   - vdd-l3-l4-supply
+   - vdd-l5-supply
+@@ -99,10 +98,11 @@ required:
+   - gpio-controller
+   - "#gpio-cells"
+   - gpio-ranges
+-  - interrupt-controller
+-  - "#interrupt-cells"
+   - "#thermal-sensor-cells"
+ 
++dependencies:
++  interrupt-controller: [ interrupts, "#interrupt-cells" ]
++
+ additionalProperties: false
+ 
+ examples:
+
+-- 
+2.43.0
+

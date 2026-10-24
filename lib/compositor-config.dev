@@ -1,0 +1,57 @@
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/child_process"
+use "std/encoding"
+use "std/regex"
+use "../lib/desktop.dev" as util
+
+fn snapshot(): json.Value {
+    let root = process.getenv("DEV_OS_ROOT")
+    if strings.equal(root, "") { root = "/usr/share/dev-os" }
+    let tracker = ""
+    if fs.existsSync(root + "/native/dev-os-window-tracker") { tracker = root + "/native/dev-os-window-tracker" }
+    else {
+        if fs.existsSync(root + "/build/native/dev-os-window-tracker") { tracker = root + "/build/native/dev-os-window-tracker" }
+    }
+    if strings.equal(tracker, "") { return json.null_value() }
+    let options = child_process.options()
+    options.timeoutMs = 2000
+    let output = child_process.execFileSync(tracker, Vec<str>(), options)
+    let text = encoding.decode(output.stdout, "utf8")
+    let desktops = json.array()
+    let lines = strings.split(text, "\n")
+    for i in 0..(lines.len() as i64) {
+        let line = strings.trim(lines[i])
+        if strings.equal(line, "") { continue }
+        let event = json.parse(line)
+        let kind = util.text(util.get(event, "type"))
+        if strings.equal(kind, "desktop-begin") { desktops = json.array() }
+        if strings.equal(kind, "desktop") { desktops = json.push(desktops, util.text(util.get(event, "name"))) }
+        if strings.equal(kind, "desktop-done") {
+            if json.len(desktops) == 0 { return json.null_value() }
+            return desktops
+        }
+    }
+    return json.null_value()
+}
+
+fn xmlEscape(text: str): str {
+    let out = strings.replaceAll(text, "&", "&amp;")
+    out = strings.replaceAll(out, "<", "&lt;")
+    return strings.replaceAll(out, ">", "&gt;")
+}
+
+fn replaceDesktops(xml: str, desktops: json.Value): str {
+    let namesBlock = "\n"
+    for i in 0..(json.len(desktops) as i64) {
+        namesBlock = namesBlock + "    <name>" + xmlEscape(json.string(json.at(desktops, i))) + "</name>\n  "
+    }
+    let replacement = "<desktops number=\"${json.len(desktops)}\">\n  <names>" + namesBlock + "</names>\n  </desktops>"
+    let pattern = regex.compile("<desktops[\\s\\S]*?</desktops>|<desktops[^>]*/>", "")
+    let result = pattern.replace(xml, replacement)
+    pattern.close()
+    return result
+}
+

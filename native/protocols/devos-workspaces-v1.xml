@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="devos_workspaces_v1">
   <copyright>Copyright 2026 Dev OS contributors. Permission is granted to use, copy, modify and distribute this protocol with this notice, without warranty.</copyright>
-  <interface name="devos_workspace_manager_v1" version="4">
+  <interface name="devos_workspace_manager_v1" version="6">
     <description summary="Dev OS workspace control">Desktop identifiers are one-based configuration order. Snapshots are bounded by begin/done. Window identifiers are existing zwlr_foreign_toplevel_handle_v1 resource IDs in the requesting client's namespace.</description>
     <request name="destroy" type="destructor"/>
     <request name="refresh"/>
@@ -15,5 +15,8 @@
     <request name="remove" since="3"><description summary="Remove a desktop">Moves its windows to the preceding desktop, or the next desktop when removing the first. The final desktop cannot be removed. Desktop identifiers are renumbered after removal.</description><arg name="desktop" type="uint"/></request>
     <request name="set_layout" since="4"><description summary="Select keyboard layout">Select a zero-based group in the compositor keyboard keymap.</description><arg name="index" type="uint"/></request>
     <event name="keyboard_layout" since="4"><arg name="index" type="uint"/><arg name="name" type="string"/><arg name="active" type="uint"/></event>
+    <request name="snap" since="5"><description summary="Snap a tracked window">Region is a compositor configured region name. Unknown regions and locked sessions are ignored.</description><arg name="window" type="uint"/><arg name="region" type="string"/></request>
+    <request name="resize_group" since="6"><description summary="Resize adjacent snapped windows together">Array of up to four native-endian uint32 tuples: handle, x, y, width, height in 0..10000 units of one output usable area. All members must be snapped on the same output and desktop. Invalid geometry, locked sessions and client minimum-size violations reject the whole request.</description><arg name="cells" type="array"/></request>
+    <event name="geometry" since="6"><arg name="handle" type="uint"/><arg name="x" type="int"/><arg name="y" type="int"/><arg name="width" type="int"/><arg name="height" type="int"/><arg name="output" type="string"/><arg name="area_x" type="int"/><arg name="area_y" type="int"/><arg name="area_width" type="int"/><arg name="area_height" type="int"/><arg name="region" type="string"/><arg name="min_width" type="int"/><arg name="min_height" type="int"/></event>
   </interface>
 </protocol>

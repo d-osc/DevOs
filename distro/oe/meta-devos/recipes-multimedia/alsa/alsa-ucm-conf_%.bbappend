@@ -1,4 +1,6 @@
 UCM_X2_REV = "e8d50c6e0b39d2fc495599736fe66dbe03a87a62"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://devos-glymur.conf"
 SRC_URI += "https://raw.githubusercontent.com/alsa-project/alsa-ucm-conf/${UCM_X2_REV}/ucm2/Qualcomm/glymur/ASUS-Zenbook-A14-UX3407NA.conf;name=x2ucm0;downloadfilename=x2-0-ASUS-Zenbook-A14-UX3407NA.conf"
 SRC_URI[x2ucm0.sha256sum] = "feef01a8007720ff338e3b68990e4afd2be3604dd336c522b6717a0071c3784c"
 SRC_URI += "https://raw.githubusercontent.com/alsa-project/alsa-ucm-conf/${UCM_X2_REV}/ucm2/Qualcomm/glymur/glymur.conf;name=x2ucm1;downloadfilename=x2-1-glymur.conf"
@@ -11,7 +13,8 @@ do_install:append() {
     install -d ${D}${datadir}/alsa/ucm2/Qualcomm/glymur
     install -m0644 ${UNPACKDIR}/x2-0-ASUS-Zenbook-A14-UX3407NA.conf ${D}${datadir}/alsa/ucm2/Qualcomm/glymur/ASUS-Zenbook-A14-UX3407NA.conf
     install -d ${D}${datadir}/alsa/ucm2/Qualcomm/glymur
-    install -m0644 ${UNPACKDIR}/x2-1-glymur.conf ${D}${datadir}/alsa/ucm2/Qualcomm/glymur/glymur.conf
+    install -m0644 ${UNPACKDIR}/x2-1-glymur.conf ${D}${datadir}/alsa/ucm2/Qualcomm/glymur/glymur-upstream.conf
+    install -m0644 ${UNPACKDIR}/devos-glymur.conf ${D}${datadir}/alsa/ucm2/Qualcomm/glymur/glymur.conf
     install -d ${D}${datadir}/alsa/ucm2/Qualcomm/glymur
     install -m0644 ${UNPACKDIR}/x2-2-ZenbookA14-HiFi.conf ${D}${datadir}/alsa/ucm2/Qualcomm/glymur/ZenbookA14-HiFi.conf
     install -d ${D}${datadir}/alsa/ucm2/codecs/qcom-lpass/wsa-macro/two-speakers

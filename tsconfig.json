@@ -28,6 +28,9 @@
       "@dev-os/core": [
         "./packages/core/index.ts"
       ],
+      "@dev-os/core/*": [
+        "./packages/core/*.ts"
+      ],
       "@dev-os/extensions": [
         "./packages/extensions/index.ts"
       ],

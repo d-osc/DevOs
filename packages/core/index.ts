@@ -1,6 +1,8 @@
 export * from './renderer.js';
 export * from './view.js';
 export * from './window-header.js';
+export {setBaseIconProvider, setImageIcon, baseImage} from './base-icons.js';
+export type {BaseIconProvider} from './base-icons.js';
 export * from './native.js';
 export type * from './gir-types.js';
 // Public desktop services and extension lifecycle API for GJS.
@@ -13,3 +15,4 @@ export {SettingsPages} from './settings-pages.js';
 export {Listeners} from './listeners.js';
 export {readText, readJson, writeJson, removeTree} from './files.js';
 export {moveTabItem, reconcileRemovedTab, completeTabMove} from './tabs.js';
+export * from './theme.js';

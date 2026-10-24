@@ -1,0 +1,24 @@
+From: DevOs <devos@localhost>
+Subject: [PATCH] proxy: support the DevOS desktop with the GSettings resolver
+
+DevOs provides a native editor for the same per-user GSettings proxy schema.
+Enable that resolver without advertising the desktop as GNOME to other apps.
+
+Upstream-Status: Inappropriate [DevOs integration]
+---
+ proxy/gnome/gproxyresolvergnome.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/proxy/gnome/gproxyresolvergnome.c b/proxy/gnome/gproxyresolvergnome.c
+--- a/proxy/gnome/gproxyresolvergnome.c
++++ b/proxy/gnome/gproxyresolvergnome.c
+@@ -359,7 +359,8 @@ g_proxy_resolver_gnome_is_supported (GProxyResolver *object)
+    * pretend to be GNOME and want to use our proxy settings will list
+    * themselves alongside GNOME. That's fine; they'll get our proxy settings.
+    */
+-  return strstr (desktops, "GNOME") != NULL;
++  return strstr (desktops, "GNOME") != NULL ||
++         strstr (desktops, "DevOS") != NULL;
+ }
+ 
+ /* Threadsafely determines what to do with @uri; returns %FALSE if an

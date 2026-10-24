@@ -5,7 +5,7 @@ import Cairo from 'cairo';
 import {loadPicture, pictureLayout, type WallpaperConfig} from './wallpaper.js';
 import {DesktopWidgets} from './desktop-widgets.js';
 
-export interface BackgroundConfig {name: string; background: string; accent: string;}
+export interface BackgroundConfig {name: string; background: string; accent: string; foreground?: string; muted?: string;}
 function rgb(color: string): [number, number, number] {
     return [parseInt(color.slice(1, 3), 16) / 255, parseInt(color.slice(3, 5), 16) / 255,
         parseInt(color.slice(5, 7), 16) / 255];
@@ -17,11 +17,11 @@ export function drawBackground(canvas: Gtk.DrawingArea, context: Cairo.Context, 
     context.paint();
     const glow = new Cairo.RadialGradient(width * .7, height * .48, 0,
         width * .7, height * .48, width * .6);
-    glow.addColorStopRGBA(0, .18, .39, .36, .36);
-    glow.addColorStopRGBA(1, .04, .07, .1, 0);
+    glow.addColorStopRGBA(0, ...rgb(config.accent), .30);
+    glow.addColorStopRGBA(1, ...rgb(config.accent), 0);
     context.setSource(glow);
     context.paint();
-    context.setSourceRGBA(.62, .83, .81, .045);
+    context.setSourceRGBA(...rgb(config.foreground ?? '#9fd4ce'), .045);
     context.setLineWidth(1);
     for (let x = 0; x < width; x += 72) {
         context.moveTo(x + .5, 0); context.lineTo(x + .5, height);
@@ -55,12 +55,14 @@ export function drawBackground(canvas: Gtk.DrawingArea, context: Cairo.Context, 
     };
     text(`${config.name.toUpperCase()}  /  WAYLAND`, left, baseline, 12,
         [...rgb(config.accent), 1], true);
-    text('Make room', left, baseline + 65 * scale, 48, [.9, .95, .96, 1], true);
-    text('for your ideas.', left, baseline + 125 * scale, 48, [.9, .95, .96, 1], true);
-    text('A small beginning. An open desktop.', left, baseline + 173 * scale, 16, [.58, .67, .7, 1]);
+    const strong: [number, number, number, number] = [...rgb(config.foreground ?? '#e6f2f5'), 1];
+    const quiet: [number, number, number, number] = [...rgb(config.muted ?? '#94aab2'), 1];
+    text('Make room', left, baseline + 65 * scale, 48, strong, true);
+    text('for your ideas.', left, baseline + 125 * scale, 48, strong, true);
+    text('A small beginning. An open desktop.', left, baseline + 173 * scale, 16, quiet);
     text('SUPER + SPACE   Applications     /     SUPER + ENTER   Terminal',
-        left, height - 64 * scale, 12, [.58, .67, .7, 1]);
-    text('WAYLAND SESSION    ·    GJS / GTK', left, height - 36 * scale, 10, [.38, .51, .54, 1]);
+        left, height - 64 * scale, 12, quiet);
+    text('WAYLAND SESSION    ·    GJS / GTK', left, height - 36 * scale, 10, [...rgb(config.muted ?? '#94aab2'), .7]);
     return false;
 }
 

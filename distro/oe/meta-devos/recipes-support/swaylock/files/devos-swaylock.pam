@@ -1,0 +1,4 @@
+# Screen unlock authenticates the current user; it is not a new console login.
+# Do not inherit login's pam_securetty policy (swaylock has no login TTY).
+auth required pam_unix.so
+account required pam_unix.so

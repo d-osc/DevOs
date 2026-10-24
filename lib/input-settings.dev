@@ -1,0 +1,71 @@
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/os"
+use "std/regex"
+use "../lib/desktop.dev" as util
+fn defaults(kind: str): json.Value {
+    if strings.equal(kind, "mouse") { return {speed: 50, natural: false, leftHanded: false} }
+    util.require(strings.equal(kind, "keyboard"), "Unsupported input settings page.")
+    return {repeat: true, delay: 500, rate: 25}
+}
+fn preferencesPath(kind: str): str {
+    defaults(kind)
+    let base = process.getenv("XDG_CONFIG_HOME")
+    if strings.equal(base, "") { base = os.homedir() + "/.config" }
+    return base + "/dev-os/" + kind + ".json"
+}
+fn integer(value: json.Value, key: str, low: i64, high: i64): bool {
+    if !json.has(value, key) || !strings.equal(json.kind(json.get(value, key)), "number") { return false }
+    let number = json.float(json.get(value, key))
+    return number >= low as f64 && number <= high as f64 && number == (number as i64) as f64
+}
+fn validate(kind: str, value: json.Value): json.Value {
+    let settings = defaults(kind)
+    if !strings.equal(json.kind(value), "object") { return json.null_value() }
+    let booleans = strings.equal(kind, "mouse") ? Vec<str>("natural", "leftHanded") : Vec<str>("repeat")
+    for key in booleans { if !json.has(value, key) || !strings.equal(json.kind(json.get(value, key)), "bool") { return json.null_value() }; settings = json.set(settings, key, json.get(value, key)) }
+    if strings.equal(kind, "mouse") {
+        if !integer(value, "speed", 0, 100) { return json.null_value() }
+        settings = json.set(settings, "speed", json.get(value, "speed"))
+    } else {
+        if !integer(value, "delay", 100, 2000) || !integer(value, "rate", 5, 60) { return json.null_value() }
+        settings = json.set(settings, "delay", json.get(value, "delay"))
+        settings = json.set(settings, "rate", json.get(value, "rate"))
+    }
+    return settings
+}
+fn load(kind: str): json.Value {
+    let path = preferencesPath(kind)
+    if !fs.existsSync(path) { return defaults(kind) }
+    let raw = fs.readFileSync(path, "utf8")
+    if !json.valid(raw) { return json.null_value() }
+    return validate(kind, json.parse(raw))
+}
+fn applyXml(xml: str, kind: str, value: json.Value): str {
+    let settings = validate(kind, value)
+    util.require(!json.is_null(settings), "Invalid input settings.")
+    if strings.equal(kind, "mouse") {
+        let speed = (json.float(json.get(settings, "speed")) - 50.0) / 50.0
+        let natural = json.bool(json.get(settings, "natural")) ? "yes" : "no"
+        let left = json.bool(json.get(settings, "leftHanded")) ? "yes" : "no"
+        let block = "<device category=\"non-touch\"><pointerSpeed>${speed}</pointerSpeed><naturalScroll>${natural}</naturalScroll><leftHanded>${left}</leftHanded></device>"
+        let pattern = regex.compile("<device[ \\t\\r\\n]+category=\"non-touch\"[^>]*>[\\s\\S]*?</device>", "")
+        let updated = pattern.replace(xml, block); pattern.close()
+        if !strings.equal(updated, xml) || strings.contains(xml, block) { return updated }
+        if strings.contains(xml, "</libinput>") { return strings.replace(xml, "</libinput>", block + "</libinput>") }
+        if strings.contains(xml, "<libinput/>") { return strings.replace(xml, "<libinput/>", "<libinput>" + block + "</libinput>") }
+        util.require(strings.contains(xml, "</labwc_config>"), "Invalid compositor configuration.")
+        return strings.replace(xml, "</labwc_config>", "<libinput>" + block + "</libinput></labwc_config>")
+    }
+    let rate = json.bool(json.get(settings, "repeat")) ? json.int(json.get(settings, "rate")) : 0
+    let delay = json.int(json.get(settings, "delay"))
+    let pattern = regex.compile("<repeatRate>[^<]*</repeatRate>|<repeatDelay>[^<]*</repeatDelay>", "")
+    let updated = pattern.replace(xml, ""); pattern.close()
+    let block = "<repeatRate>${rate}</repeatRate><repeatDelay>${delay}</repeatDelay>"
+    if strings.contains(updated, "</keyboard>") { return strings.replace(updated, "</keyboard>", block + "</keyboard>") }
+    if strings.contains(updated, "<keyboard/>") { return strings.replace(updated, "<keyboard/>", "<keyboard>" + block + "</keyboard>") }
+    util.require(strings.contains(updated, "</labwc_config>"), "Invalid compositor configuration.")
+    return strings.replace(updated, "</labwc_config>", "<keyboard>" + block + "</keyboard></labwc_config>")
+}

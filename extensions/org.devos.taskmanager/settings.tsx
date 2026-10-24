@@ -22,7 +22,7 @@ export function TaskManagerSettings({openManager, controls}: {openManager: () =>
     return <Box className="settings-content task-manager-settings" orientation="vertical" expand fill>
         <Box className="settings-page-header" orientation="vertical" spacing={14}>
             <Label className="settings-eyebrow" xalign={0}>EXTENSIONS / TASK MANAGER</Label>
-            <Box spacing={14}><Box className="settings-page-icon" widthRequest={48} heightRequest={48} valign="center"><Image iconName="utilities-system-monitor-symbolic" pixelSize={26} expand/></Box>
+            <Box spacing={14}><Box className="settings-page-icon" widthRequest={48} heightRequest={48} valign="center"><Image iconName="dev-os-task-manager" pixelSize={26} expand/></Box>
                 <Box orientation="vertical" spacing={5} expand><Label className="heading" xalign={0}>Task Manager</Label><Label className="settings-description" wrap xalign={0}>Understand what is using your system.</Label></Box>
                 <Button id="task-settings-refresh" sensitive={!busy} valign="center" onClicked={() => {void refresh();}}>Refresh snapshot</Button>
             </Box>
@@ -47,6 +47,6 @@ export function TaskManagerSettings({openManager, controls}: {openManager: () =>
             <Box className="settings-card" orientation="vertical" spacing={10}><Label className="section-heading" xalign={0}>Linux session</Label><Label className="settings-description" wrap xalign={0}>Resource usage and processes come from Linux. When DevOs runs through WSL, Windows applications are outside this view.</Label></Box>
             {error && <Label id="task-settings-error" className="error" wrap selectable xalign={0}>{error}</Label>}
         </Box></ScrolledWindow>
-        <Box className="settings-action-bar" spacing={10}><Image iconName={busy ? 'view-refresh-symbolic' : 'utilities-system-monitor-symbolic'} pixelSize={16}/><Label className="settings-description" expand wrap xalign={0}>{busy ? 'Reading system resources…' : error ? 'Unable to load the snapshot. Try Refresh again.' : 'Snapshot loaded. Refresh to see the latest usage.'}</Label></Box>
+        <Box className="settings-action-bar" spacing={10}><Image iconName={busy ? 'view-refresh-symbolic' : 'dev-os-task-manager'} pixelSize={16}/><Label className="settings-description" expand wrap xalign={0}>{busy ? 'Reading system resources…' : error ? 'Unable to load the snapshot. Try Refresh again.' : 'Snapshot loaded. Refresh to see the latest usage.'}</Label></Box>
     </Box>;
 }

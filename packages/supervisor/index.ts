@@ -1,13 +1,26 @@
 import {
     readJson, Gio, GLib
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 // Keep the compositor and managed services tied to the GJS shell's lifetime.
 import {addUnixSignal} from '@dev-os/services/signals';
 
 import {loadConfig, expandHome} from '@dev-os/config';
 import {installedSessionRoot} from '@dev-os/runtime/session-version';
 
-export function runSupervisor(): number {
+export interface SupervisorOptions {
+    /** Delay before a crashed shell is started again. */
+    restartDelaySeconds?: number;
+    /** Crashes tolerated inside `restartWindowSeconds` before the session is ended instead of restarted. */
+    maxRestarts?: number;
+    restartWindowSeconds?: number;
+}
+
+export function runSupervisor(options: SupervisorOptions = {}): number {
+    const restartDelay = options.restartDelaySeconds ?? 1;
+    const maxRestarts = options.maxRestarts ?? 5;
+    const restartWindow = options.restartWindowSeconds ?? 300;
+    const crashTimes: number[] = [];
+    let restartTimer = 0;
     const loop = new GLib.MainLoop(null, false);
     interface ManagedChild {process: Gio.Subprocess; pid: string | null; done: boolean;}
     const children: ManagedChild[] = [];
@@ -59,6 +72,7 @@ export function runSupervisor(): number {
     function shutdown() {
         if (closing) return;
         closing = true;
+        if (restartTimer) { GLib.source_remove(restartTimer); restartTimer = 0; }
         // Stop entire service groups, including children spawned by service scripts.
         for (const child of children) signalGroup(child, 'TERM');
         deadline = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
@@ -70,6 +84,27 @@ export function runSupervisor(): number {
         finishIfReady();
     }
 
+    function restartShell(reason: string): boolean {
+        const now = GLib.get_monotonic_time() / 1e6;
+        while (crashTimes.length > 0 && now - crashTimes[0] > restartWindow) crashTimes.shift();
+        crashTimes.push(now);
+        if (crashTimes.length > maxRestarts) {
+            printerr(`Dev OS supervisor: shell ${reason}; ${maxRestarts} restarts in ${restartWindow}s, ending the session`);
+            return false;
+        }
+        printerr(`Dev OS supervisor: shell ${reason}; restarting in ${restartDelay}s (${crashTimes.length}/${maxRestarts})`);
+        const start = () => {
+            restartTimer = 0;
+            if (closing) return GLib.SOURCE_REMOVE;
+            try { spawn([GLib.getenv('DEV_OS_SHELL')!], true); }
+            catch (error) { printerr(`Dev OS supervisor: shell restart failed: ${String(error)}`); resultCode = 1; shutdown(); }
+            return GLib.SOURCE_REMOVE;
+        };
+        restartTimer = restartDelay > 0 ? GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(restartDelay * 1000), start) : 0;
+        if (!restartDelay) start();
+        return true;
+    }
+
     function spawn(command: readonly string[], isShell = false) {
         const process = Gio.Subprocess.new(['setsid', ...command.map(expandHome)], Gio.SubprocessFlags.NONE);
         const child = {process, pid: process.get_identifier(), done: false};
@@ -78,7 +113,12 @@ export function runSupervisor(): number {
             try {
                 process.wait_finish(result); child.done = true;
                 if (isShell) {
-                    resultCode = process.get_if_exited() ? process.get_exit_status() : 1;
+                    const exited = process.get_if_exited();
+                    resultCode = exited ? process.get_exit_status() : 1;
+                    // A signal or non-zero status is a crash (OOM kill, segfault, fatal error); exit 0 is logout, a
+                    // version switch or SIGTERM. Restart a crashed shell so labwc is never left with an empty desktop.
+                    if (!closing && resultCode !== 0 && restartShell(exited ? `exited with status ${resultCode}` :
+                        `was killed by signal ${process.get_term_sig()}`)) { finishIfReady(); return; }
                     if (!closing && GLib.file_test(requestPath, GLib.FileTest.EXISTS)) {
                         try {
                             const request = readJson(requestPath) as {root: string};

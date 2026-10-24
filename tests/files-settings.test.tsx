@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot, removeTree} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
@@ -15,7 +16,7 @@ async function verify() {
     const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1150);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     try {
@@ -93,7 +94,8 @@ async function verify() {
     } finally {root.unmount(); window.destroy(); preferences.dispose(); Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default()!, css);}
     const directory = `${temporary}/files`; GLib.mkdir_with_parents(`${directory}/Child`, 0o700); GLib.file_set_contents(`${directory}/notes.txt`, 'test');
     const model = new FileBrowser(async () => {}), native = new Gtk.ApplicationWindow(), offscreen = new Gtk.OffscreenWindow(), host = new Gtk.Box();
-    offscreen.set_size_request(1000, 650); offscreen.add(host);
+    offscreen.name = 'files'; offscreen.set_size_request(1000, 650); offscreen.add(host);
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const view = mountFiles(native, model, {gridView: false, showHidden: false}, host);
     try {
         await model.navigate(directory); offscreen.show_all(); await wait();
@@ -104,7 +106,16 @@ async function verify() {
             assert(fileContextEntry(widget, allocation.x + 5, allocation.y + 5, model.state.entries)?.path === `${directory}/Child`, 'Right-click coordinates target the correct item in list and grid');
             assert(!fileContextEntry(widget, 0, 100000, model.state.entries), 'Empty space has no stale file target');
         }
-    } finally {view.destroy(); native.destroy(); offscreen.destroy(); model.dispose(); removeTree(temporary);}
+        const capture = GLib.getenv('DEV_OS_FILES_SCREENSHOT');
+        if (capture) offscreen.get_pixbuf()!.savev(`${capture}-grid.png`, 'png', [], []);
+        await model.navigate(`${directory}/Child`); view.setGrid(false); await wait();
+        const empty = widgets(host).find(item => item.get_style_context().has_class('files-empty'))!;
+        const overlay = widgets(host).find(item => item instanceof Gtk.Overlay) as Gtk.Overlay;
+        assert(empty && overlay.get_overlay_pass_through(empty), 'Empty illustration preserves background context-menu input');
+        offscreen.set_size_request(650, 650); offscreen.resize(650, 650); await wait();
+        assert(host.get_preferred_width()[0] <= 650, 'Files fits a snapped half-screen window');
+        if (capture) offscreen.get_pixbuf()!.savev(`${capture}-empty.png`, 'png', [], []);
+    } finally {Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default()!, css); view.destroy(); native.destroy(); offscreen.destroy(); model.dispose(); removeTree(temporary);}
     print('PASS: Files settings, custom CRUD, protected defaults, scope/command validation, literal path execution, native menu actions and list/grid click targets');
 }
 const loop = new GLib.MainLoop(null, false); let failed: unknown;

@@ -1,0 +1,14 @@
+# USB-A host regulator/PHY chain needed before the Live USB root can appear.
+# The generic xHCI/storage modules are re-added after it to keep the proven order.
+-xhci_pci
+-xhci_plat_hcd
+-usb_storage
+-uas
+qcom_rpmh_regulator
+qcom_refgen_regulator
+phy_qcom_m31_eusb2
+phy_qcom_qmp_usb
+dwc3_qcom
+xhci_plat_hcd
+usb_storage
+uas

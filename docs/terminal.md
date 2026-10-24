@@ -1,7 +1,7 @@
 # Terminal settings
 
-Settings → Terminal includes a sample output preview, Midnight/Slate/Paper
-colors, font presets and a custom font family/size (6–48), scrollback history
+Settings → Terminal includes a sample output preview (colors follow the Dark/Light
+theme, see `docs/theme.md`), font presets and a custom font family/size (6–48), scrollback history
 (100–100,000 lines), clickable application hyperlinks, audible bell, following
 new output and following typing. Font availability depends on installed fonts;
 Pango substitutes a fallback for unavailable families.

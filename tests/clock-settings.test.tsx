@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager, clockFormat, clockDisplayFormat} from '@dev-os/extensions';
@@ -13,7 +14,7 @@ async function verify() {
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1080);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
     const theme = new Gtk.CssProvider();
-    theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     let applied = 0;

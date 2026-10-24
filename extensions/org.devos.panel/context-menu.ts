@@ -1,4 +1,4 @@
-import {Gtk, type SettingsValues} from '@dev-os/core';
+import {Gtk, baseImage, type SettingsValues} from '@dev-os/core';
 import {parseCustomMenu, customMenuMatches, type CustomMenuItem} from '../org.devos.files/custom-menu.js';
 export const panelMenuItems = [
     {key: 'menuPanelSettings', title: 'Panel settings', icon: 'view-more-symbolic'},
@@ -18,7 +18,7 @@ export function createPanelMenu(values: SettingsValues, actions: Record<PanelMen
     for (const item of panelMenuItems) {
         if (values[item.key] === false) continue;
         const row = new Gtk.MenuItem(); row.name = `panel-menu-${item.key}`;
-        const content = new Gtk.Box({spacing: 10}); content.add(new Gtk.Image({icon_name: item.icon, pixel_size: 16}));
+        const content = new Gtk.Box({spacing: 10}); content.add(baseImage(item.icon, 16));
         content.add(new Gtk.Label({label: item.title, xalign: 0})); row.add(content);
         row.connect('activate', actions[item.key]); menu.append(row);
     }

@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, createRoot, GLib} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {BluetoothDevicesSettings} from '../extensions/org.devos.settings/bluetooth-view.js';
@@ -6,7 +7,7 @@ import type {BluetoothControls, BluetoothState} from '../extensions/org.devos.se
 Gtk.init(null);
 const theme = new Gtk.CssProvider();
 theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(
-    GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {
@@ -24,12 +25,12 @@ async function verify() {
         refresh: async scan => { actions.push(scan ? 'scan' : 'refresh'); },
         power: async () => { actions.push('power'); },
         device: async action => { actions.push(action); },
-        openSettings: async page => { actions.push(`settings:${page}`); }};
+        openSettings: async page => { actions.push(`settings:${page}`); }, pair: async device => {actions.push(`pair:${device.id}`);}, respond: (accept, code) => {actions.push(`confirm:${accept}:${code}`);}, cancelPair: () => {actions.push('cancel-pair');}};
     const container = new Gtk.Box(), root = createRoot(container);
     const preview = new Gtk.OffscreenWindow();
     preview.name = 'settings'; preview.set_size_request(760, 900); preview.add(container);
     try {
-        root.render(<BluetoothDevicesSettings controls={controls} />); await idle();
+        root.render(<BluetoothDevicesSettings controls={controls} navigate={page => actions.push(`native:${page}`)} />); await idle();
         const find = (id: string) => widgets(container).find(widget => widget.name === id);
         const button = (label: string) => widgets(container).find(widget => widget instanceof Gtk.Button && widget.get_label() === label) as Gtk.Button;
         assert(find('bluetooth-status') instanceof Gtk.Label, 'Bluetooth status is rendered');
@@ -41,7 +42,14 @@ async function verify() {
         button('Confirm forget').emit('clicked'); await idle();
         assert(actions.includes('scan') && actions.includes('connect') && actions.includes('forget'), 'Bluetooth actions reach the controller');
         (find('devices-category-mouse') as Gtk.Button).emit('clicked');
-        assert(actions.includes('settings:mouse'), 'Device category opens its own settings panel');
+        assert(actions.includes('native:mouse'), 'Device category opens its own settings panel');
+        root.render(<BluetoothDevicesSettings key="add" adding controls={{...controls, state:{...state, devices: state.devices.map(device => ({...device, paired:false}))}}}/>); await idle();
+        button('Pair…').emit('clicked'); assert(actions.some(action => action.startsWith('pair:')), 'Pair uses native controller');
+        assert(!find('devices-category-mouse'), 'Add-device page focuses on Bluetooth pairing');
+        root.render(<BluetoothDevicesSettings key="confirm" adding controls={{...controls, state:{...state, busy:true, pairing:'Test headphones', prompt:{kind:'confirm', device:state.devices[0].id, code:'123456'}}}}/>); await idle();
+        assert(!actions.some(action => action.startsWith('confirm:')), 'Showing pairing code does not accept it');
+        (find('bluetooth-pair-confirm') as Gtk.Button).emit('clicked'); assert(actions.includes('confirm:true:'), 'Explicit confirmation reaches agent');
+        (find('bluetooth-pair-cancel') as Gtk.Button).emit('clicked'); assert(actions.includes('cancel-pair'), 'Cancel reaches native agent');
         root.render(<BluetoothDevicesSettings key="wsl" controls={{...controls, state: {...state, host: 'Windows', adapters: [], devices: []}}} />); await idle();
         assert(find('bluetooth-wsl-notice'), 'WSL explains host ownership of hidden radios');
         assert(!(find('bluetooth-scan') as Gtk.Button).get_sensitive(), 'No adapter disables scanning');

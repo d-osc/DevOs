@@ -8,6 +8,7 @@ use "std/encoding"
 use "std/result"
 use "../lib/desktop.dev" as util
 use "../lib/posix.dev" as posix
+use "../lib/devstr.dev" as devstr
 
 fn devices(root: str, modprobe: str): json.Value {
     let found = json.array()
@@ -105,6 +106,61 @@ fn repair(items: json.Value, modprobe: str): json.Value {
     }
     return actions
 }
+fn lines(raw: str): Vec<str> {
+    let found = Vec<str>()
+    for line in strings.split(raw, "\n") {
+        let item = strings.trim(line)
+        if !strings.equal(item, "") { found.push(item) }
+    }
+    return found
+}
+fn firmwarePresent(roots: Vec<str>, name: str): bool {
+    for root in roots {
+        for suffix in Vec<str>("", ".zst", ".xz") {
+            if fs.is_file(root + "/" + name + suffix) { return true }
+        }
+    }
+    return false
+}
+# Check what the profile selected at boot (see profiles/devos-hwprofile) expects from this machine.
+fn hardwareProfile(run: str, firmwareRoots: Vec<str>, sys: str): json.Value {
+    let selection = util.readJson(run + "/selection.json")
+    if !json.has(selection, "profile") {
+        return {status: "not-selected", detail: "No hardware profile was selected at boot; run devos-hwprofile boot", checks: json.array()}
+    }
+    let settings = lines(util.read(run + "/profile.conf"))
+    let testStatus = ""
+    let supportLevel = ""
+    for entry in settings {
+        if strings.startsWith(entry, "test_status=") { testStatus = strings.trim(devstr.byteSlice(entry, 12, strings.len(entry) as i64)) }
+        if strings.startsWith(entry, "support_level=") { supportLevel = strings.trim(devstr.byteSlice(entry, 14, strings.len(entry) as i64)) }
+    }
+    let checks = json.array()
+    for name in lines(util.read(run + "/firmware.list")) {
+        checks = json.push(checks, {kind: "firmware", name: name, status: firmwarePresent(firmwareRoots, name) ? "present" : "missing"})
+    }
+    for name in lines(util.read(run + "/modules.load")) {
+        let loaded = fs.is_dir(sys + "/module/" + strings.replaceAll(name, "-", "_"))
+        checks = json.push(checks, {kind: "module", name: name, status: loaded ? "loaded" : "not-loaded"})
+    }
+    for name in lines(util.read(run + "/modules.blacklist")) {
+        let loaded = fs.is_dir(sys + "/module/" + strings.replaceAll(name, "-", "_"))
+        checks = json.push(checks, {kind: "blacklist", name: name, status: loaded ? "loaded-despite-blacklist" : "absent"})
+    }
+    let report = {status: "selected", machine_id: util.text(util.get(selection, "machine_id")), form_factor: util.text(util.get(selection, "form_factor")),
+        profile: util.text(util.get(selection, "profile")), profile_kind: util.text(util.get(selection, "profile_kind")),
+        test_status: testStatus, support_level: supportLevel, detail: util.text(util.get(selection, "message"))}
+    report = json.set(report, "quirks", json.value(lines(util.read(run + "/quirks.list"))))
+    return json.set(report, "checks", checks)
+}
+fn profileIssues(profile: json.Value): bool {
+    let checks = util.get(profile, "checks")
+    for i in 0..(json.len(checks) as i64) {
+        let status = util.text(util.get(json.at(checks, i), "status"))
+        if strings.equal(status, "missing") || strings.equal(status, "not-loaded") || strings.equal(status, "loaded-despite-blacklist") { return true }
+    }
+    return false
+}
 fn main(): i32 {
     let asJson = false
     let fix = false
@@ -146,11 +202,13 @@ fn main(): i32 {
         }
     }
     let caps = capabilities("/sys", wsl)
+    let profile = hardwareProfile("/run/devos-hw", Vec<str>("/lib/firmware", "/usr/lib/firmware"), "/sys")
     let notes = Vec<str>("A bound driver is not proof of full device functionality.", "Unresolved aliases may mean absent modules, unsupported hardware, or intentionally unbound devices; check kernel logs and firmware.", "Audit covers PCI, USB interfaces, VMBus, virtio and HID; platform/ACPI devices and firmware health need further inspection.")
     if wsl { notes.push("Host GPU/network drivers belong to Windows. WSLg supplies graphics/audio integration; physical Wi-Fi/Bluetooth may not be exposed.") }
     let report = {environment: wsl ? "wsl" : "linux", kernel: kernel, module_tree: fs.is_dir("/lib/modules/" + kernel)}
     report = json.set(report, "devices", items)
     report = json.set(report, "capabilities", caps)
+    report = json.set(report, "hardware_profile", profile)
     report = json.set(report, "actions", actions)
     report = json.set(report, "notes", json.value(notes))
     if asJson { print(json.pretty(report)) }
@@ -162,9 +220,16 @@ fn main(): i32 {
                 print(strings.toUpperCase(util.text(util.get(item, "status"))) + ": " + util.text(util.get(item, "bus")) + "/" + util.text(util.get(item, "id")) + " " + util.text(util.get(item, "name")) + " " + util.text(util.get(item, "detail")))
             }
         }
+        print("Hardware profile: " + (strings.equal(util.text(util.get(profile, "status")), "selected") ? util.text(util.get(profile, "profile")) + " (" + util.text(util.get(profile, "machine_id")) + ", " + util.text(util.get(profile, "form_factor")) + ", " + util.text(util.get(profile, "test_status")) + ")" : util.text(util.get(profile, "detail"))))
+        let checks = util.get(profile, "checks")
+        for i in 0..(json.len(checks) as i64) {
+            let check = json.at(checks, i)
+            print(strings.toUpperCase(util.text(util.get(check, "status"))) + ": profile " + util.text(util.get(check, "kind")) + " " + util.text(util.get(check, "name")))
+        }
         for note in notes { print("Note: " + note) }
     }
     let issues = false
+    if profileIssues(profile) { issues = true }
     for i in 0..(json.len(items) as i64) {
         let status = util.text(util.get(json.at(items, i), "status"))
         if !strings.equal(status, "bound") && !strings.equal(status, "core-managed") && !strings.equal(status, "optional-host-channel") { issues = true }

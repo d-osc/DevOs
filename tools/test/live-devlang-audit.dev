@@ -28,8 +28,9 @@ fn main(): i32 {
             tool.exec(Vec<str>("debugfs", "-R", "dump " + installed + " " + extracted, image))
             tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(tool.root() + "/" + relative)), "Installed source differs or is missing: " + installed)
             result = json.set(result, installed, feed.sha(extracted))
-            if strings.startsWith(relative, "lib/") {
+            if strings.startsWith(relative, "lib/") || strings.startsWith(relative, "bin/") {
                 let runtimePath = "/usr/" + relative
+                if strings.startsWith(relative, "bin/") { runtimePath = "/usr/share/dev-os/" + relative }
                 fs.unlinkSync(extracted)
                 tool.exec(Vec<str>("debugfs", "-R", "dump " + runtimePath + " " + extracted, image))
                 tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(tool.root() + "/" + relative)), "Runtime import differs or is missing: " + runtimePath)

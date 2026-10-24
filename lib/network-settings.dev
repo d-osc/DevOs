@@ -1,0 +1,225 @@
+# Native NetworkManager pages. Never return connection secrets to the UI.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/uuid"
+use "std/result"
+use "std/time"
+use "../lib/desktop.dev" as util
+use "../lib/dbus.dev" as dbus
+use "../lib/network.dev" as wifi
+use "../lib/vpn-import.dev" as vpn
+fn call(bus: *void, method: str, args: str): json.Value { return wifi.nmCall(bus, method, args) }
+fn array(value: json.Value): json.Value { return strings.equal(json.kind(value), "array") ? value : json.array() }
+fn ipv6(bytes: json.Value): str {
+    if !strings.equal(json.kind(bytes), "array") || json.len(bytes) != 16 { return "" }
+    let value = ""
+    let hex = "0123456789abcdef"
+    for i in 0..16 {
+        let byte = json.int(json.at(bytes, i))
+        if byte < 0 || byte > 255 { return "" }
+        if i > 0 && i % 2 == 0 { value = value + ":" }
+        value = value + strings.charAt(hex, byte / 16) + strings.charAt(hex, byte % 16)
+    }
+    return value
+}
+fn profiles(bus: *void): json.Value {
+    let list = json.at(dbus.call(bus, "/org/freedesktop/NetworkManager/Settings", "org.freedesktop.NetworkManager.Settings", "ListConnections", "()", 5000), 0)
+    let active = json.get(dbus.properties(bus, "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager"), "ActiveConnections")
+    let running = json.object()
+    for i in 0..(json.len(active) as i64) {
+        let path = json.string(json.at(active, i))
+        let props = dbus.properties(bus, path, "org.freedesktop.NetworkManager.Connection.Active")
+        running = json.set(running, util.text(util.get(props, "Uuid")), {path: path, state: util.number(util.get(props, "State"))})
+    }
+    let found = json.array()
+    for i in 0..(json.len(list) as i64) {
+        let path = json.string(json.at(list, i))
+        let values = json.at(dbus.call(bus, path, "org.freedesktop.NetworkManager.Settings.Connection", "GetSettings", "()", 3000), 0)
+        let connection = util.get(values, "connection")
+        let id = util.text(util.get(connection, "uuid"))
+        let current = util.get(running, id)
+        let type = util.text(util.get(connection, "type"))
+        let wireless = util.get(values, "802-11-wireless")
+        let ap = strings.equal(util.text(util.get(wireless, "mode")), "ap")
+        found = json.push(found, {id: id, path: path, name: util.text(util.get(connection, "id")), type: type, activePath: util.text(util.get(current, "path")), active: util.number(util.get(current, "state")) == 2, hotspot: ap, ownHotspot: ap && strings.equal(util.text(util.get(connection, "stable-id")), "devos-hotspot-v1")})
+    }
+    return found
+}
+fn addresses(bus: *void, path: str, type: str): json.Value {
+    if strings.equal(path, "") || strings.equal(path, "/") { return {addresses: json.array(), dns: json.array(), gateway: ""} }
+    let props = dbus.properties(bus, path, "org.freedesktop.NetworkManager.IP" + type + "Config")
+    let ips = json.array()
+    let dns = json.array()
+    let data = array(util.get(props, "AddressData"))
+    for i in 0..(json.len(data) as i64) { let value = json.at(data, i); ips = json.push(ips, util.text(util.get(value, "address")) + "/" + json.stringify(util.get(value, "prefix"))) }
+    data = array(util.get(props, "NameserverData"))
+    for i in 0..(json.len(data) as i64) {
+        let item = json.at(data, i)
+        let address = util.text(util.get(item, "address"))
+        if strings.equal(address, "") { address = util.text(util.get(item, "uri")) }
+        if !strings.equal(address, "") { dns = json.push(dns, address) }
+    }
+    if strings.equal(type, "6") && json.len(dns) == 0 {
+        data = array(util.get(props, "Nameservers"))
+        for i in 0..(json.len(data) as i64) { let address = ipv6(json.at(data, i)); if !strings.equal(address, "") { dns = json.push(dns, address) } }
+    }
+    return {addresses: ips, dns: dns, gateway: util.text(util.get(props, "Gateway"))}
+}
+fn adapters(bus: *void): json.Value {
+    let list = json.at(call(bus, "GetDevices", "()"), 0)
+    let found = json.array()
+    for i in 0..(json.len(list) as i64) {
+        let path = json.string(json.at(list, i))
+    let props = dbus.properties(bus, path, "org.freedesktop.NetworkManager.Device")
+        let type = util.number(util.get(props, "DeviceType"))
+    let capabilities: i64 = 0
+        if type == 2 { capabilities = util.number(dbus.property(bus, path, "org.freedesktop.NetworkManager.Device.Wireless", "WirelessCapabilities")) }
+        found = json.push(found, {path: path, name: util.text(util.get(props, "Interface")), type: type, state: util.number(util.get(props, "State")), managed: util.boolean(util.get(props, "Managed")), mtu: util.number(util.get(props, "Mtu")), mac: util.text(util.get(props, "HwAddress")), driver: util.text(util.get(props, "Driver")), ap: (capabilities & 0x40) != 0, ipv4: addresses(bus, util.text(util.get(props, "Ip4Config")), "4"), ipv6: addresses(bus, util.text(util.get(props, "Ip6Config")), "6")})
+    }
+    return found
+}
+fn radios(): json.Value {
+    if strings.equal(util.which("rfkill"), "") { return json.array() }
+    let probe = util.run("rfkill", Vec<str>("--json", "--output", "ID,TYPE,DEVICE,SOFT,HARD"), "", 3000)
+    if !probe.success || !json.valid(util.output(probe)) { return json.array() }
+    let values = util.get(json.parse(util.output(probe)), "rfkilldevices")
+    if !strings.equal(json.kind(values), "array") { return json.array() }
+    return values
+}
+fn radioState(): json.Value {
+    let values = radios()
+    let blocked = json.len(values) > 0
+    for i in 0..(json.len(values) as i64) { if !strings.equal(util.text(util.get(json.at(values, i), "soft")), "blocked") { blocked = false } }
+    return {ok: true, radios: values, airplane: blocked, radioError: strings.equal(util.which("rfkill"), "") ? "Radio controls are not installed in this system image." : ""}
+}
+fn snapshot(bus: *void): json.Value {
+    let root = dbus.properties(bus, "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager")
+    let value = radioState()
+    value = json.set(value, "available", true)
+    value = json.set(value, "adapters", adapters(bus))
+    value = json.set(value, "profiles", profiles(bus))
+    value = json.set(value, "connectivity", util.number(util.get(root, "Connectivity")))
+    return value
+}
+fn find(list: json.Value, key: str, value: str): json.Value {
+    for i in 0..(json.len(list) as i64) { let item = json.at(list, i); if strings.equal(util.text(util.get(item, key)), value) { return item } }
+    result.raise("The selected connection or adapter is no longer available. Refresh and try again.")
+    return json.null_value()
+}
+fn checked(args: Vec<str>, timeout: i64) {
+    let probe = util.run("nmcli", args, "", timeout)
+    util.require(probe.success, "NetworkManager could not complete this operation. Check the configuration, credentials and your network permissions.")
+}
+fn hotspotSettings(ssid: str, password: str): str {
+    let size = encoding.encode(ssid, "utf8").len()
+    util.require(size >= 1 && size <= 32, "Hotspot name must be 1–32 UTF-8 bytes.")
+    util.require(strings.charLength(password) >= 8 && strings.charLength(password) <= 63, "Hotspot password must be 8–63 ASCII characters.")
+    for i in 0..strings.charLength(password) { util.require(strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", strings.charAt(password, i)), "Use ASCII characters for the hotspot password.") }
+    let settings = wifi.connectionSettings(ssid, password, "psk")
+    settings = strings.replace(settings, "<\"infrastructure\">", "<\"ap\">")
+    settings = strings.replace(settings, "\"autoconnect\": <true>", "\"autoconnect\": <false>, \"stable-id\": <\"devos-hotspot-v1\">")
+    settings = strings.replace(settings, "\"ipv4\": {\"method\": <\"auto\">}", "\"ipv4\": {\"method\": <\"shared\">}")
+    settings = strings.replace(settings, "\"ipv6\": {\"method\": <\"auto\">}", "\"ipv6\": {\"method\": <\"disabled\">}")
+    # 2.4 GHz is the band every Wi-Fi radio can host an access point on; 5/6 GHz AP needs a regulatory domain the firmware may not have reported.
+    settings = strings.replace(settings, "\"mode\": <\"ap\">", "\"mode\": <\"ap\">, \"band\": <\"bg\">")
+    # Use a definite WPA2/CCMP AP profile, not client-mode WPA/WPA3 defaults.
+    settings = strings.replace(settings, "\"key-mgmt\": <\"wpa-psk\">", "\"key-mgmt\": <\"wpa-psk\">, \"proto\": <@as [\"rsn\"]>, \"pairwise\": <@as [\"ccmp\"]>, \"group\": <@as [\"ccmp\"]>, \"pmf\": <int32 1>")
+    return settings
+}
+# NM_DEVICE_STATE_REASON values that explain a failed access point start.
+fn reasonText(code: i64): str {
+    if code == 4 { return "the Wi-Fi configuration was rejected" }
+    if code == 5 || code == 18 || code == 19 { return "internet sharing could not start (dnsmasq or the firewall NAT rules)" }
+    if code == 9 || code == 10 || code == 11 { return "the Wi-Fi supplicant could not start the access point" }
+    if code == 35 { return "Wi-Fi firmware is missing" }
+    return ""
+}
+fn failureMessage(bus: *void, device: str, headline: str): str {
+    let probe = result.attempt(fn(): json.Value { return dbus.property(bus, device, "org.freedesktop.NetworkManager.Device", "StateReason") })
+    let code: i64 = 0
+    if !result.isErr(probe) {
+        let value = result.unwrap(probe)
+        if strings.equal(json.kind(value), "array") && json.len(value) >= 2 { code = json.int(json.at(value, 1)) }
+    }
+    let reason = reasonText(code)
+    let text = strings.equal(reason, "") ? headline + " NetworkManager gave no reason (code " + json.stringify(code) + ")." : headline + " NetworkManager reports " + reason + " (code " + json.stringify(code) + ")."
+    return text + " Run devos-hotspot-report for the full check."
+}
+fn activateHotspot(bus: *void, device: str, ssid: str, password: str) {
+        let settings = hotspotSettings(ssid, password)
+        let reply = dbus.call(bus, "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager", "AddAndActivateConnection", "(" + settings + ", objectpath " + json.stringify(device) + ", objectpath \"/\")", 30000)
+        let saved: str = json.string(json.at(reply, 0))
+    let active: str = json.string(json.at(reply, 1))
+        # Wait for a final state rather than claiming success when activation starts.
+        let outcome = result.run(fn() {
+            let deadline = time.now_ms() + 20000
+            while time.now_ms() < deadline {
+                let probe = result.attempt(fn(): json.Value { return dbus.property(bus, active, "org.freedesktop.NetworkManager.Connection.Active", "State") })
+                if result.isErr(probe) { result.raise(failureMessage(bus, device, "Hotspot activation stopped before completing.")) }
+                let state = util.number(result.unwrap(probe))
+                if state == 2 { return }
+                if state == 4 { result.raise(failureMessage(bus, device, "Hotspot activation failed.")) }
+                time.sleep_ms(200)
+            }
+            result.raise(failureMessage(bus, device, "Hotspot activation timed out."))
+        })
+        if result.isErr(outcome) {
+            result.run(fn() { call(bus, "DeactivateConnection", "(objectpath " + json.stringify(active) + ",)") })
+            result.run(fn() { dbus.call(bus, saved, "org.freedesktop.NetworkManager.Settings.Connection", "Delete", "()", 3000) })
+            result.raise(result.message(outcome))
+        }
+}
+fn connectVpn(id: str, username: str, password: str) {
+            util.require(!strings.contains(username, "\n") && !strings.contains(username, "\r"), "Invalid VPN user name.")
+            util.require(!strings.contains(password, "\n") && !strings.contains(password, "\r"), "Invalid VPN password.")
+            if !strings.equal(username, "") { checked(Vec<str>("connection", "modify", "uuid", id, "vpn.user-name", username), 5000) }
+            let temporary = ""
+    let args: Vec<str> = Vec<str>("--wait", "20", "connection", "up", "uuid", id)
+            if !strings.equal(password, "") {
+                temporary = util.command("mktemp", Vec<str>("/tmp/devos-vpn.XXXXXXXXXX")); util.require(!strings.equal(temporary, ""), "Could not prepare VPN credentials.")
+                if !fs.writeFileSync(temporary, "vpn.secrets.password:" + password + "\n") { util.remove(temporary); result.raise("Could not prepare VPN credentials.") }
+                args.push("passwd-file"); args.push(temporary)
+            }
+            let outcome = result.run(fn() { checked(args, 23000) }); if !strings.equal(temporary, "") { util.remove(temporary) }; if result.isErr(outcome) { result.raise(result.message(outcome)) }
+}
+fn execute(bus: *void, request: json.Value): json.Value {
+    let action = util.text(util.get(request, "action"))
+    if strings.equal(action, "radios") { return radioState() }
+    if strings.equal(action, "list") { return snapshot(bus) }
+    if strings.equal(action, "vpn-import") {
+        vpn.importFile(bus, util.text(util.get(request, "type")), util.text(util.get(request, "file")))
+    } else if strings.equal(action, "hotspot-start") {
+        let device = find(adapters(bus), "path", util.text(util.get(request, "device")))
+        util.require(util.boolean(util.get(device, "managed")), "NetworkManager does not manage this Wi-Fi adapter, so a hotspot cannot be started on it.")
+        util.require(util.boolean(util.get(device, "ap")), "Hotspot is not supported by this Wi-Fi hardware/firmware: the " + util.text(util.get(device, "driver")) + " driver does not report access point mode. Run devos-hotspot-report for details.")
+        let all = profiles(bus)
+        for i in 0..(json.len(all) as i64) { let current = json.at(all, i); util.require(!(util.boolean(util.get(current, "hotspot")) && !strings.equal(util.text(util.get(current, "activePath")), "")), "A hotspot is already running. Stop it before starting another.") }
+        activateHotspot(bus, util.text(util.get(device, "path")), util.text(util.get(request, "ssid")), util.text(util.get(request, "password")))
+    } else if strings.startsWith(action, "vpn-") || strings.equal(action, "hotspot-stop") {
+        let profile = find(profiles(bus), "id", util.text(util.get(request, "id")))
+        let type = util.text(util.get(profile, "type"))
+        let vpn = strings.equal(type, "vpn") || strings.equal(type, "wireguard")
+        util.require(strings.equal(action, "hotspot-stop") ? util.boolean(util.get(profile, "hotspot")) : vpn, "This operation does not match the selected connection.")
+        let id = util.text(util.get(profile, "id"))
+        if strings.equal(action, "vpn-connect") {
+            connectVpn(id, strings.equal(type, "vpn") ? util.text(util.get(request, "username")) : "", util.text(util.get(request, "password")))
+        } else if strings.equal(action, "vpn-remove") {
+            util.require(strings.equal(util.text(util.get(profile, "activePath")), ""), "Disconnect the VPN before removing it.")
+            dbus.call(bus, util.text(util.get(profile, "path")), "org.freedesktop.NetworkManager.Settings.Connection", "Delete", "()", 5000)
+        } else {
+            util.require(strings.equal(action, "vpn-disconnect") || strings.equal(action, "hotspot-stop"), "Unsupported VPN action.")
+            let active = util.text(util.get(profile, "activePath")); util.require(!strings.equal(active, ""), "This connection is already disconnected.")
+            call(bus, "DeactivateConnection", "(objectpath " + json.stringify(active) + ",)")
+            if strings.equal(action, "hotspot-stop") && util.boolean(util.get(profile, "ownHotspot")) { dbus.call(bus, util.text(util.get(profile, "path")), "org.freedesktop.NetworkManager.Settings.Connection", "Delete", "()", 5000) }
+        }
+    } else if strings.equal(action, "adapter-disconnect") || strings.equal(action, "adapter-connect") {
+        let device = find(adapters(bus), "path", util.text(util.get(request, "device")))
+        util.require(util.boolean(util.get(device, "managed")) && (util.number(util.get(device, "type")) == 1 || util.number(util.get(device, "type")) == 2), "This adapter cannot be managed here.")
+        if strings.equal(action, "adapter-disconnect") { dbus.call(bus, util.text(util.get(device, "path")), "org.freedesktop.NetworkManager.Device", "Disconnect", "()", 5000) }
+        else { checked(Vec<str>("--wait", "15", "device", "connect", util.text(util.get(device, "name"))), 18000) }
+    } else if strings.equal(action, "connectivity-check") { call(bus, "CheckConnectivity", "()") }
+    else { util.require(false, "Unsupported network settings action.") }
+    return snapshot(bus)
+}

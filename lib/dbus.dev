@@ -3,6 +3,7 @@
 use "std/json"
 use "std/strings"
 use "std/result"
+use "std/encoding"
 use "../lib/desktop.dev" as util
 extern fn g_bus_get_sync(kind: i32, cancellable: *void, error: *void): *void
 extern fn g_dbus_connection_call_sync(connection: *void, service: str, path: str, interface: str, method: str, parameters: *void, replyType: *void, flags: i32, timeout: i32, cancellable: *void, error: *void): *void
@@ -22,6 +23,10 @@ extern fn g_variant_get_byte(value: *void): u8
 extern fn g_variant_get_boolean(value: *void): i32
 extern fn g_variant_unref(value: *void)
 extern fn g_object_unref(value: *void)
+extern fn calloc(count: usize, size: usize): *void
+extern fn free(value: *void)
+extern fn g_error_free(value: *void)
+struct BusError { domain: u32, code: i32, message: *u8 }
 
 fn decode(value: *void): json.Value {
     unsafe {
@@ -70,8 +75,23 @@ fn call(bus: *void, path: str, interface: str, method: str, parameters: str, tim
         let args = g_variant_parse(null, parameters, null, null, null)
         util.require(args as bool, "Invalid D-Bus method parameters.")
         # call_sync consumes a floating parameters reference.
-        let reply = g_dbus_connection_call_sync(bus, "org.freedesktop.NetworkManager", path, interface, method, args, null, 0, timeout, null, null)
-        util.require(reply as bool, "NetworkManager request failed or authorization was denied.")
+        let slot = calloc(1, 16) as *usize
+        util.require(slot as bool, "Could not allocate D-Bus error storage.")
+        let reply = g_dbus_connection_call_sync(bus, "org.freedesktop.NetworkManager", path, interface, method, args, null, 0, timeout, null, slot as *void)
+        let failure = slot[0] as *BusError
+        free(slot as *void)
+        if !(reply as bool) {
+            let message = "NetworkManager request failed."
+            if failure as bool {
+                let bytes = Vec<u8>()
+                let i = 0
+                let pointer = (*failure).message
+                while i < 4096 && pointer[i] != 0 { bytes.push(pointer[i]); i = i + 1 }
+                message = encoding.decode(bytes, "utf8")
+                g_error_free(failure as *void)
+            }
+            result.raise(message)
+        }
         let decoded = result.attempt(fn(): json.Value { return decode(reply) })
         g_variant_unref(reply)
         return result.unwrap(decoded)

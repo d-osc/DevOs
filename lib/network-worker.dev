@@ -15,7 +15,11 @@ fn main(): i32 {
     if result.isErr(outcome) {
         let message = result.message(outcome)
         let secret = util.text(util.get(request, "password"))
-        if !strings.equal(secret, "") { message = strings.replaceAll(message, secret, "[redacted]") }
+        if !strings.equal(secret, "") {
+            let quoted = json.stringify(secret)
+            message = strings.replaceAll(message, strings.substring(quoted, 1, strings.charLength(quoted) - 1), "[redacted]")
+            message = strings.replaceAll(message, secret, "[redacted]")
+        }
         print(json.stringify(util.error(message)))
         return 1
     }

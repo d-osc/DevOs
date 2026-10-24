@@ -10,6 +10,10 @@
 #include <wlr/types/wlr_keyboard_group.h>
 #include "labwc.h"
 #include "view.h"
+#include "regions.h"
+#include "output.h"
+#include "ssd.h"
+#include "common/border.h"
 #include "workspaces.h"
 #include "session-lock.h"
 #include "devos-workspaces-v1-protocol.h"
@@ -64,8 +68,18 @@ static void refresh(struct wl_client *client, struct wl_resource *resource) {
             struct view *view = handle->data;
             if (!view) continue;
             struct wl_resource *window;
-            wl_resource_for_each(window, &handle->resources) if (wl_resource_get_client(window) == client)
+            wl_resource_for_each(window, &handle->resources) if (wl_resource_get_client(window) == client) {
                 devos_workspace_manager_v1_send_window(resource, wl_resource_get_id(window), desktop_id(server, view->workspace), view->visible_on_all_workspaces);
+                if (wl_resource_get_version(resource) >= 6 && view->output) {
+                    struct wlr_box area = output_usable_area_in_layout_coords(view->output);
+                    struct border margin = ssd_get_margin(view->ssd);
+                    struct view_size_hints hints = view_get_size_hints(view);
+                    devos_workspace_manager_v1_send_geometry(resource, wl_resource_get_id(window), view->current.x - margin.left, view->current.y - margin.top,
+                        view->current.width + margin.left + margin.right, view->current.height + margin.top + margin.bottom,
+                        view->output->wlr_output->name, area.x, area.y, area.width, area.height,
+                        view->tiled_region ? view->tiled_region->name : "", hints.min_width + margin.left + margin.right, hints.min_height + margin.top + margin.bottom);
+                }
+            }
         }
     }
     struct wlr_keyboard *keyboard = layout_keyboard(server);
@@ -139,11 +153,54 @@ static void set_layout(struct wl_client *client, struct wl_resource *resource, u
         wlr_keyboard_notify_modifiers(keyboard, keyboard->modifiers.depressed, keyboard->modifiers.latched, keyboard->modifiers.locked, index);
     refresh(client, resource);
 }
+static void snap(struct wl_client *client, struct wl_resource *resource, uint32_t id, const char *name) {
+    struct server *server = wl_resource_get_user_data(resource);
+    struct wl_resource *window = wl_client_get_object(client, id);
+    if (!window || LOCKED(server) || server->seat.drag.active || strcmp(wl_resource_get_class(window), "zwlr_foreign_toplevel_handle_v1")) return;
+    struct wlr_foreign_toplevel_handle_v1 *handle = wl_resource_get_user_data(window);
+    struct view *view = handle ? handle->data : NULL;
+    if (!view || !view->output) return;
+    struct region *region = regions_from_name(name, view->output);
+    if (region) view_snap_to_region(view, region);
+    refresh(client, resource);
+}
+static void resize_group(struct wl_client *client, struct wl_resource *resource, struct wl_array *cells) {
+    struct server *server = wl_resource_get_user_data(resource);
+    if (LOCKED(server) || server->seat.drag.active || cells->size < 40 || cells->size > 80 || cells->size % 20) return;
+    struct view *views[4]; struct wlr_box boxes[4];
+    uint32_t *values = cells->data; size_t count = cells->size / 20;
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t *cell = values + i * 5;
+        struct wl_resource *window = wl_client_get_object(client, cell[0]);
+        if (!window || strcmp(wl_resource_get_class(window), "zwlr_foreign_toplevel_handle_v1")) return;
+        struct wlr_foreign_toplevel_handle_v1 *handle = wl_resource_get_user_data(window);
+        struct view *view = handle ? handle->data : NULL;
+        if (!view || !view->output || !view->tiled_region || view->fullscreen || view->visible_on_all_workspaces) return;
+        if (i && (view->output != views[0]->output || view->workspace != views[0]->workspace)) return;
+        for (size_t j = 0; j < i; ++j) if (views[j] == view) return;
+        if (!cell[3] || !cell[4] || cell[1] > 10000 || cell[2] > 10000 || cell[3] > 10000 - cell[1] || cell[4] > 10000 - cell[2]) return;
+        struct wlr_box area = output_usable_area_in_layout_coords(view->output);
+        struct region region = {.output = view->output, .geo = {
+            .x = area.x + (int64_t)area.width * cell[1] / 10000,
+            .y = area.y + (int64_t)area.height * cell[2] / 10000,
+            .width = (int64_t)area.width * (cell[1] + cell[3]) / 10000 - (int64_t)area.width * cell[1] / 10000,
+            .height = (int64_t)area.height * (cell[2] + cell[4]) / 10000 - (int64_t)area.height * cell[2] / 10000}};
+        boxes[i] = view_get_region_snap_box(view, &region); views[i] = view;
+        struct view_size_hints hints = view_get_size_hints(view);
+        if (boxes[i].width < (hints.min_width > 160 ? hints.min_width : 160) || boxes[i].height < (hints.min_height > 100 ? hints.min_height : 100)) return;
+        for (size_t j = 0; j < i; ++j) {
+            uint32_t *other = values + j * 5;
+            if (cell[1] < other[1] + other[3] && other[1] < cell[1] + cell[3] && cell[2] < other[2] + other[4] && other[2] < cell[2] + cell[4]) return;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) view_move_resize(views[i], boxes[i]);
+    refresh(client, resource);
+}
 static const struct devos_workspace_manager_v1_interface implementation = {
-    .destroy = destroy, .refresh = refresh, .activate = activate, .move_window = move_window, .create = create, .remove = remove_desktop, .set_layout = set_layout,
+    .destroy = destroy, .refresh = refresh, .activate = activate, .move_window = move_window, .create = create, .remove = remove_desktop, .set_layout = set_layout, .snap = snap, .resize_group = resize_group,
 };
 static void bind_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
-    struct wl_resource *resource = wl_resource_create(client, &devos_workspace_manager_v1_interface, version < 4 ? version : 4, id);
+    struct wl_resource *resource = wl_resource_create(client, &devos_workspace_manager_v1_interface, version < 6 ? version : 6, id);
     if (!resource) { wl_client_post_no_memory(client); return; }
     struct devos_workspace_client *entry = calloc(1, sizeof(*entry));
     if (!entry) {wl_resource_destroy(resource); wl_client_post_no_memory(client); return;}
@@ -152,5 +209,5 @@ static void bind_manager(struct wl_client *client, void *data, uint32_t version,
     wl_resource_set_implementation(resource, &implementation, data, release_client);
 }
 void devos_workspaces_init(struct server *server) {
-    wl_global_create(server->wl_display, &devos_workspace_manager_v1_interface, 4, server, bind_manager);
+    wl_global_create(server->wl_display, &devos_workspace_manager_v1_interface, 6, server, bind_manager);
 }

@@ -9,6 +9,8 @@ application.register(null);
 const loop = new GLib.MainLoop(null, false);
 let failed: unknown;
 let expired = false;
+// TCG on ARM64 can take much longer than native execution to start the TS worker.
+const timeScale = GLib.getenv('DEV_OS_EDITOR_TEST_SLOW') === '1' ? 6 : 1;
 async function run() {
     const fixture = GLib.dir_make_tmp('devos-live-editor-XXXXXX');
     const path = `${fixture}/example.ts`;
@@ -26,7 +28,7 @@ async function run() {
     try {
         editor.show();
         if (!await editor.openFile(path)) throw new Error('Editor could not open the test file');
-        for (let i=0; i<300 && !editor.surface?.ready; i++) {
+        for (let i=0; i<300 * timeScale && !editor.surface?.ready; i++) {
             if (editor.surface?.error) throw new Error(editor.surface.error);
             await new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {resolve(); return GLib.SOURCE_REMOVE;}));
         }
@@ -37,7 +39,7 @@ async function run() {
         // A module worker must load its split dependencies and still report errors.
         await editor.surface.evaluate('window.devOsEditor.replace("const answer: number = \\\"wrong\\\";\\n")');
         let diagnostics = '';
-        for (let i=0; i<200; i++) {
+        for (let i=0; i<200 * timeScale; i++) {
             diagnostics = await editor.surface.evaluate('JSON.stringify(window.devOsEditor.diagnostics())');
             if (diagnostics.includes('not assignable')) break;
             await new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {resolve(); return GLib.SOURCE_REMOVE;}));
@@ -51,7 +53,7 @@ async function run() {
         print('PASS: native Monaco loads async assets, edits and saves a real file');
     } finally { GLib.source_remove(heartbeat); editor.destroy(); (await assets).dispose(); preferences.dispose(); }
 }
-const timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 45, () => {expired = true;failed = new Error('Editor test timed out');loop.quit();return GLib.SOURCE_REMOVE;});
+const timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 45 * timeScale, () => {expired = true;failed = new Error('Editor test timed out');loop.quit();return GLib.SOURCE_REMOVE;});
 void run().catch(error => {failed=error;}).finally(() => loop.quit());
 loop.run(); if (!expired) GLib.source_remove(timeout);
 if (failed) throw failed;

@@ -6,6 +6,8 @@ param(
     [ValidateRange(256,65536)][int]$Memory = 0,
     [ValidateRange(1,32)][int]$Cpus = 2,
     [ValidateRange(1,3600)][int]$Timeout = 120,
+    [ValidatePattern('^\d{3,4}x\d{3,4}$')][string]$Resolution = '1920x1080',
+    [ValidateSet('virtio','bochs')][string]$Gpu = 'virtio',
     [string]$BuildDistribution = 'Ubuntu',
     [string]$ImageDirectory,
     [string]$Kernel,
@@ -31,5 +33,5 @@ foreach ($taskPair in @(@('--image-dir',$ImageDirectory),@('--kernel',$Kernel),@
 }
 $taskDevlang = (& wsl -d $BuildDistribution --exec sh -lc 'command -v d || echo $HOME/.local/bin/d').Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the DevLang runtime (d) on the Linux build host.' }
-& wsl -d $BuildDistribution --exec "$taskDevlang" "$taskProject/distro/qemu.dev" -- @taskQemuArgs
+& wsl -d $BuildDistribution --exec env "DEVOS_QEMU_RESOLUTION=$Resolution" "DEVOS_QEMU_GPU=$Gpu" "$taskDevlang" "$taskProject/distro/qemu.dev" -- @taskQemuArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

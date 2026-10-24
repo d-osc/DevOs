@@ -3,12 +3,43 @@ import {
 } from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {desktopApps, findDesktopApp} from './apps.js';
+import {snapCells, resizeSnap, fitSnapGroup} from './snap-geometry.js';
 import {rankExternalApps} from './memory-policy.js';
 
-export interface DesktopWindow {id: number; title: string; appId: string; active: boolean; minimized: boolean; desktop?: number; sticky?: boolean;}
+export interface WindowGeometry {x: number; y: number; width: number; height: number; output: string; area: {x: number; y: number; width: number; height: number}; region: string; minWidth: number; minHeight: number;}
+export interface DesktopWindow {maximized?: boolean; fullscreen?: boolean; geometry?: WindowGeometry;id: number; title: string; appId: string; active: boolean; minimized: boolean; desktop?: number; sticky?: boolean;}
+export function gestureWindowTarget(windows: readonly DesktopWindow[], desktop: number | undefined, action: 'next' | 'previous' | 'restore', minimizedOrder: readonly number[] = []): DesktopWindow | undefined {
+    const candidates = windows.filter(window => desktop === undefined || window.sticky || window.desktop === undefined || window.desktop === desktop).sort((a, b) => a.id - b.id);
+    if (action === 'restore') {const minimized = candidates.filter(window => window.minimized); return [...minimizedOrder].reverse().map(id => minimized.find(window => window.id === id)).find(Boolean) ?? minimized[minimized.length - 1];}
+    if (!candidates.length) return undefined;
+    const active = candidates.findIndex(window => window.active);
+    return candidates[(active < 0 ? action === 'next' ? 0 : candidates.length - 1 : active + (action === 'next' ? 1 : candidates.length - 1)) % candidates.length];
+}
 export interface DesktopWorkspace {id: number; name: string; active: boolean;}
 export interface KeyboardLayout {index: number; name: string; active: boolean;}
+export const snapLayouts = [
+    {id: 'halves', name: 'Two columns', regions: ['half-left', 'half-right'], widths: [1, 1]},
+    {id: 'wide-left', name: 'Wide left', regions: ['wide-left', 'third-right'], widths: [2, 1]},
+    {id: 'wide-right', name: 'Wide right', regions: ['third-left', 'wide-right'], widths: [1, 2]},
+    {id: 'thirds', name: 'Three columns', regions: ['third-left', 'third-center', 'third-right'], widths: [1, 1, 1]},
+    {id: 'quarters', name: 'Four quarters', regions: ['quarter-top-left', 'quarter-top-right', 'quarter-bottom-left', 'quarter-bottom-right'], widths: [1, 1, 1, 1]},
+] as const;
+export interface SnapGroup {cuts?: readonly number[]; row?: number; id: number; layout: string; members: {id: number; region: string}[];}
+export function validSnapMembers(layout: string, ids: readonly number[], windows: readonly DesktopWindow[]) {
+    const preset = snapLayouts.find(item => item.id === layout);
+    if (!preset || ids.length !== preset.regions.length || new Set(ids).size !== ids.length) return undefined;
+    const selected = ids.map(id => windows.find(window => window.id === id));
+    if (selected.some(window => !window || window.sticky) || selected.some(window => window!.desktop !== selected[0]!.desktop)) return undefined;
+    return preset.regions.map((region, index) => ({id: ids[index], region: `devos-${region}`}));
+}
 export interface WindowControls {
+    readonly canResizeSnap?: boolean;
+    resizeSnapGroup?(id: number, axis: 'x' | 'y', index: number, position: number): void;
+    readonly canSnap?: boolean;
+    readonly snapGroups?: readonly SnapGroup[];
+    arrange?(layout: string, ids: readonly number[]): void;
+    restoreSnapGroup?(id: number): void;
+    removeSnapGroup?(id: number): void;
     readonly state: readonly DesktopWindow[];
     subscribe(listener: () => void): () => void;
     activate(id: number): void;
@@ -27,6 +58,46 @@ export interface WindowControls {
 
 // The base owns the Wayland connection; extensions consume snapshots and actions.
 export class Windows implements WindowControls {
+    canResizeSnap = false;
+    resizeSnapGroup(id: number, axis: 'x' | 'y', index: number, position: number) {
+        if (!this.canResizeSnap || this.disposed || !this.input) return;
+        const group = this.snapGroups.find(group => group.id === id);
+        if (!group) return;
+        const next = resizeSnap(group, this.state, axis, index, position);
+        if (!next) return;
+        this.snapGroups = this.snapGroups.map(group => group.id === id ? next : group);
+        this.sendSnapGeometry(next); this.publish();
+    }
+    private sendSnapGeometry(group: SnapGroup) {
+        if (!this.canResizeSnap || !this.input || this.disposed) return;
+        const expected = group.layout === 'quarters' ? 4 : group.layout === 'thirds' ? 3 : 2;
+        if (group.members.length !== expected) return;
+        this.queue = this.queue.filter(command => !command.startsWith('sash '));
+        this.queue.push(`sash ${snapCells(group).map(cell => `${cell.id},${cell.x},${cell.y},${cell.width},${cell.height}`).join(' ')}\n`); this.write();
+    }
+    canSnap = false;
+    snapGroups: readonly SnapGroup[] = [];
+    private nextSnapGroup = 1;
+    arrange(layout: string, ids: readonly number[]) {
+        const members = validSnapMembers(layout, ids, this.state);
+        if (!this.canSnap || !members || !this.input || this.disposed) return;
+        const fresh: SnapGroup = {id: this.nextSnapGroup++, layout, members};
+        const fitted = this.canResizeSnap ? fitSnapGroup(fresh, this.state) : fresh;
+        this.snapGroups = [...this.snapGroups.filter(group => !group.members.some(member => ids.includes(member.id))), fitted];
+        for (const member of members) {this.queue.push(`snap ${member.id} ${member.region}\n`); this.send('activate', member.id);}
+        this.sendSnapGeometry(this.snapGroups[this.snapGroups.length - 1]);
+        this.write(); this.publish();
+    }
+    restoreSnapGroup(id: number) {
+        let group = this.snapGroups.find(group => group.id === id);
+        if (!group || !this.canSnap || !this.input || this.disposed) return;
+        if (this.canResizeSnap) {group = fitSnapGroup(group, this.state); const fitted = group; this.snapGroups = this.snapGroups.map(item => item.id === id ? fitted : item); this.publish();}
+        const desktop = this.state.find(window => window.id === group!.members[0].id)?.desktop;
+        if (desktop) this.switchDesktop(desktop);
+        for (const member of group.members) {this.queue.push(`snap ${member.id} ${member.region}\n`); this.send('activate', member.id);}
+        this.sendSnapGeometry(group); this.write();
+    }
+    removeSnapGroup(id: number) {this.snapGroups = this.snapGroups.filter(group => group.id !== id); this.publish();}
     state: readonly DesktopWindow[] = [];
     desktops: readonly DesktopWorkspace[] = [];
     keyboardLayouts: readonly KeyboardLayout[] = [];
@@ -48,6 +119,7 @@ export class Windows implements WindowControls {
     private recentApps: string[] = [];
     private memoryTimer = 0;
     private memoryWriting = false;
+    private minimizedOrder: number[] = [];
     constructor() {
         this.memoryTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {this.publishMemory(); return GLib.SOURCE_CONTINUE;});
         const helper = [`${ROOT}/build/native/dev-os-window-tracker`, `${ROOT}/native/dev-os-window-tracker`]
@@ -64,7 +136,13 @@ export class Windows implements WindowControls {
     private publish() {
         if (this.disposed || this.pending) return;
         this.pending = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            this.pending = 0; this.state = [...this.entries.values()];
+            this.pending = 0;
+            const next = [...this.entries.values()];
+            this.minimizedOrder = this.minimizedOrder.filter(id => next.some(window => window.id === id && window.minimized));
+            for (const window of next) if (window.minimized && !this.state.find(previous => previous.id === window.id)?.minimized) this.minimizedOrder.push(window.id);
+            this.state = next;
+            this.snapGroups = this.snapGroups.map(group => ({...group, members: group.members.filter(member => next.some(window => window.id === member.id))}))
+                .filter(group => group.members.length >= 2 && group.members.every(member => next.find(window => window.id === member.id)?.desktop === next.find(window => window.id === group.members[0].id)?.desktop));
             this.publishMemory();
             this.listeners.emit();
             return GLib.SOURCE_REMOVE;
@@ -93,14 +171,28 @@ export class Windows implements WindowControls {
             if (this.disposed) return;
             try {
                 const [line] = this.output!.read_line_finish_utf8(result);
-                if (line === null) { this.entries.clear(); this.desktops = []; this.keyboardLayouts = []; this.canCreateDesktop = false; this.canRemoveDesktop = false; this.publish(); this.input = undefined; return; }
+                if (line === null) { this.entries.clear(); this.snapGroups = []; this.canSnap = false; this.canResizeSnap = false; this.desktops = []; this.keyboardLayouts = []; this.canCreateDesktop = false; this.canRemoveDesktop = false; this.publish(); this.input = undefined; return; }
                 const event = JSON.parse(line) as Record<string, unknown>;
-                if (event.type === 'window' && typeof event.id === 'number' && Number.isSafeInteger(event.id) && event.id > 0 &&
+                if (event.type === 'snap-capability') {this.canSnap = event.supported === true; this.canResizeSnap = event.canResize === true; this.publish();}
+                else if (event.type === 'geometry' && typeof event.id === 'number' && this.entries.has(event.id) && event.geometry && typeof event.geometry === 'object') {
+                    const geometry = event.geometry as WindowGeometry;
+                    if (geometry.area && typeof geometry.output === 'string' && typeof geometry.region === 'string' && [geometry.x, geometry.y, geometry.width, geometry.height, geometry.minWidth, geometry.minHeight, ...Object.values(geometry.area)].every(value => typeof value === 'number' && Number.isFinite(value))) {
+                        const previous = this.entries.get(event.id)!;
+                        if (JSON.stringify(previous.geometry) !== JSON.stringify(geometry)) {this.entries.set(event.id, {...previous, geometry}); this.publish();}
+                    }
+                }
+                else if (event.type === 'window' && typeof event.id === 'number' && Number.isSafeInteger(event.id) && event.id > 0 &&
                     typeof event.title === 'string' && typeof event.appId === 'string' && typeof event.active === 'boolean' && typeof event.minimized === 'boolean') {
                     const previous = this.entries.get(event.id);
-                    const next = {id: event.id, title: event.title, appId: event.appId, active: event.active, minimized: event.minimized,
+                    const next = {maximized: event.maximized === true, fullscreen: event.fullscreen === true, geometry: previous?.geometry, id: event.id, title: event.title, appId: event.appId, active: event.active, minimized: event.minimized,
                         desktop: typeof event.desktop === 'number' && event.desktop > 0 ? event.desktop : undefined, sticky: event.sticky === true};
-                    if (JSON.stringify(previous) !== JSON.stringify(next)) {this.entries.set(event.id, next); this.publish();}
+                    if (JSON.stringify(previous) !== JSON.stringify(next)) {
+                        this.entries.set(event.id, next); this.publish();
+                        if ((previous?.maximized || previous?.fullscreen) && !next.maximized && !next.fullscreen) {
+                            const group = this.snapGroups.find(group => group.members.some(member => member.id === next.id));
+                            if (group) this.sendSnapGeometry(group);
+                        }
+                    }
                 } else if (event.type === 'closed' && typeof event.id === 'number') { this.entries.delete(event.id); this.publish(); }
                 else if (event.type === 'desktop-begin') {this.desktopDraft = []; this.keyboardDraft = []; this.desktopCapabilityChanged = this.canCreateDesktop !== (event.canCreate === true) || this.canRemoveDesktop !== (event.canRemove === true); this.canCreateDesktop = event.canCreate === true; this.canRemoveDesktop = event.canRemove === true;}
                 else if (event.type === 'desktop' && typeof event.id === 'number' && Number.isInteger(event.id) && event.id > 0 && typeof event.name === 'string' && typeof event.active === 'boolean')
@@ -130,6 +222,7 @@ export class Windows implements WindowControls {
         });
     }
     activate(id: number) { this.send('activate', id); }
+    gesture(action: 'next' | 'previous' | 'restore') {const target = gestureWindowTarget(this.state, this.desktops.find(desktop => desktop.active)?.id, action, this.minimizedOrder); if (target) this.activate(target.id);}
     setKeyboardLayout(index: number) {if (this.disposed || !this.input || !this.keyboardLayouts.some(layout => layout.index === index)) return; this.queue.push(`layout ${index}\n`); this.write();}
     close(id: number) {this.send('close', id);}
     switchDesktop(id: number) {if (this.disposed || !this.input || !this.desktops.some(desktop => desktop.id === id)) return; this.queue.push(`desktop ${id}\n`); this.write();}
@@ -144,6 +237,7 @@ export class Windows implements WindowControls {
         if (this.disposed) return; this.disposed = true;
         if (this.memoryTimer) GLib.source_remove(this.memoryTimer);
         this.cancel.cancel(); if (this.pending) GLib.source_remove(this.pending);
+        this.canResizeSnap = false; this.canSnap = false; this.snapGroups = [];
         this.process?.force_exit(); this.listeners.clear(); this.entries.clear(); this.queue = []; this.state = []; this.desktops = []; this.desktopDraft = []; this.keyboardLayouts = []; this.keyboardDraft = []; this.canCreateDesktop = false; this.canRemoveDesktop = false;
     }
 }

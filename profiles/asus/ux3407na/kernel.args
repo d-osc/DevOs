@@ -1,0 +1,4 @@
+clk_ignore_unused
+pd_ignore_unused
+arm64.nopauth
+mem_sleep_default=s2idle

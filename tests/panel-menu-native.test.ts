@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 // Use tools/test/background-menu-smoke.dev panel to provide a private compositor.
 import {Gtk, Gdk, Gio, GLib, removeTree, type UIContext} from '@dev-os/core';
 import {ROOT, DEFAULTS} from '@dev-os/config';
@@ -15,7 +16,7 @@ preferences.update('org.devos.panel', true, {position: edge, height: 44, menuTer
 const display = Gdk.Display.get_default()!, application = new Gtk.Application({application_id: 'org.devos.PanelNativeTest'});
 application.register(null);
 const theme = new Gtk.CssProvider();
-theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', DEFAULTS.accent) + '\nwindow#panel { background: #1a202a; border-radius: 12px; }'));
+theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()) + '\nwindow#panel { background: #1a202a; border-radius: 12px; }'));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 let invoked = '', launched = 0;
 const context: UIContext = {application, display, preferences, config: () => DEFAULTS, saveCore() {}, monitors: () => [display.get_monitor(0)!],

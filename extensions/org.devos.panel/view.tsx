@@ -7,6 +7,8 @@ import {
 import {ROOT} from '@dev-os/config';
 import {clockFormat} from '@dev-os/extensions';
 import type {DeviceControls, DeviceState} from './devices.js';
+import {PanelBattery} from './battery-view.js';
+import {batteryPresentation} from './battery.js';
 import {windowGroup, type WindowControls, type DesktopWindow, type KeyboardLayout} from '@dev-os/services/windows';
 import {findDesktopApp, desktopApps as installedDesktopApps} from '@dev-os/services/apps';
 import {panelOptions, type PanelOptions} from './options.js';
@@ -25,7 +27,7 @@ export function PanelPowerControls() {
         <Label className="popup-muted" xalign={0}>POWER</Label>
         <Box spacing={6} homogeneous>{(Object.keys(labels) as PowerAction[]).map(action => <Button key={action} id={`panel-power-${action}`} sensitive={available[action] && !busy} tooltip={available[action] ? labels[action] : `${labels[action]} is unavailable on this system`} onClicked={() => {setError(''); select(action);}}><Box orientation="vertical" spacing={6}><Image iconName={icons[action]} pixelSize={18} /><Label>{labels[action]}</Label></Box></Button>)}</Box>
         {selected && <Box orientation="vertical" spacing={8}>
-            <Label wrap xalign={0}>{selected === 'sleep' ? 'Put this device to sleep?' : `${labels[selected]} this device? Save your work before continuing.`}</Label>
+            <Label wrap xalign={0}>{selected === 'sleep' ? 'Lock the screen and show the clock?' : `${labels[selected]} this device? Save your work before continuing.`}</Label>
             <Box spacing={8} homogeneous><Button sensitive={!busy} onClicked={() => select(null)}>Cancel</Button><Button id="panel-power-confirm" sensitive={!busy} onClicked={() => {setBusy(true); setError(''); void requestPower(selected).then(() => select(null)).catch(reason => setError(String(reason))).finally(() => setBusy(false));}}>{busy ? 'Please wait…' : labels[selected]}</Button></Box>
         </Box>}
         {!!error && <Label className="error" wrap maxWidthChars={38} xalign={0}>{error}</Label>}
@@ -59,7 +61,15 @@ function PanelUserButton({switchUser, showAccounts, position}: {switchUser(usern
     const [error, setError] = useState('');
     const backend = useRef<Accounts | null>(null);
     const refresh = () => {void backend.current?.request('get').then(value => {setSystem(value.system); setError('');}).catch(reason => setError(String(reason)));};
-    useEffect(() => {let alive = true; const service = new Accounts(); backend.current = service; void service.request('get').then(value => {if (alive) setSystem(value.system);}).catch(() => {}); return () => {alive = false; backend.current = null; service.destroy();};}, []);
+    // The account helper is a DevLang process; start it after the desktop has settled (a click still refreshes at once).
+    useEffect(() => {
+        let alive = true; const service = new Accounts(); backend.current = service;
+        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT_IDLE, 12, () => {
+            void service.request('get').then(value => {if (alive) setSystem(value.system);}).catch(() => {});
+            return GLib.SOURCE_REMOVE;
+        });
+        return () => {alive = false; GLib.source_remove(timer); backend.current = null; service.destroy();};
+    }, []);
     const current = system?.currentUser ?? GLib.get_user_name();
     const toggle = usePopup(anchor, <Box id="panel-user-popup" className="quick-settings" orientation="vertical" spacing={14} borderWidth={20} widthRequest={300}>
         <Label className="popup-title" xalign={0}>Your account</Label>
@@ -165,7 +175,7 @@ function QuickSettings({application, device}: {application: PanelApplication; de
             <Label widthChars={4}>{device.brightness == null ? '�' : `${device.brightness}%`}</Label>
         </Box>
         {device.brightness == null && <Label className="popup-muted" wrap xalign={0}>Brightness unavailable: no kernel backlight device.</Label>}
-        {device.battery !== null && <Label className="popup-muted" xalign={0}>{`Battery · ${device.battery}%`}</Label>}
+        {(device.batteryFound || device.acFound) && <Label className="popup-muted" xalign={0}>{batteryPresentation(device.battery, device.batteryStatus, {found: device.batteryFound, acOnline: device.acOnline}).tooltip}</Label>}
         {device.error && <Label className="error" wrap xalign={0}>{device.error}</Label>}
     </Box>;
 }
@@ -186,7 +196,10 @@ function TaskButton({application, id, title, iconName, gicon, windows, launch}: 
     return <Button id={id} ref={anchor} className={`panel-app panel-task ${running ? 'task-running' : ''} ${active ? 'task-active' : ''} ${minimized ? 'task-minimized' : ''}`}
         tooltip={running ? `${title} · ${windows.length} window${windows.length > 1 ? 's' : ''}${minimized ? ' · Minimized' : active ? ' · Active' : ''}` : title}
         onClicked={() => { if (!running) launch?.(); else if (windows.length === 1) application.windows?.toggle(windows[0].id); else togglePicker(); }}>
-        <Image gicon={gicon} iconName={iconName} pixelSize={application.options?.iconSize ?? 16} />
+        <Box orientation="vertical" spacing={1} valign="center">
+            <Image gicon={gicon} iconName={iconName} pixelSize={application.options?.iconSize ?? 16} />
+            {running && <Box className="task-status-dot" widthRequest={4} heightRequest={4} halign="center" />}
+        </Box>
     </Button>;
 }
 function PanelView({application, monitor, message}: {application: PanelApplication; monitor: Gdk.Monitor; message: string}) {
@@ -246,7 +259,7 @@ function PanelView({application, monitor, message}: {application: PanelApplicati
         <Box spacing={options.itemSpacing} valign="center">
             <PanelLanguage controls={application.windows} showSettings={application.showLanguage} position={options.position} />
             <Button id="panel-devices" ref={deviceAnchor} className="tray-button" tooltip={`${device.network} · ${device.volume === null ? 'Audio unavailable' : device.muted ? 'Muted' : `Volume ${device.volume}%`}`} onClicked={toggleDevices}>
-                <Box spacing={5}><Image iconName={device.connected ? device.wireless ? 'network-wireless-signal-excellent-symbolic' : 'network-wired-symbolic' : 'network-offline-symbolic'} pixelSize={16} /><Image iconName={audioIcon} pixelSize={16} />{device.battery !== null && <Image iconName={device.battery < 20 ? 'battery-low-symbolic' : 'battery-good-symbolic'} pixelSize={16} />}</Box>
+                <Box spacing={8}><Image iconName={device.connected ? device.wireless ? 'network-wireless-signal-excellent-symbolic' : 'network-wired-symbolic' : 'network-offline-symbolic'} pixelSize={16} /><Image iconName={audioIcon} pixelSize={16} /><PanelBattery percent={device.battery} status={device.batteryStatus} found={device.batteryFound} acOnline={device.acOnline} acFound={device.acFound} /></Box>
             </Button>
             <Button id="panel-clock" ref={clockAnchor} className={`clock-button ${options.showDate ? '' : 'clock-single-line'}`} tooltip={now.format('%A, %d %B %Y') ?? undefined} onClicked={toggleClock}>
                 <Box orientation="vertical" spacing={0}><Label className="clock-time" xalign={1}>{now.format(clockFormat(application.extensions, application.config.clock_format === '%a %d %b  ·  %H:%M' ? '%H:%M' : application.config.clock_format)) ?? now.format('%H:%M')}</Label>{options.showDate && <Label className="clock-date" xalign={1}>{now.format('%d/%m/%Y')}</Label>}</Box>

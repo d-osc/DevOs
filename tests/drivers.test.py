@@ -71,5 +71,45 @@ class DriverTests(unittest.TestCase):
         source = use('drivers') + 'use "std/json"\nprint(json.stringify(drivers.capabilities(' + json.dumps(str(self.root)) + ', false)))'
         items = json.loads(run_source(source, env={'PATH': str(self.root) + ':' + os.environ['PATH']}))
         self.assertEqual(next(item for item in items if item['name'] == 'audio')['status'], 'backend-unavailable')
+    def profile_run(self, **files):
+        run = self.root / 'run-devos-hw'
+        run.mkdir()
+        for name, content in files.items(): (run / name).write_text(content)
+        return run
+    def profile_report(self, run):
+        firmware = self.root / 'firmware'
+        return self.evaluate(f'drivers.hardwareProfile({json.dumps(str(run))}, Vec<str>({json.dumps(str(firmware))}), {json.dumps(str(self.root))})')
+    def profile_has_issues(self, report):
+        source = use('drivers') + 'use "std/json"\nprint(json.stringify(drivers.profileIssues(json.parse(' + json.dumps(json.dumps(report)) + '))))\n'
+        return json.loads(run_source(source))
+    def test_profile_not_selected_is_not_an_issue(self):
+        report = self.profile_report(self.root / 'missing-run')
+        self.assertEqual(report['status'], 'not-selected')
+        self.assertFalse(self.profile_has_issues(report))
+    def test_profile_firmware_modules_and_blacklist_are_checked(self):
+        selection = {'machine_id': 'asus/zenbook-a14-ux3407na', 'form_factor': 'laptop', 'profile': 'asus/ux3407na',
+                     'profile_kind': 'model', 'message': 'DEVOS HW: model profile asus/ux3407na'}
+        run = self.profile_run(**{'selection.json': json.dumps(selection),
+            'profile.conf': 'name=ASUS\ntest_status=untested-on-hardware\nsupport_level=experimental\n',
+            'firmware.list': 'qcom/present.mbn\nqcom/compressed.bin\nqcom/missing.mbn\n',
+            'modules.load': 'loaded_mod\nabsent-mod\n', 'modules.blacklist': 'noisy_mod\nclean_mod\n', 'quirks.list': 'no-lid-suspend\n'})
+        (self.root / 'firmware/qcom').mkdir(parents=True)
+        (self.root / 'firmware/qcom/present.mbn').write_text('x')
+        (self.root / 'firmware/qcom/compressed.bin.zst').write_text('x')
+        (self.root / 'module/loaded_mod').mkdir(parents=True)
+        (self.root / 'module/noisy_mod').mkdir()
+        report = self.profile_report(run)
+        self.assertEqual((report['profile'], report['test_status'], report['support_level']), ('asus/ux3407na', 'untested-on-hardware', 'experimental'))
+        self.assertEqual(report['quirks'], ['no-lid-suspend'])
+        statuses = {(c['kind'], c['name']): c['status'] for c in report['checks']}
+        self.assertEqual(statuses, {('firmware', 'qcom/present.mbn'): 'present', ('firmware', 'qcom/compressed.bin'): 'present',
+            ('firmware', 'qcom/missing.mbn'): 'missing', ('module', 'loaded_mod'): 'loaded', ('module', 'absent-mod'): 'not-loaded',
+            ('blacklist', 'noisy_mod'): 'loaded-despite-blacklist', ('blacklist', 'clean_mod'): 'absent'})
+        self.assertTrue(self.profile_has_issues(report))
+    def test_generic_profile_has_nothing_to_check(self):
+        run = self.profile_run(**{'selection.json': json.dumps({'profile': 'generic', 'profile_kind': 'generic'}), 'profile.conf': 'test_status=baseline\n'})
+        report = self.profile_report(run)
+        self.assertEqual((report['status'], report['checks']), ('selected', []))
+        self.assertFalse(self.profile_has_issues(report))
 
 if __name__ == '__main__': unittest.main()

@@ -1,0 +1,10 @@
+// Let a signed-in Dev OS user change time zone, NTP and the clock from Settings > Time.
+// systemd-timedated asks polkit for org.freedesktop.timedate1.*; without an active logind
+// seat session (or an agent) the default policy is auth_admin, which surfaces as an
+// access-denied error and makes the time zone look impossible to select.
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.timedate1.") !== 0) return polkit.Result.NOT_HANDLED;
+    if (!subject.local) return polkit.Result.NOT_HANDLED;
+    if (subject.active || subject.isInGroup("wheel") || subject.isInGroup("devos")) return polkit.Result.YES;
+    return polkit.Result.NOT_HANDLED;
+});

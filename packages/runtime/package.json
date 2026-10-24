@@ -3,6 +3,10 @@
   "version": "0.3.6",
   "type": "module",
   "exports": {
+    "./lid": {
+      "types": "./dist/lid.d.ts",
+      "import": "./dist/lid.js"
+    },
     "./lock": {
       "types": "./dist/lock.d.ts",
       "import": "./dist/lock.js"
@@ -22,6 +26,10 @@
     "./session-version": {
       "types": "./dist/session-version.d.ts",
       "import": "./dist/session-version.js"
+    },
+    "./sleep": {
+      "types": "./dist/sleep.d.ts",
+      "import": "./dist/sleep.js"
     }
   },
   "files": [

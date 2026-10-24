@@ -1,6 +1,7 @@
-import {React, Gtk, Box, Label, Button, Image, SearchEntry, Switch, ScrolledWindow, useState, useMemo, useRef, useLayoutEffect, type SettingsHost} from '@dev-os/core';
+import {React, Gtk, Box, Label, Button, Image, SearchEntry, Switch, FlowBox, ScrolledWindow, useState, useMemo, useRef, useLayoutEffect, type SettingsHost} from '@dev-os/core';
 import {installedIconThemes} from './themes.js';
 import {materialIcon} from './material.js';
+import {PACKS, STYLES, PACK_TITLES, PACK_STYLES, hasCombination, parseChoice, savedChoice, renderIcon, resolveIcon, type IconChoice, type Pack, type Style} from './fa-icons.js';
 const id = 'org.devos.icons';
 function PreviewIcon({theme, name, title}: {theme: Gtk.IconTheme; name: string; title: string}) {
     const host = useRef<Gtk.Box>(null);
@@ -17,9 +18,23 @@ function PreviewIcon({theme, name, title}: {theme: Gtk.IconTheme; name: string; 
     }, [theme, name]);
     return <Box className="icons-preview-item" orientation="vertical" spacing={10} expand fill><Box ref={host} halign="center" heightRequest={36} /><Label className="settings-description">{title}</Label></Box>;
 }
+const BASE_PREVIEW = [{name: 'utilities-terminal-symbolic', title: 'Terminal'}, {name: 'folder-symbolic', title: 'Files'}, {name: 'network-wireless-symbolic', title: 'Wi-Fi'}, {name: 'bluetooth-symbolic', title: 'Bluetooth'}, {name: 'battery-good-symbolic', title: 'Battery'}, {name: 'preferences-system-symbolic', title: 'Settings'}];
+function BaseIconPreview({name, title, choice}: {name: string; title: string; choice: IconChoice}) {
+    const host = useRef<Gtk.Box>(null);
+    useLayoutEffect(() => {
+        const image = new Gtk.Image(), context = host.current!.get_style_context();
+        let pixbuf = null;
+        try {pixbuf = renderIcon(name, 32, context.get_color(context.get_state()), choice);} catch {/* shown as missing below */}
+        if (pixbuf) image.set_from_pixbuf(pixbuf); else image.set_from_icon_name(name, Gtk.IconSize.DIALOG);
+        host.current!.add(image); image.show();
+        return () => {image.destroy();};
+    }, [name, choice.pack, choice.style]);
+    const exact = resolveIcon(name, choice);
+    return <Box className="icons-preview-item" orientation="vertical" spacing={10} expand fill><Box ref={host} halign="center" heightRequest={36} /><Label className="settings-description" tooltip={exact && exact.fallback !== 'exact' ? `Showing ${PACK_TITLES[exact.pack]} ${exact.style}` : undefined}>{title}</Label></Box>;
+}
 export function IconsSettings({preferences, iconTheme, sessionTheme}: {preferences: SettingsHost; iconTheme: Gtk.IconTheme; sessionTheme: string}) {
     const info = preferences.get(id);
-    const [saved, setSaved] = useState(() => ({themeName: String(info.state.values.themeName ?? 'Adwaita'), useSystemTheme: info.state.values.useSystemTheme === true, materialFiles: info.state.values.materialFiles !== false}));
+    const [saved, setSaved] = useState(() => ({...savedChoice(info.state.values.basePack, info.state.values.baseStyle), baseIcons: info.state.values.baseIcons !== false, themeName: String(info.state.values.themeName ?? 'Adwaita'), useSystemTheme: info.state.values.useSystemTheme === true, materialFiles: info.state.values.materialFiles !== false}));
     const [draft, setDraft] = useState(saved);
     const [themes, setThemes] = useState(() => installedIconThemes(iconTheme));
     const [query, setQuery] = useState(''); const [revision, refresh] = useState(0);
@@ -28,6 +43,8 @@ export function IconsSettings({preferences, iconTheme, sessionTheme}: {preferenc
     const valid = draft.useSystemTheme || themes.includes(draft.themeName);
     const selected = draft.useSystemTheme || !valid ? sessionTheme : draft.themeName;
     const preview = useMemo(() => {const theme = new Gtk.IconTheme(); theme.set_search_path(iconTheme.get_search_path() ?? []); theme.set_custom_theme(selected); return theme;}, [selected, revision, iconTheme]);
+    const choice: IconChoice = {pack: draft.pack, style: draft.style};
+    const pickPack = (pack: Pack) => edit({pack, style: hasCombination(pack, draft.style) ? draft.style : PACK_STYLES[pack][0]});
     const edit = (next: Partial<typeof draft>) => {setDraft(current => ({...current, ...next})); setError(''); setStatus('');};
     const filtered = themes.filter(name => name.toLowerCase().includes(query.trim().toLowerCase()));
     return <Box className="settings-content" orientation="vertical" expand fill>
@@ -39,6 +56,16 @@ export function IconsSettings({preferences, iconTheme, sessionTheme}: {preferenc
                     <Box spacing={8} homogeneous>{[{name: 'folder-symbolic', title: 'Files'}, {name: 'utilities-terminal-symbolic', title: 'Terminal'}, {name: 'preferences-system-symbolic', title: 'Settings'}, {name: 'network-wireless-symbolic', title: 'Network'}].map(item => <PreviewIcon key={item.title} theme={preview} {...item} />)}</Box>
                     <Box className="icons-preview-files" spacing={8} homogeneous>{[{path: 'src', directory: true, title: 'src'}, {path: 'view.tsx', directory: false, title: 'view.tsx'}, {path: 'package.json', directory: false, title: 'package.json'}, {path: 'notes.txt', directory: false, title: 'notes.txt'}].map(item => <PreviewIcon key={item.title} theme={preview} title={item.title} name={materialIcon(item.path, item.directory, draft.materialFiles) ?? (item.directory ? 'folder' : 'text-x-generic')} />)}</Box>
                     <Label className="settings-description" wrap xalign={0}>Actual icons from the selected theme · Changes stay in this preview until Apply.</Label>
+                </Box>
+                <Box className="settings-card icons-settings-card" orientation="vertical" spacing={16}>
+                    <Box spacing={12}><Box orientation="vertical" spacing={5} expand><Label className="settings-field-title" xalign={0}>Font Awesome base icons</Label><Label className="settings-description" wrap xalign={0}>Panel, launcher, settings and window controls draw from the bundled Font Awesome set.</Label></Box><Switch id="icons-base-enabled" active={draft.baseIcons} valign="center" onActiveChanged={widget => edit({baseIcons: widget.active})} /></Box>
+                    <Label className="settings-eyebrow" xalign={0}>BASE ICON PREVIEW</Label>
+                    <Box id="icons-base-preview" spacing={8} homogeneous>{BASE_PREVIEW.map(item => <BaseIconPreview key={item.title} choice={choice} {...item} />)}</Box>
+                    <Label className="section-heading" xalign={0}>Icon pack</Label>
+                    <FlowBox id="icons-base-packs" selectionMode={Gtk.SelectionMode.NONE} minChildrenPerLine={2} maxChildrenPerLine={4} rowSpacing={6} columnSpacing={6}>{PACKS.map(pack => <Button key={pack} id={`icons-pack-${pack}`} className={`icons-theme-choice ${draft.pack === pack ? 'icons-theme-selected' : ''}`} sensitive={draft.baseIcons} onClicked={() => pickPack(pack)}><Label xalign={0}>{PACK_TITLES[pack]}</Label></Button>)}</FlowBox>
+                    <Label className="section-heading" xalign={0}>Icon style</Label>
+                    <Box spacing={6} homogeneous>{STYLES.map(style => <Button key={style} id={`icons-style-${style}`} className={`icons-theme-choice ${draft.style === style ? 'icons-theme-selected' : ''}`} sensitive={draft.baseIcons && hasCombination(draft.pack, style)} tooltip={hasCombination(draft.pack, style) ? undefined : `${PACK_TITLES[draft.pack]} has no ${style} style`} onClicked={() => edit({style})}><Label>{style[0].toUpperCase() + style.slice(1)}</Label></Button>)}</Box>
+                    <Label className="settings-description" wrap xalign={0}>{`${PACK_TITLES[draft.pack]} provides: ${PACK_STYLES[draft.pack].join(', ')}. Styles a pack lacks are greyed out; icons missing from a font fall back to the nearest style, then Classic, then the GTK theme.`}</Label>
                 </Box>
                 <Box className="settings-card icons-settings-card" orientation="vertical" spacing={16}>
                     <Box spacing={12}><Box orientation="vertical" spacing={5} expand><Label className="settings-field-title" xalign={0}>Use the session icon theme</Label><Label className="settings-description" wrap xalign={0}>{`Follow the theme active when Dev OS started: ${sessionTheme}.`}</Label></Box><Switch id="icons-use-session" active={draft.useSystemTheme} valign="center" onActiveChanged={widget => edit({useSystemTheme: widget.active})} /></Box>
@@ -54,6 +81,6 @@ export function IconsSettings({preferences, iconTheme, sessionTheme}: {preferenc
                 {(error || info.error) && <Label className="error" wrap xalign={0}>{error || info.error}</Label>}
             </Box>
         </ScrolledWindow>
-        <Box className="settings-action-bar" spacing={12}><Label className="settings-description" expand wrap xalign={0}>{status || (dirty ? 'Unsaved changes · Preview only' : 'Small details, a familiar workspace.')}</Label><Button id="icons-settings-reset" sensitive={dirty} onClicked={() => {setDraft({...saved}); setError(''); setStatus('');}}>Reset</Button><Button id="icons-settings-apply" className="settings-primary" sensitive={dirty && valid && !info.error} onClicked={() => {try {preferences.update(id, true, {...draft}); setSaved({...draft}); setStatus('Icon preferences updated.');} catch (reason) {setError(reason instanceof Error ? reason.message : String(reason));}}}>Apply</Button></Box>
+        <Box className="settings-action-bar" spacing={12}><Label className="settings-description" expand wrap xalign={0}>{status || (dirty ? 'Unsaved changes · Preview only' : 'Small details, a familiar workspace.')}</Label><Button id="icons-settings-reset" sensitive={dirty} onClicked={() => {setDraft({...saved}); setError(''); setStatus('');}}>Reset</Button><Button id="icons-settings-apply" className="settings-primary" sensitive={dirty && valid && !info.error} onClicked={() => {try {const checked = parseChoice(draft.pack, draft.style); const {pack, style, ...rest} = draft; preferences.update(id, true, {...rest, basePack: checked.pack, baseStyle: checked.style}); setSaved({...draft}); setStatus('Icon preferences updated.');} catch (reason) {setError(reason instanceof Error ? reason.message : String(reason));}}}>Apply</Button></Box>
     </Box>;
 }

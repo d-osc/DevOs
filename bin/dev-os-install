@@ -1,0 +1,373 @@
+#!/bin/sh
+# Install Dev OS from a running Live USB onto an internal disk (ARM64 UEFI).
+#
+#   dev-os-install disks [--json]
+#   dev-os-install plan --disk DEV [--username NAME] [--hostname NAME]
+#   dev-os-install run --disk DEV --confirm-erase DEV --confirm-size BYTES \
+#                      --username NAME [--hostname NAME] --password-stdin
+#
+# `disks` and `plan` never write anything. `run` erases the whole target disk and is refused unless every
+# safety check passes: root, Live session, UEFI, a disk that is not the Live media, has no mounted
+# filesystem or active swap, is large enough, and is confirmed by exact path and byte size.
+# Progress is reported as `STEP i/N message`, then `DONE` or `ERROR message`.
+#
+# Test hooks (never needed on a real machine):
+#   DEVOS_INSTALL_LSBLK       file with `lsblk -bP` output to use instead of running lsblk
+#   DEVOS_INSTALL_LIVE_DISK   name of the Live media disk (e.g. sdb) instead of detecting it
+#   DEVOS_INSTALL_SOURCE      directory with the system to copy (default /run/live/lower)
+#   DEVOS_INSTALL_BOOT_EFI    installed-system UKI to place on the ESP (default: from the Live ESP)
+#   DEVOS_INSTALL_ALLOW_NON_LIVE=1   skip the Live-session and UEFI checks (loop-device tests)
+#   DEVOS_INSTALL_ALLOW_LOOP=1       with ALLOW_NON_LIVE, accept /dev/loopN as the target disk
+set -eu
+
+SOURCE=${DEVOS_INSTALL_SOURCE:-/run/live/lower}
+ESP_MIB=512
+MIN_DISK_BYTES=$((8 * 1024 * 1024 * 1024))
+LOG=${DEVOS_INSTALL_LOG:-/var/log/devos-install.log}
+TOTAL_STEPS=10
+WORK=
+MOUNTED=
+STEP_NAME=
+REPORTED=0
+
+say() { printf '%s\n' "$*"; }
+die() { REPORTED=1; log "ERROR $*"; printf 'ERROR %s\n' "$*"; exit 1; }
+step() { STEP_NAME=$2; log "STEP $1/$TOTAL_STEPS $2"; printf 'STEP %s/%s %s\n' "$1" "$TOTAL_STEPS" "$2"; }
+log() { printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; }
+
+# ---- device inventory ------------------------------------------------------------------------------
+# lsblk -P values never contain a double quote (lsblk hex-escapes them), so the pairs are split
+# with parameter expansion; nothing from a device name or model is ever passed to eval.
+lsblk_pairs() {
+    if [ -n "${DEVOS_INSTALL_LSBLK:-}" ]; then cat "$DEVOS_INSTALL_LSBLK"; return; fi
+    lsblk -bP -o NAME,PATH,TYPE,SIZE,MODEL,TRAN,RM,RO,MOUNTPOINTS,PKNAME,FSTYPE,LABEL 2>/dev/null ||
+        lsblk -bP -o NAME,PATH,TYPE,SIZE,MODEL,TRAN,RM,RO,MOUNTPOINT,PKNAME,FSTYPE,LABEL
+}
+# Writes name|path|type|size|model|transport|removable|readonly|mounts|parent|fstype|label rows.
+device_table() {
+    lsblk_pairs | while IFS= read -r line; do
+        n=; p=; t=; s=0; m=; tr=; rm=0; ro=0; mp=; pk=; fs=; lb=
+        rest=$line
+        while [ -n "$rest" ]; do
+            key=${rest%%=*}; rest=${rest#*=\"}; value=${rest%%\"*}; rest=${rest#*\"}; rest=${rest# }
+            case $key in
+                NAME) n=$value ;; PATH) p=$value ;; TYPE) t=$value ;; SIZE) s=$value ;; MODEL) m=$value ;;
+                TRAN) tr=$value ;; RM) rm=$value ;; RO) ro=$value ;; MOUNTPOINTS|MOUNTPOINT) mp=$value ;;
+                PKNAME) pk=$value ;; FSTYPE) fs=$value ;; LABEL) lb=$value ;;
+            esac
+        done
+        [ -n "$p" ] || p=/dev/$n
+        # Keep the field separator out of values.
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$n" "$p" "$t" "$s" "$(clean "$m")" "$tr" "$rm" "$ro" "$mp" "$pk" "$fs" "$(clean "$lb")"
+    done
+}
+clean() { printf '%s' "$1" | tr -cd 'A-Za-z0-9 ._:+-' | sed 's/  */ /g; s/^ //; s/ $//'; }
+# The disk that owns a device name (walks PKNAME up to the TYPE=disk row).
+disk_of() {
+    cur=$1; guard=0
+    while [ "$guard" -lt 8 ]; do
+        row=$(grep -m1 "^$cur|" "$TABLE" || true)
+        [ -n "$row" ] || { printf '%s' "$cur"; return; }
+        parent=$(printf '%s' "$row" | cut -d'|' -f10)
+        [ -n "$parent" ] || { printf '%s' "$cur"; return; }
+        cur=$parent; guard=$((guard + 1))
+    done
+    printf '%s' "$cur"
+}
+live_disk() {
+    if [ -n "${DEVOS_INSTALL_LIVE_DISK:-}" ]; then printf '%s' "$DEVOS_INSTALL_LIVE_DISK"; return; fi
+    src=$(findmnt -n -o SOURCE /run/live/lower 2>/dev/null || true)
+    [ -n "$src" ] || return 0
+    disk_of "$(basename "$src")"
+}
+# Fills $BUSY with the disks that hold a mounted filesystem or active swap.
+find_busy() {
+    BUSY=
+    while IFS='|' read -r n p t s m tr rm ro mp pk fs lb; do
+        [ -n "$mp" ] || continue
+        BUSY="$BUSY $(disk_of "$n")"
+    done <"$TABLE"
+}
+is_busy() { case " $BUSY " in *" $1 "*) return 0 ;; esac; return 1; }
+# The filesystem types found on a disk's partitions, for the "this disk contains" warning.
+contents_of() {
+    while IFS='|' read -r n p t s m tr rm ro mp pk fs lb; do
+        if [ "$pk" = "$1" ] && [ -n "$fs" ]; then printf '%s\n' "$fs"; fi
+    done <"$TABLE" | sort -u | tr '\n' ',' | sed 's/,$//'
+}
+# Writes the candidate disks as name|path|size|model|transport|removable|contents rows.
+candidates() {
+    LIVE=$(live_disk); find_busy
+    while IFS='|' read -r n p t s m tr rm ro mp pk fs lb; do
+        if [ "$t" != disk ]; then { [ "$t" = loop ] && loop_ok; } || continue; fi
+        [ "$ro" = 0 ] || continue
+        [ "$s" -ge "$MIN_DISK_BYTES" ] 2>/dev/null || continue
+        [ "$n" != "$LIVE" ] || continue
+        is_busy "$n" && continue
+        case $n in ram*|zram*|sr*|fd*|nbd*) continue ;; loop*) loop_ok || continue ;; esac
+        contents=$(contents_of "$n")
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$n" "$p" "$s" "$m" "$tr" "$rm" "$contents"
+    done <"$TABLE"
+}
+json_text() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+cmd_disks() {
+    json=0; [ "${1:-}" != --json ] || json=1
+    TABLE=$(mktemp); trap 'rm -f "$TABLE"' EXIT
+    device_table >"$TABLE"
+    if [ "$json" = 1 ]; then
+        printf '['; first=1
+        candidates | while IFS='|' read -r n p s m tr rm contents; do
+            [ "$first" = 1 ] || printf ','
+            first=0
+            removable=false; [ "$rm" != 1 ] || removable=true
+            printf '{"name":"%s","path":"%s","size":%s,"model":"%s","transport":"%s","removable":%s,"contents":"%s"}' \
+                "$(json_text "$n")" "$(json_text "$p")" "$s" "$(json_text "$m")" "$(json_text "$tr")" "$removable" "$(json_text "$contents")"
+        done
+        printf ']\n'
+    else
+        candidates | while IFS='|' read -r n p s m tr rm contents; do
+            printf '%s\t%s\t%s GiB\t%s\t%s\n' "$p" "${m:-unknown model}" "$((s / 1073741824))" "${tr:-?}" "${contents:-empty}"
+        done
+    fi
+}
+
+# ---- argument validation ---------------------------------------------------------------------------
+loop_ok() { [ "${DEVOS_INSTALL_ALLOW_NON_LIVE:-0}" = 1 ] && [ "${DEVOS_INSTALL_ALLOW_LOOP:-0}" = 1 ]; }
+valid_disk_path() { case $1 in /dev/loop[0-9]|/dev/loop[0-9][0-9]) loop_ok; return ;; esac; case $1 in /dev/sd[a-z]|/dev/sd[a-z][a-z]|/dev/vd[a-z]|/dev/nvme[0-9]n[0-9]|/dev/nvme[0-9][0-9]n[0-9]|/dev/mmcblk[0-9]) return 0 ;; esac; return 1; }
+valid_name() { printf '%s' "$1" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$'; }
+valid_host() { printf '%s' "$1" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; }
+part_path() { case $1 in *[0-9]) printf '%sp%s' "$1" "$2" ;; *) printf '%s%s' "$1" "$2" ;; esac; }
+
+DISK=; CONFIRM=; CONFIRM_SIZE=; USERNAME=; HOSTNAME_NEW=devos; PASSWORD_STDIN=0
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --disk) DISK=${2:-}; shift 2 ;;
+            --confirm-erase) CONFIRM=${2:-}; shift 2 ;;
+            --confirm-size) CONFIRM_SIZE=${2:-}; shift 2 ;;
+            --username) USERNAME=${2:-}; shift 2 ;;
+            --hostname) HOSTNAME_NEW=${2:-}; shift 2 ;;
+            --password-stdin) PASSWORD_STDIN=1; shift ;;
+            *) die "Unknown argument: $1" ;;
+        esac
+    done
+}
+# Resolves $DISK against the live inventory and refuses anything that is not a safe target.
+select_target() {
+    valid_disk_path "$DISK" || die "Not a whole-disk device path: ${DISK:-none}"
+    TABLE=$(mktemp); device_table >"$TABLE"
+    name=${DISK#/dev/}
+    row=$(candidates | grep -m1 "^$name|" || true)
+    if [ -z "$row" ]; then
+        if [ "$name" = "$(live_disk)" ]; then die "$DISK is the Live USB this system booted from"; fi
+        full=$(grep -m1 "^$name|" "$TABLE" || true)
+        [ -n "$full" ] || die "$DISK was not found"
+        find_busy
+        if is_busy "$name"; then die "$DISK has mounted filesystems or active swap"; fi
+        die "$DISK is not a suitable install target (needs a writable disk of at least $((MIN_DISK_BYTES / 1073741824)) GiB)"
+    fi
+    TARGET_SIZE=$(printf '%s' "$row" | cut -d'|' -f3)
+}
+check_source() {
+    [ -d "$SOURCE" ] || die "System image not found at $SOURCE (run this from the Live USB)"
+    grep -qx 'ID=devos' "$SOURCE/etc/os-release" 2>/dev/null || grep -q '^ID="\?devos"\?$' "$SOURCE/etc/os-release" 2>/dev/null || die "$SOURCE is not a Dev OS root filesystem"
+    # Measure the tree itself (df would report the whole filesystem a plain directory happens to live on).
+    # du exits non-zero on any unreadable entry; the total it printed is still usable.
+    used_kb=$(du -sxk "$SOURCE" 2>/dev/null | cut -f1 || true)
+    case $used_kb in ''|*[!0-9]*) die "Could not measure the system image at $SOURCE" ;; esac
+    USED_BYTES=$((used_kb * 1024))
+    NEEDED=$((USED_BYTES + USED_BYTES / 4 + (ESP_MIB + 1024) * 1048576))
+    [ "$NEEDED" -le "$MIN_DISK_BYTES" ] || [ "$TARGET_SIZE" -ge "$NEEDED" ] || die "The disk is too small: $((NEEDED / 1073741824)) GiB needed"
+}
+check_environment() {
+    if [ "${DEVOS_INSTALL_ALLOW_NON_LIVE:-0}" != 1 ]; then
+        [ "$(id -u)" = 0 ] || die "The installer must run as root"
+        [ -f /run/devos-live/root-session-enabled ] || die "The installer only runs from the Live USB session"
+        [ -d /sys/firmware/efi ] || die "This system did not boot with UEFI; Dev OS installs to UEFI machines only"
+        [ "$(uname -m)" = aarch64 ] || die "This installer targets ARM64 machines"
+    else
+        [ "$(id -u)" = 0 ] || die "The installer must run as root"
+    fi
+}
+
+cmd_plan() {
+    parse_args "$@"
+    valid_name "${USERNAME:-user}" || die "Invalid user name"
+    valid_host "$HOSTNAME_NEW" || die "Invalid host name"
+    select_target; check_source
+    cat <<EOF
+Dev OS will ERASE $DISK ($((TARGET_SIZE / 1073741824)) GiB) completely and install to it:
+  1. Create a GPT partition table
+  2. $(part_path "$DISK" 1)  ${ESP_MIB} MiB  EFI system partition (FAT32, label DEVOSESP)
+  3. $(part_path "$DISK" 2)  rest of the disk  Dev OS root (ext4, label devos-root)
+  4. Copy the Dev OS system, write /etc/fstab, host name $HOSTNAME_NEW
+  5. Create the user ${USERNAME:-<you choose>} (administrator) and lock the root account
+  6. Install the UEFI boot entry; other disks are not touched
+Confirm with: --confirm-erase $DISK --confirm-size $TARGET_SIZE
+EOF
+}
+
+# ---- installation ----------------------------------------------------------------------------------
+# Runs on every exit. A failure that did not go through die (a command stopped by set -e, a signal) is still
+# reported to the UI as an ERROR line, and its log is copied to the Live USB's DEVOS-LOGS for later inspection.
+cleanup() {
+    status=$?
+    set +e
+    if [ "$status" -ne 0 ] && [ "$REPORTED" != 1 ]; then
+        detail=$(tail -n 3 "$LOG" 2>/dev/null | tr '\n' ' ' | tr -cd 'A-Za-z0-9 ._:/,()=+-')
+        log "ERROR exit status $status during: ${STEP_NAME:-start}"
+        printf 'ERROR The installer stopped during "%s" (exit status %s). %s\n' "${STEP_NAME:-start}" "$status" "$detail"
+    fi
+    [ -z "$MOUNTED" ] || for m in $MOUNTED; do umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null; done
+    MOUNTED=
+    [ -z "$WORK" ] || rmdir "$WORK" 2>/dev/null
+    [ -z "${TABLE:-}" ] || rm -f "$TABLE"
+    if [ "$status" -ne 0 ]; then save_log; fi
+    return $status
+}
+# Copies the install log to DEVOS-LOGS on the Live USB's EFI partition (best effort, failures only).
+save_log() {
+    [ -s "$LOG" ] || return 0
+    esp=$(findfs LABEL=DEVOS_EFI 2>/dev/null) || return 0
+    dir=$(findmnt -n -o TARGET "$esp" 2>/dev/null | head -n 1)
+    if [ -n "$dir" ]; then
+        # The Live boot already mounts the ESP read-write; a second mount of it with other options fails.
+        mount -o remount,rw "$dir" 2>/dev/null
+        mkdir -p "$dir/DEVOS-LOGS" && cp "$LOG" "$dir/DEVOS-LOGS/install-$(date -u +%Y%m%dT%H%M%SZ).log" 2>/dev/null
+        sync
+        return 0
+    fi
+    dir=$(mktemp -d /run/devos-logesp.XXXXXX 2>/dev/null) || return 0
+    if mount "$esp" "$dir" 2>/dev/null; then
+        mkdir -p "$dir/DEVOS-LOGS" && cp "$LOG" "$dir/DEVOS-LOGS/install-$(date -u +%Y%m%dT%H%M%SZ).log" 2>/dev/null
+        sync; umount "$dir" 2>/dev/null
+    fi
+    rmdir "$dir" 2>/dev/null
+    return 0
+}
+mount_tracked() { mount "$@" || die "Could not mount $* (see $LOG)"; for last; do :; done; MOUNTED="$last $MOUNTED"; }
+unmount_all() {
+    for m in $MOUNTED; do
+        umount "$m" 2>/dev/null || { sleep 2; umount "$m" 2>/dev/null; } || umount -l "$m" 2>/dev/null || die "Could not unmount $m (see $LOG)"
+    done
+    MOUNTED=
+}
+
+place_boot_entry() {
+    target=$1
+    mkdir -p "$target/boot/efi/EFI/BOOT" "$target/boot/efi/EFI/DEVOS" || die "Could not create the EFI directories"
+    efi=${DEVOS_INSTALL_BOOT_EFI:-}
+    if [ -z "$efi" ]; then
+        live_esp=$(findfs LABEL=DEVOS_EFI 2>/dev/null || true)
+        [ -n "$live_esp" ] || die "Cannot find the Live USB boot partition (DEVOS_EFI)"
+        # Reuse the mount the Live boot already made (mounting a FAT volume again with other options fails).
+        espdir=$(findmnt -n -o TARGET "$live_esp" 2>/dev/null | head -n 1)
+        if [ -z "$espdir" ]; then
+            espdir=$(mktemp -d /run/devos-liveesp.XXXXXX)
+            mount_tracked -o ro "$live_esp" "$espdir"
+        fi
+        efi=$espdir/EFI/DEVOS/INSTALLED.EFI
+    fi
+    [ -f "$efi" ] || die "This Live USB has no installed-system boot image (INSTALLED.EFI); rebuild the USB image"
+    cp "$efi" "$target/boot/efi/EFI/DEVOS/DEVOS.EFI" || die "Could not copy the boot image to the EFI partition (see $LOG)"
+    # The removable-media path boots on any UEFI firmware without NVRAM changes.
+    cp "$efi" "$target/boot/efi/EFI/BOOT/BOOTAA64.EFI" || die "Could not copy the fallback boot image (see $LOG)"
+}
+
+cmd_run() {
+    parse_args "$@"
+    valid_name "$USERNAME" || die "Invalid user name (lowercase letters, digits, - and _; start with a letter)"
+    valid_host "$HOSTNAME_NEW" || die "Invalid host name"
+    [ "$PASSWORD_STDIN" = 1 ] || die "Pass the password on standard input with --password-stdin"
+    PASSWORD=
+    IFS= read -r PASSWORD || true
+    [ -n "$PASSWORD" ] || die "The password cannot be empty"
+    check_environment
+    select_target; check_source
+    [ "$CONFIRM" = "$DISK" ] || die "Confirmation does not match: type $DISK to erase it"
+    [ "$CONFIRM_SIZE" = "$TARGET_SIZE" ] || die "Disk size confirmation does not match ($TARGET_SIZE bytes)"
+    for tool in sfdisk mkfs.vfat mkfs.ext4 blkid tar mount umount udevadm useradd chpasswd; do
+        command -v "$tool" >/dev/null 2>&1 || die "Missing tool: $tool"
+    done
+    mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+    : >"$LOG" 2>/dev/null || true
+    trap cleanup EXIT
+    trap 'exit 143' TERM HUP INT
+    # Messages from commands that fail go to the log instead of the progress stream.
+    exec 2>>"$LOG"
+    ESP=$(part_path "$DISK" 1); ROOT=$(part_path "$DISK" 2)
+
+    step 1 "Partitioning $DISK"
+    printf 'label: gpt\nsize=%sMiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="DevOs EFI"\ntype=B921B045-1DF0-41C3-AF44-4C6F280D3FAE, name="DevOs root"\n' "$ESP_MIB" |
+        sfdisk --wipe always --wipe-partitions always "$DISK" >>"$LOG" 2>&1 || die "Partitioning failed (see $LOG)"
+    blockdev --rereadpt "$DISK" 2>/dev/null || true
+    udevadm settle 2>/dev/null || true
+    n=0; while [ ! -b "$ROOT" ] || [ ! -b "$ESP" ]; do
+        n=$((n + 1)); [ "$n" -le 20 ] || die "The new partitions did not appear"; sleep 1
+    done
+
+    step 2 "Formatting"
+    mkfs.vfat -F 32 -n DEVOSESP "$ESP" >>"$LOG" 2>&1 || die "Could not format the EFI partition"
+    mkfs.ext4 -F -q -L devos-root "$ROOT" >>"$LOG" 2>&1 || die "Could not format the root partition"
+    udevadm settle 2>/dev/null || true
+
+    step 3 "Mounting the new system"
+    WORK=$(mktemp -d /run/devos-install.XXXXXX)
+    mount_tracked "$ROOT" "$WORK"
+    mkdir -p "$WORK/boot/efi" || die "Could not create the boot mount point"
+    mount_tracked "$ESP" "$WORK/boot/efi"
+
+    step 4 "Copying Dev OS (this takes several minutes)"
+    xattr=; tar --help 2>&1 | grep -q -- --xattrs && xattr='--xattrs --xattrs-include=*'
+    # shellcheck disable=SC2086
+    (cd "$SOURCE" && tar --one-file-system --numeric-owner $xattr -cf - .) | (cd "$WORK" && tar --numeric-owner $xattr -xpf -) >>"$LOG" 2>&1 || die "Copying the system failed (see $LOG)"
+    [ -f "$WORK/etc/os-release" ] && [ -e "$WORK/usr/lib/systemd/systemd" ] || die "The copied system is incomplete (see $LOG)"
+    mkdir -p "$WORK/proc" "$WORK/sys" "$WORK/dev" "$WORK/run" "$WORK/tmp" && chmod 1777 "$WORK/tmp" || die "Could not prepare the system directories (see $LOG)"
+
+    step 5 "Writing disk and host configuration"
+    ROOT_UUID=$(blkid -s UUID -o value "$ROOT" || true); ESP_UUID=$(blkid -s UUID -o value "$ESP" || true)
+    [ -n "$ROOT_UUID" ] && [ -n "$ESP_UUID" ] || die "Could not read the new filesystem UUIDs"
+    printf 'UUID=%s / ext4 defaults,noatime 0 1\nUUID=%s /boot/efi vfat umask=0077,shortname=winnt 0 2\n' "$ROOT_UUID" "$ESP_UUID" >"$WORK/etc/fstab"
+    printf '%s\n' "$HOSTNAME_NEW" >"$WORK/etc/hostname"
+    printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\tlocalhost\n' "$HOSTNAME_NEW" >"$WORK/etc/hosts"
+    : >"$WORK/etc/machine-id"; rm -f "$WORK/var/lib/dbus/machine-id"
+    mkdir -p "$WORK/etc/devos"; printf 'installed=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$WORK/etc/devos/installed"
+
+    step 6 "Creating the user $USERNAME"
+    groups=
+    for g in wheel netdev devos video render seat audio input; do grep -q "^$g:" "$WORK/etc/group" && groups="$groups,$g"; done
+    useradd -R "$WORK" -m -s /bin/sh ${groups:+-G "${groups#,}"} "$USERNAME" >>"$LOG" 2>&1 || die "Could not create the user"
+    # -P edits the target's files with this (Live) system's PAM setup; -R needs a complete PAM setup inside the target.
+    { printf '%s:%s\n' "$USERNAME" "$PASSWORD" | chpasswd -P "$WORK" >>"$LOG" 2>&1 ||
+        printf '%s:%s\n' "$USERNAME" "$PASSWORD" | chpasswd -R "$WORK" >>"$LOG" 2>&1; } || die "Could not set the password"
+    PASSWORD=
+    # The base image keeps root locked; nothing in this step enables a root login.
+
+    step 7 "Hardware profile for this machine"
+    for item in usr/share/devos/profiles usr/bin/devos-hwprofile; do
+        [ ! -e "/$item" ] || { mkdir -p "$WORK/$(dirname "$item")"; cp -R "/$item" "$WORK/$item"; }
+    done
+
+    step 8 "Installing the boot entry"
+    place_boot_entry "$WORK"
+    if command -v efibootmgr >/dev/null 2>&1 && [ -d /sys/firmware/efi ]; then
+        efibootmgr -c -d "$DISK" -p 1 -L "Dev OS" -l '\EFI\DEVOS\DEVOS.EFI' >>"$LOG" 2>&1 || say "NOTE the firmware boot entry was not created; the disk still boots through the fallback path"
+    fi
+
+    step 9 "Finishing"
+    sync || true
+    unmount_all
+    rmdir "$WORK" 2>/dev/null || true; WORK=
+    udevadm settle 2>/dev/null || true
+
+    step 10 "Done"
+    say "DONE Dev OS is installed on $DISK. Remove the USB drive and restart."
+}
+
+case ${1:-} in
+    disks) shift; cmd_disks "$@" ;;
+    plan) shift; cmd_plan "$@" ;;
+    run) shift; cmd_run "$@" ;;
+    -h|--help|help|'') sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "Unknown command: $1" ;;
+esac

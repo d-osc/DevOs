@@ -1,0 +1,16 @@
+#!/usr/bin/d
+use "std/json"
+use "std/result"
+use "/usr/share/dev-os/native/radio-system.dev" as radio
+use "/usr/share/dev-os/native/privileged.dev" as secure
+use "/usr/share/dev-os/lib/desktop.dev" as util
+fn main(): i32 {
+    let outcome = result.attempt(fn(): json.Value {
+        let raw = secure.descriptorText(0, 4096)
+        secure.require(json.valid(raw), "Invalid radio request.")
+        return radio.apply(json.parse(raw))
+    })
+    if result.isErr(outcome) { print(json.stringify(util.error(result.message(outcome)))); return 1 }
+    print(json.stringify(result.unwrap(outcome))); return 0
+}
+return main()

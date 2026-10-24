@@ -1,0 +1,208 @@
+#!/bin/sh
+# Wi-Fi hotspot (access point) report for the Live system: prints a verdict per layer
+# (Wi-Fi interface and driver, AP mode in the wiphy, regulatory domain, rfkill,
+# NetworkManager, wpa_supplicant AP support, dnsmasq, nft/iptables, netfilter/NAT
+# modules, IP forwarding) and the raw evidence behind it. It changes no state unless
+# asked: `--try` (or DEVOS_HOTSPOT_TRY=1) creates a temporary NetworkManager hotspot on
+# 2.4 GHz for DEVOS_HOTSPOT_TRY_SECONDS (default 15), records the exact result and
+# removes it again. That drops a Wi-Fi client connection on the same radio for the test.
+# Usage: devos-hotspot-report [--try] [output-file]   (default: standard output)
+export PATH=${DEVOS_EXTRA_PATH:+$DEVOS_EXTRA_PATH:}/usr/bin:/usr/sbin:/bin:/sbin
+SYS=${DEVOS_SYS_ROOT:-}
+T="/usr/bin/timeout 8"
+[ -x /usr/bin/timeout ] || T=
+TRY=${DEVOS_HOTSPOT_TRY:-0}
+TRY_SECONDS=${DEVOS_HOTSPOT_TRY_SECONDS:-15}
+OUT=
+for arg in "$@"; do
+    case "$arg" in --try) TRY=1 ;; *) OUT=$arg ;; esac
+done
+PROFILE=devos-hotspot-report-test
+
+have_module() {
+    grep -q "^$1 " "$SYS/proc/modules" 2>/dev/null || [ -d "$SYS/sys/module/$1" ]
+}
+
+# kernel_has <module>: loaded, built in, or installable by modprobe (listed in modules.dep).
+kernel_has() {
+    have_module "$1" && return 0
+    release=$(uname -r)
+    base="$SYS/lib/modules/$release"
+    [ -f "$base/modules.dep" ] || base="$SYS/usr/lib/modules/$release"
+    grep -q -E "(^|/)$1\.ko(\.[a-z]+)?:" "$base/modules.dep" 2>/dev/null && return 0
+    grep -q -E "(^|/)$1\.ko(\.[a-z]+)?\$" "$base/modules.builtin" 2>/dev/null
+}
+
+# Prints the interface-mode lines of the first wiphy that lists any.
+phy_modes() {
+    printf '%s\n' "$1" | awk '/Supported interface modes:/{on=1; next} on && /^[ \t]+\* /{sub(/^[ \t]+\* /,""); printf "%s ", $0; next} on{exit}'
+}
+
+report() {
+    dmesg_file=$(mktemp)
+    if [ -n "$DEVOS_DMESG_FILE" ]; then cat "$DEVOS_DMESG_FILE" >"$dmesg_file"; else dmesg >"$dmesg_file" 2>&1; fi
+    echo "=== DevOS hotspot report $(date -u +%FT%TZ) kernel $(uname -r) ==="
+    echo
+    echo '=== Verdict ==='
+    # 1. A wireless interface and the driver bound to it.
+    iface=; driver=
+    for n in "$SYS"/sys/class/net/*; do
+        [ -d "$n/wireless" ] || [ -d "$n/phy80211" ] || continue
+        iface=$(basename "$n"); driver=$(basename "$(readlink "$n/device/driver" 2>/dev/null)" 2>/dev/null); break
+    done
+    [ -n "$iface" ] && echo "HOTSPOT-CHECK wifi-interface: ok ($iface driver ${driver:-unknown})" || echo 'HOTSPOT-CHECK wifi-interface: FAIL (no wireless interface in /sys/class/net: the Wi-Fi driver did not bind)'
+    for mod in cfg80211 mac80211; do
+        have_module "$mod" && echo "HOTSPOT-CHECK module-$mod: ok" || echo "HOTSPOT-CHECK module-$mod: FAIL (not loaded and not built in)"
+    done
+    if have_module ath12k || have_module ath12k_wifi7; then
+        fw=$(grep -o 'fw_version [^ ]* fw_build_timestamp [0-9-]* [0-9:]*' "$dmesg_file" | tail -1)
+        echo "HOTSPOT-CHECK driver-firmware: ok (ath12k loaded; ${fw:-no fw_version line in dmesg})"
+    else
+        echo "HOTSPOT-CHECK driver-firmware: FAIL (ath12k not loaded; interface driver: ${driver:-none})"
+    fi
+    # 2. Does the wiphy advertise AP mode (and can it run AP together with a station)?
+    phy=$($T iw phy 2>&1)
+    modes=$(phy_modes "$phy")
+    case " $modes" in
+        *" AP "*) echo "HOTSPOT-CHECK ap-mode: ok (supported interface modes: $modes)" ;;
+        *) if [ -n "$modes" ]; then echo "HOTSPOT-CHECK ap-mode: FAIL (wiphy supports only: $modes; this driver/firmware cannot host an access point)"
+           else echo "HOTSPOT-CHECK ap-mode: FAIL (iw phy gave no interface modes: $(printf '%s' "$phy" | tr '\n' ' ' | cut -c1-120))"; fi ;;
+    esac
+    combos=$(printf '%s\n' "$phy" | grep -c '#{.*AP')
+    [ "$combos" -gt 0 ] && echo "HOTSPOT-CHECK ap-combination: ok ($combos interface combination(s) include AP)" || echo 'HOTSPOT-CHECK ap-combination: FAIL (no valid interface combination includes AP)'
+    # 3. Regulatory domain: AP on 5/6 GHz is refused without one; 2.4 GHz still works in the world domain.
+    reg=$($T iw reg get 2>&1)
+    country=$(printf '%s\n' "$reg" | sed -n 's/^country \([A-Z0-9][A-Z0-9]\).*/\1/p' | head -1)
+    case "$country" in
+        00) echo 'HOTSPOT-CHECK regulatory-country: ok (country 00, the world domain: the hotspot is limited to 2.4 GHz channels)' ;;
+        "") echo "HOTSPOT-CHECK regulatory-country: FAIL (iw reg get printed no country: $(printf '%s' "$reg" | tr '\n' ' ' | cut -c1-120))" ;;
+        *) echo "HOTSPOT-CHECK regulatory-country: ok ($country)" ;;
+    esac
+    stalled=$(grep -c 'Timeout while waiting for regulatory update' "$dmesg_file")
+    if [ "$stalled" -gt 0 ]; then echo "HOTSPOT-CHECK regulatory-update: FAIL (the Wi-Fi firmware never answered the regulatory update $stalled time(s); AP on 5/6 GHz is likely refused, DevOS starts hotspots on 2.4 GHz)"
+    else echo 'HOTSPOT-CHECK regulatory-update: ok (no regulatory update timeout in dmesg)'; fi
+    if [ -f "$SYS/lib/firmware/regulatory.db" ] && [ -f "$SYS/lib/firmware/regulatory.db.p7s" ]; then echo 'HOTSPOT-CHECK regulatory-db: ok'
+    else echo 'HOTSPOT-CHECK regulatory-db: FAIL (regulatory.db or regulatory.db.p7s missing from /lib/firmware)'; fi
+    # 4. rfkill.
+    rk=$($T rfkill list wlan 2>&1)
+    case "$rk" in
+        *"Hard blocked: yes"*) echo 'HOTSPOT-CHECK rfkill: FAIL (hard blocked: wireless switch / firmware kill line)' ;;
+        *"Soft blocked: yes"*) echo 'HOTSPOT-CHECK rfkill: FAIL (soft blocked: run rfkill unblock wlan)' ;;
+        *"Soft blocked: no"*) echo 'HOTSPOT-CHECK rfkill: ok' ;;
+        *) echo "HOTSPOT-CHECK rfkill: FAIL (no wlan rfkill entry: $(printf '%s' "$rk" | tr '\n' ' ' | cut -c1-120))" ;;
+    esac
+    # 5. NetworkManager and its view of the radio.
+    nmstate=$($T systemctl is-active NetworkManager 2>&1)
+    [ "$nmstate" = active ] && echo 'HOTSPOT-CHECK networkmanager: ok' || echo "HOTSPOT-CHECK networkmanager: FAIL (state: $nmstate)"
+    devs=$($T nmcli -t -f DEVICE,TYPE,STATE device 2>&1)
+    nmstatus=$(printf '%s\n' "$devs" | grep ':wifi:' | grep -v '^p2p-dev' | head -1)
+    case "$nmstatus" in
+        *unmanaged*) echo "HOTSPOT-CHECK nm-wifi-device: FAIL (NetworkManager does not manage it: $nmstatus)" ;;
+        "") echo 'HOTSPOT-CHECK nm-wifi-device: FAIL (NetworkManager lists no Wi-Fi device)' ;;
+        *) echo "HOTSPOT-CHECK nm-wifi-device: ok ($nmstatus)" ;;
+    esac
+    nmap=
+    [ -n "$iface" ] && nmap=$($T nmcli -t -g WIFI-PROPERTIES.AP device show "$iface" 2>&1 | head -1)
+    case "$nmap" in
+        yes) echo 'HOTSPOT-CHECK nm-ap-capability: ok (NetworkManager reports WIFI-PROPERTIES.AP yes)' ;;
+        *) echo "HOTSPOT-CHECK nm-ap-capability: FAIL (WIFI-PROPERTIES.AP is '${nmap:-unknown}': the Settings hotspot page reports the hardware as unsupported)" ;;
+    esac
+    # 6. wpa_supplicant must be built with AP support: NetworkManager starts the access point through it.
+    wpas=$(command -v wpa_supplicant)
+    if [ -z "$wpas" ]; then echo 'HOTSPOT-CHECK wpa-supplicant-ap: FAIL (wpa_supplicant is not installed)'
+    elif grep -a -q -E 'AP-ENABLED|hostapd' "$wpas" 2>/dev/null; then echo "HOTSPOT-CHECK wpa-supplicant-ap: ok ($wpas has access point support)"
+    else echo "HOTSPOT-CHECK wpa-supplicant-ap: FAIL ($wpas has no AP support: rebuild with CONFIG_AP=y)"; fi
+    # 7. Internet sharing backend: dnsmasq for DHCP/DNS and nft or iptables for NAT.
+    dnsmasq=$(command -v dnsmasq)
+    [ -n "$dnsmasq" ] && echo "HOTSPOT-CHECK dnsmasq: ok ($dnsmasq)" || echo 'HOTSPOT-CHECK dnsmasq: FAIL (not installed: NetworkManager ipv4.method shared cannot start DHCP)'
+    fw=$(command -v nft || command -v iptables)
+    [ -n "$fw" ] && echo "HOTSPOT-CHECK firewall-tool: ok ($fw)" || echo 'HOTSPOT-CHECK firewall-tool: FAIL (neither nft nor iptables is installed: sharing has no NAT backend)'
+    for mod in nf_tables nf_nat nft_masq nft_chain_nat nft_ct; do
+        kernel_has "$mod" && echo "HOTSPOT-CHECK kernel-$mod: ok" || echo "HOTSPOT-CHECK kernel-$mod: FAIL (neither loaded, built in nor in modules.dep: NAT for hotspot sharing cannot be set up)"
+    done
+    fwd=$(cat "$SYS/proc/sys/net/ipv4/ip_forward" 2>/dev/null)
+    case "$fwd" in
+        0|1) echo "HOTSPOT-CHECK ip-forward: ok (net.ipv4.ip_forward=$fwd; NetworkManager sets it to 1 while sharing)" ;;
+        *) echo 'HOTSPOT-CHECK ip-forward: FAIL (net.ipv4.ip_forward is not readable: no IPv4 routing support in the kernel)' ;;
+    esac
+    # 8. Optional live attempt, exactly as the shell does it (WPA2, 2.4 GHz, IPv4 shared).
+    try_evidence=
+    if [ "$TRY" = 1 ] && [ -n "$iface" ] && command -v nmcli >/dev/null 2>&1; then
+        pass=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 12)
+        [ -n "$pass" ] || pass=$(date +%s | sha1sum | cut -c1-12)
+        $T nmcli connection delete "$PROFILE" >/dev/null 2>&1
+        added=$($T nmcli connection add type wifi ifname "$iface" con-name "$PROFILE" autoconnect no ssid DevOsHotspotTest mode ap 802-11-wireless.band bg ipv4.method shared ipv6.method disabled wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$pass" 2>&1)
+        up=$(/usr/bin/timeout $((TRY_SECONDS+10)) nmcli --wait "$TRY_SECONDS" connection up "$PROFILE" ifname "$iface" 2>&1)
+        upstatus=$?
+        sleep 2
+        state=$($T nmcli -t -g GENERAL.STATE,GENERAL.REASON device show "$iface" 2>&1 | tr '\n' ' ')
+        ifinfo=$($T iw dev "$iface" info 2>&1)
+        shared=$(pgrep -a dnsmasq 2>&1)
+        rules=$($T nft list ruleset 2>&1 | grep -E 'masquerade|nm-shared' | head -5)
+        $T nmcli connection down "$PROFILE" >/dev/null 2>&1
+        $T nmcli connection delete "$PROFILE" >/dev/null 2>&1
+        recent_log=$($T journalctl -b --no-pager -n 40 -u NetworkManager -u wpa_supplicant 2>&1)
+        if [ "$upstatus" -eq 0 ]; then echo "HOTSPOT-CHECK try-hotspot: ok (2.4 GHz access point activated; device state: $state)"
+        else echo "HOTSPOT-CHECK try-hotspot: FAIL ($(printf '%s' "$up" | tr '\n' ' ' | cut -c1-240); device state: $state)"; fi
+        printf '%s\n' "$ifinfo" | grep -q 'type AP' && echo 'HOTSPOT-CHECK try-interface-type-ap: ok' || echo 'HOTSPOT-CHECK try-interface-type-ap: FAIL (the interface did not switch to type AP)'
+        try_evidence="--- nmcli connection add ---
+$added
+--- nmcli connection up (exit $upstatus) ---
+$up
+--- device state ---
+$state
+--- iw dev $iface info ---
+$ifinfo
+--- dnsmasq processes ---
+$shared
+--- nft masquerade rules ---
+$rules
+--- journalctl NetworkManager / wpa_supplicant (last 40) ---
+$recent_log"
+    else
+        echo 'HOTSPOT-CHECK try-hotspot: SKIPPED (run with --try, or set DEVOS_HOTSPOT_TRY=1; it drops a Wi-Fi client connection for about 15 seconds)'
+    fi
+    echo
+    echo '=== Try evidence ==='
+    echo "${try_evidence:-(no hotspot attempt was made)}"
+    echo
+    echo '=== iw phy ==='
+    echo "$phy"
+    echo
+    echo '=== iw reg get ==='
+    echo "$reg"
+    echo
+    echo '=== rfkill ==='
+    $T rfkill list 2>&1
+    echo
+    echo '=== nmcli device status ==='
+    $T nmcli device status 2>&1
+    $T nmcli -f GENERAL,WIFI-PROPERTIES device show "${iface:-wlan0}" 2>&1
+    echo
+    echo '=== NetworkManager.service ==='
+    echo 'Last DevOS Settings hotspot error (password redacted):'
+    [ ! -r /run/devos-hotspot-last-error.json ] || cat /run/devos-hotspot-last-error.json
+    echo
+    $T systemctl status NetworkManager --no-pager -l 2>&1 | head -20
+    echo
+    echo '=== Sharing modules ==='
+    echo 'Standalone DNS service and DNS/DHCP listeners (NetworkManager owns per-hotspot dnsmasq):'
+    $T systemctl is-enabled dnsmasq.service 2>&1
+    $T systemctl status dnsmasq.service --no-pager -l 2>&1 | head -15
+    $T ss -lntup 2>&1 | grep -E '(:53 |:67 |dnsmasq|resolved)' || true
+    $T journalctl -b --no-pager -n 20 -u dnsmasq 2>&1
+    grep -E '^(nf_tables|nf_nat|nft_[a-z_]+|nf_conntrack|ath12k[a-z0-9_]*|mac80211|cfg80211) ' "$SYS/proc/modules" 2>&1
+    echo
+    echo '=== dmesg: ath12k, cfg80211, regulatory and wlan lines ==='
+    grep -i -E 'ath12k|cfg80211|regulatory|wlan|wcn7850|qcc2072' "$dmesg_file" | head -120
+    echo
+    echo '=== journalctl NetworkManager and wpa_supplicant ==='
+    $T journalctl -b --no-pager -n 80 -u NetworkManager -u wpa_supplicant 2>&1
+    rm -f "$dmesg_file"
+}
+
+if [ -n "$OUT" ]; then
+    report >"$OUT.new" 2>&1 && mv "$OUT.new" "$OUT"
+else
+    report
+fi

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Install Dev OS
+Comment=Install Dev OS on this computer from the Live USB
+Exec=dev-os-shell installer
+TryExec=dev-os-shell
+Icon=system-software-install
+Categories=System;
+Terminal=false

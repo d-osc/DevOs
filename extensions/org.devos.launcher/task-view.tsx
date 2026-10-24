@@ -13,13 +13,13 @@ export function TaskViewContent({windows, desktops = [], dismiss, activate, clos
     const info = (window: DesktopWindow) => {
         const group = windowGroup(window), app = findDesktopApp(apps, group);
         return {app, title: app?.get_display_name() || ({terminal: 'Terminal', files: 'Files', settings: 'Settings', 'dev-os-editor': 'Editor'} as Record<string, string>)[group] || group,
-            icon: group === 'terminal' ? 'utilities-terminal-symbolic' : group === 'files' ? 'folder-symbolic' : group === 'settings' ? 'preferences-system-symbolic' : group === 'dev-os-editor' ? 'accessories-text-editor-symbolic' : 'application-x-executable-symbolic'};
+            icon: group === 'terminal' ? 'utilities-terminal-symbolic' : group === 'files' ? 'folder-symbolic' : group === 'settings' ? 'preferences-system-symbolic' : group === 'dev-os-editor' ? 'dev-os-editor' : 'application-x-executable-symbolic'};
     };
     return <Box className="task-view-content" orientation="vertical" spacing={16} borderWidth={16} expand>
         <Box className="task-view-header" spacing={20}>
             <Box orientation="vertical" spacing={7} expand><Label className="task-view-eyebrow" xalign={0}>WORKSPACE OVERVIEW</Label><Label className="task-view-heading" xalign={0}>Task View</Label><Label id="task-view-desktop-title" className="task-view-description" xalign={0}>{`${current ? `${desktopName(current)}  ·  ` : ''}${visible.length} open window${visible.length === 1 ? '' : 's'}`}</Label></Box>
             <Box className="task-view-summary" spacing={10} valign="center"><Image iconName="view-grid-symbolic" pixelSize={16} /><Label>{`${desktopCount} desktop${desktopCount === 1 ? '' : 's'}  ·  ${windows.length} window${windows.length === 1 ? '' : 's'}`}</Label></Box>
-            <Button id="task-view-dismiss" className="task-view-dismiss" valign="center" tooltip="Close Task View · Esc" onClicked={dismiss}><Image iconName="window-close-symbolic" pixelSize={18} /></Button>
+            <Button id="task-view-dismiss" className="task-view-dismiss launcher-icon-button" valign="center" tooltip="Close Task View · Esc" onClicked={dismiss}><Image iconName="window-close-symbolic" pixelSize={16} /></Button>
         </Box>
         <Box spacing={10}><Label className="task-view-section-title" xalign={0}>Open windows</Label><Label className="task-view-count">{String(visible.length)}</Label><Label className="task-view-description" xalign={1} expand>Choose a window to continue</Label></Box>
         <ScrolledWindow expand hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>

@@ -18,7 +18,7 @@ do_configure:prepend() {
     sh ${S}/scripts/kconfig/merge_config.sh -m -O ${B} ${B}/.config ${UNPACKDIR}/devos-desktop.cfg
 }
 do_configure:append() {
-    for setting in CONFIG_ARM64=y CONFIG_MODULES=y CONFIG_DRM_VIRTIO_GPU=y CONFIG_INPUT_EVDEV=y CONFIG_CGROUPS=y CONFIG_FHANDLE=y CONFIG_EXT4_FS=y; do
+    for setting in CONFIG_ARM64=y CONFIG_MODULES=y CONFIG_DRM_VIRTIO_GPU=y CONFIG_DRM_BOCHS=y CONFIG_INPUT_EVDEV=y CONFIG_CGROUPS=y CONFIG_FHANDLE=y CONFIG_EXT4_FS=y; do
         grep -Fx "$setting" ${B}/.config >/dev/null || bbfatal "Missing desktop kernel requirement: $setting"
     done
 }

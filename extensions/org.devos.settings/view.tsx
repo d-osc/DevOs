@@ -2,7 +2,7 @@ import {
     Gtk, Pango, React, Box, Label,
     Button, Entry, SearchEntry, Switch, Image,
     DrawingArea, ScrolledWindow, createRoot, mountWindowHeader, useState,
-    useEffect, type Config, type SettingsHost, type SettingsSection, type SettingsValues,
+    useEffect, activePalette, rgbOf, type Config, type SettingsHost, type SettingsSection, type SettingsValues,
     type SettingsPages
 } from '@dev-os/core';
 
@@ -16,10 +16,13 @@ export interface SettingsServices {
     openFiles?(): void;
     switchUser?(username?: string): void;
 }
-import {NetworkSettings} from './network-view.js';
+import {NetworkSettings, isNetworkPage} from './network-view.js';
 import {BluetoothDevicesSettings} from './bluetooth-view.js';
 import {LanguageSettings} from './language-view.js';
 import {TimeSettings} from './time-view.js';
+import {InputSettings} from './input-view.js';
+import {PrintersSettings} from './printers-view.js';
+import {TouchpadSettings} from './touchpad-view.js';
 import {SystemSettings} from './system-view.js';
 import {AccountsSettings} from './accounts-view.js';
 import {isSystemPage} from './system.js';
@@ -36,8 +39,6 @@ function CoreSections(config: Config): {sections: SettingsSection[]; values: Set
     const sections: SettingsSection[] = [
         {id: 'appearance', title: 'Appearance', description: 'Make this desktop feel like your workspace.', fields: [
             {key: 'name', title: 'Desktop name', description: 'The name shown on your desktop.', type: 'string', default: config.name},
-            {key: 'accent', title: 'Accent color', description: 'Highlights, active controls and selection.', type: 'color', default: config.accent},
-            {key: 'background', title: 'Background color', description: 'The base color of your desktop wallpaper.', type: 'color', default: config.background},
         ]},
         {id: 'panel', title: 'Panel & clock', description: 'Keep essential information within reach.', fields: [
             {key: 'panel_height', title: 'Panel height', description: 'Height in pixels.', type: 'number', default: config.panel_height, min: 32, max: 96, integer: true},
@@ -53,8 +54,10 @@ function CoreSections(config: Config): {sections: SettingsSection[]; values: Set
     return {sections, values: Object.fromEntries(sections.flatMap(section => section.fields).map(field => [field.key, field.default]))};
 }
 const pageIcons: Record<string, string> = {
+    'org.devos.camera': 'camera-photo-symbolic',
+    'org.devos.microphone': 'audio-input-microphone-symbolic',
     core: 'video-display-symbolic', 'org.devos.background': 'preferences-desktop-wallpaper-symbolic',
-    'org.devos.clock': 'preferences-system-time-symbolic', 'org.devos.editor': 'accessories-text-editor-symbolic',
+    'org.devos.clock': 'preferences-system-time-symbolic', 'org.devos.editor': 'dev-os-editor',
     'org.devos.files': 'folder-symbolic', 'org.devos.icons': 'applications-graphics-symbolic',
     'org.devos.launcher': 'view-app-grid-symbolic', 'org.devos.panel': 'view-more-symbolic',
     'org.devos.settings': 'preferences-system-symbolic', 'org.devos.terminal': 'utilities-terminal-symbolic',
@@ -63,7 +66,7 @@ const pageIcons: Record<string, string> = {
     'org.devos.store': 'application-x-addon-symbolic',
     'org.devos.appstore': 'system-software-install-symbolic',
     'org.devos.diskmanager': 'drive-harddisk-symbolic',
-    'org.devos.taskmanager': 'utilities-system-monitor-symbolic',
+    'org.devos.taskmanager': 'dev-os-task-manager',
 };
 const sectionIcons: Record<string, string> = {
     appearance: 'applications-graphics-symbolic', panel: 'preferences-system-time-symbolic', session: 'system-run-symbolic',
@@ -74,7 +77,7 @@ function ColorSwatch({color}: {color: string}) {
             const valid = /^#[0-9a-fA-F]{6}$/.test(color), hex = valid ? color : '#566277';
             cr.arc(widget.get_allocated_width() / 2, widget.get_allocated_height() / 2, 10, 0, Math.PI * 2);
             cr.setSourceRGB(...[1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255) as [number, number, number]);
-            cr.fillPreserve(); cr.setSourceRGBA(1, 1, 1, .18); cr.setLineWidth(1); cr.stroke();
+            cr.fillPreserve(); cr.setSourceRGBA(...rgbOf(activePalette().fg), .3); cr.setLineWidth(1); cr.stroke();
             return false;
         }} />;
 }
@@ -215,10 +218,10 @@ export function SettingsView({services, initialPage = 'system', onPageChanged}: 
                 <Label className="settings-eyebrow" xalign={0} marginBottom={4}>PREFERENCES</Label>
                 <Button id="settings-nav-accounts" className={`settings-nav ${selected === 'accounts' ? 'settings-nav-active' : ''}`} onClicked={() => choose('accounts')}><Box spacing={10}><Image iconName="avatar-default-symbolic" pixelSize={17} /><Label xalign={0} expand>Accounts</Label></Box></Button>
                 <Button id="settings-nav-system" className={`settings-nav ${isSystemPage(selected) || ['core', 'language', 'time'].includes(selected) ? 'settings-nav-active' : ''}`} onClicked={() => choose('system')}><Box spacing={10}><Image iconName="computer-symbolic" pixelSize={17} /><Label xalign={0} expand>System</Label></Box></Button>
-                <Button id="settings-nav-network" className={`settings-nav ${['network', 'wifi'].includes(selected) ? 'settings-nav-active' : ''}`} onClicked={() => choose('network')}>
+                <Button id="settings-nav-network" className={`settings-nav ${isNetworkPage(selected) ? 'settings-nav-active' : ''}`} onClicked={() => choose('network')}>
                     <Box spacing={10}><Image iconName="network-workgroup-symbolic" pixelSize={17} /><Label xalign={0} expand>Network &amp; Internet</Label></Box>
                 </Button>
-                <Button id="settings-nav-bluetooth" className={`settings-nav ${selected === 'bluetooth' ? 'settings-nav-active' : ''}`} onClicked={() => choose('bluetooth')}>
+                <Button id="settings-nav-bluetooth" className={`settings-nav ${['bluetooth', 'touchpad', 'mouse', 'keyboard', 'bluetooth-add', 'printers'].includes(selected) ? 'settings-nav-active' : ''}`} onClicked={() => choose('bluetooth')}>
                     <Box spacing={10}><Image iconName="bluetooth-symbolic" pixelSize={17} /><Label xalign={0} expand>Bluetooth &amp; Devices</Label></Box>
                 </Button>
             </Box>
@@ -249,7 +252,7 @@ export function SettingsView({services, initialPage = 'system', onPageChanged}: 
             </Box>
             {CustomPage && notice && <Label className="settings-description" xalign={0} wrap>{notice}</Label>}
         </Box>
-        {selected === 'accounts' ? <AccountsSettings switchUser={services.switchUser} /> : isSystemPage(selected) ? <SystemSettings page={selected} navigate={choose} openFiles={services.openFiles} /> : selected === 'time' ? <TimeSettings showClock={() => choose('org.devos.clock')} /> : selected === 'language' ? <LanguageSettings /> : selected === 'org.devos.settings' ? <SettingsPreferences preferences={services.extensions} /> : selected === 'org.devos.clock' ? <ClockSettings preferences={services.extensions} fallback={services.getCore().clock_format} applied={services.applied} /> : selected === 'bluetooth' ? <BluetoothDevicesSettings /> : selected === 'network' || selected === 'wifi' ? <NetworkSettings page={selected} navigate={choose} /> : CustomPage ? <CustomPage key={selected} /> : <Editor key={`${selected}/${revision}`} {...page} icon={pageIcons[selected] ?? 'application-x-addon-symbolic'} core={!info} notice={notice}
+        {selected === 'accounts' ? <AccountsSettings switchUser={services.switchUser} /> : isSystemPage(selected) ? <SystemSettings page={selected} navigate={choose} openFiles={services.openFiles} /> : selected === 'time' ? <TimeSettings showClock={() => choose('org.devos.clock')} /> : selected === 'language' ? <LanguageSettings /> : selected === 'org.devos.settings' ? <SettingsPreferences preferences={services.extensions} /> : selected === 'org.devos.clock' ? <ClockSettings preferences={services.extensions} fallback={services.getCore().clock_format} applied={services.applied} /> : selected === 'touchpad' ? <TouchpadSettings back={() => choose('bluetooth')} /> : selected === 'mouse' || selected === 'keyboard' ? <InputSettings key={selected} kind={selected} back={() => choose('bluetooth')} language={() => choose('language')} /> : selected === 'printers' ? <PrintersSettings back={() => choose('bluetooth')} /> : selected === 'bluetooth' || selected === 'bluetooth-add' ? <BluetoothDevicesSettings key={selected} adding={selected === 'bluetooth-add'} back={() => choose('bluetooth')} navigate={choose} showTouchpad={() => choose('touchpad')} /> : isNetworkPage(selected) ? <NetworkSettings page={selected} navigate={choose} /> : CustomPage ? <CustomPage key={selected} /> : <Editor key={`${selected}/${revision}`} {...page} icon={pageIcons[selected] ?? 'application-x-addon-symbolic'} core={!info} notice={notice}
             apply={(enabled, values) => {
                 if (info) services.extensions.update(info.manifest.id, enabled, values);
                 else {

@@ -1,11 +1,11 @@
 import {
     readJson, Gio, GLib, writeJson
-} from '@dev-os/core';
-export {readText} from '@dev-os/core';
+} from '@dev-os/core/base';
+export {readText} from '@dev-os/core/base';
 
 export type Command = 'terminal' | 'files' | 'lock';
 export interface Config {
-    name: string; accent: string; background: string; panel_height: number;
+    name: string; panel_height: number;
     clock_format: string; terminal: string[]; files: string[]; lock: string[]; autostart: string[][];
 }
 declare const __DEV_OS_VERSION__: string;
@@ -13,7 +13,7 @@ export const VERSION = typeof __DEV_OS_VERSION__ === 'string' ? __DEV_OS_VERSION
 export const ROOT = GLib.getenv('DEV_OS_ROOT') ??
     Gio.File.new_for_uri(import.meta.url).get_parent()!.get_parent()!.get_path()!;
 export const DEFAULTS: Readonly<Config> = Object.freeze({
-    name: 'Dev OS', accent: '#88e0c0', background: '#101b25', panel_height: 36,
+    name: 'Dev OS', panel_height: 36,
     clock_format: '%H:%M', terminal: ['dev-os-terminal'],
     files: ['thunar', '~'], lock: ['dev-os-lock'], autostart: [],
 });
@@ -29,20 +29,18 @@ function validateCommand(value: unknown, key: string): asserts value is string[]
         throw new Error(`${key} must be a non-empty array of non-empty command arguments`);
 }
 
+/** Colors now come from the Dark/Light themes; configs written before that still carry these keys. */
+const legacyColorKeys = ['accent', 'background'];
+
 export function validateConfig(data: unknown): Config {
     if (data === null || typeof data !== 'object' || Array.isArray(data))
         throw new Error('Config must be a JSON object');
     const input = data as Record<string, unknown>;
-    const unknown = Object.keys(input).filter(key => !Object.hasOwn(DEFAULTS, key));
+    const unknown = Object.keys(input).filter(key => !Object.hasOwn(DEFAULTS, key) && !legacyColorKeys.includes(key));
     if (unknown.length) throw new Error(`Unknown settings: ${unknown.join(', ')}`);
     for (const key of ['name', 'clock_format']) {
         if (Object.hasOwn(input, key) && (typeof input[key] !== 'string' || !input[key].trim()))
             throw new Error(`${key} must be a non-empty string`);
-    }
-    for (const key of ['accent', 'background']) {
-        if (Object.hasOwn(input, key) && (typeof input[key] !== 'string' ||
-            !/^#[0-9a-fA-F]{6}$/.test(input[key])))
-            throw new Error(`${key} must be a six-digit hex color, e.g. #88e0c0`);
     }
     if (Object.hasOwn(input, 'panel_height') &&
         (typeof input.panel_height !== 'number' || !Number.isInteger(input.panel_height) || input.panel_height < 32 || input.panel_height > 96))
@@ -54,6 +52,7 @@ export function validateConfig(data: unknown): Config {
         if (!Array.isArray(input.autostart)) throw new Error('autostart must be an array of command arrays');
         input.autostart.forEach(command => validateCommand(command, 'autostart'));
     }
+    for (const key of legacyColorKeys) delete input[key];
     return JSON.parse(JSON.stringify({...DEFAULTS, ...input})) as Config;
 }
 
@@ -79,3 +78,4 @@ export function saveConfig(data: unknown, path = configPath()): Config {
     writeJson(path, config);
     return config;
 }
+

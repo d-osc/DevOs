@@ -3,7 +3,7 @@
 Settings → Time (or `dev-os-shell time`) shows a live clock, the current time
 zone and network synchronization status. Refresh reads the service again.
 The panel clock popup also has a **Time settings** button.
-Search/select a time zone and click **Apply time zone**. The **Set time
+Search the time zone list, click a zone to select it, then click **Apply time zone**. The **Set time
 automatically** switch enables/disables the system's NTP service. With automatic
 time off, enter a local date (`YYYY-MM-DD`) and 24-hour time (`HH:MM`), then click
 **Set date & time**. **Panel clock appearance** opens the existing Clock page.
@@ -35,3 +35,9 @@ Validation:
 Native system-time mutation/authentication and NTP network synchronization
 still need validation on the built DevOs image. The bridge follows
 [systemd's timedate1 interface](https://github.com/systemd/systemd/blob/main/man/org.freedesktop.timedate1.xml).
+
+Live USB: `devos-session` installs `47-devos-time.rules`, a polkit rule that lets
+local active (or `wheel`/`devos`) users call `org.freedesktop.timedate1.*`
+without a password prompt, so the non-root Live user can change the time zone.
+The helper returns the real `busctl` error (with a "Permission denied" prefix
+for authorization failures) instead of a generic message.

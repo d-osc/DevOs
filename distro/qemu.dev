@@ -90,8 +90,25 @@ fn inspectRootfs(rootfs: str, release: str): bool {
     return false
 }
 
+// Desktop uses -cpu max: the guest then gets LSE atomics and newer instructions that TCG
+// runs much faster than a72 emulation (desktop boot to login 54 s -> 32 s measured).
+// Guest display size. DEVOS_QEMU_RESOLUTION=WIDTHxHEIGHT overrides the 1920x1080 default.
+fn resolution(): Vec<str> {
+    let value = process.getenv("DEVOS_QEMU_RESOLUTION")
+    let parts = strings.split(value, "x")
+    if parts.len() == 2 && intOf(parts[0]) >= 640 && intOf(parts[0]) <= 7680 && intOf(parts[1]) >= 480 && intOf(parts[1]) <= 4320 {
+        return Vec<str>("${intOf(parts[0])}", "${intOf(parts[1])}")
+    }
+    return Vec<str>("1920", "1080")
+}
+// DEVOS_QEMU_GPU=bochs selects bochs-display (the guest's own mode setting decides its size);
+// the default virtio-gpu-pci uses the resolution() size.
+fn gpuDevice(): str {
+    if strings.equal(process.getenv("DEVOS_QEMU_GPU"), "bochs") { return "bochs-display" }
+    return "virtio-gpu-pci,xres=" + resolution()[0] + ",yres=" + resolution()[1]
+}
 fn plan(mode: str, kernel: str, rootfs: str, initrd: str, log: str, memory: i64, cpus: i64, headless: bool, test: bool): Vec<str> {
-    let command = Vec<str>("qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72", "-accel", "tcg,thread=multi",
+    let command = Vec<str>("qemu-system-aarch64", "-machine", "virt", "-cpu", strings.equal(mode, "desktop") ? "max" : "cortex-a72", "-accel", "tcg,thread=multi",
         "-smp", "${cpus}", "-m", "${memory}", "-no-reboot")
     if test {
         command.push("-display")
@@ -101,7 +118,7 @@ fn plan(mode: str, kernel: str, rootfs: str, initrd: str, log: str, memory: i64,
         command.push("-serial")
         command.push("stdio")
     } else {
-        let display = strings.equal(mode, "base") || headless ? "none" : "gtk,gl=off"
+        let display = strings.equal(mode, "base") || headless ? "none" : "gtk,gl=off,show-cursor=on,zoom-to-fit=on"
         let escapedLog = strings.replaceAll(log, ",", ",,")
         command.push("-display")
         command.push(display)
@@ -110,7 +127,7 @@ fn plan(mode: str, kernel: str, rootfs: str, initrd: str, log: str, memory: i64,
         command.push("-serial")
         command.push("chardev:console")
         command.push("-mon")
-        command.push("chardev:console,mode=readline")
+        command.push("chardev=console,mode=readline")
     }
     if strings.equal(mode, "base") {
         let append = "console=ttyAMA0 rdinit=/init panic=-1" + (test ? " devos.smoke=1" : "")
@@ -129,7 +146,7 @@ fn plan(mode: str, kernel: str, rootfs: str, initrd: str, log: str, memory: i64,
         command.push("-device")
         command.push("virtio-blk-pci,drive=devos")
         command.push("-device")
-        command.push("virtio-gpu-pci")
+        command.push(gpuDevice())
         command.push("-device")
         command.push("qemu-xhci")
         command.push("-device")
@@ -325,6 +342,13 @@ fn main(): i32 {
     }
     print("Exit console/VM with Ctrl+A then X. Desktop changes are temporary.")
     let joined = ""
+    if strings.equal(mode, "desktop") && !headless {
+        // X11 (XWayland under WSLg) is faster than the Wayland GTK path; set DEVOS_QEMU_GDK_BACKEND=wayland to opt out.
+        let backend = process.getenv("DEVOS_QEMU_GDK_BACKEND")
+        if strings.equal(backend, "") { backend = "x11" }
+        joined = " env GDK_BACKEND=" + shellQuote(backend)
+        if strings.equal(backend, "x11") && strings.equal(process.getenv("DISPLAY"), "") { joined = joined + " DISPLAY=:0" }
+    }
     for i in 0..(command.len() as i64) { joined = joined + " " + shellQuote(command[i]) }
     return posix.shell(joined)
 }

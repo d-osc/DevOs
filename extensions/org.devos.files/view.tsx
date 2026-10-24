@@ -1,6 +1,6 @@
 import {
     Gtk, Gdk, GLib, Gio, Pango,
-    React, Box, Label, Button, Image,
+    React, Box, Label, Button, Image, Overlay,
     Entry, CheckButton, ScrolledWindow, ListBox, ListBoxRow,
     FlowBox, FlowBoxChild, createRoot, mountWindowHeader, flushSync,
     useState, useLayoutEffect, useRef, useImperativeHandle, useMemo,
@@ -26,21 +26,21 @@ const FileRow = memo(function FileRow({entry, selected}: {entry: FileEntry; sele
     const kind = fileKind(entry);
     return <ListBoxRow tooltip={entry.label} className={selected ? 'selected-file' : ''}>
         <Box spacing={12} borderWidth={8}>
-            <Image gicon={entryIcon(entry)} pixelSize={20} />
-            <Label className="file-name mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE} maxWidthChars={38} expand>{entry.label}</Label>
-            <Label className={`file-type kind-${kind.color}`} xalign={0} widthRequest={106}>{kind.label}</Label>
+            <Image gicon={entryIcon(entry)} pixelSize={24} />
+            <Label className="file-name" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE} maxWidthChars={38} expand>{entry.label}</Label>
+            <Label className={`file-type kind-${kind.color}`} xalign={0} widthRequest={76}>{kind.label}</Label>
             <Label className="subtle mono" xalign={1} widthRequest={72}>{entry.directory ? '—' : GLib.format_size(entry.size)}</Label>
-            <Label className="subtle mono" xalign={1} widthRequest={110}>{modifiedLabel(entry.modified)}</Label>
+            <Label className="subtle mono" xalign={1} widthRequest={90}>{modifiedLabel(entry.modified)}</Label>
         </Box>
     </ListBoxRow>;
 });
 const FileCard = memo(function FileCard({entry, selected}: {entry: FileEntry; selected: boolean}) {
     const kind = fileKind(entry);
-    return <FlowBoxChild tooltip={entry.path} className={selected ? 'selected-file' : ''}>
+    return <FlowBoxChild valign="start" tooltip={entry.path} className={selected ? 'selected-file' : ''}>
         <Box className="file-card" orientation="vertical" spacing={10} borderWidth={14} widthRequest={126}>
             <Box spacing={12}><Image gicon={entryIcon(entry)} pixelSize={36} expand />
                 <Label className={`type-badge kind-${kind.color}`} valign="start">{kind.tag}</Label></Box>
-            <Label className="file-name mono" xalign={0} maxWidthChars={19} ellipsize={Pango.EllipsizeMode.MIDDLE}>{entry.label}</Label>
+            <Label className="file-name" xalign={0} maxWidthChars={19} ellipsize={Pango.EllipsizeMode.MIDDLE}>{entry.label}</Label>
             <Label className="subtle" xalign={0}>{entry.directory ? kind.label : GLib.format_size(entry.size)}</Label>
         </Box>
     </FlowBoxChild>;
@@ -55,6 +55,8 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
     const [quick, setQuick] = useState(false);
     const quickHandle = useRef<QuickOpenHandle>(null);
     const addressEntry = useRef<Gtk.Entry>(null);
+    const emptyOverlay = useRef<Gtk.Overlay>(null), emptyContent = useRef<Gtk.Box>(null);
+    useLayoutEffect(() => { if (emptyOverlay.current && emptyContent.current) emptyOverlay.current.set_overlay_pass_through(emptyContent.current, true); });
     const listWidget = useRef<Gtk.ListBox>(null), gridWidget = useRef<Gtk.FlowBox>(null);
     useLayoutEffect(() => model.subscribe(() => update(model.state)), [model]);
     useLayoutEffect(() => { setGrid(options.gridView); setHidden(options.showHidden); }, [options.gridView, options.showHidden]);
@@ -115,9 +117,10 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
     const folders = useMemo(() => filtered.filter(entry => entry.directory).slice(0, 8), [filtered]);
     return <Box orientation="vertical" spacing={0} expand vexpand>
         <Box spacing={0} expand>
-            <ScrolledWindow className="files-sidebar" widthRequest={180} hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
+            <ScrolledWindow className="files-sidebar" widthRequest={170} hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
             <Box orientation="vertical" spacing={8} borderWidth={16}>
-                <Label className="eyebrow" xalign={0} marginBottom={6}>NAVIGATION</Label>
+                <Box className="files-brand" spacing={10} marginBottom={18}><Image iconName="folder-symbolic" pixelSize={24} /><Box orientation="vertical" spacing={3}><Label className="files-brand-title" xalign={0}>Files</Label><Label className="subtle" xalign={0}>Your everyday workspace</Label></Box></Box>
+                <Label className="eyebrow" xalign={0} marginBottom={6}>PLACES</Label>
                 {places.filter((place): place is string[] => !!place[1]).map(([label, path]) => <Button key={label}
                     className={`place-button ${state.directory === path ? 'place-active' : ''}`} tooltip={path} onClicked={() => { void model.navigate(path); }}>
                     <Box spacing={10}><Image iconName={label === 'Home' ? 'user-home-symbolic' : label === 'File system' ? 'drive-harddisk-symbolic' : 'folder-symbolic'} pixelSize={16} /><Label xalign={0} expand>{label}</Label></Box>
@@ -142,26 +145,35 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                     const parent = Gio.File.new_for_path(file.path).get_parent()?.get_path();
                     if (parent) void model.navigate(parent).then(ok => { if (ok) model.select(file.path); });
                 } else void model.openPath(file.path);
-            }} /> : <Box orientation="vertical" spacing={12} borderWidth={18} expand>
+            }} /> : <Box orientation="vertical" spacing={12} borderWidth={20} expand>
                 <Box className="location-bar" spacing={4}>
-            <Button tooltip="Back · Alt + Left" sensitive={state.back && !state.loading} onClicked={() => { void model.back(); }}>←</Button>
-            <Button tooltip="Forward · Alt + Right" sensitive={state.forward && !state.loading} onClicked={() => { void model.forward(); }}>→</Button>
-            <Button tooltip="Parent folder" sensitive={state.directory !== '/' && !state.loading} onClicked={() => { void model.up(); }}>↑</Button>
+            <Button tooltip="Back · Alt + Left" sensitive={state.back && !state.loading} onClicked={() => { void model.back(); }}><Image iconName="go-previous-symbolic" pixelSize={16} /></Button>
+            <Button tooltip="Forward · Alt + Right" sensitive={state.forward && !state.loading} onClicked={() => { void model.forward(); }}><Image iconName="go-next-symbolic" pixelSize={16} /></Button>
+            <Button tooltip="Parent folder" sensitive={state.directory !== '/' && !state.loading} onClicked={() => { void model.up(); }}><Image iconName="go-up-symbolic" pixelSize={16} /></Button>
             <Entry id="files-location" className="mono" ref={addressEntry} text={address} expand placeholder="Folder path · Ctrl + L" widthChars={16}
                 onChanged={entry => setAddress(entry.get_text())} onActivate={() => { void model.navigate(address); }} />
-            <Button onClicked={() => { void model.navigate(address); }}>Go</Button>
-            <Button tooltip="Refresh · F5" onClicked={() => { void model.refresh(); }}>Refresh</Button>
+
+            <Button tooltip="Refresh · F5" onClicked={() => { void model.refresh(); }}><Image iconName="view-refresh-symbolic" pixelSize={16} /></Button>
                 </Box>
         <ScrolledWindow hscrollbarPolicy={Gtk.PolicyType.AUTOMATIC} vscrollbarPolicy={Gtk.PolicyType.NEVER}>
             <Box className="breadcrumbs" spacing={3}>{breadcrumbs.map(item => <Button key={item.path} className={item.path === state.directory ? 'crumb-current' : ''} tooltip={item.path} onClicked={() => { void model.navigate(item.path); }}>{item.label}</Button>)}</Box>
         </ScrolledWindow>
-                <Box spacing={8}>
-                    <Button className="primary-action" sensitive={!state.loading && !state.busy} onClicked={() => { setName(''); setEditing('create'); }}>New folder</Button>
-                    <Button sensitive={!!selected && !state.busy && !state.loading} onClicked={rename}>Rename</Button>
-                    <Button sensitive={!!selected && !state.busy} onClicked={() => { if (selected) void model.open(selected); }}>Open</Button>
-                    <Button tooltip="Copy selected item path, or current folder path" onClicked={() => { copyPath(selected?.path ?? state.directory); setNotice('Path copied'); }}>Copy path</Button>
+                <Box className="folder-heading" spacing={12} marginTop={6} marginBottom={4}>
+                    <Box className="folder-emblem" borderWidth={12}><Image iconName={state.directory === GLib.get_home_dir() ? 'user-home-symbolic' : 'folder-symbolic'} pixelSize={26} /></Box>
+                    <Box orientation="vertical" spacing={5} expand>
+                        <Label className="folder-title" xalign={0} ellipsize={Pango.EllipsizeMode.END} maxWidthChars={24}>{state.directory === GLib.get_home_dir() ? 'Home' : state.directory === '/' ? 'File system' : GLib.path_get_basename(state.directory)}</Label>
+                        <Label className="subtle" xalign={0}>{filtered.length ? `${filtered.length} items in this folder` : 'A little space for something new'}</Label>
+                    </Box>
+                    <Button className="files-icon-button" tooltip="Search files · Ctrl + P" onClicked={openQuick}><Image iconName="system-search-symbolic" pixelSize={18} /></Button>
+                </Box>
+                <Box className="files-actions" spacing={6}>
+                    <Button className="primary-action" sensitive={!state.loading && !state.busy} onClicked={() => { setName(''); setEditing('create'); }}><Box spacing={6}><Image iconName="folder-new-symbolic" pixelSize={16} /><Label>New folder</Label></Box></Button>
+                    <Button tooltip="Rename selected item" sensitive={!!selected && !state.busy && !state.loading} onClicked={rename}><Image iconName="document-edit-symbolic" pixelSize={16} /></Button>
+                    <Button tooltip="Open selected item" sensitive={!!selected && !state.busy} onClicked={() => { if (selected) void model.open(selected); }}><Image iconName="document-open-symbolic" pixelSize={16} /></Button>
+                    <Button tooltip="Copy selected item path, or current folder path" onClicked={() => { copyPath(selected?.path ?? state.directory); setNotice('Path copied'); }}><Image iconName="edit-copy-symbolic" pixelSize={16} /></Button>
                     <Box expand />
-                    <Button className="view-switch" onClicked={() => { setGrid(value => !value); model.select(null); }}>{grid ? 'List view' : 'Grid view'}</Button>
+                    <Button className={!grid ? 'view-active' : ''} tooltip="List view" onClicked={() => { setGrid(false); model.select(null); }}><Image iconName="view-list-symbolic" pixelSize={16} /></Button>
+                    <Button className={grid ? 'view-active' : ''} tooltip="Grid view" onClicked={() => { setGrid(true); model.select(null); }}><Image iconName="view-grid-symbolic" pixelSize={16} /></Button>
                 </Box>
                 {editing && <Box className="edit-strip" spacing={8} borderWidth={8}>
                     <Entry id="files-name" expand text={name} placeholder={editing === 'create' ? 'New folder name' : 'New name'}
@@ -172,9 +184,10 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                 {state.error && <Label className="error" xalign={0} wrap>{state.error}</Label>}
                 {state.loading && <Label className="muted" xalign={0}>Loading folder…</Label>}
                 {!grid && <Box className="column-heading" spacing={12} marginStart={12} marginEnd={12}>
-                    <Label xalign={0} expand>NAME</Label><Label xalign={0} widthRequest={106}>TYPE</Label>
-                    <Label xalign={1} widthRequest={72}>SIZE</Label><Label xalign={1} widthRequest={110}>MODIFIED</Label>
+                    <Label xalign={0} expand>NAME</Label><Label xalign={0} widthRequest={76}>TYPE</Label>
+                    <Label xalign={1} widthRequest={72}>SIZE</Label><Label xalign={1} widthRequest={90}>MODIFIED</Label>
                 </Box>}
+                <Overlay ref={emptyOverlay} className="files-content" expand vexpand>
                 <ScrolledWindow expand hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
                     {grid ? <FlowBox id="files-grid" ref={gridWidget} selectionMode={Gtk.SelectionMode.SINGLE} activateOnSingleClick={false}
                         minChildrenPerLine={1} maxChildrenPerLine={6} rowSpacing={8} columnSpacing={8}
@@ -187,15 +200,21 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
                         {entries.map(entry => <FileRow key={entry.path} entry={entry} selected={state.selected === entry.path} />)}
                     </ListBox>}
                 </ScrolledWindow>
-                {!state.loading && !filtered.length && <Label className="empty-message">This folder is empty</Label>}
+                {!state.loading && !filtered.length && <Box ref={emptyContent} overlay orientation="vertical" halign="center" valign="center" spacing={12} className="files-empty">
+                    <Box className="empty-folder-icon" halign="center" borderWidth={24}><Image iconName="folder-symbolic" pixelSize={52} /></Box>
+                    <Label className="empty-title">A fresh start</Label>
+                    <Label className="subtle">This folder is empty</Label>
+                    <Label className="subtle" marginTop={4}>Use New folder to make room for your next idea.</Label>
+                </Box>}
+                </Overlay>
                 {filtered.length > limit && <Button onClicked={() => setLimit(value => value + 200)}>Show more</Button>}
             </Box>}
         </Box>
-        <Box className="files-statusbar" spacing={12} borderWidth={10}>
-            <Label className="status-dot">●</Label>
-            <Label className="subtle mono" xalign={0} ellipsize={Pango.EllipsizeMode.MIDDLE} expand tooltip={selected?.path ?? state.directory}>{compactPath(selected?.path ?? state.directory)}</Label>
-            <Label className="status-message">{state.busy ? 'Working…' : notice || state.status}</Label>
-            <Label className="subtle">{filtered.length} items</Label>
+        <Box id="files-footer" className="files-statusbar" spacing={10} vexpand={false}>
+            <Image iconName={selected ? 'text-x-generic-symbolic' : 'folder-symbolic'} pixelSize={14} valign="center" />
+            <Label className="footer-location" xalign={0} valign="center" ellipsize={Pango.EllipsizeMode.MIDDLE} expand tooltip={selected?.path ?? state.directory}>{selected?.label ?? (state.directory === GLib.get_home_dir() ? 'Home' : compactPath(state.directory))}</Label>
+            {!!(state.busy || notice || state.status) && <Label className="status-message" valign="center" ellipsize={Pango.EllipsizeMode.END} maxWidthChars={24}>{state.busy ? 'Working…' : notice || state.status}</Label>}
+            <Label className="footer-count" valign="center">{selected ? '1 selected  ·  ' : ''}{filtered.length} {filtered.length === 1 ? 'item' : 'items'}</Label>
         </Box>
     </Box>;
 }

@@ -1,0 +1,32 @@
+#!/bin/sh
+# Called by this board's suspend service, before freeze and after resume.
+phase=$1
+sys=${2:-/sys}
+if [ "$phase" = pre ]; then
+    bound=no
+    for device in "$sys"/bus/i2c/drivers/asus-glymur-ec/*-0076; do
+        [ ! -L "$device" ] || bound=yes
+    done
+    if [ "$bound" != yes ]; then
+        echo 'Dev OS: suspend refused: ASUS Embedded Controller driver is not bound.' >&2
+        exit 1
+    fi
+    if ! grep -qw s2idle "$sys/power/mem_sleep"; then
+        echo 'Dev OS: suspend refused: s2idle is unavailable on this board.' >&2
+        exit 1
+    fi
+fi
+# Live diagnostics survive a failed resume; never write to an internal disk.
+if [ "$sys" = /sys ] && mountpoint -q /run/live/esp; then
+    destination=/run/live/esp/DEVOS-LOGS/$(cat /proc/sys/kernel/random/boot_id)
+    mkdir -p "$destination"
+    {
+        date -u
+        echo "phase=$phase"
+        cat /sys/power/state /sys/power/mem_sleep
+        ls -l /sys/bus/i2c/drivers/asus-glymur-ec/
+        journalctl -b -k --no-pager -n 300
+    } >"$destination/sleep-$phase.txt" 2>&1
+    sync -f "$destination/sleep-$phase.txt"
+fi
+exit 0

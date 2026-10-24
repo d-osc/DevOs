@@ -1,0 +1,164 @@
+#!/bin/sh
+# Battery / AC bring-up report for the Live system: prints a verdict per layer
+# (kernel modules, device-tree pmic-glink node, SOCCP/ADSP remoteproc, PMIC_RTR rpmsg channel,
+# power-supply auxiliary device, /sys/class/power_supply entries, battery and charger attributes,
+# kernel messages) and what the panel indicator would show. It changes no driver state.
+# On Snapdragon X laptops the battery is not an ACPI device: qcom_battmgr talks to the PMIC firmware over
+# pmic_glink, so no qcom-battmgr-bat entry means one of the layers below is down.
+# Usage: devos-battery-report [output-file]   (default: standard output)
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+HW=${DEVOS_HW_RUN:-/run/devos-hw}
+SYS=${DEVOS_SYS_ROOT:-}
+DT="$SYS/sys/firmware/devicetree/base"
+PS="$SYS/sys/class/power_supply"
+
+have_module() {
+    grep -q "^$1 " "$SYS/proc/modules" 2>/dev/null || [ -d "$SYS/sys/module/$1" ]
+}
+# attr <supply> <file>: the value, or "(unreadable: <error>)" so ENODATA/EAGAIN from the driver is visible.
+attr() {
+    if [ ! -e "$PS/$1/$2" ]; then printf '(absent)'; return; fi
+    if v=$(cat "$PS/$1/$2" 2>&1); then printf '%s' "$v"; else printf '(unreadable: %s)' "$(echo "$v" | sed 's/^.*: //')"; fi
+}
+num() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+report() {
+    dmesg_file=$(mktemp)
+    if [ -n "$DEVOS_DMESG_FILE" ]; then cat "$DEVOS_DMESG_FILE" >"$dmesg_file"; else dmesg >"$dmesg_file" 2>&1; fi
+    echo "=== DevOS battery report $(date -u +%FT%TZ) kernel $(uname -r) ==="
+    echo "profile: $(sed -n 's/^selected_profile=//p' "$HW/profile.conf" 2>/dev/null)"
+    echo
+    echo '=== Verdict ==='
+    # 1. Kernel modules: the battery manager and the pmic_glink transport it depends on.
+    for mod in pmic_glink qcom_battmgr; do
+        if have_module "$mod"; then echo "BATTERY-CHECK module-$mod: ok"
+        else echo "BATTERY-CHECK module-$mod: FAIL (not loaded and not built in: CONFIG_BATTERY_QCOM_BATTMGR / CONFIG_QCOM_PMIC_GLINK, or modprobe $mod)"; fi
+    done
+    # 2. Device tree: pmic-glink node must exist and be enabled, or no aux devices are created.
+    node=
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        case "$(tr '\0' ' ' <"$c" 2>/dev/null)" in
+            *pmic-glink*) d=$(dirname "$c"); s=; [ ! -f "$d/status" ] || s=$(tr '\0' ' ' <"$d/status" | sed 's/ *$//')
+                if [ -z "$s" ] || [ "$s" = okay ]; then node="$node ${d#$DT}"; fi ;;
+        esac
+    done
+    [ -n "$node" ] && echo "BATTERY-CHECK dt-pmic-glink: ok ($node )" || echo 'BATTERY-CHECK dt-pmic-glink: FAIL (no enabled pmic-glink node: the DTB does not describe the battery manager)'
+    # 3. The remote processor that serves PMIC_RTR: SOCCP on Glymur (X2 Elite), ADSP on older Snapdragon X.
+    running=; stopped=
+    for r in "$SYS"/sys/class/remoteproc/remoteproc*; do
+        [ -e "$r/state" ] || continue
+        n=$(cat "$r/name" 2>/dev/null); s=$(cat "$r/state" 2>/dev/null)
+        case "$n" in *soccp*|*adsp*) case "$s" in running|attached) running="$running $n($s)" ;; *) stopped="$stopped $n($s)" ;; esac ;; esac
+    done
+    if [ -n "$running" ] && [ -z "$stopped" ]; then echo "BATTERY-CHECK remoteproc: ok ($running )"
+    elif [ -n "$running" ]; then echo "BATTERY-CHECK remoteproc: ok ($running ; not running:$stopped)"
+    else echo "BATTERY-CHECK remoteproc: FAIL (no running soccp/adsp remoteproc;${stopped:- none found}; check firmware in /lib/firmware/qcom/ and dmesg)"; fi
+    # 4. The glink channel pmic_glink needs: PMIC_RTR_SOCCP_APPS (Glymur) or PMIC_RTR_ADSP_APPS.
+    chan=
+    for d in "$SYS"/sys/bus/rpmsg/devices/*; do
+        [ -e "$d" ] || continue
+        case "$(cat "$d/name" 2>/dev/null)" in PMIC_RTR*) chan="$chan $(cat "$d/name")" ;; esac
+    done
+    [ -n "$chan" ] && echo "BATTERY-CHECK rpmsg-channel: ok ($chan )" || echo 'BATTERY-CHECK rpmsg-channel: FAIL (no PMIC_RTR_* rpmsg device: glink-edge of the SOCCP/ADSP node is missing in the DTB, qcom_glink_smem is not loaded, or the remote processor did not start the service)'
+    # 5. pmic_glink creates the power-supply auxiliary device; qcom_battmgr must be bound to it.
+    aux=0; bound=0
+    for d in "$SYS"/sys/bus/auxiliary/devices/*power-supply*; do
+        [ -e "$d" ] || continue
+        aux=$((aux+1)); [ -e "$d/driver" ] && bound=$((bound+1))
+    done
+    if [ "$bound" -gt 0 ]; then echo "BATTERY-CHECK aux-power-supply: ok ($bound bound of $aux)"
+    elif [ "$aux" -gt 0 ]; then echo "BATTERY-CHECK aux-power-supply: FAIL ($aux auxiliary device(s), qcom_battmgr is not bound: see dmesg lines below)"
+    else echo 'BATTERY-CHECK aux-power-supply: FAIL (no pmic_glink.power-supply auxiliary device: pmic_glink did not probe)'; fi
+    # 6. power_supply class entries.
+    bats=; acs=; usbs=; n=0
+    for d in "$PS"/*; do
+        [ -e "$d" ] || continue
+        n=$((n+1)); name=$(basename "$d"); type=$(attr "$name" type)
+        case "$type" in
+            Battery) [ "$(attr "$name" scope)" = Device ] || bats="$bats $name" ;;
+            Mains) acs="$acs $name" ;;
+            USB*) usbs="$usbs $name" ;;
+        esac
+    done
+    if [ "$n" -eq 0 ]; then echo 'BATTERY-CHECK power-supply-class: FAIL (/sys/class/power_supply is empty: no battery or charger driver registered anything)'
+    else echo "BATTERY-CHECK power-supply-class: ok ($n entries)"; fi
+    [ -n "$bats" ] && echo "BATTERY-CHECK battery-supply: ok ($bats )" || echo 'BATTERY-CHECK battery-supply: FAIL (no type=Battery supply: the panel will show "No battery data")'
+    [ -n "$acs$usbs" ] && echo "BATTERY-CHECK charger-supply: ok ($acs$usbs )" || echo 'BATTERY-CHECK charger-supply: FAIL (no Mains/USB supply: charger state is unknown)'
+    # 7. Attributes of the first battery: what the panel reads.
+    pct=; status=; first=
+    for b in $bats; do first=$b; break; done
+    if [ -n "$first" ]; then
+        present=$(attr "$first" present); cap=$(attr "$first" capacity); status=$(attr "$first" status)
+        [ "$present" = 0 ] && echo "BATTERY-CHECK battery-present: FAIL ($first present=0: no battery in the bay or not detected by firmware)" || echo "BATTERY-CHECK battery-present: ok ($first present=$present)"
+        if num "$cap"; then echo "BATTERY-CHECK battery-capacity: ok ($cap%)"; pct=$cap
+        else
+            en=$(attr "$first" energy_now); ef=$(attr "$first" energy_full)
+            if num "$en" && num "$ef" && [ "$ef" -gt 0 ]; then pct=$((en*100/ef)); echo "BATTERY-CHECK battery-capacity: ok (capacity is $cap; computed ${pct}% from energy_now/energy_full)"
+            else
+                cn=$(attr "$first" charge_now); cf=$(attr "$first" charge_full)
+                if num "$cn" && num "$cf" && [ "$cf" -gt 0 ]; then pct=$((cn*100/cf)); echo "BATTERY-CHECK battery-capacity: ok (capacity is $cap; computed ${pct}% from charge_now/charge_full)"
+                else echo "BATTERY-CHECK battery-capacity: FAIL (capacity is $cap and no usable energy/charge counters: the firmware reported no percentage yet; unplug/replug the charger, wait for 'service up', see dmesg)"; fi
+            fi
+        fi
+        case "$status" in Charging|Discharging|Full|"Not charging") echo "BATTERY-CHECK battery-status: ok ($status)" ;; *) echo "BATTERY-CHECK battery-status: FAIL (status is $status)" ;; esac
+    else
+        echo 'BATTERY-CHECK battery-present: FAIL (no battery supply to read)'
+        echo 'BATTERY-CHECK battery-capacity: FAIL (no battery supply to read)'
+        echo 'BATTERY-CHECK battery-status: FAIL (no battery supply to read)'
+    fi
+    online=no
+    for a in $acs $usbs; do [ "$(attr "$a" online)" = 1 ] && online="yes ($a)"; done
+    echo "BATTERY-CHECK ac-online: $online"
+    # 8. Kernel messages.
+    err=$(grep -i -E 'battmgr|pmic_glink.*(fail|error|timeout)|PMIC_RTR|power_supply.*(fail|error)' "$dmesg_file" | grep -v -E 'Modules linked in|Failed to create device link' | head -3 | tr '\n' ' ' | cut -c1-300)
+    [ -z "$err" ] && echo 'BATTERY-CHECK kernel-messages: no battmgr/PMIC_RTR line in dmesg (the driver logs only on errors; absence alone proves nothing)' || echo "BATTERY-CHECK kernel-messages: $err"
+    # 9. What the panel shows.
+    if [ -z "$first" ]; then
+        if [ -n "$acs$usbs" ]; then echo 'BATTERY-CHECK panel-would-show: "No battery data" (neutral icon; AC supply present)'; else echo 'BATTERY-CHECK panel-would-show: nothing (no power supplies at all)'; fi
+    elif [ -n "$pct" ]; then echo "BATTERY-CHECK panel-would-show: ${pct}% $status"
+    else echo "BATTERY-CHECK panel-would-show: $status without percentage (tooltip: percentage not reported by the firmware)"; fi
+    echo
+    echo '=== power_supply attributes ==='
+    for d in "$PS"/*; do
+        [ -e "$d" ] || continue
+        name=$(basename "$d"); echo "--- $name"
+        for f in type scope present status online capacity capacity_level energy_now energy_full energy_full_design charge_now charge_full voltage_now current_now power_now cycle_count technology model_name manufacturer health; do
+            [ -e "$d/$f" ] && printf '%s=%s\n' "$f" "$(attr "$name" "$f")"
+        done
+    done
+    echo
+    echo '=== ls -l /sys/class/power_supply ==='
+    ls -l "$PS" 2>&1
+    echo
+    echo '=== remoteproc ==='
+    for r in "$SYS"/sys/class/remoteproc/remoteproc*; do
+        [ -e "$r" ] && printf '%s name=%s state=%s firmware=%s\n' "$(basename "$r")" "$(cat "$r/name" 2>/dev/null)" "$(cat "$r/state" 2>/dev/null)" "$(cat "$r/firmware" 2>/dev/null)"
+    done
+    echo
+    echo '=== rpmsg and auxiliary devices ==='
+    for d in "$SYS"/sys/bus/rpmsg/devices/* "$SYS"/sys/bus/auxiliary/devices/*; do
+        [ -e "$d" ] && printf '%s name=%s driver=%s\n' "$(basename "$d")" "$(cat "$d/name" 2>/dev/null)" "$(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null)"
+    done
+    echo
+    echo '=== Battery-related modules ==='
+    grep -i -E '^(pmic_glink[a-z_]*|qcom_battmgr|ucsi_glink|qcom_glink[a-z_]*|rpmsg_core|qcom_pd_mapper|pdr_interface|qcom_q6v5_pas|qcom_pmic_typec|typec_ucsi) ' "$SYS/proc/modules" 2>&1
+    echo
+    echo '=== Deferred drivers ==='
+    cat "$SYS/sys/kernel/debug/devices_deferred" 2>&1
+    echo
+    echo '=== Device-tree pmic-glink and SOCCP nodes ==='
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        v=$(tr '\0' ' ' <"$c" 2>/dev/null)
+        case "$v" in *pmic-glink*|*pas-soccp*|*soccp*) printf '%s status=%s compatible=%s\n' "$(dirname "${c#$DT}")" "$(cat "$(dirname "$c")/status" 2>/dev/null | tr '\0' ' ' | grep . || echo '(none)')" "$v" ;; esac
+    done
+    echo
+    echo '=== dmesg: battery manager, pmic_glink, glink, remoteproc and power-supply lines ==='
+    grep -i -E 'battmgr|pmic.glink|PMIC_RTR|glink|soccp|remoteproc|power_supply|charger|ucsi' "$dmesg_file" | grep -v 'Fixed dependency cycle' | head -150
+    rm -f "$dmesg_file"
+}
+
+if [ -n "$1" ]; then
+    report >"$1.new" 2>&1 && mv "$1.new" "$1"
+else
+    report
+fi

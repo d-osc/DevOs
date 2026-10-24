@@ -1,4 +1,4 @@
-import {React, Gtk, Gio, Box, Label, Button, Entry, Switch, ComboBoxText, DrawingArea, ScrolledWindow, useState, useEffect, useRef, type SettingsHost, type SettingsValues, type WindowControls} from '@dev-os/core';
+import {React, Gtk, Gio, Box, Label, Button, Entry, Switch, ComboBoxText, DrawingArea, ScrolledWindow, useState, useEffect, useRef, wallpaperColors, type SettingsHost, type SettingsValues, type WindowControls} from '@dev-os/core';
 import {WallpaperCanvas, type BackgroundConfig} from './view.js';
 import {wallpaperConfig, loadPicture} from './wallpaper.js';
 import {BackgroundContextSettings} from './context-settings.js';
@@ -8,7 +8,7 @@ import {activeWidgetDesktop, desktopWidgetValues, updateDesktopWidgets, widgetDe
 
 const id = 'org.devos.background';
 const presets = ['#101b25', '#171923', '#18332e', '#28344f', '#3c2948', '#482d2d', '#c4b8a4', '#e7e8ec'];
-export interface BackgroundSettingsServices {preferences: SettingsHost; getConfig(): BackgroundConfig; applied(): void; parent?: Gtk.Window | null; windows?: WindowControls;}
+export interface BackgroundSettingsServices {preferences: SettingsHost; getConfig(): {name: string}; applied(): void; parent?: Gtk.Window | null; windows?: WindowControls;}
 export function BackgroundSettings({preferences, getConfig, applied, parent, windows}: BackgroundSettingsServices) {
     const [desktop, setDesktop] = useState(() => activeWidgetDesktop(windows));
     useEffect(() => windows?.subscribe(() => {
@@ -27,7 +27,7 @@ export function BackgroundSettings({preferences, getConfig, applied, parent, win
     const disposed = useRef(false);
     useEffect(() => () => { disposed.current = true; cancel.cancel(); chooser.current?.destroy(); }, [cancel]);
     const dirty = JSON.stringify(values) !== JSON.stringify(saved);
-    const config = wallpaperConfig(getConfig(), values);
+    const config = wallpaperConfig({name: getConfig().name, ...wallpaperColors()}, values);
     const edit = (next: SettingsValues) => { setValues(current => ({...current, ...next})); setError(''); setStatus(''); };
     const browse = () => {
         if (chooser.current) { chooser.current.present(); return; }
@@ -97,8 +97,8 @@ export function BackgroundSettings({preferences, getConfig, applied, parent, win
                             {id: 'cover', text: 'Fill (crop to fit)'}, {id: 'contain', text: 'Fit (show whole picture)'}, {id: 'stretch', text: 'Stretch'},
                         ]} onChanged={widget => edit({fit: widget.get_active_id() ?? 'cover'})} /></Box>
                     </Box>}
-                    <Box spacing={12}><Label xalign={0} expand>Use Desktop background color</Label><Switch id="background-desktop-color" active={values.useDesktopColor === true} sensitive={!busy} onActiveChanged={widget => edit({useDesktopColor: widget.active})} /></Box>
-                    <Label className="settings-description" xalign={0} wrap>{values.useDesktopColor ? 'Uses the color saved in Desktop → Appearance.' : 'This color also fills any space around your picture.'}</Label>
+                    <Box spacing={12}><Label xalign={0} expand>Use theme background color</Label><Switch id="background-desktop-color" active={values.useDesktopColor === true} sensitive={!busy} onActiveChanged={widget => edit({useDesktopColor: widget.active})} /></Box>
+                    <Label className="settings-description" xalign={0} wrap>{values.useDesktopColor ? 'Follows the Dark or Light theme.' : 'This color also fills any space around your picture.'}</Label>
                     <Box spacing={8}>{presets.map(color => <Button key={color} id={`background-color-${color.slice(1)}`} tooltip={color} sensitive={!busy} onClicked={() => edit({color, useDesktopColor: false})}>
                         <DrawingArea widthRequest={24} heightRequest={24} onDraw={(_canvas, cr) => {
                             cr.setSourceRGB(...[1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16) / 255) as [number, number, number]); cr.paint(); return false;
