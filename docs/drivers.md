@@ -35,6 +35,13 @@ unloads drivers, overrides blacklists, installs packages, or builds vendor code.
 Exit status: 0 means no issues identified within audit scope, 1 means review or
 repair remains, 2 means invalid usage/environment. JSON includes repair outcomes.
 
+On a Live USB boot the report also has a `hardware_profile` section: the profile
+selected for this machine (`/run/devos-hw`, see [hardware-profiles.md](hardware-profiles.md)),
+its test status and quirks, and checks that the profile's `firmware.list`
+entries exist, its `modules.load` modules are loaded and blacklisted modules
+are not. Missing firmware or an unloaded module counts as an issue (exit 1).
+Without a boot-time selection the section is `not-selected` and has no effect.
+
 Optional desktop tools on native Linux: NetworkManager (`nmcli`) for Wi-Fi,
 BlueZ (`bluetoothctl`) for Bluetooth, WirePlumber (`wpctl`) or PulseAudio tools
 (`pactl`) for audio. Install the appropriate distribution packages only when

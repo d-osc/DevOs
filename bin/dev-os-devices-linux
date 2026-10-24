@@ -137,7 +137,12 @@ fn devicesOf(tree: json.Value): json.Value {
             if strings.equal(name, "") { name = vText(propGet(props, "Name")) }
             let address = vText(propGet(props, "Address"))
             if strings.equal(name, "") { name = strings.equal(address, "") ? paths[i] : address }
+            // BlueZ aliases a nameless LE device with its address in dashed form (52-5A-26-11-45-E9).
+            let dashed = strings.replaceAll(address, ":", "-")
+            let named = !strings.equal(vText(propGet(props, "Name")), "") || (!strings.equal(name, dashed) && !strings.equal(name, address) && !strings.equal(name, paths[i]))
+            if !named { name = "Unknown device · " + address }
             let item = json.set(json.object(), "id", paths[i])
+            item = json.set(item, "named", named)
             item = json.set(item, "adapter", vText(propGet(props, "Adapter")))
             item = json.set(item, "name", name)
             item = json.set(item, "address", address)
@@ -176,12 +181,22 @@ fn deviceLess(a: json.Value, b: json.Value): bool {
     let aPaired = json.bool(propGet(a, "paired"))
     let bPaired = json.bool(propGet(b, "paired"))
     if aPaired != bPaired { return aPaired }
-    return strings.toLowerCase(json.string(propGet(a, "name"))) < strings.toLowerCase(json.string(propGet(b, "name")))
+    let aNamed = json.bool(propGet(a, "named"))
+    let bNamed = json.bool(propGet(b, "named"))
+    if aNamed != bNamed { return aNamed }
+    // The DevLang runtime has no string `<` ("unsupported string operator"): comparing names made every
+    // list with two otherwise-equal devices fail, so a real scan showed an error instead of devices.
+    return false
 }
 
 fn busCall(args: Vec<str>): bool {
     let output = child_process.execFileSync("busctl", args, child_process.options())
     return output.success
+}
+
+fn discoveryRunning(adapter: str): bool {
+    let output = child_process.execFileSync("busctl", Vec<str>("get-property", "org.bluez", adapter, "org.bluez.Adapter1", "Discovering"), child_process.options())
+    return output.success && strings.contains(decodeText(output.stdout), "true")
 }
 
 fn act(request: json.Value, tree: json.Value): json.Value {
@@ -195,12 +210,17 @@ fn act(request: json.Value, tree: json.Value): json.Value {
             if json.bool(propGet(json.at(adapters, i), "powered")) { adapter = json.string(propGet(json.at(adapters, i), "id")) }
         }
         if strings.equal(adapter, "") { return json.set(json.object(), "error", "Turn on a Bluetooth adapter before scanning.") }
+        // org.bluez.Error.InProgress: another client already scans. Read its results instead of failing,
+        // and leave its discovery session running.
+        let ownsDiscovery = true
         if !busCall(Vec<str>("call", "org.bluez", adapter, "org.bluez.Adapter1", "StartDiscovery")) {
-            return json.set(json.object(), "error", "Bluetooth scan failed.")
+            if !discoveryRunning(adapter) { return json.set(json.object(), "error", "Bluetooth scan failed.") }
+            ownsDiscovery = false
         }
-        time.sleep_ms(3000)
+        // BR/EDR inquiry needs several seconds; 3 s only ever caught LE advertisements.
+        time.sleep_ms(8000)
         let outcome = result.attempt(fn(): json.Value { return objects() })
-        busCall(Vec<str>("call", "org.bluez", adapter, "org.bluez.Adapter1", "StopDiscovery"))
+        if ownsDiscovery { busCall(Vec<str>("call", "org.bluez", adapter, "org.bluez.Adapter1", "StopDiscovery")) }
         let refreshed = result.unwrap(outcome)
         if json.is_null(refreshed) { return json.set(json.object(), "error", "Bluetooth scan failed.") }
         return refreshed

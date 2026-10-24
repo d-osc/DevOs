@@ -9,6 +9,32 @@ SHA-256 verification and provenance recorded in `/usr/share/devlang` and
 `/usr/share/gh`. GitHub CLI uses the system CA store and Git for repository
 operations.
 
+### Language toolchains
+
+The OpenEmbedded `devos-image` (not the minimal `distro/base` console
+initramfs, which carries no Git either) also installs, from the pinned
+openembedded-core / meta-openembedded (`meta-oe`) layers:
+
+- Python 3.14 with `pip`, `venv`, `ensurepip` and the full stdlib
+- Node.js 22 with `npm`/`npx`
+- Rust 1.94 (`rustc`) and `cargo`; OE's `rust` package also pulls in
+  `gcc`, `g++` and `binutils` so cargo can link.
+
+Verify on a booted image:
+
+```sh
+python3 --version && python3 -m pip --version && python3 -m venv /tmp/v
+node --version && npm --version
+rustc --version && cargo --version
+```
+
+Cost: expect roughly +1 GB of rootfs (rustc/std ~400 MB, gcc/g++ ~250 MB,
+Node ~100 MB, Python modules already shipped) and, on a cold sstate cache,
+several extra hours of build time (target `rust` and `nodejs` compile
+LLVM/V8; `rust-native` is also built). Warm sstate rebuilds are fast.
+`IMAGE_ROOTFS_EXTRA_SPACE` already leaves headroom. These sizes are estimates
+until measured from a real build.
+
 ## Bundled desktop applications
 
 The `devos-image` desktop image includes Google Chrome 155.0.8059.84 and

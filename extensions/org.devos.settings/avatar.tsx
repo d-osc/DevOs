@@ -1,4 +1,5 @@
-import {React, Gtk, Gio, GLib, Soup, Image, useEffect, useRef} from '@dev-os/core';
+import {React, Gtk, Gio, GLib, Image, setImageIcon, useEffect, useRef} from '@dev-os/core';
+import {Soup} from '@dev-os/core/soup';
 import GdkPixbuf from 'gi://GdkPixbuf?version=2.0';
 
 const downloads = new Map<number, Promise<GLib.Bytes>>();
@@ -20,7 +21,7 @@ export function AccountAvatar({githubId, size = 40}: {githubId?: number; size?: 
     const ref = useRef<Gtk.Image | null>(null);
     useEffect(() => {
         const widget = ref.current; if (!widget) return;
-        widget.set_from_icon_name('avatar-default-symbolic', Gtk.IconSize.DIALOG); widget.set_pixel_size(size);
+        widget.set_pixel_size(size); setImageIcon(widget, 'avatar-default-symbolic', Gtk.IconSize.DIALOG);
         if (!githubId || !Number.isSafeInteger(githubId) || githubId <= 0) return;
         let alive = true;
         const path = `${GLib.get_user_cache_dir()}/dev-os/avatars/${githubId}.image`;

@@ -28,14 +28,25 @@ fn checkInitrd(staging: str, temporary: str): str {
         hook = hook + "mkdir -p /newroot/etc/systemd/system/" + service + ".service.d\ncp /test/output.conf /newroot/etc/systemd/system/" + service + ".service.d/test-output.conf\n"
     }
     let init = tool.read(tree + "/init")
-    tool.require(tool.count(init, "status '[5/6]") == 1, "Test initramfs injection anchor missing or ambiguous.")
-    tool.write(tree + "/init", strings.replaceAll(init, "status '[5/6]", hook + "status '[5/6]")); tool.chmod(tree + "/init", "755")
+    if tool.has("--device-regressions") {
+        for name in Vec<str>("bluetooth-controller-test", "bluetooth-discovery-test") {
+            tool.copy(tool.root() + "/build/" + name + ".js", tree + "/test/fixture/" + name + ".js")
+        }
+        tool.copy(tool.root() + "/tools/test/device-regressions.sh", tree + "/test/fixture/device-regressions.sh")
+        tool.write(tree + "/test/regressions.service", "[Unit]\nAfter=dbus.service NetworkManager.service\n[Service]\nType=oneshot\nStandardOutput=journal+console\nStandardError=journal+console\nExecStart=/bin/sh /usr/libexec/devos-live-test/device-regressions.sh\n");
+        hook = hook + "cp /test/regressions.service /newroot/etc/systemd/system/devos-device-regressions.service\nln -s ../devos-device-regressions.service /newroot/etc/systemd/system/multi-user.target.wants/devos-device-regressions.service\n"
+    }
+    // Installed-disk boot has its own [5/6] checkpoint. Inject only into Live.
+    let anchor = "status '[5/6] starting systemd; GUI service diagnostics enabled'"
+    tool.require(tool.count(init, anchor) == 1, "Test initramfs injection anchor missing or ambiguous.")
+    tool.write(tree + "/init", strings.replaceAll(init, anchor, hook + anchor)); tool.chmod(tree + "/init", "755")
     let output = temporary + "/root-check.cpio.gz"
     tool.shell("cd " + util.quote(tree) + "; find . -print0 | cpio --null -o --format=newc | gzip -n > " + util.quote(output), Map<str,str>())
     return output
 }
 fn main(): i32 {
-    if tool.has("--help") { print("Usage: d live-usb-boot.dev -- --staging DIR --log FILE [--timeout 90] [--storage usb|virtio] [--desktop-check]"); return 0 }
+    if tool.has("--help") { print("Usage: d live-usb-boot.dev -- --staging DIR --log FILE [--timeout 90] [--storage usb|virtio] [--desktop-check] [--device-regressions (software checks only)]"); return 0 }
+    tool.require(!tool.has("--device-regressions") || tool.has("--desktop-check"), "Device software regressions require --desktop-check.")
     tool.require(tool.has("--staging") && tool.has("--log"), "Supply staging directory and log file.")
     let staging: str = tool.resolve(tool.option("--staging", ""))
     let log: str = tool.resolve(tool.option("--log", ""))
@@ -65,14 +76,14 @@ fn main(): i32 {
         let outcome = result.run(fn() {
             tool.waitFor(fn(): bool {
                 let output = util.read(log)
-                tool.require(!strings.contains(output, "DEVOS LIVE: STOP:") && !strings.contains(output, "DEVOS_LIVE_ROOT_DESKTOP_FAIL") && !process.ready(), "QEMU Live boot failed; see " + log)
-                return strings.contains(output, "DEVOS_LIVE_OVERLAY_READY: [6/6]") && strings.contains(output, "systemd[1]: systemd ") && (!tool.has("--desktop-check") || strings.contains(output, "DEVOS_LIVE_ROOT_DESKTOP_PASS=uid0"))
+                tool.require(!strings.contains(output, "DEVOS LIVE: STOP:") && !strings.contains(output, "DEVOS_DEVICE_REGRESSIONS_FAIL") && !strings.contains(output, "DEVOS_LIVE_ROOT_DESKTOP_FAIL") && !process.ready(), "QEMU Live boot failed; see " + log)
+                return strings.contains(output, "DEVOS_LIVE_OVERLAY_READY: [6/6]") && strings.contains(output, "systemd[1]: systemd ") && (!tool.has("--desktop-check") || strings.contains(output, "DEVOS_LIVE_ROOT_DESKTOP_PASS=uid0")) && (!tool.has("--device-regressions") || strings.contains(output, "DEVOS_DEVICE_REGRESSIONS_PASS"))
             }, timeout, "QEMU Live boot timed out; see " + log)
             tool.require(!strings.contains(util.read(log), ": not found"), "Guest command missing; see " + log)
         })
         smoke.stop(process); result.unwrap(outcome)
     })
-    print("PASS: staged Live initramfs, RAM overlay and systemd" + (tool.has("--desktop-check") ? "; root Wayland desktop UID 0" : "") + "; log: " + log)
+    print("PASS: staged Live initramfs, RAM overlay and systemd" + (tool.has("--desktop-check") ? "; root Wayland desktop UID 0" : "") + (tool.has("--device-regressions") ? "; software device regressions (no physical devices)" : "") + "; log: " + log)
     return 0
 }
 return tool.main(main)

@@ -1,4 +1,5 @@
 import {isWsl} from '../org.devos.settings/wifi.js';
+import {readPower, type BatteryStatus, type PowerFs} from './battery.js';
 import {
     Listeners, Gio, GLib
 } from '@dev-os/core';
@@ -7,6 +8,9 @@ export interface DeviceState {
     connected: boolean; wireless: boolean; network: string;
     wifi: boolean | null; bluetooth: boolean | null;
     brightness?: number | null; volume: number | null; muted: boolean; battery: number | null;
+    batteryStatus?: BatteryStatus;
+    /** Whether /sys/class/power_supply has a battery, and whether a charger or any other supply is online. */
+    batteryFound?: boolean; acOnline?: boolean; acFound?: boolean;
     busy: boolean; error: string;
 }
 export interface DeviceControls {
@@ -30,7 +34,15 @@ function entries(path: string): string[] {
 function text(path: string): string {
     try { return new TextDecoder().decode(GLib.file_get_contents(path)[1]).trim(); } catch { return ''; }
 }
+const sysfs: PowerFs = {list: entries, read: text};
 export class Devices implements DeviceControls {
+    private batteryTimer: number;
+    private readBattery() {
+        const {battery, batteryStatus, batteryFound, acOnline, acFound} = readPower(sysfs);
+        const s = this.state;
+        if (s.battery === battery && s.batteryStatus === batteryStatus && s.batteryFound === batteryFound && s.acOnline === acOnline && s.acFound === acFound) return;
+        this.update({battery, batteryStatus, batteryFound, acOnline, acFound});
+    }
     state: DeviceState = {connected: false, wireless: false, network: 'Checking network…', wifi: null,
         bluetooth: null, volume: null, muted: false, battery: null, busy: false, error: ''};
     private listeners = new Listeners();
@@ -43,8 +55,11 @@ export class Devices implements DeviceControls {
     private refreshing = false;
     private audio: 'wpctl' | 'pactl' | null = null;
     constructor() {
+        this.batteryTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {this.readBattery(); return GLib.SOURCE_CONTINUE;});
         this.networkSignal = this.network.connect('notify', () => { void this.refresh(); });
-        this.timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => { void this.refresh(); return GLib.SOURCE_CONTINUE; });
+        // Each refresh starts nmcli, bluetoothctl and pactl; polling every 5 s kept slow machines and emulators busy.
+        // Actions and network changes still refresh immediately.
+        this.timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 30, () => { void this.refresh(); return GLib.SOURCE_CONTINUE; });
         void this.refresh();
     }
     subscribe(listener: () => void) { return this.listeners.subscribe(listener); }
@@ -84,10 +99,10 @@ export class Devices implements DeviceControls {
             const wirelessAdapter = entries('/sys/class/net').some(name => GLib.file_test(`/sys/class/net/${name}/wireless`, GLib.FileTest.IS_DIR));
             const route = text('/proc/net/route').split('\n').map(line => line.trim().split(/\s+/)).find(fields => fields[1] === '00000000')?.[0];
             const wireless = route ? GLib.file_test(`/sys/class/net/${route}/wireless`, GLib.FileTest.IS_DIR) : wirelessAdapter;
-            const batteryName = entries('/sys/class/power_supply').find(name => text(`/sys/class/power_supply/${name}/type`) === 'Battery');
+            this.readBattery();
             const connected = this.network.get_network_available();
             this.update({connected, wireless, network: connected ? isWsl() ? 'Connected through Windows' : wireless ? 'Wi-Fi connected' : 'Ethernet connected' : 'No network connection',
-                battery: batteryName ? Number(text(`/sys/class/power_supply/${batteryName}/capacity`)) : null});
+                });
             const backlight = entries('/sys/class/backlight').sort().find(name => Number(text(`/sys/class/backlight/${name}/max_brightness`)) > 0);
             const maximum = backlight ? Number(text(`/sys/class/backlight/${backlight}/max_brightness`)) : 0;
             const brightnessText = backlight ? text(`/sys/class/backlight/${backlight}/brightness`) : '';
@@ -142,6 +157,7 @@ export class Devices implements DeviceControls {
     toggleBluetooth() { return this.state.bluetooth === null ? Promise.resolve() : this.action(['bluetoothctl', 'power', this.state.bluetooth ? 'off' : 'on']); }
     destroy() {
         this.disposed = true;
+        GLib.source_remove(this.batteryTimer);
         GLib.source_remove(this.timer); this.network.disconnect(this.networkSignal);
         this.cancel.cancel(); for (const process of this.processes) process.force_exit(); this.listeners.clear();
     }

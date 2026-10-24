@@ -1,0 +1,13 @@
+# Relative to /lib/firmware. OEM DSP files are staged locally by
+# distro/usb/stage-x2-firmware.ps1 from this machine's own Windows driver store.
+qcom/glymur/ASUSTeK/UX3407NA/qcadsp8480.mbn
+qcom/glymur/ASUSTeK/UX3407NA/adsp_dtbs.elf
+qcom/glymur/ASUSTeK/UX3407NA/adspr.jsn
+qcom/glymur/ASUSTeK/UX3407NA/adsps.jsn
+qcom/glymur/ASUSTeK/UX3407NA/adspua.jsn
+qcom/glymur/ASUSTeK/UX3407NA/qccdsp8480.mbn
+qcom/glymur/ASUSTeK/UX3407NA/cdsp_dtbs.elf
+qcom/glymur/GLYMUR-ASUS-Zenbook-A14-UX3407NA-tplg.bin
+ath12k/QCC2072/hw1.0/board.bin
+qca/ornbtfw11.tlv
+qca/ornnv11.bin

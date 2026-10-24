@@ -1,9 +1,10 @@
 import {
-    React, Gtk, type UIExtension, type UIContext
+    React, Gtk, type UIExtension, type UIContext, setBaseIconProvider
 } from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {setMaterialIcons} from './material.js';
 import {installedIconThemes} from './themes.js';
+import {renderIcon, savedChoice} from './fa-icons.js';
 export {installedIconThemes} from './themes.js';
 import {IconsSettings} from './settings-view.js';
 
@@ -18,6 +19,8 @@ export default {id: 'org.devos.icons', activate(context: Pick<UIContext, 'displa
     const apply = () => {
         const {values} = context.preferences.get('org.devos.icons').state;
         setMaterialIcons(values.materialFiles !== false);
+        const choice = savedChoice(values.basePack, values.baseStyle);
+        setBaseIconProvider(values.baseIcons === false ? undefined : (name, size, color) => renderIcon(name, size, color, choice));
         const requested = typeof values.themeName === 'string' ? values.themeName.trim() : '';
         const installed = installedIconThemes(theme);
         const selected = values.useSystemTheme === true || !installed.includes(requested) ? original : requested;
@@ -29,5 +32,5 @@ export default {id: 'org.devos.icons', activate(context: Pick<UIContext, 'displa
     apply();
     const unsubscribe = context.preferences.subscribe(apply);
     context.onReload(apply);
-    return () => { unsubscribe(); setMaterialIcons(previousMaterial); theme.set_search_path(originalPaths); settings.gtk_icon_theme_name = original; };
+    return () => { unsubscribe(); setBaseIconProvider(undefined); setMaterialIcons(previousMaterial); theme.set_search_path(originalPaths); settings.gtk_icon_theme_name = original; };
 }} satisfies UIExtension;

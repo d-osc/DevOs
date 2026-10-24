@@ -1,0 +1,51 @@
+# libnm parses provider files in-process. Autoconnect is disabled before storage.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../lib/desktop.dev" as util
+use "../lib/dbus.dev" as dbus
+extern fn nm_conn_wireguard_import(filename: str, error: *void): *void
+extern fn nm_vpn_plugin_info_new_from_file(filename: str, error: *void): *void
+extern fn nm_vpn_plugin_info_load_editor_plugin(info: *void, error: *void): *void
+extern fn nm_vpn_editor_plugin_import(plugin: *void, filename: str, error: *void): *void
+extern fn nm_connection_get_setting_connection(connection: *void): *void
+extern fn nm_connection_to_dbus(connection: *void, flags: u32): *void
+extern fn g_object_set(object: *void, key: str, value: i32, end: *void)
+extern fn g_object_unref(object: *void)
+extern fn g_variant_print(value: *void, annotations: i32): *u8
+extern fn g_variant_unref(value: *void)
+extern fn g_free(value: *void)
+fn importFile(bus: *void, type: str, file: str) {
+    util.require(strings.equal(type, "wireguard") || strings.equal(type, "openvpn"), "Choose WireGuard or OpenVPN.")
+    util.require(strings.startsWith(file, "/") && fs.is_file(file), "Choose a readable VPN configuration file.")
+    util.require(strings.len(fs.readFileSync(file, "utf8")) <= 1048576, "VPN configuration must be smaller than 1 MiB.")
+    let connection: *void = null
+    unsafe {
+        if strings.equal(type, "wireguard") { connection = nm_conn_wireguard_import(file, null) }
+        else {
+            let descriptor = "/usr/lib/NetworkManager/VPN/nm-openvpn-service.name"
+            util.require(fs.is_file(descriptor), "The NetworkManager OpenVPN plugin is not installed.")
+            let info = nm_vpn_plugin_info_new_from_file(descriptor, null)
+            util.require(info as bool, "The OpenVPN plugin could not be loaded.")
+            let plugin = nm_vpn_plugin_info_load_editor_plugin(info, null)
+            if plugin as bool { connection = nm_vpn_editor_plugin_import(plugin, file, null) }
+            g_object_unref(info)
+        }
+        util.require(connection as bool, "The VPN configuration could not be imported. Check the file and any referenced certificates or keys.")
+        let setting = nm_connection_get_setting_connection(connection)
+        g_object_set(setting, "autoconnect", 0, null)
+        let value = nm_connection_to_dbus(connection, 0)
+        g_object_unref(connection)
+        util.require(value as bool, "Could not prepare VPN settings.")
+        let printed = g_variant_print(value, 1)
+        g_variant_unref(value)
+        util.require(printed as bool, "Could not serialize VPN settings.")
+        let bytes = Vec<u8>()
+        let i: i64 = 0
+        while printed[i] != 0 { bytes.push(printed[i]); i = i + 1 }
+        let text = encoding.decode(bytes, "utf8")
+        g_free(printed as *void)
+        dbus.call(bus, "/org/freedesktop/NetworkManager/Settings", "org.freedesktop.NetworkManager.Settings", "AddConnection", "(" + text + ",)", 10000)
+    }
+}

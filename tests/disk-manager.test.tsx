@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {Gtk, Gdk, GLib, React, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {DiskManager} from '../extensions/org.devos.diskmanager/extension.js';
@@ -15,7 +16,7 @@ async function test() {
     disk.children = [{...disk, path:'/dev/test1',type:'part',size:64 * 1073741824,fstype:'ext4',label:'Data',uuid:'test-uuid'}];
     const controls: DiskControls = {async request(action) {if (action !== 'get') throw new Error('Only inventory requests are allowed'); reads++; return {devices:[disk],wsl:true};}, destroy() {}};
     const window = new Gtk.OffscreenWindow(); window.name='disk-manager'; window.set_size_request(1040,720); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@','#88e0c0'))); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!,css,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()))); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!,css,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = (name:string) => widgets(window).find(widget => widget.name === name) as Gtk.Button;
     try {
         root.render(<DiskManager controls={controls}/>); window.show_all(); await wait(); await wait();

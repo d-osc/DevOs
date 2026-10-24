@@ -26,6 +26,7 @@ fn waitLocked(runtime: str, expected: bool) { tool.waitFor(fn(): bool { return (
 fn main(): i32 {
     if tool.has("--help") { print("Test session locking in a disposable two-output compositor."); return 0 }
     let extras = Map<str,str>(); extras.set("WLR_HEADLESS_OUTPUTS", "2")
+    extras.set("PATH", tool.root() + "/build/wsl/bin:" + tool.root() + "/bin:/usr/local/bin:/usr/bin:/bin")
     smoke.withSession("lock", extras, fn(session: smoke.Session) {
         let env: Map<str,str> = smoke.environment(session)
         let shellPid = smoke.processIds(session.runtime, session.root + "/dist/main.js")[0]
@@ -36,6 +37,20 @@ fn main(): i32 {
         let screens = session.root + "/build/test-results"
         fs.mkdirSync(screens, true)
         for output in Vec<str>("HEADLESS-1", "HEADLESS-2") { tool.checked(Vec<str>("grim", "-o", output, screens + "/lock-screen-" + output + ".png"), env, "", 10000) }
+        smoke.key(env, Vec<str>("-k", "a")); time.sleep_ms(300)
+        tool.checked(Vec<str>("grim", "-o", "HEADLESS-1", screens + "/lock-login-after-key.png"), env, "", 10000)
+        tool.require(lockers(session.runtime).len() == 1, "Revealing authentication must not unlock.")
+        smoke.remote(session, env, "lock"); time.sleep_ms(300)
+        tool.checked(Vec<str>("grim", "-o", "HEADLESS-1", screens + "/lock-clock-restored.png"), env, "", 10000)
+        tool.checked(Vec<str>("wlopm", "--off", "HEADLESS-1"), env, "", 10000)
+        tool.require(lockers(session.runtime).len() == 1, "Display power-off must preserve the secure lock.")
+        tool.checked(Vec<str>("wlopm", "--on", "HEADLESS-1"), env, "", 10000)
+        let pointer = smoke.input(smoke.compilePointer(session.base + "/pointer-build"), session.base, env)
+        pointer = smoke.send(pointer, "move 20 10")
+        pointer = smoke.send(pointer, "click left")
+        tool.checked(Vec<str>("grim", "-o", "HEADLESS-1", screens + "/lock-login-after-pointer.png"), env, "", 10000)
+        smoke.closeInput(pointer)
+        tool.require(lockers(session.runtime).len() == 1, "Pointer input must reveal authentication without unlocking.")
         tool.require(posix.send(lockers(session.runtime)[0], posix.SIGUSR1()), "Could not recover private test locker.")
         waitLocked(session.runtime, false)
         smoke.key(env, Vec<str>("-M", "logo", "-k", "l", "-m", "logo"))

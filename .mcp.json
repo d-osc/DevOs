@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "devos-qemu": {
+      "command": "node",
+      "args": ["tools/mcp/qemu-vm/server.ts"]
+    }
+  }
+}

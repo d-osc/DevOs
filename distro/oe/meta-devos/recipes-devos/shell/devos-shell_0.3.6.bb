@@ -6,7 +6,7 @@ FILESEXTRAPATHS:prepend := "${DEVOS_PAYLOAD_DIR}:"
 SRC_URI = "file://devos-runtime.tar.gz"
 S = "${UNPACKDIR}/devos-runtime"
 DEPENDS = "wayland wayland-native"
-RDEPENDS:${PN} = "devlang gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc dbus util-linux-setsid coreutils networkmanager-nmcli bash ca-certificates adwaita-icon-theme librsvg-gtk"
+RDEPENDS:${PN} = "gstreamer1.0 gstreamer1.0-plugins-base-videoconvertscale gstreamer1.0-plugins-base-audioconvert gstreamer1.0-plugins-base-audioresample gstreamer1.0-plugins-base-playback gstreamer1.0-plugins-good-gtk gstreamer1.0-plugins-good-video4linux2 gstreamer1.0-plugins-good-pulseaudio gstreamer1.0-plugins-good-level gstreamer1.0-plugins-good-jpeg gstreamer1.0-plugins-good-multifile gstreamer1.0-plugins-good-wavenc devlang gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc wlr-randr pulseaudio-client-tools cups dbus util-linux-setsid coreutils networkmanager-nmcli networkmanager-openvpn util-linux-rfkill glib-networking gsettings-desktop-schemas dconf bash ca-certificates adwaita-icon-theme adwaita-icon-theme-cursors librsvg-gtk util-linux-sfdisk util-linux-blkid util-linux-lsblk util-linux-findmnt util-linux-findfs util-linux-blockdev util-linux-wipefs dosfstools e2fsprogs e2fsprogs-mke2fs efibootmgr tar shadow"
 inherit pkgconfig
 do_configure[noexec] = "1"
 do_compile() {
@@ -18,7 +18,7 @@ do_compile() {
         $(pkg-config --cflags --libs wayland-client) -o ${B}/dev-os-window-tracker
 }
 do_install() {
-    install -d ${D}${bindir} ${D}${datadir}/dev-os/native
+    install -d ${D}${bindir} ${D}${datadir}/dev-os/native ${D}${datadir}/dev-os/bin
     for directory in dist data config extensions lib; do
         cp -R --no-preserve=ownership ${S}/$directory ${D}${datadir}/dev-os/
     done
@@ -27,19 +27,26 @@ do_install() {
     for executable in ${S}/bin/*; do
         case "$executable" in *.ps1) continue ;; esac
         install -m0755 "$executable" ${D}${bindir}/
+        install -m0755 "$executable" ${D}${datadir}/dev-os/bin/
     done
     install -m0755 ${B}/dev-os-window-tracker ${D}${datadir}/dev-os/native/
     install -m0644 ${S}/native/*.dev ${D}${datadir}/dev-os/native/
     install -d ${D}${libexecdir} ${D}${datadir}/polkit-1/actions ${D}${localstatedir}/lib/devos
+    install -m0755 ${S}/native/devos-radio-admin ${D}${libexecdir}/devos-radio-admin
+    install -m0644 ${S}/data/polkit-1/actions/org.devos.radio.policy ${D}${datadir}/polkit-1/actions/
     install -m0755 ${S}/native/devos-account-admin ${D}${libexecdir}/devos-account-admin
     install -m0755 ${S}/native/devos-account-admin ${D}${libexecdir}/devos-account-setup
     install -m0755 ${S}/native/devos-pam-auth ${D}${libexecdir}/devos-pam-auth
     install -m0755 ${S}/native/devos-account-askpass ${D}${libexecdir}/devos-account-askpass
     install -m0755 ${S}/native/devos-app-store-admin ${D}${libexecdir}/devos-app-store-admin
     install -m0644 ${S}/data/polkit-1/actions/org.devos.appstore.policy ${D}${datadir}/polkit-1/actions/
+    # wlroots/labwc look up the "default" cursor theme; without it the pointer is invisible.
+    install -d ${D}${datadir}/icons/default
+    echo "[Icon Theme]" > ${D}${datadir}/icons/default/index.theme
+    echo "Inherits=Adwaita" >> ${D}${datadir}/icons/default/index.theme
     install -d ${D}${sysconfdir}/devos
     install -m0644 ${S}/config/app-store.json ${D}${sysconfdir}/devos/app-store.json
     install -m0644 ${S}/data/polkit-1/actions/org.devos.accounts.policy ${D}${datadir}/polkit-1/actions/
 }
-FILES:${PN} += "${prefix}/lib/*.dev ${datadir}/dev-os ${datadir}/polkit-1/actions ${localstatedir}/lib/devos ${sysconfdir}/devos"
+FILES:${PN} += "${datadir}/icons/default ${prefix}/lib/*.dev ${datadir}/dev-os ${datadir}/polkit-1/actions ${localstatedir}/lib/devos ${sysconfdir}/devos"
 CONFFILES:${PN} += "${sysconfdir}/devos/app-store.json"

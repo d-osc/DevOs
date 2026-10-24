@@ -1,0 +1,62 @@
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../native/privileged.dev" as secure
+use "../lib/desktop.dev" as util
+fn rfkill(args: Vec<str>): str {
+    let executable = ""
+    for path in Vec<str>("/usr/sbin/rfkill", "/sbin/rfkill", "/usr/bin/rfkill", "/bin/rfkill") { if fs.is_file(path) { executable = path; break } }
+    secure.require(!strings.equal(executable, ""), "Wireless radio controls are not installed.")
+    let argv = Vec<str>(executable); for value in args { argv.push(value) }
+    let probe = secure.run(argv, "")
+    secure.require(probe.success, "Could not change wireless radio state. Check hardware switches and rfkill support.")
+    return util.output(probe)
+}
+fn inventory(): json.Value {
+    let raw = rfkill(Vec<str>("--json", "--output", "ID,TYPE,DEVICE,SOFT,HARD"))
+    secure.require(json.valid(raw), "Invalid radio inventory.")
+    let radios = util.get(json.parse(raw), "rfkilldevices")
+    secure.require(strings.equal(json.kind(radios), "array"), "Invalid radio inventory.")
+    return radios
+}
+fn restore(previous: json.Value) {
+    rfkill(Vec<str>("unblock", "all"))
+    let current = inventory()
+    for i in 0..(json.len(previous) as i64) {
+        let old = json.at(previous, i)
+        if !strings.equal(util.text(util.get(old, "soft")), "blocked") { continue }
+        for j in 0..(json.len(current) as i64) {
+            let now = json.at(current, j)
+            if strings.equal(util.text(util.get(old, "device")), util.text(util.get(now, "device"))) && strings.equal(util.text(util.get(old, "type")), util.text(util.get(now, "type"))) {
+                let id = util.get(now, "id")
+                secure.require(strings.equal(json.kind(id), "number") && json.int(id) >= 0, "Invalid radio identifier.")
+                rfkill(Vec<str>("block", json.stringify(id)))
+            }
+        }
+    }
+}
+fn apply(request: json.Value): json.Value {
+    secure.require(secure.root(), "Administrator authentication is required.")
+    secure.require(strings.equal(json.kind(util.get(request, "enabled")), "bool"), "Invalid airplane mode request.")
+    let enabled: bool = json.bool(json.get(request, "enabled"))
+    let radios: json.Value = inventory()
+    secure.require(json.len(radios) > 0, "No wireless radios are present.")
+    secure.stateDirectory()
+    let lock = secure.lock("/var/lib/devos/radio.lock")
+    let outcome = result.attempt(fn(): json.Value {
+        let file = "/var/lib/devos/radio.json"
+    let saved = json.object()
+        if fs.is_file(file) { let text = secure.trusted(file); secure.require(json.valid(text), "Saved radio preferences could not be read."); saved = json.parse(text) }
+        if enabled {
+            if !util.boolean(util.get(saved, "enabled")) { saved = {enabled: true, radios: radios}; secure.save(file, json.stringify(saved)) }
+            let changed = result.run(fn() { rfkill(Vec<str>("block", "all")) })
+            if result.isErr(changed) { restore(radios); secure.save(file, json.stringify({enabled:false, radios:json.array()})); result.raise(result.message(changed)) }
+        } else {
+            restore(util.get(saved, "radios"))
+            secure.save(file, json.stringify({enabled: false, radios: json.array()}))
+        }
+        return {ok: true}
+    })
+    secure.unlock(lock); return result.unwrap(outcome)
+}

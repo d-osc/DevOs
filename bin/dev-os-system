@@ -64,8 +64,32 @@ fn optGet(value: json.Value, key: str): json.Value {
 }
 
 fn powerProperties(name: str, path: str): json.Value {
-    let output = capture("busctl call org.freedesktop.UPower " + path + " org.freedesktop.DBus.Properties GetAll s " + name)
-    return json.set(json.object(), "raw", output)
+    let output = capture("busctl --timeout=3 --json=short call " + name + " " + path + " org.freedesktop.DBus.Properties GetAll s " + name)
+    if !json.valid(output) { return json.object() }
+    let value = json.parse(output)
+    if !json.has(value, "data") { return json.object() }
+    let data = json.get(value, "data")
+    if strings.equal(json.kind(data), "array") && json.len(data) > 0 { return json.at(data, 0) }
+    return json.object()
+}
+
+fn powerValue(props: json.Value, key: str): json.Value {
+    if !json.has(props, key) { return json.null_value() }
+    let value = json.get(props, key)
+    if strings.equal(json.kind(value), "object") && json.has(value, "data") { return json.get(value, "data") }
+    return value
+}
+
+fn advertisedProfiles(props: json.Value): json.Value {
+    let profiles = json.array()
+    let values = powerValue(props, "Profiles")
+    if !strings.equal(json.kind(values), "array") { return profiles }
+    for i in 0..(json.len(values) as i64) {
+        let item = json.at(values, i)
+        let name = jsonText(powerValue(item, "Profile"))
+        if strings.equal(name, "power-saver") || strings.equal(name, "balanced") || strings.equal(name, "performance") { profiles = json.push(profiles, name) }
+    }
+    return profiles
 }
 
 fn powerProfileState(): json.Value {
@@ -74,34 +98,14 @@ fn powerProfileState(): json.Value {
     result = json.set(result, "profiles", json.array())
     result = json.set(result, "degraded", "")
     result = json.set(result, "error", "")
-    let probe = capture("busctl call org.freedesktop.UPower /org/freedesktop/UPower/PowerProfiles org.freedesktop.DBus.Properties GetAll s org.freedesktop.UPower.PowerProfiles")
-    let fallback = false
-    if strings.equal(strings.trim(probe), "") {
-        probe = capture("busctl call org.freedesktop.UPower /net/hadess/PowerProfiles org.freedesktop.DBus.Properties GetAll s net.hadess.PowerProfiles")
-        fallback = strings.equal(strings.trim(probe), "")
-    }
-    if strings.equal(strings.trim(probe), "") {
-        return json.set(result, "error", "Power profiles unavailable: busctl call failed.")
-    }
-    let profiles = json.array()
-    for candidate in 0..3 {
-        let name = "power-saver"
-        if candidate == 1 { name = "balanced" }
-        if candidate == 2 { name = "performance" }
-        if strings.contains(probe, "\"" + name + "\"") { profiles = json.push(profiles, name) }
-    }
+    let props = powerProperties("org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles")
+    if !json.has(props, "Profiles") { props = powerProperties("net.hadess.PowerProfiles", "/net/hadess/PowerProfiles") }
+    let profiles = advertisedProfiles(props)
+    if json.len(profiles) == 0 { return json.set(result, "error", "Power modes are not supported by the current hardware or service.") }
     result = json.set(result, "available", true)
     result = json.set(result, "profiles", profiles)
-    let activeAt = strings.indexOf(probe, "ActiveProfile")
-    if activeAt >= 0 {
-        let rest = strings.substring(probe, activeAt, strings.charLength(probe))
-        let quote = strings.indexOf(rest, "\"")
-        if quote >= 0 {
-            let after = strings.substring(rest, quote + 1, strings.charLength(rest))
-            let endQuote = strings.indexOf(after, "\"")
-            if endQuote >= 0 { result = json.set(result, "active", strings.substring(after, 0, endQuote)) }
-        }
-    }
+    result = json.set(result, "active", jsonText(powerValue(props, "ActiveProfile")))
+    result = json.set(result, "degraded", jsonText(powerValue(props, "PerformanceDegraded")))
     return result
 }
 
@@ -119,12 +123,33 @@ fn batteries(): json.Value {
             if value < 0 { value = 0 }
             if value > 100 { value = 100 }
             percent = json.value(value)
+        } else {
+            // qcom_battmgr reports no capacity until the firmware sends a percentage; use the energy/charge counters.
+            let now = readTrimmed(base + "/energy_now")
+            let total = readTrimmed(base + "/energy_full")
+            if strings.equal(now, "") || strings.equal(total, "") { now = readTrimmed(base + "/charge_now"); total = readTrimmed(base + "/charge_full") }
+            if !strings.equal(now, "") && intOf(total) > 0 && intOf(now) <= intOf(total) { percent = json.value(intOf(now) * 100 / intOf(total)) }
         }
         let model = readTrimmed(base + "/model_name")
         let status = readTrimmed(base + "/status")
         let item = json.set(json.object(), "name", strings.equal(model, "") ? names[i] : model)
         item = json.set(item, "status", strings.equal(status, "") ? "Unknown" : status)
         item = json.set(item, "percent", percent)
+        let full = intOf(readTrimmed(base + "/energy_full"))
+        let design = intOf(readTrimmed(base + "/energy_full_design"))
+        if full == 0 || design == 0 { full = intOf(readTrimmed(base + "/charge_full")); design = intOf(readTrimmed(base + "/charge_full_design")) }
+        let health = json.null_value()
+        if full > 0 && design > 0 { let value = full * 100 / design; if value > 100 { value = 100 }; health = json.value(value) }
+        item = json.set(item, "health", health)
+        let cycles = readTrimmed(base + "/cycle_count")
+        item = json.set(item, "cycles", strings.equal(cycles, "") ? json.null_value() : json.value(intOf(cycles)))
+        let energy = intOf(readTrimmed(base + "/energy_now"))
+        let rate = intOf(readTrimmed(base + "/power_now"))
+        let minutes = json.null_value()
+        if energy > 0 && rate > 0 && strings.equal(status, "Discharging") { minutes = json.value(energy * 60 / rate) }
+        let energyFull = intOf(readTrimmed(base + "/energy_full"))
+        if energyFull > energy && rate > 0 && strings.equal(status, "Charging") { minutes = json.value((energyFull - energy) * 60 / rate) }
+        item = json.set(item, "minutes", minutes)
         result = json.push(result, item)
     }
     return result
@@ -174,6 +199,50 @@ fn toolAvailable(tool: str): bool {
     return !strings.equal(strings.trim(capture("command -v " + tool)), "")
 }
 
+fn hardwareText(path: str): str {
+    if !fs.existsSync(path) { return "" }
+    let output = child_process.execFileSync("cat", Vec<str>(path), child_process.options())
+    let value = strings.trim(decodeText(output.stdout))
+    let lower = strings.toLowerCase(value)
+    for placeholder in Vec<str>("unknown", "none", "not specified", "default string", "to be filled by o.e.m.", "system serial number", "00000000-0000-0000-0000-000000000000") {
+        if strings.equal(lower, placeholder) { return "" }
+    }
+    return value
+}
+
+fn hardwareInfo(cpuinfo: str): json.Value {
+    let details = capture("LC_ALL=C lscpu")
+    let model = hardwareText("/sys/class/dmi/id/product_name")
+    if strings.equal(model, "") { model = hardwareText("/sys/firmware/devicetree/base/model") }
+    let cpuName = fieldOf(details, "Model name", ":")
+    if strings.equal(cpuName, "") { cpuName = fieldOf(cpuinfo, "model name", ":") }
+    if strings.equal(cpuName, "") { cpuName = hardwareText("/sys/devices/soc0/machine") }
+    let manufacturer = hardwareText("/sys/class/dmi/id/sys_vendor")
+    if strings.equal(manufacturer, "") { manufacturer = hardwareText("/sys/class/dmi/id/board_vendor") }
+    let data = json.set(json.object(), "manufacturer", manufacturer)
+    data = json.set(data, "model", model)
+    data = json.set(data, "family", hardwareText("/sys/class/dmi/id/product_family"))
+    data = json.set(data, "serial", hardwareText("/sys/class/dmi/id/product_serial"))
+    data = json.set(data, "productUuid", hardwareText("/sys/class/dmi/id/product_uuid"))
+    data = json.set(data, "machineId", hardwareText("/etc/machine-id"))
+    data = json.set(data, "boardVendor", hardwareText("/sys/class/dmi/id/board_vendor"))
+    data = json.set(data, "boardModel", hardwareText("/sys/class/dmi/id/board_name"))
+    data = json.set(data, "biosVendor", hardwareText("/sys/class/dmi/id/bios_vendor"))
+    data = json.set(data, "biosVersion", hardwareText("/sys/class/dmi/id/bios_version"))
+    data = json.set(data, "biosDate", hardwareText("/sys/class/dmi/id/bios_date"))
+    data = json.set(data, "cpuName", cpuName)
+    data = json.set(data, "cpuVendor", fieldOf(details, "Vendor ID", ":"))
+    data = json.set(data, "cpuSockets", fieldOf(details, "Socket(s)", ":"))
+    data = json.set(data, "coresPerSocket", fieldOf(details, "Core(s) per socket", ":"))
+    data = json.set(data, "threadsPerCore", fieldOf(details, "Thread(s) per core", ":"))
+    data = json.set(data, "cpuMaxMHz", fieldOf(details, "CPU max MHz", ":"))
+    data = json.set(data, "socFamily", hardwareText("/sys/devices/soc0/family"))
+    data = json.set(data, "socId", hardwareText("/sys/devices/soc0/soc_id"))
+    data = json.set(data, "socRevision", hardwareText("/sys/devices/soc0/revision"))
+    data = json.set(data, "bootMode", fs.existsSync("/sys/firmware/efi") ? "UEFI" : "Legacy / non-EFI")
+    return data
+}
+
 fn inventory(): json.Value {
     let wsl = isWsl()
     let meminfo = fs.readFileSync("/proc/meminfo", "utf8")
@@ -188,6 +257,9 @@ fn inventory(): json.Value {
     let memTotal = fieldOf(meminfo, "MemTotal", ":")
     let memValue = intOf(memTotal) * 1024
     let cpuModel = fieldOf(cpuinfo, "model name", ":")
+    let hardware = hardwareInfo(cpuinfo)
+    let reportedCpu = json.string(json.get(hardware, "cpuName"))
+    if !strings.equal(reportedCpu, "") { cpuModel = reportedCpu }
     if strings.equal(cpuModel, "") { cpuModel = fieldOf(cpuinfo, "Processor", ":") }
     let machine = strings.trim(capture("uname -m"))
     if strings.equal(cpuModel, "") { cpuModel = machine }
@@ -196,8 +268,8 @@ fn inventory(): json.Value {
     let sessionType = process.getenv("XDG_SESSION_TYPE")
     if strings.equal(sessionType, "") { sessionType = "unknown" }
     let power = wsl ? json.set(json.set(json.set(json.set(json.object(), "available", false), "active", ""), "profiles", json.array()), "error", "") : powerProfileState()
-    let tools = json.set(json.object(), "display", toolAvailable("wdisplays"))
-    tools = json.set(tools, "sound", toolAvailable("pavucontrol"))
+    let tools = json.set(json.object(), "display", toolAvailable("wlr-randr"))
+    tools = json.set(tools, "sound", toolAvailable("pactl"))
     let state = json.set(json.object(), "hostManaged", wsl)
     state = json.set(state, "hostname", hostname)
     state = json.set(state, "os", fieldOf(release, "PRETTY_NAME", "="))
@@ -205,6 +277,7 @@ fn inventory(): json.Value {
     state = json.set(state, "kernel", kernel)
     state = json.set(state, "architecture", machine)
     state = json.set(state, "cpu", cpuModel)
+    state = json.set(state, "hardware", hardware)
     state = json.set(state, "processors", json.value(os.availableParallelism()))
     state = json.set(state, "memory", json.value(memValue))
     state = json.set(state, "session", sessionType)
@@ -235,8 +308,8 @@ fn openPage(page: str, host: bool): str {
         return ""
     }
     let tool = ""
-    if strings.equal(page, "display") { tool = "wdisplays" }
-    if strings.equal(page, "sound") { tool = "pavucontrol" }
+    if strings.equal(page, "display") { return "Configure displays in DevOs Settings." }
+    if strings.equal(page, "sound") { return "Configure sound in DevOs Settings." }
     if !strings.equal(tool, "") {
         if !toolAvailable(tool) { return "The configuration tool is not installed. It is included in the DevOs desktop image." }
         posix.shell(tool + " >/dev/null 2>&1 &")
@@ -250,16 +323,19 @@ fn selectProfile(profile: str): str {
     if !strings.equal(profile, "power-saver") && !strings.equal(profile, "balanced") && !strings.equal(profile, "performance") {
         return "This power profile is unavailable."
     }
-    let probe = capture("busctl call org.freedesktop.UPower /org/freedesktop/UPower/PowerProfiles org.freedesktop.DBus.Properties GetAll s org.freedesktop.UPower.PowerProfiles")
     let name = "org.freedesktop.UPower.PowerProfiles"
     let path = "/org/freedesktop/UPower/PowerProfiles"
-    if strings.equal(strings.trim(probe), "") {
-        probe = capture("busctl call org.freedesktop.UPower /net/hadess/PowerProfiles org.freedesktop.DBus.Properties GetAll s net.hadess.PowerProfiles")
+    let props = powerProperties(name, path)
+    if !json.has(props, "Profiles") {
         name = "net.hadess.PowerProfiles"
         path = "/net/hadess/PowerProfiles"
+        props = powerProperties(name, path)
     }
-    if !strings.contains(probe, "\"" + profile + "\"") { return "This power profile is unavailable." }
-    let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.UPower", path,
+    let supported = false
+    let profiles = advertisedProfiles(props)
+    for i in 0..(json.len(profiles) as i64) { if strings.equal(jsonText(json.at(profiles, i)), profile) { supported = true } }
+    if !supported { return "This power profile is unavailable." }
+    let output = child_process.execFileSync("busctl", Vec<str>("--timeout=10", "call", name, path,
         "org.freedesktop.DBus.Properties", "Set", "ssv", name, "ActiveProfile", "s", profile), child_process.options())
     if !output.success { return "This power profile is unavailable." }
     return ""

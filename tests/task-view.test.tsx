@@ -1,12 +1,19 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {TaskViewLive} from '../extensions/org.devos.launcher/task-view.js';
 import type {DesktopWindow, DesktopWorkspace, WindowControls} from '@dev-os/services/windows';
+import {gestureWindowTarget} from '@dev-os/services/windows';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 async function verify() {
+    const targets: DesktopWindow[] = [{id: 1, title: 'One', appId: 'one', desktop: 1, active: true, minimized: false}, {id: 2, title: 'Two', appId: 'two', desktop: 1, active: false, minimized: true}, {id: 3, title: 'Other desktop', appId: 'three', desktop: 2, active: false, minimized: true}];
+    assert(gestureWindowTarget(targets, 1, 'next')?.id === 2 && gestureWindowTarget(targets, 1, 'previous')?.id === 2, 'Three-finger app switching stays on the current desktop');
+    assert(gestureWindowTarget(targets, 1, 'restore', [3, 2])?.id === 2, 'Restore selects a minimized window on the current desktop');
+    assert(gestureWindowTarget([], 1, 'restore') === undefined, 'Restore is a no-op without minimized windows');
+    assert(gestureWindowTarget(targets.map(window => ({...window, active: window.id === 2})), 1, 'next')?.id === 1, 'App switching wraps in a stable order');
     const listeners = new Set<() => void>(); let activated = 0, closed = 0, dismissed = 0;
     let desktops: DesktopWorkspace[] = [], moved = 0;
     let state: DesktopWindow[] = [
@@ -16,6 +23,7 @@ async function verify() {
         {id: 4, title: 'Dev OS Editor · main.ts', appId: 'editor', active: false, minimized: false},
     ];
     const controls: WindowControls = {get state() {return state;}, get desktops() {return desktops;}, subscribe: listener => {listeners.add(listener); return () => {listeners.delete(listener);};},
+        canSnap: true, snapGroups: [{id: 7, layout: 'halves', members: [{id: 1, region: 'devos-half-left'}, {id: 2, region: 'devos-half-right'}]}],
         canCreateDesktop: true,
         canRemoveDesktop: true,
         removeDesktop: id => {if (desktops.length <= 1) return; const target = id > 1 ? id - 1 : 2; state = state.map(window => ({...window, desktop: window.desktop === id ? target : window.desktop})); desktops = desktops.filter(desktop => desktop.id !== id).map(desktop => ({...desktop, active: desktop.id === target})); listeners.forEach(listener => listener());},
@@ -26,11 +34,12 @@ async function verify() {
         moveToDesktop: (id, desktop) => {moved = id; state = state.map(window => window.id === id ? {...window, desktop} : window); listeners.forEach(listener => listener());}};
     const window = new Gtk.OffscreenWindow(); window.name = 'task-view'; window.set_size_request(1200, 780);
     const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     try {
         root.render(<TaskViewLive controls={controls} dismiss={() => {dismissed++;}} />); window.show_all(); await wait();
+        assert(!find('snap-panel') && !find('snap-layout-halves') && !find('snap-tab-groups'), 'Task View has no Snap controls');
         assert(widgets(window).filter(widget => widget.name.startsWith('task-view-activate-')).length === 4, 'Every tracked window has its own card');
         const screenshot = GLib.getenv('DEV_OS_TEST_SCREENSHOT'); if (screenshot) window.get_pixbuf()!.savev(screenshot, 'png', [], []);
         find<Gtk.Button>('task-view-activate-3').emit('clicked'); assert(activated === 3, 'Minimized window can be selected');

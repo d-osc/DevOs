@@ -1,5 +1,5 @@
 import {
-    Gtk, Gdk, GLib, GtkLayerShell, React, type UIContext, type Config, type SettingsValues
+    Gtk, Gdk, GLib, GtkLayerShell, React, onThemeChange, wallpaperColors, type UIContext, type Config, type SettingsValues
 } from '@dev-os/core';
 import Cairo from 'cairo';
 import {layerWindow} from '@dev-os/services/layers';
@@ -26,7 +26,7 @@ export class Background {
                 GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT]);
         GtkLayerShell.set_exclusive_zone(this.window, -1);
         this.window.set_resizable(true);
-        const appearance = () => wallpaperConfig(context.config(), context.preferences.get('org.devos.background').state.values);
+        const appearance = () => wallpaperConfig({name: context.config().name, ...wallpaperColors()}, context.preferences.get('org.devos.background').state.values);
         const widgetValues = () => context.preferences.get('org.devos.background').state.values;
         const viewProps = () => {
             const desktop = activeWidgetDesktop(context.windows);
@@ -44,6 +44,9 @@ export class Background {
             this.menu?.destroy(); this.menu = undefined;
             render();
         });
+        const themeCleanup = onThemeChange(render);
+        const baseCleanup = this.preferencesCleanup;
+        this.preferencesCleanup = () => { baseCleanup(); themeCleanup(); };
         let previousDesktop = initial.desktopKey;
         this.windowsCleanup = context.windows?.subscribe(() => {
             const desktop = activeWidgetDesktop(context.windows)?.key ?? 'pending';

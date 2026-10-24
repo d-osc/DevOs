@@ -14,7 +14,10 @@ for argument in "$@"; do
         *) printf 'Unknown argument: %s\n' "$argument" >&2; exit 1 ;;
     esac
 done
-if ! "$base/bin/dev-os-shell" doctor; then exit 1; fi
+# Each doctor run is a full GJS start; prebuilt images set DEV_OS_SKIP_DOCTOR=1 (--check still runs it).
+if [ "${DEV_OS_SKIP_DOCTOR:-0}" != 1 ] || [ "$check" = yes ]; then
+    if ! "$base/bin/dev-os-shell" doctor; then exit 1; fi
+fi
 if [ "$check" = yes ]; then exit 0; fi
 if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
     printf '%s\n' 'XDG_RUNTIME_DIR is missing. Start from a logged-in Linux session.' >&2
@@ -26,6 +29,7 @@ export PATH="$base/bin:$PATH"
 export XDG_DATA_DIRS="$root/data:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export XDG_CURRENT_DESKTOP=DevOS:labwc XDG_SESSION_DESKTOP=dev-os XDG_SESSION_TYPE=wayland
 export GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland
+export GIO_USE_PROXY_RESOLVER=${GIO_USE_PROXY_RESOLVER:-gnome}
 export DEV_OS_TASK_VIEW=1
 export DEV_OS_WINDOW_ANIMATIONS=${DEV_OS_WINDOW_ANIMATIONS:-1}
 if [ "$mode" != headless ]; then export DEV_OS_LOGIN=${DEV_OS_LOGIN:-1}; fi

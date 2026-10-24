@@ -13,10 +13,11 @@ export const systemPages = [
 export type SystemPage = 'system' | 'display' | 'sound' | 'power' | 'storage' | 'about';
 export const isSystemPage = (page: string): page is SystemPage => ['system', 'display', 'sound', 'power', 'storage', 'about'].includes(page);
 export interface SystemState {
+    hardware?: Partial<Record<'manufacturer' | 'model' | 'family' | 'serial' | 'productUuid' | 'machineId' | 'boardVendor' | 'boardModel' | 'biosVendor' | 'biosVersion' | 'biosDate' | 'cpuName' | 'cpuVendor' | 'cpuSockets' | 'coresPerSocket' | 'threadsPerCore' | 'cpuMaxMHz' | 'socFamily' | 'socId' | 'socRevision' | 'bootMode', string>>;
     hostManaged: boolean; hostname: string; os: string; kernel: string; architecture: string; cpu: string; processors: number; memory: number; session: string;
     desktopBuild: Record<string, unknown>;
     storage: {path: string; total: number; used: number; free: number}[];
-    batteries: {name: string; status: string; percent: number | null}[];
+    batteries: {name: string; status: string; percent: number | null; health?: number | null; cycles?: number | null; minutes?: number | null}[];
     power: {available: boolean; active: string; profiles: string[]; degraded: string; error: string};
     tools: Record<string, boolean>; hostSettings: boolean;
 }

@@ -109,6 +109,16 @@ fn snapshot(propsRaw: str, error: str): json.Value {
     return state
 }
 
+fn busFailure(stderr: Vec<u8>, fallback: str): str {
+    let detail = strings.trim(decodeText(stderr))
+    let lower = strings.toLowerCase(detail)
+    if strings.contains(lower, "access denied") || strings.contains(lower, "authentication") || strings.contains(lower, "not authorized") || strings.contains(lower, "interactive") {
+        return "Permission denied: this user is not allowed to change system time settings. " + detail
+    }
+    if strings.equal(detail, "") { return fallback }
+    return fallback + " " + detail
+}
+
 fn optGet(value: json.Value, key: str): json.Value {
     if json.has(value, key) { return json.get(value, key) }
     return json.null_value()
@@ -215,7 +225,7 @@ fn main(): i32 {
         if !zoneKnown(zoneList(), zone) { return fail("Choose a valid time zone.") }
         let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
             "org.freedesktop.timedate1", "SetTimezone", "sb", zone, "true"), child_process.options())
-        if !output.success { return fail("Linux time service rejected the time zone.") }
+        if !output.success { return fail(busFailure(output.stderr, "Linux time service rejected the time zone.")) }
         print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
         return 0
     }
@@ -226,7 +236,7 @@ fn main(): i32 {
         let enabled = json.bool(optGet(request, "enabled"))
         let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
             "org.freedesktop.timedate1", "SetNTP", "bb", enabled ? "true" : "false", "true"), child_process.options())
-        if !output.success { return fail("Linux time service rejected the NTP change.") }
+        if !output.success { return fail(busFailure(output.stderr, "Linux time service rejected the NTP change.")) }
         print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
         return 0
     }
@@ -242,7 +252,7 @@ fn main(): i32 {
         if value < 0 { return fail("This local time is invalid during a daylight-saving change.") }
         let output = child_process.execFileSync("busctl", Vec<str>("call", "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
             "org.freedesktop.timedate1", "SetTime", "xbb", "${value}", "false", "true"), child_process.options())
-        if !output.success { return fail("Linux time service rejected the manual time.") }
+        if !output.success { return fail(busFailure(output.stderr, "Linux time service rejected the manual time.")) }
         print(json.stringify(json.set(json.set(json.object(), "ok", true), "state", snapshot(timedateProperties(), ""))))
         return 0
     }

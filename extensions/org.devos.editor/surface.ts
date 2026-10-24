@@ -1,5 +1,5 @@
 import {
-    Gtk, Gdk, Gio, type WebKit2Types as WebKit2
+    Gtk, Gdk, Gio, activeFamily, activeTheme, onThemeChange, paletteFor, type ThemeFamily, type ThemeName, type WebKit2Types as WebKit2
 } from '@dev-os/core';
 import type {EditorConfig, EditorMessage} from './protocol.js';
 import {EditorAssets} from './assets.js';
@@ -14,18 +14,19 @@ export class MonacoSurface {
     private manager?: WebKit2.UserContentManager;
     private messageSignal = 0;
     private dropCleanup?: () => void;
+    private themeCleanup = onThemeChange((name, family) => this.applyTheme(name, family));
     constructor(private host: Gtk.Box, private assets: Promise<EditorAssets>,
         private message: (message: EditorMessage) => void, private changed: () => void) { void this.start(); }
     private async start() {
         try {
-            const [{default: WebKit}, assets] = await Promise.all([import('@dev-os/core').then(({WebKit2}) => ({default: WebKit2})), this.assets]);
+            const [{default: WebKit}, assets] = await Promise.all([import('@dev-os/core/webkit').then(({WebKit2}) => ({default: WebKit2})), this.assets]);
             if (this.disposed) return;
             const manager = this.manager = new WebKit.UserContentManager();
             this.messageSignal = manager.connect('script-message-received::editor', (_manager, result) => {
                 if (this.disposed) return;
                 try {
                     const data = JSON.parse((result as WebKit2.JavascriptResult).get_js_value().to_string()) as EditorMessage;
-                    if (data.type === 'ready') { this.ready = true; this.changed(); }
+                    if (data.type === 'ready') { this.ready = true; this.applyTheme(activeTheme(), activeFamily()); this.changed(); }
                     else if (data.type === 'error') { this.error = String(data.message); this.changed(); }
                     else this.message(data);
                 } catch (error) { this.error = String(error); this.changed(); }
@@ -33,7 +34,7 @@ export class MonacoSurface {
             manager.register_script_message_handler('editor');
             const view = this.view = new WebKit.WebView({user_content_manager: manager, hexpand: true, vexpand: true});
             this.dropCleanup = tabDetachTarget(view, undefined, true);
-            const color = new Gdk.RGBA(); color.parse('#24292e'); view.set_background_color(color);
+            this.paintBackground(activeTheme(), activeFamily());
             const settings = view.get_settings();
             settings.set_hardware_acceleration_policy(WebKit.HardwareAccelerationPolicy.NEVER);
             settings.set_enable_html5_local_storage(false); settings.set_enable_media_stream(false);
@@ -55,10 +56,18 @@ export class MonacoSurface {
             try { resolve(view!.evaluate_javascript_finish(result).to_string()); } catch (error) { reject(error); }
         }));
     }
+    private paintBackground(name: ThemeName, family: ThemeFamily) {
+        const color = new Gdk.RGBA(); color.parse(paletteFor(name, family).editorBg); this.view?.set_background_color(color);
+    }
+    /** Switches Monaco and the web view's own background to the Dark or Light theme. */
+    applyTheme(name: ThemeName, family: ThemeFamily) {
+        this.paintBackground(name, family);
+        if (this.ready && !this.disposed) void this.evaluate(`window.devOsEditor.setTheme(${JSON.stringify(name)}, ${JSON.stringify(family)})`).catch(() => {});
+    }
     configure(config: EditorConfig) { if (this.ready) void this.evaluate(`window.devOsEditor.configure(${JSON.stringify(config)})`).catch(error => { if (!this.disposed) { this.error = String(error); this.changed(); } }); }
     focus() { this.view?.grab_focus(); if (this.ready) void this.evaluate('window.devOsEditor.focus()').catch(() => {}); }
     dispose() {
-        this.disposed = true; this.cancel.cancel();
+        this.disposed = true; this.cancel.cancel(); this.themeCleanup();
         this.dropCleanup?.(); this.dropCleanup = undefined;
         if (this.manager) { this.manager.disconnect(this.messageSignal); this.manager.unregister_script_message_handler('editor'); }
         this.view?.stop_loading(); this.view?.destroy(); this.view = undefined;

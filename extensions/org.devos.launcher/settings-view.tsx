@@ -5,7 +5,7 @@ const id = 'org.devos.launcher';
 const samples = [
     {name: 'Terminal', description: 'Native desktop terminal', icon: 'utilities-terminal-symbolic'},
     {name: 'Files', description: 'Browse your workspace', icon: 'folder-symbolic'},
-    {name: 'Editor', description: 'Write something great', icon: 'accessories-text-editor-symbolic'},
+    {name: 'Editor', description: 'Write something great', icon: 'dev-os-editor'},
 ];
 const toggles = [
     {key: 'showWorkspace', title: 'Workspace shortcuts', description: 'Keep Terminal, Files and Editor close at hand.', icon: 'view-app-grid-symbolic'},

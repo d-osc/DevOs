@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {
     Gtk, Gdk, Gio, GLib, React,
     createRoot, DrawingArea, ListBox, ListBoxRow, Label,
@@ -177,7 +178,7 @@ asyncTest('compact panel allocates exactly 36 pixels with the application theme'
     const fixture = GLib.dir_make_tmp('dev-os-panel-size-XXXXXX');
     const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     const provider = new Gtk.CssProvider();
-    provider.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', DEFAULTS.accent));
+    provider.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
     Gtk.StyleContext.add_provider_for_screen(display.get_default_screen(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const monitor = display.get_monitor(0)!;
     const context: UIContext = {application, display, preferences, config: () => ({...DEFAULTS, panel_height: 36}),

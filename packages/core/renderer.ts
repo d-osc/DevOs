@@ -4,6 +4,7 @@ import Reconciler from 'react-reconciler';
 import {ConcurrentRoot, DefaultEventPriority, DiscreteEventPriority} from 'react-reconciler/constants.js';
 import {Gtk} from './native.js';
 import {widgetFactories} from './widgets.js';
+import {setImageIcon, releaseImageIcon, releaseImageIcons} from './base-icons.js';
 
 import type {Alignment} from './props.js';
 import type {GioTypes as Gio} from './gir-types.js';
@@ -186,7 +187,7 @@ function apply(node: HostNode, next: HostProps): void {
         if (node.type === 'image' && (changed('gicon') || changed('iconName') || changed('iconSize'))) {
             const image = node.widget as Gtk.Image;
             if (next.gicon) image.set_from_gicon(next.gicon, next.iconSize ?? Gtk.IconSize.BUTTON);
-            else if (next.iconName) image.set_from_icon_name(next.iconName, next.iconSize ?? Gtk.IconSize.BUTTON);
+            else if (next.iconName) setImageIcon(image, next.iconName, next.iconSize ?? Gtk.IconSize.BUTTON);
             else image.clear();
         }
         if (textContent(node.type, next) && (!textContent(node.type, previous) || plainText(previous.children) !== plainText(next.children)))
@@ -340,6 +341,7 @@ function dispose(node: HostNode): void {
     node.children.forEach(dispose);
     for (const {target, id} of node.signals.values()) target.disconnect(id);
     node.signals.clear();
+    if (node.type === 'image') releaseImageIcon(node.widget as Gtk.Image);
 }
 function remove(parent: ParentNode, child: HostNode): void {
     parent.children.splice(parent.children.indexOf(child), 1);
@@ -389,7 +391,7 @@ const hostConfig: HostConfig = {
     resetTextContent: node => {
         if (node.widget instanceof Gtk.Bin) {
             const child = node.widget.get_child();
-            if (child) { node.widget.remove(child); child.destroy(); }
+            if (child) { node.widget.remove(child); releaseImageIcons(child); child.destroy(); }
         } else (node.widget as Gtk.Label).set_label('');
     },
     hideInstance: node => { node.hidden = true; show(node); },

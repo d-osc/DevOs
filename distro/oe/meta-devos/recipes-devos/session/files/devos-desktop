@@ -13,13 +13,16 @@ esac
 export XDG_CURRENT_DESKTOP=DevOS:labwc
 export XDG_SESSION_TYPE=wayland
 export DEV_OS_LOGIN=0
+# Image dependencies are pinned by the recipe; skip the per-login doctor (a full GJS start).
+export DEV_OS_SKIP_DOCTOR=1
 unset GREETD_SOCK
 export PATH=/usr/bin:/usr/sbin:/usr/libexec:/bin:/sbin
 if [ "${1:-}" != --session ]; then
     exec dbus-run-session -- "$0" --session
 fi
 # Start per-user audio with the PAM-created user manager, not root services.
-if ! systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service; then
+# --no-block: do not hold the desktop back while wireplumber starts (slow on emulated CPUs); audio comes up in the background.
+if ! systemctl --user start --no-block pipewire.socket pipewire-pulse.socket wireplumber.service; then
     printf '%s\n' 'DevOs: user audio services could not start; check the user journal.' >&2
 fi
 polkit-gnome-authentication-agent-1 &

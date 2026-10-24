@@ -15,7 +15,8 @@ apt-get install -y --no-install-recommends \
     build-essential pkg-config meson ninja-build git curl tar coreutils \
     gjs gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
     gir1.2-webkit2-4.1 gir1.2-soup-3.0 dbus-daemon util-linux \
-    xdg-utils pulseaudio-utils \
+    xdg-utils pulseaudio-utils gir1.2-gstreamer-1.0 gstreamer1.0-tools \
+    gstreamer1.0-gtk3 gstreamer1.0-plugins-base gstreamer1.0-plugins-good v4l-utils \
     libwayland-dev libwayland-bin wayland-protocols libgtk-3-dev \
     libinput-dev libxkbcommon-dev libpixman-1-dev libdrm-dev \
     libegl1-mesa-dev libgles2-mesa-dev libgbm-dev libudev-dev libseat-dev \

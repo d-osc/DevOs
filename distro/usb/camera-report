@@ -1,0 +1,146 @@
+#!/bin/sh
+# Camera bring-up report for the Live system: prints a verdict per layer (USB
+# camera, device-tree camera graph, CAMSS/CCI/sensor drivers, video and media
+# nodes, V4L2 / libcamera / PipeWire visibility) and the raw evidence behind it.
+# Read-only: it opens no camera stream and changes no driver state.
+# Usage: devos-camera-report [output-file]   (default: standard output)
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export XDG_RUNTIME_DIR=/run/user/0
+export PULSE_SERVER=unix:/run/user/0/pulse/native
+HW=${DEVOS_HW_RUN:-/run/devos-hw}
+SYS=${DEVOS_SYS_ROOT:-}
+T="/usr/bin/timeout 8"
+[ -x /usr/bin/timeout ] || T=
+DT="$SYS/sys/firmware/devicetree/base"
+
+# Prints device-tree node paths that look like camera graph parts.
+dt_nodes() {
+    find "$DT" -type d \( -name 'camss@*' -o -name 'cci@*' -o -name 'csiphy@*' -o -name 'camera@*' -o -name 'camera-sensor@*' -o -name 'image-sensor@*' -o -name 'sensor@*' \) 2>/dev/null
+}
+
+# A node counts as enabled when it has no status property or status is "okay".
+dt_enabled() {
+    s=$(tr -d '\0' <"$1/status" 2>/dev/null)
+    [ -z "$s" ] || [ "$s" = okay ]
+}
+
+report() {
+    dmesg_file=$(mktemp) && dmesg >"$dmesg_file" 2>&1
+    echo "=== DevOS camera report $(date -u +%FT%TZ) kernel $(uname -r) ==="
+    echo "profile: $(sed -n 's/^selected_profile=//p' "$HW/profile.conf" 2>/dev/null)"
+    echo
+    echo '=== Verdict ==='
+    # 1. A USB (UVC) camera is any USB device of video class 0e or a UVC interface.
+    uvc=0
+    for d in "$SYS"/sys/bus/usb/devices/*; do
+        [ -e "$d/bInterfaceClass" ] && [ "$(cat "$d/bInterfaceClass" 2>/dev/null)" = 0e ] && uvc=$((uvc+1))
+    done
+    [ "$uvc" -gt 0 ] && echo "CAMERA-CHECK usb-uvc-device: ok ($uvc video-class USB interface(s))" || echo 'CAMERA-CHECK usb-uvc-device: FAIL (no USB video-class device: this laptop camera is not a USB webcam, or USB bring-up failed)'
+    # 2. Device tree: CAMSS controller, CCI (I2C control), and an enabled sensor.
+    camss=0; cci=0; sensor=0
+    for n in $(dt_nodes); do
+        case "$n" in
+            */camss@*) dt_enabled "$n" && camss=$((camss+1)) ;;
+            */cci@*) dt_enabled "$n" && cci=$((cci+1)) ;;
+        esac
+    done
+    # Sensors are I2C children that name an ovXX/imxXXX/hiXXX/gcXXXX compatible.
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        case "$(tr '\0' ' ' <"$c" 2>/dev/null)" in
+            *ovti,*|*sony,imx*|*hynix,hi*|*galaxycore,gc*|*samsung,s5k*) dt_enabled "$(dirname "$c")" && sensor=$((sensor+1)) ;;
+        esac
+    done
+    [ "$camss" -gt 0 ] && echo "CAMERA-CHECK dt-camss-node: ok ($camss enabled)" || echo 'CAMERA-CHECK dt-camss-node: FAIL (no enabled camss@ node: DTB has no camera controller; needs the Glymur CAMSS device tree)'
+    [ "$cci" -gt 0 ] && echo "CAMERA-CHECK dt-cci-node: ok ($cci enabled)" || echo 'CAMERA-CHECK dt-cci-node: FAIL (no enabled cci@ node: sensor control bus is not described)'
+    [ "$sensor" -gt 0 ] && echo "CAMERA-CHECK dt-sensor-node: ok ($sensor enabled sensor node(s))" || echo 'CAMERA-CHECK dt-sensor-node: FAIL (no enabled camera sensor node; the OV02C10 power/GPIO/CSI graph for UX3407NA is not in the DTB)'
+    # 3. Drivers: loaded or built in.
+    # Driver match tables: the module can be present yet unable to bind this SoC.
+    modinfo -F alias qcom_camss 2>/dev/null | grep -q 'glymur-camss' && echo 'CAMERA-CHECK kernel-camss-glymur-match: ok' || echo 'CAMERA-CHECK kernel-camss-glymur-match: FAIL (qcom_camss has no qcom,glymur-camss alias: kernel lacks the Glymur CAMSS patch, see native/kernel/ux3407na-camera)'
+    modinfo -F alias qcom_pm8008 2>/dev/null | grep -q 'pm8010' && echo 'CAMERA-CHECK kernel-pm8010-match: ok' || echo 'CAMERA-CHECK kernel-pm8010-match: FAIL (qcom_pm8008 has no qcom,pm8010 alias: camera PMIC rails unsupported)'
+    for node in "$DT"/soc@0/clock-controller@ade0000; do
+        [ -d "$node" ] && echo 'CAMERA-CHECK dt-camcc-node: ok (clock-controller@ade0000)' || echo 'CAMERA-CHECK dt-camcc-node: FAIL (no camera clock controller node)'
+    done
+    for mod in camcc_glymur phy_qcom_mipi_csi2 qcom_pm8008 qcom_pm8008_regulator qcom_camss i2c_qcom_cci ov02c10 uvcvideo videodev; do
+        if grep -q "^$mod " "$SYS/proc/modules" 2>/dev/null || [ -d "$SYS/sys/module/$mod" ]; then
+            echo "CAMERA-CHECK module-$mod: ok"
+        else
+            echo "CAMERA-CHECK module-$mod: FAIL (not loaded; modules load on a matching DT/USB device, so FAIL here is expected without the nodes above)"
+        fi
+    done
+    # 4. Probe errors for the camera stack.
+    n=$(grep -c -i -E 'camss.*(fail|error|-[0-9]+$)|cci.*(fail|error)|ov02c10.*(fail|error|-[0-9]+$)|pm8010.*(fail|error)|uvcvideo.*(fail|error)|Direct firmware load for .*(cam|ov0|isp)' "$dmesg_file")
+    [ "$n" = 0 ] && echo 'CAMERA-CHECK kernel-probe-errors: ok (no camera probe errors in dmesg)' || echo "CAMERA-CHECK kernel-probe-errors: FAIL $n camera probe error line(s), see dmesg below"
+    # 5. Device nodes.
+    v=$(ls "$SYS"/dev/video* 2>/dev/null | wc -l); m=$(ls "$SYS"/dev/media* 2>/dev/null | wc -l)
+    [ "$v" -gt 0 ] && echo "CAMERA-CHECK dev-video: ok ($v node(s))" || echo 'CAMERA-CHECK dev-video: FAIL (no /dev/video*)'
+    [ "$m" -gt 0 ] && echo "CAMERA-CHECK dev-media: ok ($m node(s))" || echo 'CAMERA-CHECK dev-media: FAIL (no /dev/media*: no media-controller camera pipeline)'
+    # 6. Userspace layers.
+    list=$($T v4l2-ctl --list-devices 2>&1)
+    case "$list" in */dev/video*) echo 'CAMERA-CHECK v4l2-list-devices: ok' ;; *) echo "CAMERA-CHECK v4l2-list-devices: FAIL ($(echo "$list" | tr '\n' ' '))" ;; esac
+    cams=$($T cam -l 2>&1)
+    case "$cams" in *"Available cameras"*"("*) echo 'CAMERA-CHECK libcamera-cam-list: ok' ;; *) echo "CAMERA-CHECK libcamera-cam-list: FAIL ($(echo "$cams" | tr '\n' ' ' | cut -c1-200))" ;; esac
+    $T gst-inspect-1.0 libcamerasrc >/dev/null 2>&1 && echo 'CAMERA-CHECK gst-libcamerasrc: ok' || echo 'CAMERA-CHECK gst-libcamerasrc: FAIL (libcamera GStreamer plugin missing: libcamera-gst)'
+    $T gst-inspect-1.0 v4l2src >/dev/null 2>&1 && echo 'CAMERA-CHECK gst-v4l2src: ok' || echo 'CAMERA-CHECK gst-v4l2src: FAIL (gstreamer1.0-plugins-good v4l2 missing)'
+    pw=$($T pw-cli ls Node 2>&1)
+    case "$pw" in *Video/Source*) echo 'CAMERA-CHECK pipewire-video-source: ok' ;; *) echo 'CAMERA-CHECK pipewire-video-source: FAIL (no Video/Source node in PipeWire)' ;; esac
+    echo
+    echo '=== Device identity ==='
+    for f in board_vendor product_family product_name board_name; do printf '%s=' "$f"; cat "$SYS/sys/devices/virtual/dmi/id/$f" 2>&1; done
+    tr '\0' ' ' <"$DT/compatible" 2>&1; echo
+    echo
+    echo '=== USB devices (an internal UVC webcam would appear here) ==='
+    $T lsusb 2>&1
+    $T lsusb -t 2>&1
+    echo
+    echo '=== Device-tree camera nodes and status ==='
+    for n in $(dt_nodes); do
+        printf '%s status=%s compatible=%s\n' "${n#$DT}" "$( [ -f "$n/status" ] && tr -d '\0' <"$n/status" || echo '(none)')" "$( [ -f "$n/compatible" ] && tr '\0' ' ' <"$n/compatible" || echo '(none)')"
+    done
+    echo 'OV02C10 sensor node values in the DT (present only if the UNVERIFIED camera candidate DTB is booted; hex cells):'
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        case "$(tr '\0' ' ' <"$c" 2>/dev/null)" in
+            *ovti,ov02c10*)
+                n=${c%/compatible}; echo "${n#$DT}"
+                for prop in reset-gpios data-lanes avdd-supply dovdd-supply dvdd-supply assigned-clock-rates; do
+                    for f in "$n/$prop" "$n"/port/endpoint/"$prop"; do
+                        [ -f "$f" ] && printf '  %s: %s\n' "$prop" "$(od -An -tx1 "$f" | tr -d '\n')"
+                    done
+                done ;;
+        esac
+    done
+    echo 'Camera PMIC (PM8008/PM8010) nodes in the DT:'
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        case "$(tr '\0' ' ' <"$c" 2>/dev/null)" in *pm8008*|*pm8010*) echo "${c%/compatible}" ;; esac
+    done
+    echo 'Reserved memory regions named camera (a reserved region alone does not describe a sensor):'
+    ls -d "$DT"/reserved-memory/camera* 2>&1
+    echo
+    echo '=== Video and media device nodes ==='
+    ls -l "$SYS"/dev/video* "$SYS"/dev/media* "$SYS"/dev/v4l-subdev* 2>&1
+    $T v4l2-ctl --list-devices 2>&1
+    for m in "$SYS"/dev/media*; do [ -e "$m" ] && $T media-ctl -d "$m" -p 2>&1 | head -120; done
+    echo
+    echo '=== libcamera ==='
+    $T cam -l 2>&1
+    echo
+    echo '=== Camera-related modules ==='
+    grep -i -E '^(camcc_glymur|phy_qcom_mipi_csi2|videodev|v4l2|videobuf2|uvcvideo|qcom_camss|i2c_qcom_cci|ov[0-9a-z]+|imx[0-9]+|hi[0-9]+|gc[0-9]+|qcom_pm8008|pm8008|v4l2_cci|v4l2_fwnode|v4l2_async|mc|gpio_keys) ' "$SYS/proc/modules" 2>&1
+    ls "$SYS"/lib/modules/"$(uname -r)"/kernel/drivers/media/platform/qcom/camss "$SYS"/lib/modules/"$(uname -r)"/kernel/drivers/media/i2c/ov02c10.ko* 2>&1
+    echo
+    echo '=== Deferred drivers ==='
+    cat "$SYS/sys/kernel/debug/devices_deferred" 2>&1
+    echo
+    echo '=== dmesg: camera, CCI, sensor, regulator and media lines ==='
+    grep -i -E 'camss|camera|cci|csiphy|csid|vfe|ov02|ov0[0-9]|imx[0-9]|pm8010|pm8008|uvc|video|v4l2|media|cam_ahb|camcc|sensor' "$dmesg_file" | head -300
+    echo
+    echo '=== PipeWire video nodes ==='
+    $T pw-cli ls Node 2>&1 | grep -i -E 'video|camera|v4l2|libcamera'
+    $T wpctl status 2>&1 | sed -n '/Video/,$p'
+    rm -f "$dmesg_file"
+}
+
+if [ -n "$1" ]; then
+    report >"$1.new" 2>&1 && mv "$1.new" "$1"
+else
+    report
+fi

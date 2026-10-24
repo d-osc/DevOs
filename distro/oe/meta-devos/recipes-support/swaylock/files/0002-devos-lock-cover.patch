@@ -1,0 +1,231 @@
+From: Dev OS <devos@localhost>
+Subject: [PATCH] Secure black clock cover before authentication
+
+Upstream-Status: Inappropriate [Dev OS lock workflow]
+
+--- a/include/swaylock.h
++++ b/include/swaylock.h
+@@ -98,6 +98,7 @@ struct swaylock_state {
+ 	uint32_t highlight_start; // position of highlight; 2048 = 1 full turn
+ 	int failed_attempts;
+ 	bool run_display, locked;
++	bool devos_cover;
+ 	struct ext_session_lock_manager_v1 *ext_session_lock_manager_v1;
+ 	struct ext_session_lock_v1 *ext_session_lock_v1;
+ };
+@@ -135,6 +136,7 @@ struct swaylock_image {
+ void swaylock_handle_key(struct swaylock_state *state,
+ 		xkb_keysym_t keysym, uint32_t codepoint);
+ 
++bool devos_dismiss_cover(struct swaylock_state *state);
+ void render(struct swaylock_surface *surface);
+ void damage_state(struct swaylock_state *state);
+ void clear_password_buffer(struct swaylock_password *pw);
+--- a/main.c
++++ b/main.c
+@@ -181,6 +181,29 @@ void damage_state(struct swaylock_state *state) {
+ 	}
+ }
+ 
++
++static void devos_cover_signal(int sig);
++
++static void devos_show_cover(struct swaylock_state *state) {
++    if (state->auth_state == AUTH_STATE_VALIDATING) return;
++    state->devos_cover = true;
++    clear_password_buffer(&state->password);
++    state->input_state = INPUT_STATE_IDLE;
++    state->auth_state = AUTH_STATE_IDLE;
++    struct swaylock_surface *surface;
++    wl_list_for_each(surface, &state->surfaces, link) surface->last_buffer_width = 0;
++    damage_state(state);
++}
++
++bool devos_dismiss_cover(struct swaylock_state *state) {
++    if (!state->devos_cover) return false;
++    state->devos_cover = false;
++    struct swaylock_surface *surface;
++    wl_list_for_each(surface, &state->surfaces, link) surface->last_buffer_width = 0;
++    damage_state(state);
++    return true;
++}
++
+ // Refresh the background without replacing the secure lock surface.
+ static void devos_clock_tick(void *data) {
+ 	static time_t last_minute = 0;
+@@ -321,6 +344,10 @@ static const struct wl_registry_listener registry_listener = {
+ };
+ 
+ static int sigusr_fds[2] = {-1, -1};
++static void devos_cover_signal(int sig) {
++    (void)sig;
++    (void)write(sigusr_fds[1], "2", 1);
++}
+ 
+ void do_sigusr(int sig) {
+ 	(void)write(sigusr_fds[1], "1", 1);
+@@ -562,6 +589,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
+ 	};
+ 
+ 	const char usage[] =
++        "  Dev OS secure clock cover: DEV_OS_LOCK_COVER=1\n"
+ 		"Usage: swaylock [options...]\n"
+ 		"\n"
+ 		"  -C, --config <config_file>       "
+@@ -1076,7 +1104,12 @@ static void comm_in(int fd, short mask, void *data) {
+ }
+ 
+ static void term_in(int fd, short mask, void *data) {
+-	state.run_display = false;
++    char command;
++    if (read(fd, &command, 1) == 1 && command == '2') {
++        devos_show_cover(&state);
++        return;
++    }
++    state.run_display = false;
+ }
+ 
+ // Check for --debug 'early' we also apply the correct loglevel
+@@ -1170,6 +1203,7 @@ int main(int argc, char **argv) {
+ 		state.args.colors.line = state.args.colors.ring;
+ 	}
+ 
++	state.devos_cover = getenv("DEV_OS_LOCK_COVER") && strcmp(getenv("DEV_OS_LOCK_COVER"), "1") == 0;
+ 	state.password.len = 0;
+ 	state.password.buffer_len = 1024;
+ 	state.password.buffer = password_buffer_create(state.password.buffer_len);
+@@ -1250,7 +1284,13 @@ int main(int argc, char **argv) {
+ 		}
+ 	}
+ 
+-	if (state.args.ready_fd >= 0) {
++    // Install the cover handler before readiness can trigger another request.
++    struct sigaction cover_sa;
++    cover_sa.sa_handler = devos_cover_signal;
++    sigemptyset(&cover_sa.sa_mask);
++    cover_sa.sa_flags = SA_RESTART;
++    sigaction(SIGUSR2, &cover_sa, NULL);
++    if (state.args.ready_fd >= 0) {
+ 		if (write(state.args.ready_fd, "\n", 1) != 1) {
+ 			swaylock_log(LOG_ERROR, "Failed to send readiness notification");
+ 			return 2;
+--- a/render.c
++++ b/render.c
+@@ -13,8 +13,8 @@
+ const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;
+ 
+ // Clock colors come from the Dev OS theme as RRGGBB; the black cover always keeps light text.
+-static void devos_clock_color(cairo_t *cairo, int line) {
+-	const char *value = getenv(line == 0 ? "DEV_OS_LOCK_CLOCK_COLOR" : "DEV_OS_LOCK_CLOCK_MUTED");
++static void devos_clock_color(cairo_t *cairo, int line, bool cover) {
++	const char *value = cover ? NULL : getenv(line == 0 ? "DEV_OS_LOCK_CLOCK_COLOR" : "DEV_OS_LOCK_CLOCK_MUTED");
+ 	char *end = NULL;
+ 	long rgb = value && strlen(value) == 6 ? strtol(value, &end, 16) : -1;
+ 	if (rgb < 0 || !end || *end != '\0') {
+@@ -27,7 +27,7 @@ static void devos_clock_color(cairo_t *cairo, int line) {
+ }
+ 
+ // Opt-in clock for the Dev OS wallpaper; authentication stays in swaylock.
+-static void render_devos_clock(cairo_t *cairo, int width, int height) {
++static void render_devos_clock(cairo_t *cairo, int width, int height, bool cover) {
+ 	const char *enabled = getenv("DEV_OS_LOCK_CLOCK");
+ 	if (!enabled || strcmp(enabled, "1") != 0) {
+ 		return;
+@@ -47,12 +47,12 @@ static void render_devos_clock(cairo_t *cairo, int width, int height) {
+ 		strftime(text, sizeof(text), line == 0 ? "%H:%M" : "%A, %d %B %Y", &local);
+ 		cairo_select_font_face(cairo, "Sans", CAIRO_FONT_SLANT_NORMAL,
+ 			line == 0 ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+-		cairo_set_font_size(cairo, line == 0 ? 68 : 20);
+-		devos_clock_color(cairo, line);
++		cairo_set_font_size(cairo, line == 0 ? (cover ? 112 : 68) : (cover ? 26 : 20));
++		devos_clock_color(cairo, line, cover);
+ 		cairo_text_extents_t extents;
+ 		cairo_text_extents(cairo, text, &extents);
+ 		cairo_move_to(cairo, 960 - extents.width / 2 - extents.x_bearing,
+-			line == 0 ? 139 : 180);
++			cover ? (line == 0 ? 540 : 602) : (line == 0 ? 139 : 180));
+ 		cairo_show_text(cairo, text);
+ 	}
+ 	cairo_restore(cairo);
+@@ -129,14 +129,14 @@ void render(struct swaylock_surface *surface) {
+ 
+ 		cairo_save(cairo);
+ 		cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
+-		cairo_set_source_u32(cairo, state->args.colors.background);
++		cairo_set_source_u32(cairo, state->devos_cover ? 0x000000ff : state->args.colors.background);
+ 		cairo_paint(cairo);
+-		if (surface->image && state->args.mode != BACKGROUND_MODE_SOLID_COLOR) {
++		if (!state->devos_cover && surface->image && state->args.mode != BACKGROUND_MODE_SOLID_COLOR) {
+ 			cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
+ 			render_background_image(cairo, surface->image,
+ 				state->args.mode, buffer_width, buffer_height);
+ 		}
+-		render_devos_clock(cairo, buffer_width, buffer_height);
++		render_devos_clock(cairo, buffer_width, buffer_height, state->devos_cover);
+ 		cairo_restore(cairo);
+ 		cairo_identity_matrix(cairo);
+ 
+@@ -190,7 +190,7 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 	char *text = NULL;
+ 	const char *layout_text = NULL;
+ 
+-	bool draw_indicator = state->args.show_indicator &&
++	bool draw_indicator = !state->devos_cover && state->args.show_indicator &&
+ 		(state->auth_state != AUTH_STATE_IDLE ||
+ 			state->input_state != INPUT_STATE_IDLE ||
+ 			state->args.indicator_idle_visible);
+--- a/seat.c
++++ b/seat.c
+@@ -67,11 +67,14 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard,
+ 		uint32_t serial, uint32_t time, uint32_t key, uint32_t _key_state) {
+ 	struct swaylock_seat *seat = data;
+ 	struct swaylock_state *state = seat->state;
+-	if (state->xkb.state == NULL) {
+-		return;
+-	}
+-
+-	enum wl_keyboard_key_state key_state = _key_state;
++	// The first press only reveals authentication; it never enters a password
++    // or arms key repeat, including when the user holds that key down.
++    if (_key_state == WL_KEYBOARD_KEY_STATE_PRESSED && devos_dismiss_cover(state)) return;
++    if (state->xkb.state == NULL) {
++        return;
++    }
++
++    enum wl_keyboard_key_state key_state = _key_state;
+ 	xkb_keysym_t sym = xkb_state_key_get_one_sym(state->xkb.state, key + 8);
+ 	uint32_t keycode = key_state == WL_KEYBOARD_KEY_STATE_PRESSED ?
+ 		key + 8 : 0;
+@@ -151,17 +154,20 @@ static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
+ 
+ static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
+ 		uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+-	// Who cares
++	struct swaylock_seat *seat = data;
++	devos_dismiss_cover(seat->state);
+ }
+ 
+ static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
+ 		uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+-	// Who cares
++	struct swaylock_seat *seat = data;
++	if (state == WL_POINTER_BUTTON_STATE_PRESSED) devos_dismiss_cover(seat->state);
+ }
+ 
+ static void wl_pointer_axis(void *data, struct wl_pointer *wl_pointer,
+ 		uint32_t time, uint32_t axis, wl_fixed_t value) {
+-	// Who cares
++	struct swaylock_seat *seat = data;
++	devos_dismiss_cover(seat->state);
+ }
+ 
+ static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
+@@ -208,7 +214,7 @@ static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
+ 	}
+ 	if ((caps & WL_SEAT_CAPABILITY_POINTER)) {
+ 		seat->pointer = wl_seat_get_pointer(wl_seat);
+-		wl_pointer_add_listener(seat->pointer, &pointer_listener, NULL);
++		wl_pointer_add_listener(seat->pointer, &pointer_listener, seat);
+ 	}
+ 	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD)) {
+ 		seat->keyboard = wl_seat_get_keyboard(wl_seat);

@@ -8,14 +8,14 @@
   "system": true,
   "entry": "org.devos.terminal.js",
   "order": 26,
-  "settingsVersion": 1,
+  "settingsVersion": 2,
   "enabledByDefault": true,
   "settings": [
     {
       "id": "terminal",
       "title": "Terminal",
       "fields": [
-        {"key": "scheme", "title": "Color scheme", "type": "string", "default": "midnight"},
+        {"key": "suggestions", "title": "Command suggestions", "type": "boolean", "default": true},
         {"key": "audibleBell", "title": "Audible bell", "type": "boolean", "default": false},
         {"key": "allowHyperlinks", "title": "Clickable links", "type": "boolean", "default": true},
         {"key": "scrollOnOutput", "title": "Follow new output", "type": "boolean", "default": false},

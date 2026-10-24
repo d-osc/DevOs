@@ -23,6 +23,10 @@
       "types": "./dist/window-tabs.d.ts",
       "import": "./dist/window-tabs.js"
     },
+    "./snap-geometry": {
+      "types": "./dist/snap-geometry.d.ts",
+      "import": "./dist/snap-geometry.js"
+    },
     "./windows": {
       "types": "./dist/windows.d.ts",
       "import": "./dist/windows.js"

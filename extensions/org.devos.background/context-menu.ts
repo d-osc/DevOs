@@ -1,4 +1,4 @@
-import {Gtk, type SettingsValues} from '@dev-os/core';
+import {Gtk, baseImage, type SettingsValues} from '@dev-os/core';
 import {parseCustomMenu, customMenuMatches, type CustomMenuItem} from '../org.devos.files/custom-menu.js';
 export const backgroundMenuItems = [
     {key: 'menuWidgets', title: 'Desktop widgets', icon: 'list-add-symbolic'},
@@ -18,7 +18,7 @@ export function createBackgroundMenu(values: SettingsValues, actions: Record<Bac
     for (const item of backgroundMenuItems) {
         if (values[item.key] === false) continue;
         const row = new Gtk.MenuItem(); row.name = `background-menu-${item.key}`;
-        const content = new Gtk.Box({spacing: 10}); content.add(new Gtk.Image({icon_name: item.icon, pixel_size: 16}));
+        const content = new Gtk.Box({spacing: 10}); content.add(baseImage(item.icon, 16));
         content.add(new Gtk.Label({label: item.title, xalign: 0})); row.add(content);
         row.connect('activate', actions[item.key]); menu.append(row);
     }

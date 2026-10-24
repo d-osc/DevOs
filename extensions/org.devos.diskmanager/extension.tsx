@@ -1,4 +1,4 @@
-import {Gtk, React, Box, Label, Button, Image, ScrolledWindow, DrawingArea, createRoot, mountWindowHeader, useState, useEffect, type UIExtension} from '@dev-os/core';
+import {Gtk, React, Box, Label, Button, Image, ScrolledWindow, DrawingArea, createRoot, mountWindowHeader, useState, useEffect, activePalette, rgbOf, type UIExtension} from '@dev-os/core';
 import {Disks, type Disk, type DiskControls, type DiskState} from './disks.js';
 import {DiskManagerSettings} from './settings.js';
 const size = (bytes: number) => bytes >= 1099511627776 ? `${(bytes / 1099511627776).toFixed(2)} TiB` : bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(1)} GiB` : `${(bytes / 1048576).toFixed(1)} MiB`;
@@ -9,10 +9,10 @@ function Map({disk}: {disk: Disk}) {
         const width = widget.get_allocated_width(), height = widget.get_allocated_height(); let offset = 0;
         for (const [index, part] of parts.entries()) {
             const extent = width * part.size / Math.max(disk.size, parts.reduce((sum, item) => sum + item.size, 0), 1);
-            const colors = [[.28,.67,.57],[.35,.55,.79],[.64,.48,.76],[.79,.62,.32]], color = colors[index % colors.length]!;
+            const p = activePalette(), colors = [p.green, p.blue, p.purple, p.orange].map(rgbOf), color = colors[index % colors.length]!;
             cr.setSourceRGB(...color as [number, number, number]); cr.rectangle(offset, 0, Math.max(1, extent - 2), height); cr.fill(); offset += extent;
         }
-        cr.setSourceRGBA(.65,.72,.78,.2); cr.rectangle(offset, 0, Math.max(0, width - offset), height); cr.fill(); return false;
+        cr.setSourceRGBA(...rgbOf(activePalette().fg), .2); cr.rectangle(offset, 0, Math.max(0, width - offset), height); cr.fill(); return false;
     }}/>;
 }
 export function DiskManager({controls}: {controls: DiskControls}) {

@@ -5,6 +5,16 @@ Editor เป็น system UI extension ที่ใช้ React + TypeScript, h
 toolbar, status bar, native header และ dialogs ใช้ GTK. Assets และ language workers bundle ใน `dist/editor/`
 และเสิร์ฟเฉพาะบน loopback ระหว่างเปิดแอป จึงใช้ได้โดยไม่ต้องเชื่อมต่อ CDN.
 
+ARM64 DevOs images using WebKitGTK 2.50 apply
+`distro/oe/meta-devos/recipes-sato/webkit/webkitgtk3_2.50%.bbappend` when installing
+JavaScriptCore. Its handwritten LLInt entry points lack BTI landing instructions,
+although the compiler-generated ELF property marks the entire library as compatible.
+Correcting that library's BTI property prevents WebKitWebProcess from receiving
+SIGILL on BTI-capable CPUs, including QEMU's `max` CPU. PAC/GCS properties and
+other libraries' BTI properties are retained; no sandbox or JIT setting is disabled.
+Run `DEV_OS_EDITOR_TEST_SLOW=1 gjs -m dist/live-editor-test.js` in a TCG guest to
+allow extra startup time while still checking TypeScript worker diagnostics and save.
+
 ติดตั้ง runtime บน Ubuntu:
 
 ```sh

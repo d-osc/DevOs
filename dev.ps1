@@ -1,4 +1,4 @@
-param([ValidateSet('run', 'updated', 'check', 'smoke', 'doctor', 'drivers', 'bootstrap', 'build', 'demo')][string]$Mode = 'run', [ValidatePattern('^$|^[a-z][a-z0-9_-]{0,30}$')][string]$User = '')
+param([ValidateSet('run', 'updated', 'check', 'smoke', 'doctor', 'drivers', 'bootstrap', 'build', 'demo')][string]$Mode = 'run', [ValidatePattern('^$|^[a-z][a-z0-9_-]{0,30}$')][string]$User = '', [switch]$X11)
 $ErrorActionPreference = 'Stop'
 if ($Mode -in @('run', 'check', 'smoke', 'build', 'demo')) {
     Push-Location $PSScriptRoot
@@ -56,11 +56,14 @@ if ($Mode -eq 'updated') {
     $taskRuntimePath = ($linuxPath -split ':' | Where-Object { $_ -notmatch '^/mnt/[a-z]/' }) -join ':'
     try {
         if ($User) {
+            if ($X11) { throw '-X11 is not supported with -User.' }
             $taskSelectedUid = (& wsl -d Ubuntu -u root -- "$taskRuntimeRoot/build/wsl/bin/d" "$linuxRoot/tools/setup/prepare-wsl-user.dev" -- $User $taskRuntimeRoot).Trim()
             if ($LASTEXITCODE -ne 0 -or $taskSelectedUid -notmatch '^\d+$') { throw 'Cannot prepare the selected Linux user session.' }
             & wsl -d Ubuntu -u $User --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "XDG_RUNTIME_DIR=/run/user/$taskSelectedUid" WAYLAND_DISPLAY=/mnt/wslg/runtime-dir/wayland-0 "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" DEV_OS_LOGIN=0 WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
         } else {
-            & wsl -d Ubuntu --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:$taskRuntimePath" "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
+            # -X11 shows the nested compositor as an X11 (XWayland) window instead of a Wayland one.
+            $taskBackendEnv = if ($X11) { @('-u', 'WAYLAND_DISPLAY', 'DISPLAY=:0') } else { @() }
+            & wsl -d Ubuntu --exec env @taskBackendEnv "PATH=$taskRuntimeRoot/build/wsl/bin:$taskRuntimePath" "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
         }
         $taskSessionExit = $LASTEXITCODE
     } finally {

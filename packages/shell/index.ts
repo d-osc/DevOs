@@ -11,6 +11,8 @@ import {SettingsPages} from '@dev-os/core';
 import {requestSessionVersion} from '@dev-os/runtime/session-version';
 import {shellApplicationId, controlInterface} from '@dev-os/runtime/remote';
 import {LockScreen} from '@dev-os/runtime/lock';
+import {SleepGuard} from '@dev-os/runtime/sleep';
+import {LidStandby} from '@dev-os/runtime/lid';
 
 interface ShellOptions {config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]; preferences?: ExtensionManager;}
 
@@ -37,6 +39,8 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     declare settingsPages: SettingsPages;
     declare control: Gio.DBusExportedObject | undefined;
     declare lockScreen: LockScreen;
+    declare sleepGuard: SleepGuard | undefined;
+    declare lidStandby: LidStandby | undefined;
     constructor(options: ShellOptions) {
         super(options as unknown as Gtk.Application.ConstructorProps);
     }
@@ -62,6 +66,8 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         this.settingsPages = new SettingsPages();
         this.control = undefined;
         this.lockScreen = new LockScreen();
+        this.sleepGuard = undefined;
+        this.lidStandby = undefined;
     }
 
     vfunc_startup() {
@@ -98,6 +104,17 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             },
         });
         this.control.export(this.get_dbus_connection()!, `${this.get_dbus_object_path()!}/control`);
+        // Lock before sleeping so waking shows the lock screen immediately. DEV_OS_LOCK_ON_SLEEP=0 opts out.
+        if (GLib.getenv('DEV_OS_LOCK_ON_SLEEP') !== '0') {
+            this.sleepGuard = new SleepGuard(ready => {
+                if (!this.lockScreen.start(this.config, message => { if (!this.quitting) this.showMessage(message); }, ready)) ready();
+            });
+            this.sleepGuard.start();
+        }
+        this.lidStandby = new LidStandby(ready => this.lockScreen.start(this.config,
+            message => { if (!this.quitting) this.showMessage(message); }, ready),
+            message => { if (!this.quitting) this.showMessage(message); });
+        this.lidStandby.start();
         print(`Dev OS shell ready on ${GLib.getenv('WAYLAND_DISPLAY')} (${this.display.get_n_monitors()} output(s)) [GJS]`);
     }
 
@@ -122,12 +139,15 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         if (this.startupError) { printerr(this.startupError); return 1; }
         const command = args[0] ?? 'shell';
         switch (command) {
-        case 'app-store': case 'disk-manager': case 'task-manager': case 'launcher': case 'overlays-hide': case 'logout': case 'settings': case 'task-view': case 'task-view-show': case 'task-view-hide': this.invoke(command); break;
+        case 'window-next': this.windows?.gesture('next'); break;
+        case 'window-previous': this.windows?.gesture('previous'); break;
+        case 'window-restore': this.windows?.gesture('restore'); break;
+        case 'camera': case 'microphone': case 'app-store': case 'disk-manager': case 'installer': case 'task-manager': case 'launcher': case 'overlays-hide': case 'logout': case 'settings': case 'snap-layouts': case 'task-view': case 'task-view-show': case 'task-view-hide': this.invoke(command); break;
         case 'wifi': this.invoke('settings.wifi'); break;
         case 'network': this.invoke('settings.network'); break;
         case 'language': this.invoke('settings.language'); break;
         case 'time': this.invoke('settings.time'); break;
-        case 'system': case 'display': case 'sound': case 'power': case 'storage': case 'about': this.invoke(`settings.${command}`); break;
+        case 'vpn': case 'hotspot': case 'airplane': case 'proxy': case 'advanced': case 'mouse': case 'keyboard': case 'bluetooth-add': case 'printers': case 'touchpad': case 'system': case 'display': case 'sound': case 'power': case 'storage': case 'about': this.invoke(`settings.${command}`); break;
         case 'reload': return this.reloadConfig() ? 0 : 1;
         case 'terminal': case 'files': case 'lock': return this.runCommand(command) ? 0 : 1;
         case 'editor': {
@@ -252,6 +272,8 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         this.control?.unexport(); this.control = undefined;
         if (this.messageSource) GLib.source_remove(this.messageSource);
         this.signalSources.forEach(source => GLib.source_remove(source));
+        this.sleepGuard?.destroy(); this.sleepGuard = undefined;
+        this.lidStandby?.destroy(); this.lidStandby = undefined;
         this.displaySignals.forEach(id => this.display.disconnect(id));
         for (const runtime of this.userRuntimes.reverse()) runtime.stop();
         this.userRuntimes = [];

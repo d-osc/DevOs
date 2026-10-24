@@ -55,3 +55,12 @@ cat "$XDG_RUNTIME_DIR/devos-memory-policy.json"
 
 Tests: `python3 tests/memory-policy.test.py`; opt-in real transient service
 test: `DEVOS_MEMORY_INTEGRATION=1 python3 tests/memory-policy.test.py`.
+
+## Session recovery
+
+If the shell dies while labwc keeps running, the screen shows only labwc's root menu. `packages/supervisor` therefore
+restarts a shell that was killed by a signal (for example an OOM kill) or exited non-zero, one second later, up to five
+times in five minutes; after that it ends the session so greetd returns instead of leaving an empty desktop. Exit status
+0 (logout, version switch, SIGTERM) is never restarted. `bin/dev-os-start` applies the same rule to the supervisor itself:
+if its scope is killed while labwc is alive, the supervisor is started again (five times in five minutes, then labwc is
+stopped).

@@ -1,29 +1,22 @@
 import {React, Box, Label, Button, Image, ScrolledWindow, Gtk, useState, useEffect} from '@dev-os/core';
 import {WifiSettings} from './wifi-view.js';
-import {WindowsWifi, isWsl} from './wifi.js';
+import {NativeNetworkSettings, type NativeNetworkPage} from './network-pages.js';
+import {ProxySettings} from './proxy-view.js';
+export type NetworkPage = 'network' | 'wifi' | 'proxy' | NativeNetworkPage;
+export const isNetworkPage = (page: string): page is NetworkPage => ['network','wifi','vpn','hotspot','airplane','proxy','advanced'].includes(page);
 
 export const networkPages = [
     {id: 'wifi', title: 'Wi-Fi', icon: 'network-wireless-symbolic', description: 'Nearby networks, saved connections and signal strength'},
     {id: 'vpn', title: 'VPN', icon: 'network-vpn-symbolic', description: 'Add and manage your VPN connections'},
     {id: 'hotspot', title: 'Mobile hotspot', icon: 'network-wireless-hotspot-symbolic', description: 'Share your internet connection with other devices'},
     {id: 'airplane', title: 'Airplane mode', icon: 'airplane-mode-symbolic', description: 'Manage wireless radios and airplane mode'},
-    {id: 'proxy', title: 'Proxy', icon: 'network-server-symbolic', description: 'Automatic detection and manual proxy configuration'},
-    {id: 'advanced', title: 'Advanced network settings', icon: 'preferences-system-symbolic', description: 'Network adapters, connection properties and reset options'},
+    {id: 'proxy', title: 'Proxy', icon: 'network-server-symbolic', description: 'PAC files, proxy servers and bypass rules'},
+    {id: 'advanced', title: 'Advanced network settings', icon: 'preferences-system-symbolic', description: 'Network adapters, IP addresses, DNS and connection status'},
 ] as const;
 
-export function NetworkSettings({page, navigate}: {page: 'network' | 'wifi'; navigate(page: string): void}) {
-    const host = isWsl() ? 'Windows' : 'Linux';
-    const native = !isWsl();
-    const [windows] = useState(() => new WindowsWifi());
-    const [opening, setOpening] = useState('');
-    const [error, setError] = useState('');
-    useEffect(() => () => windows.destroy(), [windows]);
-    const open = async (id: typeof networkPages[number]['id']) => {
-        if (id === 'wifi') { navigate('wifi'); return; }
-        setOpening(id); setError('');
-        await windows.openWindowsSettings(id);
-        setError(windows.state.error); setOpening('');
-    };
+export function NetworkSettings({page, navigate}: {page: NetworkPage; navigate(page: string): void}) {
+    if (page === 'proxy') return <ProxySettings back={() => navigate('network')} />;
+    if (page !== 'network' && page !== 'wifi') return <NativeNetworkSettings key={page} page={page} back={() => navigate('network')} />;
     if (page === 'wifi') return <Box orientation="vertical" expand fill>
         <Box className="network-breadcrumb" spacing={6}>
             <Button id="network-back" onClicked={() => navigate('network')}><Box spacing={6}><Image iconName="go-previous-symbolic" pixelSize={13} /><Label>Network &amp; Internet</Label></Box></Button>
@@ -40,20 +33,19 @@ export function NetworkSettings({page, navigate}: {page: 'network' | 'wifi'; nav
         <ScrolledWindow expand fill minContentHeight={240} hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
             <Box className="settings-form" orientation="vertical" spacing={16}>
                 <Box className="wifi-network-list" orientation="vertical">
-                    {networkPages.map((item, index) => <Button key={item.id} id={`network-category-${item.id}`} className={`network-category ${index ? 'network-category-divider' : ''}`} sensitive={!opening && (!native || item.id === 'wifi')} onClicked={() => { void open(item.id); }}>
+                    {networkPages.map((item, index) => <Button key={item.id} id={`network-category-${item.id}`} className={`network-category ${index ? 'network-category-divider' : ''}`} onClicked={() => navigate(item.id)}>
                         <Box spacing={14}>
                             <Box className={`network-category-icon ${item.id === 'wifi' ? 'network-category-primary' : ''}`} widthRequest={38} heightRequest={38}><Image iconName={item.icon} pixelSize={21} expand /></Box>
                             <Box orientation="vertical" spacing={6} expand valign="center">
                                 <Label className="network-category-title" xalign={0}>{item.title}</Label>
                                 <Label className="settings-description" xalign={0} wrap>{item.description}</Label>
                             </Box>
-                            {item.id !== 'wifi' && <Label className="network-host-badge" valign="center">{native ? 'Coming soon' : opening === item.id ? 'Opening…' : host}</Label>}
+                            <Label className="network-host-badge" valign="center">DevOs</Label>
                             <Image iconName="go-next-symbolic" pixelSize={13} valign="center" />
                         </Box>
                     </Button>)}
                 </Box>
-                <Label className="settings-description" wrap xalign={0}>{native ? 'Wi-Fi is managed in DevOs Settings. Additional network pages are being developed.' : `VPN, hotspot, airplane mode, proxy and advanced options open their ${host} settings page.`}</Label>
-                {error && <Label className="error" wrap xalign={0}>{error}</Label>}
+                <Label className="settings-description" wrap xalign={0}>Manage connections, sharing, wireless radios and proxy preferences inside DevOs.</Label>
             </Box>
         </ScrolledWindow>
     </Box>;

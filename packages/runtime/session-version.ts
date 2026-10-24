@@ -1,7 +1,7 @@
 import {
     readJson, Gio, GLib, writeJson
-} from '@dev-os/core';
-import {historyAt, run} from '@dev-os/updates';
+} from '@dev-os/core/base';
+import {historyAt, run} from '@dev-os/updates/installed';
 
 export function installedSessionRoot(): string {
     const directory = `${GLib.get_user_data_dir()}/dev-os-updates`;

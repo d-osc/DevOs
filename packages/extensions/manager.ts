@@ -2,6 +2,7 @@ import {
     readJson, Listeners, Gio, GLib, writeJson
 } from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
+import {migrateState} from './migrations.js';
 import {validateExtensionId, validateManifest, validateState, validateValues} from './schema.js';
 import type {ExtensionInfo, SettingsHost, SettingsValues} from './types.js';
 
@@ -38,7 +39,7 @@ export class ExtensionManager implements SettingsHost {
                         let state = {version: manifest.settingsVersion, enabled: manifest.enabledByDefault, values: validateValues(manifest, {})};
                         let error: string | undefined;
                         if (GLib.file_test(this.file(manifest.id), GLib.FileTest.EXISTS)) {
-                            try { state = validateState(manifest, readJson(this.file(manifest.id))); }
+                            try { state = validateState(manifest, migrateState(manifest.id, readJson(this.file(manifest.id)))); }
                             catch (reason) { error = reason instanceof Error ? reason.message : String(reason); state.enabled = manifest.system === true; }
                         }
                         next.set(manifest.id, {manifest, origin, state, error});

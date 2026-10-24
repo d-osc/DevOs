@@ -8,7 +8,7 @@ import {ROOT} from '@dev-os/config';
 export class EditorAssets {
     private constructor(private server: Soup.Server, readonly uri: string) {}
     static async create() {
-        const {default: Soup} = await import('@dev-os/core').then(({Soup}) => ({default: Soup}));
+        const {default: Soup} = await import('@dev-os/core/soup').then(({Soup}) => ({default: Soup}));
         const server = new Soup.Server(), token = GLib.uuid_string_random();
         const base = Gio.File.new_for_path(`${ROOT}/dist/editor`);
         if (!base.get_child('index.html').query_exists(null)) throw new Error('Build the Monaco assets with npm run build.');

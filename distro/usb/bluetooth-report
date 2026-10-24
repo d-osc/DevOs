@@ -1,0 +1,206 @@
+#!/bin/sh
+# Bluetooth bring-up report for the Live system: prints a verdict per layer
+# (kernel modules, device-tree node, serdev UART device, HCI controller,
+# controller firmware, rfkill, BlueZ service, adapter state, a short bounded scan)
+# and the raw evidence behind it. It changes no driver state. The only active
+# step is a scan of DEVOS_BT_SCAN_SECONDS (default 10) that is always stopped again;
+# set DEVOS_BT_SCAN=0 to skip it.
+# Usage: devos-bluetooth-report [output-file]   (default: standard output)
+export PATH=${DEVOS_EXTRA_PATH:+$DEVOS_EXTRA_PATH:}/usr/bin:/usr/sbin:/bin:/sbin
+HW=${DEVOS_HW_RUN:-/run/devos-hw}
+SYS=${DEVOS_SYS_ROOT:-}
+T="/usr/bin/timeout 8"
+[ -x /usr/bin/timeout ] || T=
+DT="$SYS/sys/firmware/devicetree/base"
+FW="$SYS/lib/firmware"
+SCAN=${DEVOS_BT_SCAN:-1}
+SCAN_SECONDS=${DEVOS_BT_SCAN_SECONDS:-10}
+
+have_module() {
+    grep -q "^$1 " "$SYS/proc/modules" 2>/dev/null || [ -d "$SYS/sys/module/$1" ]
+}
+
+# dt_prop <node-dir> <property> [default]: string property with NULs shown as spaces.
+dt_prop() {
+    if [ -f "$1/$2" ]; then tr '\0' ' ' <"$1/$2" | sed 's/ *$//'; else printf '%s' "$3"; fi
+}
+
+report() {
+    dmesg_file=$(mktemp)
+    if [ -n "$DEVOS_DMESG_FILE" ]; then cat "$DEVOS_DMESG_FILE" >"$dmesg_file"; else dmesg >"$dmesg_file" 2>&1; fi
+    echo "=== DevOS Bluetooth report $(date -u +%FT%TZ) kernel $(uname -r) ==="
+    echo "profile: $(sed -n 's/^selected_profile=//p' "$HW/profile.conf" 2>/dev/null)"
+    echo
+    echo '=== Verdict ==='
+    # 1. Kernel stack. The QCA UART controller needs bluetooth, hci_uart (serdev), btqca and the WCN power sequencer.
+    for mod in bluetooth hci_uart btqca pwrseq_qcom_wcn; do
+        if have_module "$mod"; then echo "BLUETOOTH-CHECK module-$mod: ok"
+        else echo "BLUETOOTH-CHECK module-$mod: FAIL (not loaded and not built in)"; fi
+    done
+    # 2. Device tree: an enabled Qualcomm Bluetooth node, normally a child of the BT UART.
+    dtbt=
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        case "$(tr '\0' ' ' <"$c" 2>/dev/null)" in
+            *qcom,wcn*-bt*|*qcom,qca*-bt*|*qcom,qcc*-bt*)
+                s=$(dt_prop "$(dirname "$c")" status)
+                if [ -z "$s" ] || [ "$s" = okay ]; then dtbt="$dtbt $(dirname "${c#$DT}")"; fi ;;
+        esac
+    done
+    [ -n "$dtbt" ] && echo "BLUETOOTH-CHECK dt-bluetooth-node: ok ($dtbt )" || echo 'BLUETOOTH-CHECK dt-bluetooth-node: FAIL (no enabled qcom,*-bt node in the device tree: the DTB does not describe the controller)'
+    # 3. serdev: the UART child must be bound to a driver for hci0 to exist.
+    serdev=0; bound=0
+    for d in "$SYS"/sys/bus/serial/devices/*; do
+        [ -e "$d" ] || continue
+        serdev=$((serdev+1)); [ -e "$d/driver" ] && bound=$((bound+1))
+    done
+    if [ "$bound" -gt 0 ]; then echo "BLUETOOTH-CHECK serdev-bound: ok ($bound bound of $serdev)"
+    elif [ "$serdev" -gt 0 ]; then echo "BLUETOOTH-CHECK serdev-bound: FAIL ($serdev serdev device(s), none bound to hci_uart_qca; see Deferred drivers and dmesg)"
+    else echo 'BLUETOOTH-CHECK serdev-bound: FAIL (no serdev devices: BT UART not enumerated)'; fi
+    # 4. HCI controller registered with the kernel.
+    hci=
+    for h in "$SYS"/sys/class/bluetooth/hci*; do
+        [ -e "$h" ] && case "$h" in *:*) ;; *) hci="$hci $(basename "$h")" ;; esac
+    done
+    [ -n "$hci" ] && echo "BLUETOOTH-CHECK controller-present: ok ($hci )" || echo 'BLUETOOTH-CHECK controller-present: FAIL (/sys/class/bluetooth has no hciN)'
+    # 5. Controller firmware: btqca asks for a patch (*.tlv) and NVM (*.bin) once at setup.
+    failed=$(awk '/QCA setup on UART is completed/{delete f; next} /QCA Failed to request file:/{match($0,/file: [^ ]+/); f[substr($0,RSTART+6,RLENGTH-6)]=1} END{for(k in f)print k}' "$dmesg_file" | sort -u | tr '\n' ' ' | sed 's/ *$//')
+    if [ -n "$failed" ]; then
+        present=
+        for f in $failed; do [ -f "$FW/$f" ] && present="$present $f"; done
+        if [ -n "$present" ]; then
+            echo "BLUETOOTH-CHECK controller-firmware: FAIL (setup asked for $failed before the file was available; now in rootfs:$present. Run devos-bluetooth-recover or reboot with an initramfs that carries qca/ firmware)"
+        else
+            echo "BLUETOOTH-CHECK controller-firmware: FAIL (missing: $failed; not in /lib/firmware: add to devos-x2-wireless-firmware / the DT firmware-name is wrong)"
+        fi
+    elif grep -q 'QCA setup on UART is completed' "$dmesg_file"; then
+        echo "BLUETOOTH-CHECK controller-firmware: ok (setup completed $(grep -c 'QCA setup on UART is completed' "$dmesg_file") time(s); the kernel repeats setup on each power-up)"
+    elif grep -q 'QCA Downloading' "$dmesg_file"; then
+        if grep -q -E 'unexpected event for opcode|Opcode 0x[0-9a-f]+ failed|QCA Failed' "$dmesg_file"; then
+            echo 'BLUETOOTH-CHECK controller-firmware: FAIL (download logged but controller setup errors follow; see dmesg lines below)'
+        else
+            echo 'BLUETOOTH-CHECK controller-firmware: ok (patch download logged without request failures)'
+        fi
+    else
+        echo 'BLUETOOTH-CHECK controller-firmware: FAIL (no "QCA Downloading" line: controller setup did not reach firmware download)'
+    fi
+    for f in qca/ornbtfw11.tlv qca/ornnv11.bin; do
+        [ -f "$FW/$f" ] && echo "BLUETOOTH-CHECK firmware-file-$(basename "$f"): ok" || echo "BLUETOOTH-CHECK firmware-file-$(basename "$f"): FAIL (not in /lib/firmware)"
+    done
+    # 6. rfkill.
+    rk=$($T rfkill list bluetooth 2>&1)
+    case "$rk" in
+        *"Hard blocked: yes"*) echo 'BLUETOOTH-CHECK rfkill: FAIL (hard blocked: wireless switch / firmware kill line)' ;;
+        *"Soft blocked: yes"*) echo 'BLUETOOTH-CHECK rfkill: FAIL (soft blocked: run rfkill unblock bluetooth)' ;;
+        *"Soft blocked: no"*) echo 'BLUETOOTH-CHECK rfkill: ok' ;;
+        *) echo "BLUETOOTH-CHECK rfkill: FAIL (no bluetooth rfkill entry: $(echo "$rk" | tr '\n' ' ' | cut -c1-120))" ;;
+    esac
+    # 7. BlueZ daemon and adapter.
+    state=$($T systemctl is-active bluetooth 2>&1)
+    [ "$state" = active ] && echo 'BLUETOOTH-CHECK bluetooth-service: ok' || echo "BLUETOOTH-CHECK bluetooth-service: FAIL (state: $state)"
+    show=$($T bluetoothctl show 2>&1)
+    case "$show" in
+        *"No default controller"*|"") echo 'BLUETOOTH-CHECK bluez-adapter: FAIL (BlueZ has no controller)' ;;
+        *Controller*) addr=$(echo "$show" | sed -n 's/^Controller \([0-9A-Fa-f:]*\).*/\1/p' | head -1)
+            case "$addr" in 00:00:00:00:00:00) echo 'BLUETOOTH-CHECK bluez-adapter: FAIL (address 00:00:00:00:00:00: no NVM / BD address programmed)' ;; *) echo "BLUETOOTH-CHECK bluez-adapter: ok ($addr)" ;; esac ;;
+        *) echo "BLUETOOTH-CHECK bluez-adapter: FAIL ($(echo "$show" | tr '\n' ' ' | cut -c1-120))" ;;
+    esac
+    case "$show" in
+        *"Powered: yes"*) echo 'BLUETOOTH-CHECK adapter-powered: ok' ;;
+        *) echo 'BLUETOOTH-CHECK adapter-powered: FAIL (Powered is not yes: bluetoothctl power on, or the controller setup failed)' ;;
+    esac
+    # 8. A short bounded scan. Any NEW/CHG Device line proves RX/TX over the air.
+    scan_evidence=
+    # Never scan while another client (the Settings page, bluetoothctl) holds discovery: a second
+    # scan or an HCI-level `btmgmt find` could end the user's scan or flip Discovering underneath it.
+    case "$show" in *"Discovering: yes"*) SCAN=busy ;; esac
+    if [ "$SCAN" = busy ]; then
+        echo 'BLUETOOTH-CHECK scan: SKIPPED (another client is already scanning; the collector retries later)'
+    elif [ "$SCAN" = 1 ] && [ "$bound" -gt 0 ]; then
+        before=$($T bluetoothctl show 2>&1 | grep -E 'Powered|Discovering|Discoverable|Pairable')
+        btmon_file=$(mktemp)
+        # btmon (if installed) records the HCI traffic of the scan: LE/inquiry commands, events and RSSI.
+        if command -v btmon >/dev/null 2>&1; then
+            /usr/bin/timeout $((SCAN_SECONDS+3)) btmon >"$btmon_file" 2>&1 &
+            btmon_pid=$!
+            sleep 1
+        fi
+        scan=$(/usr/bin/timeout $((SCAN_SECONDS+5)) bluetoothctl --timeout "$SCAN_SECONDS" scan on 2>&1)
+        $T bluetoothctl scan off >/dev/null 2>&1
+        [ -z "$btmon_pid" ] || wait "$btmon_pid" 2>/dev/null
+        devs=$($T bluetoothctl devices 2>&1)
+        after=$($T bluetoothctl show 2>&1 | grep -E 'Powered|Discovering|Discoverable|Pairable')
+        seen=$( { echo "$scan"; echo "$devs"; } | grep -o -E 'Device [0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}' | sort -u | wc -l)
+        rssi=$(echo "$scan" | grep -c 'RSSI')
+        if [ "$seen" -gt 0 ]; then echo "BLUETOOTH-CHECK scan: ok ($seen distinct device(s) in ${SCAN_SECONDS}s, $rssi RSSI update(s))"
+        else echo "BLUETOOTH-CHECK scan: FAIL (no device seen in ${SCAN_SECONDS}s: $(echo "$scan" | tr '\n' ' ' | cut -c1-160); put a phone in pairing mode next to the laptop; see Scan evidence for HCI traffic)"; fi
+        scan_evidence="--- before ---
+$before
+--- bluetoothctl scan output ---
+$scan
+--- bluetoothctl devices ---
+$devs
+--- after ---
+$after
+--- btmon (first 120 lines) ---
+$(head -120 "$btmon_file")"
+        rm -f "$btmon_file"
+    else
+        echo 'BLUETOOTH-CHECK scan: SKIPPED (DEVOS_BT_SCAN=0 or no bound controller)'
+    fi
+    echo
+    echo '=== Scan evidence ==='
+    echo "${scan_evidence:-(no scan was run)}"
+    echo
+    echo '=== hciconfig / hcitool (deprecated tools, if installed) ==='
+    $T hciconfig -a 2>&1
+    echo
+    echo '=== Device identity ==='
+    dt_prop "$DT" compatible; echo
+    echo
+    echo '=== rfkill ==='
+    $T rfkill list 2>&1
+    echo
+    echo '=== bluetooth.service ==='
+    $T systemctl status bluetooth --no-pager -l 2>&1 | head -30
+    echo
+    echo '=== bluetoothctl show / list ==='
+    echo "$show"
+    $T bluetoothctl list 2>&1
+    echo
+    echo '=== btmgmt info ==='
+    $T btmgmt info 2>&1 | head -40
+    echo
+    echo '=== /sys/class/bluetooth and serdev ==='
+    ls -l "$SYS"/sys/class/bluetooth "$SYS"/sys/bus/serial/devices 2>&1
+    for d in "$SYS"/sys/bus/serial/devices/*; do
+        [ -e "$d" ] && printf '%s driver=%s\n' "$d" "$(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null)"
+    done
+    echo
+    echo '=== Firmware files ==='
+    ls -l "$FW"/qca 2>&1
+    echo
+    echo '=== Device-tree Bluetooth, UART and power-sequencer nodes ==='
+    for c in $(find "$DT" -name compatible 2>/dev/null); do
+        v=$(tr '\0' ' ' <"$c" 2>/dev/null)
+        case "$v" in *-bt*|*wcn*|*pwrseq*|*qcc*) printf '%s status=%s compatible=%s firmware-name=%s\n' "$(dirname "${c#$DT}")" "$(dt_prop "$(dirname "$c")" status '(none)')" "$v" "$(dt_prop "$(dirname "$c")" firmware-name)" ;; esac
+    done
+    echo
+    echo '=== Bluetooth-related modules ==='
+    grep -i -E '^(bluetooth|hci_uart|btqca|btusb|btrtl|btintel|btbcm|bnep|rfcomm|pwrseq[a-z_]*|rfkill) ' "$SYS/proc/modules" 2>&1
+    echo
+    echo '=== Deferred drivers ==='
+    cat "$SYS/sys/kernel/debug/devices_deferred" 2>&1
+    echo
+    echo '=== dmesg: Bluetooth, HCI, QCA, serdev, power sequencer and firmware lines ==='
+    grep -i -E 'bluetooth|hci[0-9]|btqca|hci_qca|qca|serdev|pwrseq|wcn[0-9]|rfkill|geni|uart14|opcode' "$dmesg_file" | head -200
+    echo
+    echo '=== journalctl -u bluetooth ==='
+    $T journalctl -b -u bluetooth --no-pager -n 60 2>&1
+    rm -f "$dmesg_file"
+}
+
+if [ -n "$1" ]; then
+    report >"$1.new" 2>&1 && mv "$1.new" "$1"
+else
+    report
+fi

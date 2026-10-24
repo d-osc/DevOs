@@ -1,0 +1,6 @@
+# One rule per line; predicates on a line are ANDed, lines are ORed.
+# A rule with more predicates wins over a looser one.
+dt_compatible=*asus,zenbook-a14-ux3407na*
+vendor=asus product_name=*ux3407na*
+vendor=asus board_name=*ux3407na*
+dt_model=*ux3407na*

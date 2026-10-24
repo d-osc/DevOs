@@ -1,24 +1,38 @@
 [CmdletBinding()]
-param([switch]$EraseDisk1, [switch]$VerifyOnly)
+param([switch]$EraseDisk1, [switch]$VerifyOnly, [switch]$SelectTarget)
 $ErrorActionPreference = 'Stop'
+if (($EraseDisk1 -and $VerifyOnly) -or ($SelectTarget -and ($EraseDisk1 -or $VerifyOnly))) {
+    throw 'Choose only one of -SelectTarget, -EraseDisk1 or -VerifyOnly. Selecting a USB never authorizes writing it.'
+}
 $taskDirectory = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../build/live-usb'))
 $taskImage = Join-Path $taskDirectory 'devos-live-arm64-ux3407na.img'
-$taskTarget = Get-Content -LiteralPath (Join-Path $taskDirectory 'usb-target.json') -Raw | ConvertFrom-Json
+$taskTargetPath = Join-Path $taskDirectory 'usb-target.json'
+$taskTarget = if (Test-Path -LiteralPath $taskTargetPath) { Get-Content -LiteralPath $taskTargetPath -Raw | ConvertFrom-Json } else { $null }
 $taskCandidate = Get-Content -LiteralPath (Join-Path $taskDirectory 'candidate.json') -Raw | ConvertFrom-Json
 if (-not $taskCandidate.imageReady) { throw 'The candidate has no integrated board boot components.' }
 $taskExpected = (Get-Content -LiteralPath (Join-Path $taskDirectory 'SHA256SUMS') -Raw).Split()[0]
 if ($taskExpected -notmatch '^[a-f0-9]{64}$') { throw 'Invalid expected image checksum.' }
 $taskLength = (Get-Item -LiteralPath $taskImage).Length
 if ((Get-FileHash -LiteralPath $taskImage -Algorithm SHA256).Hash -ne $taskExpected) { throw 'Image checksum mismatch.' }
-function Assert-UsbTarget {
+function Assert-UsbTarget([switch]$IdentityOptional) {
     $taskDisk = Get-Disk -Number 1
-    if ($taskDisk.IsBoot -or $taskDisk.IsSystem -or $taskDisk.BusType -ne 'USB' -or
+    $taskReasons = @()
+    if ($taskDisk.IsBoot -or $taskDisk.IsSystem) { $taskReasons += 'Disk 1 is a boot/system disk.' }
+    if ($taskDisk.BusType -ne 'USB') { $taskReasons += 'Disk 1 is not a USB disk.' }
+    if ($taskDisk.IsReadOnly) { $taskReasons += 'Disk 1 is read-only.' }
+    if ($taskDisk.Size -le $taskLength) { $taskReasons += "The USB is too small for the $taskLength-byte image." }
+    if ($taskDisk.LogicalSectorSize -ne 512) { $taskReasons += 'Only 512-byte logical sectors are supported.' }
+    if ([string]::IsNullOrWhiteSpace([string]$taskDisk.UniqueId)) { $taskReasons += 'Disk 1 has no stable UniqueId.' }
+    if (-not $IdentityOptional -and (-not $taskTarget -or
         $taskDisk.UniqueId -ne $taskTarget.UniqueId -or $taskDisk.FriendlyName -ne $taskTarget.FriendlyName -or
-        $taskDisk.Size -ne $taskTarget.Size -or $taskDisk.IsReadOnly -or $taskDisk.Size -le $taskLength -or
-        $taskDisk.LogicalSectorSize -ne 512) { throw 'USB disk identity/safety check failed. Nothing was written.' }
+        $taskDisk.Size -ne $taskTarget.Size)) {
+        $taskReasons += "Saved USB: $($taskTarget.FriendlyName) / $($taskTarget.Size) bytes. Current Disk 1: $($taskDisk.FriendlyName) / $($taskDisk.Size) bytes."
+        $taskReasons += 'To select the current Disk 1, run this script with -SelectTarget first. That updates the local selection only; it does not erase or write the USB.'
+    }
+    if ($taskReasons.Count) { throw ("USB disk identity/safety check failed. Nothing was written.`n" + ($taskReasons -join "`n")) }
     return $taskDisk
 }
-$taskDisk = Assert-UsbTarget
+$taskDisk = Assert-UsbTarget -IdentityOptional:$SelectTarget
 $taskDriveLetter = [IO.Path]::GetPathRoot($taskImage)[0]
 $taskLogical = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${taskDriveLetter}:'"
 $taskSourcePartition = @(Get-CimAssociatedInstance -InputObject $taskLogical -Association Win32_LogicalDiskToPartition)
@@ -26,11 +40,17 @@ if ($taskSourcePartition.Count -ne 1) { throw 'Cannot identify the disk containi
 if ($taskSourcePartition[0].DiskIndex -eq 1) { throw 'The source image cannot be stored on the target USB.' }
 Write-Host "Image: $taskImage ($taskLength bytes)"
 Write-Host "Target: Disk 1 / $($taskDisk.FriendlyName) / $($taskDisk.Size) bytes"
-if ($EraseDisk1 -and $VerifyOnly) { throw 'Choose write or read-back verification, not both.' }
+if ($SelectTarget) {
+    @{ Number = 1; FriendlyName = $taskDisk.FriendlyName; UniqueId = $taskDisk.UniqueId; Size = $taskDisk.Size } |
+        ConvertTo-Json | Set-Content -LiteralPath $taskTargetPath -Encoding UTF8
+    Write-Host 'USB selection saved locally. No disk changes. Run without switches to validate, or use -EraseDisk1 only when you intend to erase this exact USB.'
+    return
+}
 if (-not $EraseDisk1 -and -not $VerifyOnly) { Write-Host 'Validation only. No disk changes. -EraseDisk1 authorizes erasing this USB.'; return }
 $taskPrincipal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $taskPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this script from an Administrator PowerShell to write the USB.' }
-$taskDevice = $null; $taskSource = $null; $taskHash = $null; $taskRawHash = $null; $taskOffline = $false
+. (Join-Path $PSScriptRoot 'volume-lock.ps1')
+$taskDevice = $null; $taskSource = $null; $taskHash = $null; $taskRawHash = $null; $taskVolumeLocks = $null
 function Get-HeaderCrc32([byte[]]$Bytes) {
     [uint32]$taskCrc = [uint32]::MaxValue
     foreach ($taskByte in $Bytes) {
@@ -44,8 +64,7 @@ function Get-HeaderCrc32([byte[]]$Bytes) {
 }
 try {
     $null = Assert-UsbTarget
-    Set-Disk -Number 1 -IsOffline $true
-    $taskOffline = $true
+    $taskVolumeLocks = Lock-UsbVolumes -DiskNumber 1
     $null = Assert-UsbTarget
     $taskAccess = if ($VerifyOnly) { [IO.FileAccess]::Read } else { [IO.FileAccess]::ReadWrite }
     $taskDevice = [IO.FileStream]::new('\\.\PhysicalDrive1', [IO.FileMode]::Open, $taskAccess, [IO.FileShare]::ReadWrite)
@@ -109,7 +128,8 @@ try {
     if ($taskRawHash) { $taskRawHash.Dispose() }
     if ($taskSource) { $taskSource.Dispose() }
     if ($taskDevice) { $taskDevice.Dispose() }
-    if ($taskOffline) { Set-Disk -Number 1 -IsOffline $false; Update-HostStorageCache }
+    if ($taskVolumeLocks) { foreach ($taskLock in $taskVolumeLocks) { $taskLock.Dispose() } }
+    if ($taskDevice) { Update-HostStorageCache -ErrorAction Continue }
     Write-Progress -Activity 'Writing DevOs Live USB' -Completed
     Write-Progress -Activity 'Verifying DevOs Live USB' -Completed
 }

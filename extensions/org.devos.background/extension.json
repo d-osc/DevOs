@@ -39,7 +39,7 @@
         },
         {
           "key": "useDesktopColor",
-          "title": "Use Desktop background color",
+          "title": "Use theme background color",
           "type": "boolean",
           "default": true
         },

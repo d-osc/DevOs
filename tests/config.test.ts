@@ -21,13 +21,14 @@ test('defaults and missing configuration', () => {
     equal(loadConfig('/nonexistent/dev-os-test/config.json'), DEFAULTS);
 });
 test('partial overrides keep defaults', () => {
-    const config = validateConfig({accent: '#abcdef', terminal: ['foot', '--title=My terminal']});
+    const config = validateConfig({terminal: ['foot', '--title=My terminal']});
     equal(config.terminal, ['foot', '--title=My terminal']);
-    equal(config.accent, '#abcdef'); equal(config.panel_height, 36);
+    equal(config.panel_height, 36);
 });
-test('invalid colors rejected', () => {
-    for (const accent of ['red', '#fff', '#00xx00', '#FFFFFF; background:red', 1])
-        throws(() => validateConfig({accent}));
+test('legacy color keys from before the Dark/Light themes are accepted and dropped', () => {
+    const config = validateConfig({accent: '#abcdef', background: 'not a color', terminal: ['foot']});
+    equal(config.terminal, ['foot']); equal(Object.hasOwn(config, 'accent'), false); equal(Object.hasOwn(config, 'background'), false);
+    throws(() => validateConfig({colour: '#abcdef'}));
 });
 test('commands are non-empty arrays of non-empty strings', () => {
     for (const terminal of ['foot; echo hello', [], ['foot', 1], [''], ['a\0b']])

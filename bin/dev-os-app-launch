@@ -63,7 +63,11 @@ fn main(): i32 {
         print("DevOs app launch: Invalid desktop entry")
         return 1
     }
+    # systemd-run uses the manager bus, but the app must retain the desktop bus.
+    # Otherwise native shell commands start another shell/panel on that bus.
+    let desktopBus = envValue("DBUS_SESSION_BUS_ADDRESS")
     if !managedBus() {
+        if !strings.equal(desktopBus, "") { posix.setEnv("DBUS_SESSION_BUS_ADDRESS", desktopBus) }
         print("DevOs: user manager unavailable; opening app without memory ranking.")
         return posix.shell("exec gio launch " + quote(filename))
     }
@@ -80,6 +84,7 @@ fn main(): i32 {
     let envParts = ""
     for i in 0..(names.len() as i64) {
         let value = envValue(names[i])
+        if strings.equal(names[i], "DBUS_SESSION_BUS_ADDRESS") && !strings.equal(desktopBus, "") { value = desktopBus }
         if !strings.equal(value, "") { envParts = envParts + " --setenv=" + quote(names[i] + "=" + value) }
     }
     command = command + envParts + " -- gio launch " + quote(filename)

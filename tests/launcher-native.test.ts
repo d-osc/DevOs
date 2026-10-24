@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {Gtk, Gdk, Gio, GLib, type UIContext} from '@dev-os/core';
 import {ROOT, DEFAULTS} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
@@ -11,7 +12,7 @@ const display = Gdk.Display.get_default()!, monitor = display.get_monitor(0)!;
 const application = new Gtk.Application({application_id: 'org.devos.LauncherNativeTest'}); application.register(null);
 const theme = new Gtk.CssProvider();
 // Load through the same accent substitution as the shell.
-theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', DEFAULTS.accent)));
+theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 const context: UIContext = {application, display, preferences, config: () => DEFAULTS, saveCore() {}, monitors: () => [monitor], runCommand: () => true, reload: () => true, quit() {}, invoke() {}, registerCommand: () => () => {}, onMessage: () => () => {}, onMonitors: () => () => {}, onReload: () => () => {}};
 const launcher = new Launcher(context);

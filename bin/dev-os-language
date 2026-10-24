@@ -13,6 +13,9 @@ use "std/result"
 use "std/encoding"
 use "../lib/posix.dev" as posix
 use "../lib/desktop.dev" as util
+use "../lib/touchpad.dev" as touchpad
+use "../lib/input-settings.dev" as input
+use "../lib/compositor-config.dev" as compositor
 
 fn decodeText(bytes: Vec<u8>): str {
     return encoding.decode(bytes, "utf8")
@@ -127,35 +130,7 @@ fn atomicWrite(target: str, text: str) {
     util.require(util.atomicText(target, text), "Could not save language settings.")
 }
 
-fn desktopSnapshot(): json.Value {
-    let root = process.getenv("DEV_OS_ROOT")
-    if strings.equal(root, "") { root = "/usr/share/dev-os" }
-    let tracker = ""
-    if fs.existsSync(root + "/native/dev-os-window-tracker") { tracker = root + "/native/dev-os-window-tracker" }
-    else {
-        if fs.existsSync(root + "/build/native/dev-os-window-tracker") { tracker = root + "/build/native/dev-os-window-tracker" }
-    }
-    if strings.equal(tracker, "") { return json.null_value() }
-    let options = child_process.options()
-    options.timeoutMs = 2000
-    let output = child_process.execFileSync(tracker, Vec<str>(), options)
-    let text = decodeText(output.stdout)
-    let desktops = json.array()
-    let lines = strings.split(text, "\n")
-    for i in 0..(lines.len() as i64) {
-        let line = strings.trim(lines[i])
-        if strings.equal(line, "") { continue }
-        let event = json.parse(line)
-        let kind = jsonText(optGet(event, "type"))
-        if strings.equal(kind, "desktop-begin") { desktops = json.array() }
-        if strings.equal(kind, "desktop") { desktops = json.push(desktops, jsonText(optGet(event, "name"))) }
-        if strings.equal(kind, "desktop-done") {
-            if json.len(desktops) == 0 { return json.null_value() }
-            return desktops
-        }
-    }
-    return json.null_value()
-}
+fn desktopSnapshot(): json.Value { return compositor.snapshot() }
 
 fn filterEnvironment(environment: str): str {
     let lines = strings.split(environment, "\n")
@@ -188,17 +163,7 @@ fn xmlEscape(text: str): str {
     return strings.replaceAll(out, ">", "&gt;")
 }
 
-fn replaceDesktops(xml: str, desktops: json.Value): str {
-    let namesBlock = "\n"
-    for i in 0..(json.len(desktops) as i64) {
-        namesBlock = namesBlock + "    <name>" + xmlEscape(json.string(json.at(desktops, i))) + "</name>\n  "
-    }
-    let replacement = "<desktops number=\"${json.len(desktops)}\">\n  <names>" + namesBlock + "</names>\n  </desktops>"
-    let pattern = regex.compile("<desktops[\\s\\S]*?</desktops>|<desktops[^>]*/>", "")
-    let result = pattern.replace(xml, replacement)
-    pattern.close()
-    return result
-}
+fn replaceDesktops(xml: str, desktops: json.Value): str { return compositor.replaceDesktops(xml, desktops) }
 
 fn removeSpaceKeybind(xml: str): str {
     let pattern = regex.compile("[ \\t]*<keybind key=\"[Ww]-[Ss]pace\">[\\s\\S]*?</keybind>[ \\t]*\\n?", "")
@@ -225,6 +190,12 @@ fn configure(directory: str, value: json.Value, desktops: json.Value) {
     let options = strings.equal(inherited, "") ? option : inherited + "," + option
     environment = environment + "\nXKB_DEFAULT_LAYOUT=" + layoutList + "\nXKB_DEFAULT_VARIANT=" + variantList + "\nXKB_DEFAULT_OPTIONS=" + options + "\n"
     let xml = fs.readFileSync(base + "/rc.xml", "utf8")
+    let pointer = touchpad.load()
+    xml = touchpad.applyXml(xml, json.is_null(pointer) ? touchpad.defaults() : pointer)
+    for kind in Vec<str>("mouse", "keyboard") {
+        let saved = input.load(kind)
+        xml = input.applyXml(xml, kind, json.is_null(saved) ? input.defaults(kind) : saved)
+    }
     if !json.is_null(desktops) { xml = replaceDesktops(xml, desktops) }
     if strings.equal(jsonText(json.get(value, "shortcut")), "super-space") && json.len(layouts) > 1 {
         xml = removeSpaceKeybind(xml)

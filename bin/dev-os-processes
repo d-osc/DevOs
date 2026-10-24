@@ -109,14 +109,33 @@ fn procName(text: str): str {
     return strings.substring(text, open + 1, close)
 }
 
-fn readProcess(pid: i64, pageSize: i64): json.Value {
+# Owner uid from /proc/PID/status (one file read, no subprocess).
+fn statusUid(folder: str): i64 {
+    let text = fs.readFileSync(folder + "/status", "utf8")
+    let at = strings.indexOf(text, "\nUid:")
+    if at < 0 { return 0 }
+    let line = strings.substring(text, at + 5, strings.charLength(text))
+    let end = strings.indexOf(line, "\n")
+    if end >= 0 { line = strings.substring(line, 0, end) }
+    let parts = strings.split(line, "\t")
+    for i in 0..(parts.len() as i64) {
+        if digitStart(parts[i]) { return intOf(parts[i]) }
+    }
+    return 0
+}
+
+# uids maps "pid:starttime" to the owner uid; it cannot change under the same key, so it is read once.
+fn readProcess(pid: i64, pageSize: i64, uids: json.Value): json.Value {
     let folder = "/proc/${pid}"
     let text = fs.readFileSync(folder + "/stat", "utf8")
     let fields = statFields(text)
-    let uidText = strings.trim(capture("stat -c %u " + folder + " 2>/dev/null"))
+    let uidKey = "${pid}:${fields[19]}"
+    let uidValue = 0
+    if json.has(uids, uidKey) { uidValue = json.int(json.get(uids, uidKey)) }
+    else { uidValue = statusUid(folder) }
     let item = json.set(json.object(), "pid", pid)
     item = json.set(item, "name", procName(text))
-    item = json.set(item, "uid", json.value(intOf(uidText)))
+    item = json.set(item, "uid", json.value(uidValue))
     item = json.set(item, "state", fields[0])
     item = json.set(item, "parent", json.value(intOf(fields[1])))
     item = json.set(item, "ticks", json.value(intOf(fields[11]) + intOf(fields[12])))
@@ -127,9 +146,9 @@ fn readProcess(pid: i64, pageSize: i64): json.Value {
     return item
 }
 
-fn protectedSet(pageSize: i64): Vec<i64> {
+fn protectedSet(pageSize: i64, selfPid: i64): Vec<i64> {
     let result = Vec<i64>(1)
-    result.push(selfPidValue())
+    result.push(selfPid)
     let pid = posix.ppid() as i64
     while pid > 1 {
         let known = false
@@ -138,15 +157,14 @@ fn protectedSet(pageSize: i64): Vec<i64> {
         }
         if known { break }
         result.push(pid)
-        let item = readProcess(pid, pageSize)
+        let item = readProcess(pid, pageSize, json.object())
         pid = json.int(json.get(item, "parent"))
     }
     return result
 }
 
 fn selfPidValue(): i64 {
-    let text = strings.trim(capture("echo $PPID"))
-    return intOf(text)
+    return intOf(strings.split(fs.readFileSync("/proc/self/stat", "utf8"), " ")[0])
 }
 
 fn inSet(set: Vec<i64>, value: i64): bool {
@@ -156,16 +174,16 @@ fn inSet(set: Vec<i64>, value: i64): bool {
     return false
 }
 
-fn stopProcess(request: json.Value, pageSize: i64): json.Value {
+fn stopProcess(request: json.Value, pageSize: i64, selfPid: i64): json.Value {
     let pid = 0
     if json.has(request, "pid") { pid = json.int(json.get(request, "pid")) }
     if pid <= 1 { return json.set(json.object(), "error", "This process is protected by the desktop.") }
-    if inSet(protectedSet(pageSize), pid) { return json.set(json.object(), "error", "This process is protected by the desktop.") }
+    if inSet(protectedSet(pageSize, selfPid), pid) { return json.set(json.object(), "error", "This process is protected by the desktop.") }
     # arm64: pidfd_open = 434, pidfd_send_signal = 424
     let descriptor = -1
     unsafe { descriptor = pidfd_open(pid as i32, 0) as i64 }
     if descriptor < 0 { return json.set(json.object(), "error", "This kernel does not support safe process termination.") }
-    let item = readProcess(pid, pageSize)
+    let item = readProcess(pid, pageSize, json.object())
     let startWant = ""
     if json.has(request, "start") { startWant = jsonText(json.get(request, "start")) }
     if !strings.equal(jsonText(json.get(item, "start")), startWant) {
@@ -209,7 +227,7 @@ fn memoryMap(): json.Value {
     return result
 }
 
-fn rawSample(pageSize: i64): json.Value {
+fn rawSample(pageSize: i64, uids: json.Value): json.Value {
     let statLine = strings.split(fs.readFileSync("/proc/stat", "utf8"), "\n")[0]
     let cpuParts = strings.split(statLine, " ")
     let total = 0
@@ -234,7 +252,7 @@ fn rawSample(pageSize: i64): json.Value {
         }
         if !digits { continue }
         if fs.existsSync("/proc/" + name + "/stat") {
-            processes = json.push(processes, readProcess(intOf(name), pageSize))
+            processes = json.push(processes, readProcess(intOf(name), pageSize, uids))
         }
     }
     let nowMs = time.now_ms() as i64
@@ -250,8 +268,14 @@ fn optGet(value: json.Value, key: str): json.Value {
     return json.null_value()
 }
 
-fn sample(previous: json.Value, names: json.Value, pageSize: i64, clkTck: i64): json.Value {
-    let current = rawSample(pageSize)
+fn sample(previous: json.Value, names: json.Value, pageSize: i64, clkTck: i64, selfPid: i64): json.Value {
+    let uids = json.object()
+    let prevProcesses = optGet(previous, "processes")
+    for i in 0..(json.len(prevProcesses) as i64) {
+        let item = json.at(prevProcesses, i)
+        uids = json.set(uids, "${json.int(optGet(item, "pid"))}:${jsonText(optGet(item, "start"))}", json.value(json.int(optGet(item, "uid"))))
+    }
+    let current = rawSample(pageSize, uids)
     let elapsedMs = json.int(optGet(current, "time")) - json.int(optGet(previous, "time"))
     if elapsedMs < 1 { elapsedMs = 1 }
     let elapsed: f64 = 0.0
@@ -264,7 +288,7 @@ fn sample(previous: json.Value, names: json.Value, pageSize: i64, clkTck: i64): 
         let key = "${json.int(optGet(item, "pid"))}:${jsonText(optGet(item, "start"))}"
         old = json.set(old, key, json.value(json.int(optGet(item, "ticks"))))
     }
-    let blocked = protectedSet(pageSize)
+    let blocked = protectedSet(pageSize, selfPid)
     let currentProcesses = optGet(current, "processes")
     for i in 0..(json.len(currentProcesses) as i64) {
         let item = json.at(currentProcesses, i)
@@ -313,10 +337,12 @@ fn sample(previous: json.Value, names: json.Value, pageSize: i64, clkTck: i64): 
     result = json.set(result, "cores", json.value(cores))
     result = json.set(result, "uptime", json.value(floatOf(uptimeText) as i64))
     result = json.set(result, "__previous", current)
+    result = json.set(result, "__names", names)
     return result
 }
 
 fn main(): i32 {
+    let selfPid = selfPidValue()
     let pageSize = confValue("PAGE_SIZE")
     let clkTck = confValue("CLK_TCK")
     let previous = json.null_value()
@@ -329,16 +355,18 @@ fn main(): i32 {
         if json.has(request, "action") { action = jsonText(json.get(request, "action")) }
         if strings.equal(action, "get") {
             if json.is_null(previous) {
-                previous = rawSample(pageSize)
+                previous = rawSample(pageSize, json.object())
                 time.sleep_ms(150)
             }
-            let result = sample(previous, names, pageSize, clkTck)
+            let result = sample(previous, names, pageSize, clkTck, selfPid)
             previous = json.get(result, "__previous")
+            names = json.get(result, "__names")
             result = json.remove(result, "__previous")
+            result = json.remove(result, "__names")
             print(json.stringify(json.set(result, "ok", true)))
         } else {
             if strings.equal(action, "stop") {
-                let result = stopProcess(request, pageSize)
+                let result = stopProcess(request, pageSize, selfPid)
                 if json.has(result, "error") { print(json.stringify(json.set(json.object(), "error", json.string(json.get(result, "error"))))) }
                 else { print(json.stringify(json.set(result, "ok", true))) }
             } else {

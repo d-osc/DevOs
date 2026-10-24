@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dev OS Camera
+Comment=Capture with Dev OS Camera
+Exec=dev-os-shell camera
+Icon=camera-photo
+Terminal=false
+Categories=AudioVideo;
+

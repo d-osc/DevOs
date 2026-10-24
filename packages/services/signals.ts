@@ -1,6 +1,6 @@
 import {
     GLibUnix
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 
 // GLib's GIR name differs between the build host and the native image.
 type SignalAdd = (priority: number, signal: number, callback: () => boolean) => number;

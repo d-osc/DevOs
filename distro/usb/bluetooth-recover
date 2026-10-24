@@ -1,0 +1,31 @@
+#!/bin/sh
+# Re-run the QCA Bluetooth controller setup when its firmware was not yet
+# available at first probe. btqca requests the patch/NVM once; if the request
+# failed (-2) while the root filesystem was not mounted, the controller stays in
+# ROM state (no scan/pairing). Once the file exists under /lib/firmware, unbind and
+# rebind the serdev device so the kernel repeats the setup. Runs at most once per
+# boot and does nothing when the first setup succeeded.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+SYS=${DEVOS_SYS_ROOT:-}
+FW="$SYS/lib/firmware"
+MARK=${DEVOS_BT_RECOVER_MARK:-/run/devos-bluetooth-recover.done}
+log() { echo "devos-bluetooth-recover: $*"; [ -z "$DEVOS_DMESG_FILE" ] && logger -t devos-bluetooth-recover "$*" 2>/dev/null; return 0; }
+if [ -n "$DEVOS_DMESG_FILE" ]; then dmesg_text=$(cat "$DEVOS_DMESG_FILE"); else dmesg_text=$(dmesg 2>/dev/null); fi
+# Only failures not followed by a completed setup count: the kernel repeats setup on every power-up.
+failed=$(echo "$dmesg_text" | awk '/QCA setup on UART is completed/{delete f; next} /QCA Failed to request file:/{match($0,/file: [^ ]+/); f[substr($0,RSTART+6,RLENGTH-6)]=1} END{for(k in f)print k}' | sort -u)
+[ -n "$failed" ] || { log 'no failed Bluetooth firmware request; nothing to do'; exit 0; }
+[ ! -e "$MARK" ] || { log 'already attempted this boot'; exit 0; }
+for f in $failed; do
+    [ -f "$FW/$f" ] || { log "firmware $f is not in /lib/firmware: cannot recover (fix the image or the Device Tree firmware-name)"; exit 0; }
+done
+: >"$MARK" 2>/dev/null
+done_any=0
+for d in "$SYS"/sys/bus/serial/drivers/hci_uart_qca/*; do
+    [ -L "$d" ] || continue
+    name=$(basename "$d")
+    echo "$name" >"$SYS/sys/bus/serial/drivers/hci_uart_qca/unbind" 2>/dev/null || { log "unbind $name failed"; continue; }
+    sleep 1
+    echo "$name" >"$SYS/sys/bus/serial/drivers/hci_uart_qca/bind" 2>/dev/null && { log "re-probed $name with firmware now available: $failed"; done_any=1; } || log "bind $name failed"
+done
+[ "$done_any" = 1 ] || log 'no bound hci_uart_qca serdev device found'
+exit 0

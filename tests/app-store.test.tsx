@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {Gtk, Gdk, GLib, React, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {AppStoreView} from '../extensions/org.devos.appstore/view.js';
@@ -19,7 +20,7 @@ async function test() {
         return {...state};
     }};
     const window=new Gtk.OffscreenWindow();window.name='app-store';window.set_size_request(1100,760);const root=createRoot(window);
-    const css=new Gtk.CssProvider();css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@','#88e0c0')));Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!,css,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+    const css=new Gtk.CssProvider();css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!,css,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find=(id:string)=>widgets(window).find(widget=>widget.name===id) as Gtk.Button;
     const click=async(id:string)=>{const widget=find(id);if(!widget)throw new Error(`Missing ${id}`);widget.clicked();await wait();};
     try {

@@ -56,3 +56,23 @@ GTK ดูแล inherited themes และ symbolic icons ตาม icon theme 
 ไม่ดาวน์โหลด icon packs อัตโนมัติ
 ตอน cleanup จะถอน subscription และคืนค่า theme เดิม
 Package เป็น base extension; ใช้ตัวเลือก session theme เมื่อต้องการให้ใช้ธีมเดิม
+
+## Font Awesome base icons
+
+ไอคอน `*-symbolic` ของ shell (panel, launcher, settings, ปุ่มต่าง ๆ) วาดจาก Font Awesome Pro ใน `assets/`
+โดย `tools/maintenance/build-fa-icons.py` (ต้องใช้ `pip install fonttools brotli`) ดึง outline ของไอคอนที่ใช้
+(รายการใน `fa/mapping.json`) เป็น `data/icons/fa/<pack>-<style>.json`; runtime อ่านเฉพาะ pack/style ที่เลือก
+และไม่ส่ง `assets/` (webfonts ~9 MB) เข้า image
+
+Settings: `baseIcons` (เปิด/ปิด), `basePack` (classic, duotone, sharp, sharp-duotone, chisel, etch, graphite,
+jelly, mosaic, notdog, pixel, slab, thumbprint, utility, vellum, whiteboard) และ `baseStyle`
+(solid, regular, light, thin) ค่าเริ่มต้นคือ duotone + solid. ค่าที่ไม่ถูกต้องจะถูกปฏิเสธตอนบันทึก
+และอ่านกลับเป็นค่าเริ่มต้น
+
+Pack ที่มีไม่ครบทุก style: classic/duotone/sharp/sharp-duotone มีครบ 4; chisel, jelly, pixel, slab = regular;
+etch, mosaic, notdog, vellum = solid; graphite = thin; thumbprint = light; utility และ whiteboard เป็น semibold
+(แสดงเป็น solid). ถ้าไม่มีไอคอนใน pack/style ที่เลือก จะลอง style ใกล้เคียงใน pack เดียวกัน,
+Classic style เดิม, Classic solid และสุดท้ายใช้ GTK icon theme จึงไม่มีไอคอนว่าง
+ไอคอนที่ไม่อยู่ใน mapping และชื่อที่ไม่ลงท้าย `-symbolic` (ไอคอนแอป) ใช้ GTK theme ตามเดิม
+
+License: Font Awesome Pro เป็น Commercial License; ดู `data/icons/fa/NOTICE.md`

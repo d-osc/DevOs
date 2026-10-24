@@ -1,4 +1,4 @@
-import {Gtk, type SettingsValues} from '@dev-os/core';
+import {Gtk, baseImage, type SettingsValues} from '@dev-os/core';
 import type {FileEntry} from './model.js';
 import {parseCustomMenu, customMenuMatches, type CustomMenuItem} from './custom-menu.js';
 export function fileContextEntry(widget: Gtk.ListBox | Gtk.FlowBox, x: number, y: number, entries: readonly FileEntry[]) {
@@ -30,7 +30,7 @@ export function createFileContextMenu(options: FileMenuOptions, actions: Partial
         const row: Gtk.MenuItem = item.key === 'contextHidden' ? new Gtk.CheckMenuItem({label: item.title, active: hidden}) : new Gtk.MenuItem();
         if (item.key !== 'contextHidden') {
             const content = new Gtk.Box({spacing: 10});
-            content.add(new Gtk.Image({icon_name: item.icon, pixel_size: 16}));
+            content.add(baseImage(item.icon, 16));
             content.add(new Gtk.Label({label: item.title, xalign: 0})); row.add(content);
         }
         row.name = `files-menu-${item.key}`;

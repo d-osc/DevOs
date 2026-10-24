@@ -1,0 +1,133 @@
+#!/bin/sh
+# Audio bring-up report for the Live system: prints a verdict per layer
+# (firmware, ADSP, sound card, SoundWire amplifiers, UCM, PipeWire) and the raw
+# evidence behind it. Read-only by default: no sound, no mixer changes.
+# Usage: devos-audio-report [--play] [output-file]   (default: standard output)
+#   --play  also plays a quiet 440 Hz tone on the speakers for 4 seconds (sets the
+#           PipeWire speaker sink to 30% unmuted first) and re-captures amplifier
+#           status, mixer values and kernel messages while it plays. Listen for it.
+PLAY=0
+[ "$1" != --play ] || { PLAY=1; shift; }
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export XDG_RUNTIME_DIR=/run/user/0
+export PULSE_SERVER=unix:/run/user/0/pulse/native
+HW=${DEVOS_HW_RUN:-/run/devos-hw}
+T="/usr/bin/timeout 8"
+[ -x /usr/bin/timeout ] || T=
+
+report() {
+    dmesg_file=$(mktemp) && dmesg >"$dmesg_file" 2>&1
+    echo "=== DevOS audio report $(date -u +%FT%TZ) kernel $(uname -r) ==="
+    echo "profile: $(sed -n 's/^selected_profile=//p' "$HW/profile.conf" 2>/dev/null)"
+    echo
+    echo '=== Verdict ==='
+    # Firmware named by the selected hardware profile.
+    missing=
+    if ! grep -q '^selected_profile=.' "$HW/profile.conf" 2>/dev/null || grep -q '^selected_profile=generic' "$HW/profile.conf"; then
+        echo 'AUDIO-INFO hardware-profile: none/generic selected (see boot.log "DEVOS HW"); checking the UX3407NA audio files directly'
+        for name in qcom/glymur/GLYMUR-ASUS-Zenbook-A14-UX3407NA-tplg.bin qcom/glymur/ASUSTeK/UX3407NA/qcadsp8480.mbn; do
+            [ -e "/lib/firmware/$name" ] || [ -e "/lib/firmware/$name.zst" ] || missing="$missing $name"
+        done
+    elif [ -f "$HW/firmware.list" ]; then
+        while read -r name; do
+            case "$name" in ''|'#'*) continue ;; esac
+            case "$name" in *tplg*|*dsp*) ;; *) continue ;; esac
+            [ -e "/lib/firmware/$name" ] || [ -e "/lib/firmware/$name.zst" ] || missing="$missing $name"
+        done <"$HW/firmware.list"
+    else
+        missing=' (no /run/devos-hw/firmware.list: hardware profile not applied)'
+    fi
+    [ -z "$missing" ] && echo 'AUDIO-CHECK dsp-and-topology-firmware: ok' || echo "AUDIO-CHECK dsp-and-topology-firmware: FAIL missing:$missing"
+    grep -q -E 'remote processor adsp is now up' "$dmesg_file" && echo 'AUDIO-CHECK adsp-boot: ok' || echo 'AUDIO-CHECK adsp-boot: FAIL (no "remote processor adsp is now up")'
+    grep -q 'Adding APR/GPR dev' "$dmesg_file" && echo 'AUDIO-CHECK apr-gpr-services: ok' || echo 'AUDIO-CHECK apr-gpr-services: FAIL (no APR/GPR services: ADSP not reachable)'
+    n=$(grep -c -i -E 'CMD timeout for' "$dmesg_file"); [ "$n" = 0 ] && echo 'AUDIO-CHECK adsp-commands: ok' || echo "AUDIO-CHECK adsp-commands: FAIL $n GPR command timeouts (ADSP/topology mismatch)"
+    grep -q -i -E 'tplg.*(failed|error|-2)|failed to .*topology|Direct firmware load for .*tplg' "$dmesg_file" && echo 'AUDIO-CHECK topology-load: FAIL (see dmesg lines below)' || echo 'AUDIO-CHECK topology-load: ok (no topology load error)'
+    # procfs files report size 0, so test the content rather than -s.
+    if grep -q '^ *[0-9]* \[' /proc/asound/cards 2>/dev/null; then
+        echo "AUDIO-CHECK sound-card: ok ($(sed -n 1p /proc/asound/cards | sed 's/^ *//'))"
+    else
+        echo 'AUDIO-CHECK sound-card: FAIL (/proc/asound/cards empty: ASoC card did not bind; see deferred drivers and dmesg)'
+    fi
+    wsa=0; for d in /sys/bus/soundwire/devices/*; do [ -e "$d" ] || continue; [ -e "$d/driver" ] && case "$(readlink "$d/driver")" in *wsa884x*) wsa=$((wsa+1)) ;; esac; done
+    [ "$wsa" -ge 2 ] && echo "AUDIO-CHECK speaker-amplifiers-bound: ok ($wsa WSA884x)" || echo "AUDIO-CHECK speaker-amplifiers-bound: FAIL ($wsa of 2 WSA884x bound to a driver)"
+    # Informational: amplifiers may legitimately show UNATTACHED while the bus clock is stopped (idle); re-check after --play.
+    echo "AUDIO-INFO speaker-amplifier-status: $(for d in /sys/bus/soundwire/devices/sdw:*; do [ -e "$d" ] && printf '%s=%s ' "$(basename "$d")" "$(cat "$d/status" 2>/dev/null)"; done)"
+    n=$(grep -c -E 'swrm_wait_for_(wr|rd)_fifo_avail|SWR CMD error|Slave [0-9]+ initialization failed|Update Slave status failed|Cannot sync regmap' "$dmesg_file")
+    [ "$n" = 0 ] && echo 'AUDIO-CHECK soundwire-bus: ok' || echo "AUDIO-CHECK soundwire-bus: FAIL $n SoundWire errors (amplifier unreachable: DT wiring/reset/supply, not userspace)"
+    verbs=$($T alsaucm -c hw:0 list _verbs 2>&1)
+    case "$verbs" in *HiFi*) echo 'AUDIO-CHECK ucm-verb: ok (HiFi)' ;; *) echo "AUDIO-CHECK ucm-verb: FAIL (alsaucm: $(echo "$verbs" | tr '\n' ' '))" ;; esac
+    sinks=$($T pactl list sinks short 2>&1)
+    case "$sinks" in *alsa_output*) echo 'AUDIO-CHECK pipewire-sink: ok' ;; *) echo "AUDIO-CHECK pipewire-sink: FAIL (sinks: $(echo "$sinks" | tr '\n' ' '))" ;; esac
+    echo
+    echo '=== Card identity and the DMI values the UCM router can match ==='
+    cat /proc/asound/cards 2>&1
+    for f in board_vendor product_family product_name board_name; do printf '%s=' "$f"; cat "/sys/devices/virtual/dmi/id/$f" 2>&1; done
+    echo
+    echo '=== /proc/asound ==='
+    ls /proc/asound 2>&1; cat /proc/asound/pcm /proc/asound/devices 2>&1
+    $T aplay -l 2>&1
+    $T arecord -l 2>&1
+    echo
+    echo '=== SoundWire peripherals ==='
+    for d in /sys/bus/soundwire/devices/*; do
+        [ -e "$d" ] || continue
+        echo "$(basename "$d") driver=$(readlink "$d/driver" 2>/dev/null | sed 's|.*/||') status=$(cat "$d/status" 2>/dev/null)"
+    done
+    echo '=== Deferred drivers ==='
+    cat /sys/kernel/debug/devices_deferred 2>&1
+    echo
+    echo '=== Audio firmware present ==='
+    ls -l /lib/firmware/qcom/glymur/ /lib/firmware/qcom/glymur/*/*/ 2>&1 | grep -i -E 'tplg|adsp|cdsp|jsn|mbn|elf|:$'
+    echo
+    echo '=== dmesg: audio, DSP and firmware lines ==='
+    grep -i -E 'q6|apr|gpr|apm|asoc|snd|sdw|soundwire|swr|wsa|wcd|lpass|audioreach|topology|tplg|adsp|remoteproc|firmware|dai|codec' "$dmesg_file" | head -400
+    echo
+    echo '=== UCM: verbs and devices ==='
+    $T alsaucm -c hw:0 list _verbs 2>&1
+    $T alsaucm -c hw:0 set _verb HiFi list _devices 2>&1
+    echo '=== Mixer controls relevant to the speakers (names only) ==='
+    $T amixer -c 0 controls 2>&1 | grep -i -E 'Spkr|WSA|MultiMedia1|Speaker' | head -120
+    echo '=== Speaker mixer values (idle) ==='
+    $T amixer -c 0 contents 2>&1 | awk '/^numid/ {keep = ($0 ~ /Spkr|WSA_RX[01] Digital|WSA_COMP|MultiMedia1|Speakers/)} keep' | head -200
+    echo '=== PipeWire / WirePlumber ==='
+    $T wpctl status 2>&1
+    $T pactl list cards short 2>&1
+    $T pactl list sinks short 2>&1
+    journalctl -b _UID=0 --user-unit=wireplumber.service --user-unit=pipewire.service --no-pager -n 200 2>&1 | grep -i -E 'alsa|ucm|verb|card|error|fail'
+    $T pactl list sinks 2>&1 | grep -E 'Name:|State:|Mute:|Volume:|Active Port|Description:'
+    if [ "$PLAY" = 1 ]; then
+        echo '=== Speaker test (440 Hz, 4 s) ==='
+        sink=$($T pactl list sinks short 2>/dev/null | awk '/HiFi__Speaker__sink/ {print $2; exit}')
+        if [ -z "$sink" ]; then
+            echo 'no HiFi Speaker sink: nothing to play'
+        else
+            $T pactl set-sink-mute "$sink" 0; $T pactl set-sink-volume "$sink" 30%
+            before=$(dmesg | wc -l)
+            # Use whichever ALSA plugin routes through PipeWire; never the raw hw device (it bypasses UCM).
+            : >/tmp/devos-speaker-test.log
+            for device in pipewire pulse default; do
+                echo "--- speaker-test -D $device" >>/tmp/devos-speaker-test.log
+                /usr/bin/timeout 1 speaker-test -D "$device" -c 2 -t sine -f 440 -l 1 >/tmp/devos-speaker-probe.log 2>&1
+                cat /tmp/devos-speaker-probe.log >>/tmp/devos-speaker-test.log
+                grep -q -i -E 'cannot find card|open error|Unknown PCM|No such' /tmp/devos-speaker-probe.log || break
+            done
+            { /usr/bin/timeout 6 speaker-test -D "$device" -c 2 -t sine -f 440 -l 1 >>/tmp/devos-speaker-test.log 2>&1 & } 2>/dev/null
+            sleep 2
+            echo '--- while playing: SoundWire status'
+            for d in /sys/bus/soundwire/devices/sdw:*; do [ -e "$d" ] && echo "$(basename "$d") status=$(cat "$d/status" 2>/dev/null)"; done
+            echo '--- while playing: sink state'; $T pactl list sinks short 2>&1
+            echo '--- while playing: speaker mixer values'
+            $T amixer -c 0 contents 2>&1 | awk '/^numid/ {keep = ($0 ~ /Spkr|WSA_RX[01] Digital|WSA_COMP|MultiMedia1|Speakers/)} keep' | head -200
+            sleep 4
+            echo '--- speaker-test output'; cat /tmp/devos-speaker-test.log 2>&1 | tail -15
+            echo '--- kernel messages during the test'; dmesg | tail -n +$((before + 1))
+        fi
+    fi
+    rm -f "$dmesg_file"
+}
+
+if [ -n "$1" ]; then
+    report >"$1.new" 2>&1 && mv "$1.new" "$1"
+else
+    report
+fi

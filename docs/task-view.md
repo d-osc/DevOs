@@ -55,22 +55,10 @@ on the chosen/primary monitor and releases its window subscription on hide.
 The native window tracker supports a polite `close` action alongside activation
 and minimization. Existing Applications and Alt+Tab behavior remain separate.
 
-Three-finger swipes are recognized in Dev OS's patched labwc, globally
-across applications, without reading raw input devices or requiring extra user
-permissions. They are enabled by `DEV_OS_TASK_VIEW=1` in `dev-os-session`. A
-completed three-finger swipe must move at least 70 pointer units, remain mostly
-in one axis, and finish within 1.2 seconds. Swipe up to open Task View. Swipe
-down to minimize the currently active window; while Task View is open a
-downward swipe does nothing so an unseen window is never minimized.
-Three-finger horizontal swipes switch
-desktops: swipe left for the next desktop (to the right), or right for the
-previous desktop (to the left), following Windows-style navigation. Each
-completed gesture switches once; the first/last desktop does not wrap around.
-Task View stays open when switching from its overview. Canceled/short/diagonal
-gestures, two/four-finger swipes, drags and locked sessions do not trigger any
-action. Legacy input-inhibit state is also respected on labwc versions that
-expose it. The recognized swipe is canceled for the client before the action
-runs.
+Four-finger swipe up opens Task View; four-finger horizontal swipes switch
+desktops without wrapping. Three-finger swipes now control app windows.
+See [Touchpad gestures](touchpad.md) for the complete mapping, guard conditions
+and hardware requirements. Global swipes are consumed before forwarding to apps.
 
 Completed horizontal swipes now use a 300 ms compositor slide with cubic ease-out.
 The outgoing desktop is retained through temporary scene-buffer references while
@@ -118,3 +106,21 @@ Validation:
   minimized restoration, native close, repeated
   gesture show commands and Escape. It does not inject input into the user's
   session. Physical gesture dispatch is not simulated by this test.
+
+## Snap Layouts and Snap Groups
+
+Press Super+Z or the grid button in an application title bar to open the independent, full-screen Snap panel. Task View (Super+Tab) contains only open windows and virtual desktops. Choose two equal columns, a wide left or right column, three columns, or four quarters. Select a different open window for each numbered region, then choose **Arrange & save group**. Windows must belong to the same desktop; pinned windows are excluded.
+
+The Snap panel has separate **Snap Layouts** and **Snap Groups** tabs. The Groups tab lists saved arrangements with a preview and window titles. Select a group to switch to its desktop, restore minimized members and apply its layout again. The remove button forgets the group without closing its windows. Groups belong to the running desktop session and are cleared after logout. Closing a member removes that member; groups with fewer than two remaining windows disappear. Moving members to different desktops dissolves the group. Assigning a window to a new group replaces its previous group.
+
+The compositor applies named regions within each window's current monitor, respecting panel reservations, scale, gaps and client minimum sizes. Windows on different monitors stay on their existing monitors. Applications with large minimum sizes can extend beyond a narrow region. This feature requires version 5 of the private Dev OS workspace protocol; older compositors show an unavailable message.
+
+Validation: `npm run build`, `gjs -m dist/snap-layouts-test.js`, `gjs -m dist/task-view-test.js`, and `gjs -m dist/snap-native-test.js` inside a running Dev OS Wayland session.
+
+### Shared window dividers
+
+Snapped windows use a 4 logical pixel gap, including a small margin around the usable desktop. A three-dot grip appears between the active group's windows. Drag it to resize neighboring windows together; four-quarter layouts also have a horizontal grip. Three-column layouts have two independent dividers. The compositor validates the complete set before applying a resize, honors application minimum sizes and rejects mixed monitors/desktops or overlapping cells. Groups remember adjusted proportions when restored.
+
+Initial split positions are adjusted for application minimum sizes when the set fits the available area. The transparent grip surface accepts pointer input only over its small handles. It does not take keyboard focus or cover application content with an input surface. Grips hide when a member is minimized, maximized, fullscreen, closed, moved out of its snap region, or another application becomes active. Shared resizing requires version 6 of the Dev OS workspace protocol. Applications with minimum sizes larger than a region can still require a wider initial snap layout.
+
+Dev OS application windows retain 10 logical pixel rounded client corners while snapped. The shared header renders the entire client surface inside the same rounded boundary, including the bottom corners. Maximized and fullscreen windows keep rectangular edges to fill their output. Shared grips hide while a member is maximized or fullscreen; returning to the group reapplies its saved proportions.

@@ -1,7 +1,7 @@
 import System from 'system';
 import {
     Gio, GLib
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 // Bootstrap diagnostics must work before core's native dependencies are available.
 const ROOT = GLib.getenv('DEV_OS_ROOT') ?? Gio.File.new_for_uri(import.meta.url).get_parent()!.get_parent()!.get_path()!;
 

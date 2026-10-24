@@ -1,0 +1,84 @@
+#!/usr/bin/env d
+# Per-user touchpad preferences; no raw input access or privileged process.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/io"
+use "std/result"
+use "../lib/input-settings.dev" as input
+use "../lib/desktop.dev" as util
+use "../lib/posix.dev" as posix
+use "../lib/compositor-config.dev" as compositor
+
+fn devices(kind: str): json.Value {
+    let found = json.array()
+    if !fs.is_dir("/sys/class/input") { return found }
+    for name in fs.readdirSync("/sys/class/input") {
+        if !strings.startsWith(name, "event") { continue }
+        let base = "/sys/class/input/" + name
+        let properties = util.run("udevadm", Vec<str>("info", "--query=property", "--path=" + base), "", 2000)
+        if !properties.success || !strings.contains(util.output(properties), (strings.equal(kind, "mouse") ? "ID_INPUT_MOUSE=1" : "ID_INPUT_KEYBOARD=1")) { continue }
+        let title = util.read(base + "/device/name")
+        found = json.push(found, strings.equal(strings.trim(title), "") ? name : strings.trim(title))
+    }
+    return found
+}
+fn snapshot(kind: str, settings: json.Value, applied: bool): json.Value {
+    let value = json.set(json.object(), "ok", true)
+    value = json.set(value, "settings", settings)
+    value = json.set(value, "devices", devices(kind))
+    value = json.set(value, "applied", applied)
+    return value
+}
+fn save(kind: str, value: json.Value): json.Value {
+    let settings = input.validate(kind, value)
+    util.require(!json.is_null(settings), "Invalid input preferences.")
+    let runtime = process.getenv("DEV_OS_COMPOSITOR_CONFIG")
+    let applied = false
+    let pidText = process.getenv("LABWC_PID")
+    let pid: i64 = 0
+    if !strings.equal(pidText, "") {
+        let valid = true
+        for i in 0..strings.charLength(pidText) { if !strings.contains("0123456789", strings.charAt(pidText, i)) { valid = false } }
+        if valid { pid = json.int(json.parse(pidText)) }
+    }
+    let live = !strings.equal(runtime, "") && fs.is_file(runtime + "/.devos-base") && pid > 1 && strings.equal(strings.trim(util.read("/proc/${pid}/comm")), "labwc") && posix.send(pid, 0)
+    let original = ""
+    if live {
+        original = fs.readFileSync(runtime + "/rc.xml", "utf8")
+        let xml = input.applyXml(original, kind, settings)
+        let desktops = compositor.snapshot()
+        if !json.is_null(desktops) { xml = compositor.replaceDesktops(xml, desktops) }
+        util.require(util.atomicText(runtime + "/rc.xml", xml), "Could not update the compositor configuration.")
+        if !posix.send(pid, posix.SIGHUP()) { util.atomicText(runtime + "/rc.xml", original); result.raise("The compositor could not reload input settings.") }
+        applied = true
+    }
+    if !util.atomic(input.preferencesPath(kind), settings) {
+        if live { util.atomicText(runtime + "/rc.xml", original); posix.send(pid, posix.SIGHUP()) }
+        result.raise("Could not save input preferences.")
+    }
+    return snapshot(kind, settings, applied)
+}
+fn main(): i32 {
+    let outcome = result.attempt(fn(): json.Value {
+        let raw = io.read_line()
+        util.require(json.valid(raw), "Invalid input request.")
+        let request = json.parse(raw)
+        let kind = util.text(util.get(request, "kind"))
+        input.defaults(kind)
+        let action = util.text(util.get(request, "action"))
+        if strings.equal(action, "get") {
+            let settings = input.load(kind)
+            util.require(!json.is_null(settings), "Saved input preferences could not be read. Reset to defaults to replace them.")
+            return snapshot(kind, settings, false)
+        }
+        if strings.equal(action, "reset") { return save(kind, input.defaults(kind)) }
+        util.require(strings.equal(action, "save"), "Unsupported input action.")
+        return save(kind, util.get(request, "settings"))
+    })
+    if result.isErr(outcome) { print(json.stringify({ok: false, error: result.message(outcome)})); return 1 }
+    print(json.stringify(result.unwrap(outcome)))
+    return 0
+}
+return main()

@@ -1,3 +1,4 @@
+import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {LanguageSettings} from '../extensions/org.devos.settings/language-view.js';
@@ -12,7 +13,7 @@ async function verify() {
     const controls: LanguageControls = {async load() {return catalog;}, async save(value) {if (fail) throw new Error('Compositor unavailable'); saved = value; return {settings: value, applied: true};}, destroy() {destroyed = true;}};
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(850, 800);
     const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replaceAll('@ACCENT@', '#88e0c0')));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     try {

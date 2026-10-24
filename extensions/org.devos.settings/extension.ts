@@ -45,7 +45,7 @@ export default {id: 'org.devos.settings', activate(context) {
         if (!settings) settings = new Settings(context, username => switcher.show(username));
         settings.show('time');
     });
-    for (const page of ['accounts', 'system', 'display', 'sound', 'power', 'storage', 'about']) context.registerCommand(`settings.${page}`, () => {
+    for (const page of ['vpn', 'hotspot', 'airplane', 'proxy', 'advanced', 'mouse', 'keyboard', 'bluetooth-add', 'printers', 'touchpad', 'accounts', 'system', 'display', 'sound', 'power', 'storage', 'about']) context.registerCommand(`settings.${page}`, () => {
         context.invoke('launcher.hide');
         if (!settings) settings = new Settings(context, username => switcher.show(username));
         settings.show(page);

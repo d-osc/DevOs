@@ -1,0 +1,65 @@
+#!/usr/bin/env d
+use "std/json"
+use "std/strings"
+use "std/io"
+use "std/result"
+use "../lib/posix.dev" as posix
+use "../lib/devstr.dev" as devstr
+use "../lib/desktop.dev" as util
+fn queueName(value: str): bool {
+    if strings.len(value) < 1 || strings.len(value) > 63 || strings.startsWith(value, "-") { return false }
+    for i in 0..strings.charLength(value) { if !strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-", strings.charAt(value, i)) { return false } }
+    return true
+}
+fn printerUri(value: str): bool {
+    if !(strings.startsWith(value, "ipp://") || strings.startsWith(value, "ipps://")) || strings.len(value) > 2048 { return false }
+    let host = strings.split(value, "://")[1]
+    if strings.equal(host, "") || strings.startsWith(host, "/") { return false }
+    for invalid in Vec<str>(" ", "\t", "\n", "\r", "@", "\\", "#") { if strings.contains(value, invalid) { return false } }
+    return true
+}
+fn checked(program: str, args: Vec<str>) {
+    let value = util.run(program, args, "", 15000)
+    util.require(value.success, "Printing command failed. Check the printer address, CUPS service and your administration permissions. " + util.output(value))
+}
+fn snapshot(): json.Value {
+    let available = !strings.equal(util.which("lpstat"), "")
+    if !available { return {ok: true, available: false, printers: json.array(), default: "", jobs: json.array(), message: "Printing support is not installed in this system image."} }
+    let status = util.run("lpstat", Vec<str>("-r"), "", 3000)
+    if !status.success || !strings.contains(util.output(status), "scheduler is running") { return {ok: true, available: false, printers: json.array(), default: "", jobs: json.array(), message: "The CUPS printing service is not running."} }
+    let printers = json.array()
+    for line in strings.split(util.command("lpstat", Vec<str>("-v")), "\n") {
+        if !strings.startsWith(line, "device for ") { continue }
+        let value = devstr.byteSlice(line, 11, strings.len(line) as i64)
+        let parts = strings.split(value, ": ")
+        if parts.len() >= 2 && queueName(parts[0]) { printers = json.push(printers, {name: parts[0], uri: parts[1]}) }
+    }
+    let defaultLine = util.command("lpstat", Vec<str>("-d"))
+    let defaultParts = strings.split(defaultLine, ": ")
+    let selected = defaultParts.len() >= 2 ? defaultParts[1] : ""
+    return {ok: true, available: true, printers: printers, default: selected, message: "", jobs: json.array()}
+}
+fn main(): i32 {
+    posix.setEnv("LC_ALL", "C")
+    let outcome = result.attempt(fn(): json.Value {
+        let raw = io.read_line(); util.require(json.valid(raw), "Invalid printer request.")
+        let request = json.parse(raw); let action = util.text(util.get(request, "action"))
+        if strings.equal(action, "list") { return snapshot() }
+        let name = util.text(util.get(request, "name")); util.require(queueName(name), "Use a printer name with letters, digits, hyphens or underscores (1–63 characters).")
+        if strings.equal(action, "add") {
+            let uri = util.text(util.get(request, "uri")); util.require(printerUri(uri), "Enter an ipp:// or ipps:// printer address without credentials or spaces.")
+            checked("lpadmin", Vec<str>("-p", name, "-E", "-v", uri, "-m", "everywhere"))
+        } else {
+            let current = snapshot(); let exists = false; let printers = json.get(current, "printers")
+            for i in 0..(json.len(printers) as i64) { if strings.equal(util.text(util.get(json.at(printers, i), "name")), name) { exists = true } }
+            util.require(exists, "This printer is no longer available. Refresh the list.")
+            if strings.equal(action, "default") { checked("lpoptions", Vec<str>("-d", name)) }
+            else if strings.equal(action, "remove") { checked("lpadmin", Vec<str>("-x", name)) }
+            else { util.require(false, "Unsupported printer action.") }
+        }
+        return snapshot()
+    })
+    if result.isErr(outcome) { print(json.stringify(util.error(result.message(outcome)))); return 1 }
+    print(json.stringify(result.unwrap(outcome))); return 0
+}
+return main()

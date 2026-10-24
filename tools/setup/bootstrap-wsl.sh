@@ -35,6 +35,7 @@ if [ -z "$devlang_bin" ]; then
 fi
 "$devlang_bin" "$project_root/tools/setup/patch-task-view-gesture.dev" -- "$source_dir"
 "$devlang_bin" "$project_root/tools/setup/patch-task-view-workspaces.dev" -- "$source_dir"
+"$devlang_bin" "$project_root/tools/setup/patch-touchpad.dev" -- "$source_dir"
 set --
 if [ -f "$build_dir/build.ninja" ]; then set -- --reconfigure; fi
 # Newer distro headers add enum members unknown to wlroots 0.17. Keep warnings
@@ -52,3 +53,4 @@ printf 'WSLg compositor ready: %s/labwc\n' "$bin_dir"
 sh "$project_root/tools/setup/bootstrap-terminal.sh"
 sh "$project_root/tools/setup/bootstrap-lock.sh"
 sh "$project_root/tools/setup/bootstrap-window-tracker.sh"
+sh "$project_root/tools/setup/bootstrap-media.sh"
