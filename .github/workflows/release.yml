@@ -34,21 +34,22 @@ jobs:
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
             gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
           sudo sh tools/setup/bootstrap-lock.sh
+          sudo chown -R "$(id -u):$(id -g)" build
       - run: npm ci
       - name: Install pinned DevLang tool runtime
         shell: bash
         run: |
           machine=$(uname -m)
           case "$machine" in
-            aarch64) checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
-            x86_64) checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
+            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
+            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
             *) exit 1 ;;
           esac
-          archive="devlang-d-v0.5.5-linux-$machine.tar.gz"
+          archive="devlang-d-v0.5.5-linux-$arch.tar.gz"
           curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/v0.5.5/$archive"
           printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/$archive" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/devlang-d-v0.5.5-linux-$machine" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/devlang-d-v0.5.5-linux-$arch" >> "$GITHUB_PATH"
       - run: npm run build
       - name: Test update protocol and installation
         run: gjs -m dist/updates-test.js
