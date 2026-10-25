@@ -23,6 +23,7 @@
 #include <linux/input.h>
 #include <linux/kd.h>
 #include <math.h>
+#include <stdarg.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -294,6 +295,13 @@ static void tty_clear(const char *path) {
     (void)ignored;
     close(fd);
 }
+static void tty_write(const char *path, const char *message) {
+    int fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0) return;
+    ssize_t ignored = write(fd, message, strlen(message));
+    (void)ignored;
+    close(fd);
+}
 static int read_status(const char *path, char *out, size_t size) {
     FILE *f = fopen(path, "r");
     if (!f) return 0;
@@ -386,6 +394,18 @@ static void control_poll(const char *path) {
     if (!strncmp(word, "text", 4)) signal_quit = 2; else if (!strncmp(word, "fade", 4) && signal_quit == 0) signal_quit = 1;
 }
 
+static double t_end(double start) { return now_seconds() - start; }
+static FILE *event_log;
+static double event_start;
+static void note(const char *format, ...) { /* a line in /run/devos-splash.log: what the daemon saw, saved with the boot logs */
+    if (!event_log) return;
+    va_list args;
+    fprintf(event_log, "%7.2f ", now_seconds() - event_start);
+    va_start(args, format); vfprintf(event_log, format, args); va_end(args);
+    fputc('\n', event_log);
+    fflush(event_log);
+}
+
 static int run_daemon(const Options *o) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -403,6 +423,8 @@ static int run_daemon(const Options *o) {
     memset(&scene, 0, sizeof scene);
     int inputs[MAX_INPUTS], input_count = 0;
     char input_names[MAX_INPUTS][32], message[96] = "";
+    event_log = fopen("/run/devos-splash.log", "a");
+    event_start = now_seconds();
     double start = now_seconds(), next_frame = start, next_check = start, fade_out_at = -1;
     int graphics = 0, full = 1, last_dx = 0, last_dy = 0, reveal = 0;
     while (!reveal) {
@@ -412,10 +434,10 @@ static int run_daemon(const Options *o) {
         if (signal_quit == 1 && fade_out_at < 0) fade_out_at = t;
         if (now >= next_check) {
             next_check = now + 1;
-            if (display.fd >= 0 && display_changed(&display, o->fb)) { display_close(&display); scene_free(&scene); }
+            if (display.fd >= 0 && display_changed(&display, o->fb)) { note("framebuffer changed (was %s %ux%u)", (char *)display.fix.id, display.var.xres, display.var.yres); display_close(&display); scene_free(&scene); }
             if (display.fd < 0 && display_open(&display, o->fb) == 0) {
                 if (scene_init(&scene, display.var.xres, display.var.yres, o->message)) display_close(&display);
-                else { full = 1; if (!graphics) graphics = tty_mode(o->tty, KD_GRAPHICS) == 0; }
+                else { note("framebuffer %s %ux%u %ubpp line %u", (char *)display.fix.id, display.var.xres, display.var.yres, display.var.bits_per_pixel, display.fix.line_length); full = 1; if (!graphics) graphics = tty_mode(o->tty, KD_GRAPHICS) == 0; }
             }
             if (display.fd >= 0 && o->status && read_status(o->status, message, sizeof message)) { scene_set_message(&scene, message); full = 1; }
             input_count = open_inputs(inputs, input_count, input_names);
@@ -445,15 +467,18 @@ static int run_daemon(const Options *o) {
                 struct input_event ev;
                 if (!(fds[i].revents & POLLIN)) continue;
                 while (read(inputs[i], &ev, sizeof ev) == sizeof ev)
-                    if (ev.type == EV_KEY && ev.value == 1 && ev.code < 0x100 && t > 1.0) reveal = 1;
+                    if (ev.type == EV_KEY && ev.value == 1 && ev.code == KEY_ESC && t > 1.0) { note("Esc pressed"); reveal = 1; } /* only Esc: stray EC/backlight/power keys must not end the animation */
+                    else if (ev.type == EV_KEY && ev.value == 1) note("ignored key %d", ev.code);
             }
     }
+    note("leaving: quit=%d reveal=%d t=%.1f graphics=%d display=%d", (int)signal_quit, reveal, t_end(start), graphics, display.fd >= 0);
     int quiet = fade_out_at >= 0 && signal_quit != 2 && !reveal;
     if (display.fd >= 0 && quiet) memset(display.map, 0, display.length);
     if (graphics) {
         if (quiet) tty_clear(o->tty); /* a blank console, so nothing flashes when text mode returns */
         tty_mode(o->tty, KD_TEXT);
     }
+    if (reveal) tty_clear(o->tty), tty_write(o->tty, "Dev OS: boot animation stopped (Esc).\n");
     if (reveal && access("/run/systemd/system", F_OK) == 0) kill(1, SIGRTMIN + 20); /* systemd as PID 1: show boot status again */
     for (int i = 0; i < input_count; i++) close(inputs[i]);
     display_close(&display);

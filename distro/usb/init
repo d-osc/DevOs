@@ -35,6 +35,7 @@ save_logs() {
     cp /run/live/boot.log "$logdir/boot.log"
     [ ! -f /run/devos-hw/identity.json ] || cp /run/devos-hw/identity.json /run/devos-hw/selection.json "$logdir/"
     [ ! -f /run/live/probe.log ] || cp /run/live/probe.log "$logdir/probe.log"
+    [ ! -f /run/devos-splash.log ] || cp /run/devos-splash.log "$logdir/splash.log"
     dmesg >"$logdir/kernel.log"
     sync
 }
