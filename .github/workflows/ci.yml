@@ -35,13 +35,13 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install Linux build and test dependencies
-        # Same packages as the tag-triggered Publish workflow: gjs runs the shell tests headless, the native window
+        # Xvfb provides a display for GTK UI tests; the native window
         # tracker needs the Wayland headers, and the lock-screen test needs the pinned swaylock.
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
-            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl python3-gi gir1.2-nm-1.0 python3-yaml
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl python3-gi gir1.2-nm-1.0 python3-yaml xvfb xauth
           sudo sh tools/setup/bootstrap-lock.sh
           sudo chown -R "$(id -u):$(id -g)" build
       - name: Install pinned DevLang ${{ env.DEVLANG_VERSION }}
@@ -64,6 +64,6 @@ jobs:
       - name: Build
         run: npm run build
       - name: Shell tests under GJS
-        run: npm run check
+        run: xvfb-run --auto-servernum env GDK_BACKEND=x11 npm run check
       - name: Python tests
         run: /usr/bin/python3 tools/release/run_python_tests.py
