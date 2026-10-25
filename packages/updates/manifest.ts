@@ -25,6 +25,8 @@ export interface ReleaseExtras {
     sums: {url: string; size: number} | null;
     signature: {url: string; size: number} | null;
     patch: {from: string; url: string; size: number; sha256: string; name: string} | null;
+    /** Kernel/firmware/system bundle (docs/updates.md, "System updates") and its small description file. */
+    system: {name: string; url: string; size: number; sha256: string; metaUrl: string; metaSize: number; metaSha256: string} | null;
 }
 const SHA = /^[a-f0-9]{64}$/;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -153,7 +155,9 @@ export function releaseExtras(raw: unknown, repo: string, platform: UpdatePlatfo
         const found = find(patchAssetName(installed, to, platform), 128 * 1024 * 1024);
         if (found) patch = {from: installed, url: found.url, size: found.size, sha256: found.sha256, name: found.name};
     }
-    return {sums: sums && {url: sums.url, size: sums.size}, signature: signature && {url: signature.url, size: signature.size}, patch};
+    const bundle = find(`dev-os-system-${platform}.tar.gz`, 2 * 1024 * 1024 * 1024 - 1), meta = find(`dev-os-system-${platform}.json`, 256 * 1024);
+    const system = bundle && meta ? {name: bundle.name, url: bundle.url, size: bundle.size, sha256: bundle.sha256, metaUrl: meta.url, metaSize: meta.size, metaSha256: meta.sha256} : null;
+    return {sums: sums && {url: sums.url, size: sums.size}, signature: signature && {url: signature.url, size: signature.size}, patch, system};
 }
 export function validatePatchArchive(names: string, details: string): void {
     const paths = names.trimEnd().split('\n'), rows = details.trimEnd().split('\n');

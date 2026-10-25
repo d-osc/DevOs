@@ -33,6 +33,7 @@ python tools/release/package.py check --version v0.3.7
 | `devos-<version>-source.tar.gz` | tracked sources |
 | `SHA256SUMS` | checksum of every asset |
 | `SHA256SUMS.sig` | Ed25519 signature of `SHA256SUMS`, only when the `DEVOS_UPDATE_SIGNING_KEY` secret is set |
+| `dev-os-system-<platform>.tar.gz`, `dev-os-system-<platform>.json` | optional system update (kernel, boot image, firmware, system files; restart needed). Built locally from an OpenEmbedded build with `gjs -m dist/make-system-bundle.js` and attached with `tools/release/publish-system-bundle.sh`, which also signs `SHA256SUMS` again |
 
 The update packages contain a `manifest.json` (every file with its sha256) and are what Settings > Updates installs; the
 release description shown there is `docs/releases/<version>.md`. The package format, the patch format and the trust model

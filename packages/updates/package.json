@@ -26,6 +26,14 @@
     "./package": {
       "types": "./dist/package.d.ts",
       "import": "./dist/package.js"
+    },
+    "./system": {
+      "types": "./dist/system.d.ts",
+      "import": "./dist/system.js"
+    },
+    "./system-bundle": {
+      "types": "./dist/system-bundle.d.ts",
+      "import": "./dist/system-bundle.js"
     }
   },
   "files": [

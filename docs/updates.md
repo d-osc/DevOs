@@ -21,12 +21,14 @@
 
 ### ขอบเขตและข้อจำกัด
 
-- อัปเดตเฉพาะ **Dev OS desktop layer**: shell, extensions, bin helpers, data, config, native tools. **ไม่แตะ** kernel, initramfs, firmware, bootloader/ESP
-  หรือ package ของระบบ; ส่วนเหล่านั้นอัปเดตด้วยการเขียน image ใหม่ (หรือ package manager ของ distro).
+- มีสองชั้น: **desktop layer** (shell, extensions, bin helpers, data, config, native tools — ต่อผู้ใช้ ไม่ใช้ root) และ **system layer**
+  (kernel + initramfs + bootloader stub ใน boot image บน ESP, firmware, kernel modules, ไฟล์ระบบใต้ `/usr` — ใช้ helper สิทธิ์ root,
+  ต้องยืนยันรหัสผ่านผู้ดูแล และมีปุ่ม **Restart now / Restart later** เพราะมีผลหลัง restart). ดู "System updates" ด้านล่าง.
+  ไม่แตะ partition table, boot entry อื่น (เช่น Windows), `/etc` และข้อมูลผู้ใช้.
 - **Live USB ไม่อัปเดตในที่เดิม**: root เป็น read-only image + RAM overlay การเปลี่ยนแปลงหายเมื่อปิดเครื่อง. หน้า Updates ตรวจพบ `/run/devos-live` จึงแสดง
   "Live USB is not updated in place" และปิดปุ่มติดตั้ง/Apply file (ยังตรวจรุ่นใหม่และอ่าน release notes ได้). ให้เขียน image ใหม่ลง USB (`tools/live/release-live-usb.ps1`).
-- การติดตั้งเป็นต่อผู้ใช้ (`~/.local/share/dev-os-updates`) ไม่ต้องใช้ root จึง **ไม่มี polkit action หรือ helper ที่รันเป็น root**: ผู้ใช้หลายคนบนเครื่องเดียวกันมีรุ่นของตัวเอง
-  และไฟล์ที่ดาวน์โหลดไม่เคยถูกรันด้วยสิทธิ์สูง. การอัปเดตทั้งเครื่อง (`/usr/share/dev-os`) ยังไม่ทำ.
+- desktop layer ติดตั้งต่อผู้ใช้ (`~/.local/share/dev-os-updates`) โดยไม่ใช้ root: ผู้ใช้หลายคนมีรุ่นของตัวเอง และไฟล์ที่ดาวน์โหลดไม่ถูกรันด้วยสิทธิ์สูง.
+  การเขียนทับ `/usr/share/dev-os` ทั้งเครื่องไม่ทำ; system layer เป็นทางเดียวที่แก้ไฟล์ของ image (เฉพาะ path ที่อนุญาต).
 
 เมื่อติดตั้งเสร็จแล้ว ให้สลับ session ไปใช้รุ่นที่ติดตั้งไว้:
 
@@ -127,6 +129,41 @@ gjs -m dist/make-patch.js --from build/previous/dev-os-linux-arm64.tar.gz --to b
 `patch.json`, ไฟล์ที่ติดตั้งไว้ถูกแก้, patch มีไฟล์เกินจากความต่างของสอง manifest หรือ checksum ไม่ตรง. ถ้า patch ใช้ไม่ได้ด้วยเหตุใดก็ตาม
 จะดาวน์โหลดแพ็กเกจเต็มแทนโดยอัตโนมัติ (ตรวจแยกต่างหาก). Workflow สร้าง patch จาก release ก่อนหน้าให้เมื่อมี `manifest.json`; ผู้ใช้ที่ข้ามหลายรุ่นได้แพ็กเกจเต็ม.
 
+## System updates (kernel, initramfs, bootloader/ESP, firmware, system packages)
+
+เครื่องที่ติดตั้งแล้ว boot ด้วย unified kernel image เดียว (`EFI/DEVOS/DEVOS.EFI`, สำเนาที่ `EFI/BOOT/BOOTAA64.EFI`) ที่รวม kernel, initramfs, device tree และ
+bootloader stub ไว้ในไฟล์เดียว (`distro/usb/prepare.dev`, ดู docs/installer.md). ดังนั้น "kernel + initramfs + bootloader" คือการเปลี่ยนไฟล์นี้,
+"firmware/modules/package" คือไฟล์ใต้ `/usr`.
+
+**Bundle** `dev-os-system-<platform>.tar.gz` (+ `dev-os-system-<platform>.json` คำอธิบายสั้น ๆ ที่หน้า Updates อ่านก่อนดาวน์โหลด) มี `dev-os-system/system.json`,
+`system.list` (รูปแบบบรรทัดที่ helper อ่าน), `esp/EFI/DEVOS/*.EFI` และ `root/usr/...` พร้อม sha256/ขนาด/โหมดของทุกไฟล์. สร้างจากผลของ OE build บนเครื่อง build:
+
+```sh
+gjs -m dist/make-system-bundle.js --version 0.3.7 --platform linux-arm64 --kernel 6.17.0-devos --uki INSTALLED.EFI \
+    --rootfs /path/to/extracted/rootfs --root-path usr/lib/modules/6.17.0-devos --root-path usr/lib/firmware --dereference --output build/release
+sh tools/release/publish-system-bundle.sh --tag v0.3.7 --dir build/release --key /secure/private.pem   # แนบ asset + ลงนาม SHA256SUMS ใหม่
+```
+
+(GitHub Actions build image ไม่ได้ และ asset ต้อง < 2 GiB จึงทำจากเครื่อง build; ยังไม่มี bundle = หน้า Updates ไม่แสดงการ์ด System update.)
+
+**ขั้นตอน (helper `native/devos-system-update`, polkit `org.devos.system.update`, `auth_admin`)**
+1. ดาวน์โหลด bundle + `SHA256SUMS(.sig)` เป็นผู้ใช้, ตรวจ hash/ลายเซ็นฝั่ง UI, แล้ว helper (root) **ตรวจซ้ำทั้งหมดจากสำเนาของ root เอง**: hash ของไฟล์,
+   ลายเซ็นกับ key ใน image (`/usr/share/dev-os/data/update-keys`), รายการ tar (ไม่มี link/อุปกรณ์/path แปลก), ทุกไฟล์ตรง `system.list` และไม่มีไฟล์เกิน,
+   platform/รุ่น/`min`, พื้นที่ว่างบน ESP และ root. ไม่ผ่าน = ไม่เปลี่ยนอะไร.
+2. Allow-list ของ path: ESP เฉพาะ `EFI/DEVOS/*.EFI`; root เฉพาะ `usr/{lib,bin,sbin,libexec,share}/…` ยกเว้น helper เอง, polkit actions และ unit `devos-system-*`;
+   โหมดไฟล์ 644/755 เท่านั้น (ไม่มี setuid). ลบไฟล์ได้เฉพาะ path ที่ allow-list.
+3. สำรองไฟล์ root ที่จะถูกทับ/ลบ แล้วเขียนทีละไฟล์ด้วย rename; ล้มเหลวกลางทาง = คืนทุกไฟล์.
+4. boot image ใหม่ถูกวางข้าง ๆ (`EFI/DEVOS-NEXT/`) และสร้าง boot entry ชั่วคราวด้วย `efibootmgr` แล้วตั้ง **BootNext** (ครั้งเดียว) โดยคง BootOrder เดิม:
+   ถ้า kernel ใหม่ boot ไม่ขึ้น (หรือ power cycle) firmware กลับไปใช้ entry เดิมเอง. ไม่มี efibootmgr/UEFI variables → เขียนทับในที่เดิมโดยเก็บของเดิมเป็น `.prev` (UI เตือนว่าไม่มี fallback อัตโนมัติ).
+5. UI แสดง **Restart now / Restart later**. หลัง boot `devos-system-commit.timer` (90 วินาที) เรียก `commit`: ถ้า `uname -r` ตรงกับ kernel ของ bundle จึง promote
+   (คัดลอกเป็น `DEVOS.EFI` และ `BOOTAA64.EFI`, เก็บของเดิมเป็น `.prev`, ลบ entry ชั่วคราว); ถ้าไม่ตรง (firmware fallback) จะ **คืนไฟล์ root ทั้งหมดและแจ้งว่าไม่ boot**.
+6. **Restore previous system** (หลัง commit) คืนไฟล์ root + boot image จาก `.prev` แล้วต้อง restart. **Cancel system update** ใช้ก่อน restart.
+
+ข้อจำกัด: ยังไม่ทดสอบบนฮาร์ดแวร์จริงหรือ QEMU (ทดสอบด้วย `efibootmgr` จำลอง); Secure Boot ไม่รองรับ (image ไม่ได้เซ็น); เก็บ kernel modules ของ kernel เก่าไว้ (ไม่ลบอัตโนมัติ);
+ไฟล์ firmware ที่ถูกทับมีผลกับ kernel เก่าด้วยจนกว่าจะ restart; `/etc` ไม่ถูกแตะ; บนเครื่องที่ไม่มี key ใน image การป้องกันคือ HTTPS + SHA-256 + การยืนยันผู้ดูแลเท่านั้น
+(helper รันโค้ดจาก bundle ที่ได้รับอนุญาตแล้วด้วยสิทธิ์ root ดังนั้น **ควรเปิดลายเซ็นก่อนปล่อย system update ครั้งแรก**). เวอร์ชันระบบเริ่มต้นอ่านจาก `VERSION_ID` ใน `/etc/os-release`
+(ถ้าไม่ใช่ semver ถือเป็น 0.0.0 และเสนอ bundle ล่าสุดหนึ่งครั้ง) แล้วเก็บเองที่ `/var/lib/devos-system/state`.
+
 ## Trust model
 
 | ชั้น | ตรวจอะไร | ป้องกันอะไร |
@@ -211,6 +248,7 @@ gjs -m dist/updates-test.js
 gjs -m dist/extensions-test.js
 d tools/test/smoke.dev --
 gjs -m dist/update-package-test.js   # manifest, ตรวจต้นไม้, patch, ลายเซ็น Ed25519, make-patch (ต้องมี openssl)
+gjs -m dist/system-update-test.js    # helper สิทธิ์ root: boot image A/B, BootNext, commit/rollback, allow-list, ลายเซ็น, ตัวติดตั้งใน UI (ต้องมี openssl)
 gjs -m dist/updates-patch-test.js    # ติดตั้ง/patch/ย้อนกลับ/ไฟล์ในเครื่อง/ล้มเหลวกลางทาง/Live USB/offline/rate limit ด้วย GitHub จำลอง
 gjs -m dist/updates-ui-test.js       # หน้า Settings → Updates
 ```
