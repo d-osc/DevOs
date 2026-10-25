@@ -8,6 +8,7 @@ import {materialIcon} from '../org.devos.icons/material.js';
 import {mountFiles} from './view.js';
 import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs';
 import {fileMenuOptions} from './context-menu.js';
+import {openPackageFile} from './package-open.js';
 
 interface FileTab {id: number; owner: Files; page: Gtk.Box; model: FileBrowser; view: ReturnType<typeof mountFiles>; unsubscribe: () => void;}
 
@@ -64,7 +65,11 @@ export class Files implements TabDragHost {
     private options() {
         const values = this.context.preferences.get('org.devos.files').state.values;
         return {gridView: values.gridView === true, showHidden: values.showHidden === true, materialIcons: this.context.preferences.get('org.devos.icons').state.values.materialFiles !== false, searchExcludedDirectories: typeof values.searchExcludedDirectories === 'string' ? values.searchExcludedDirectories : undefined,
-            contextMenu: fileMenuOptions(values), openTerminal: (directory: string) => {this.context.runCommand('terminal', directory);}};
+            contextMenu: fileMenuOptions(values), openTerminal: (directory: string) => {this.context.runCommand('terminal', directory);},
+            installPackage: this.context.openPackage ? (path: string) => this.openPackage(path) : undefined};
+    }
+    private openPackage(path: string): boolean {
+        try { return this.context.openPackage?.(path) ?? false; } catch (error) { printerr(`Install package: ${String(error)}`); return false; }
     }
     private renderTabs() {
         this.header.update({tabs: this.tabs.map(tab => ({id: tab.id,
@@ -77,6 +82,8 @@ export class Files implements TabDragHost {
         const id = this.nextId++, page = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
         const model = new FileBrowser((uri, cancel) => new Promise<void>((resolve, reject) => {
             const path = Gio.File.new_for_uri(uri).get_path();
+            // Package files (.dpk/.deb/.rpm and installable .tar.gz) open the install page instead of a generic handler.
+            if (path && openPackageFile(path, p => this.openPackage(p))) { resolve(); return; }
             const associations = this.context.preferences.get('org.devos.editor').state.values.fileAssociations;
             if (path && typeof associations === 'string' && opensInEditor(path, associations) && this.context.openEditor?.(path)) {
                 resolve(); return;

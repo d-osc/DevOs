@@ -8,6 +8,7 @@ import {DEFAULT_LAUNCHER_OPTIONS, type LauncherOptions} from './options.js';
 import {launcherCustomization, workspaceAppKey} from './customization.js';
 import type {OverlayMotion} from './overlay-motion.js';
 import {launchDesktopApp} from '@dev-os/services/apps';
+import {userPackageCommand, createAppContextMenu, appInfoLines} from './uninstall.js';
 
 export interface LauncherServices {
     motion?: OverlayMotion;
@@ -19,6 +20,8 @@ export interface LauncherServices {
     searchApps(apps: Gio.AppInfo[], query: string): Gio.AppInfo[];
     showSettings?(): void;
     openEditor?(): void;
+    /** Removes a package installed for this user (by its launcher command). Rejects with a readable message. */
+    uninstallApp?(command: string): Promise<string>;
     getCustomization?(): SettingsValues;
     saveCustomization?(patch: SettingsValues): void;
 }
@@ -40,6 +43,7 @@ function LauncherView({window, services, handle}: ViewProps) {
     const [message, setMessage] = useState('');
     const [customization, setCustomization] = useState(() => launcherCustomization(services.getCustomization?.()));
     const [editingWorkspace, setEditingWorkspace] = useState(false);
+    const [pendingUninstall, setPendingUninstall] = useState<{app: Gio.AppInfo; command: string} | null>(null), [info, setInfo] = useState<string[] | null>(null), [removing, setRemoving] = useState(false), [removed, setRemoved] = useState<string[]>([]);
     const grid = useRef<Gtk.FlowBox>(null);
     const save = (patch: SettingsValues) => {
         try {
@@ -58,7 +62,30 @@ function LauncherView({window, services, handle}: ViewProps) {
         const signal = window.connect('size-allocate', size); size();
         return () => window.disconnect(signal);
     }, [window, options.menuWidth]);
-    const matches = useMemo(() => services.searchApps(apps, query), [apps, query, services]);
+    const matches = useMemo(() => services.searchApps(apps.filter(app => !removed.includes(app.get_id() ?? '')), query), [apps, query, services, removed]);
+    const uninstall = async () => {
+        if (!pendingUninstall || !services.uninstallApp) return;
+        const {app, command} = pendingUninstall; setRemoving(true);
+        try {const text = await services.uninstallApp(command); setRemoved(list => [...list, app.get_id() ?? '']); setPendingUninstall(null); setMessage(text);}
+        catch (error) {setMessage(`Could not uninstall ${app.get_display_name()}: ${error instanceof Error ? error.message : String(error)}`); setPendingUninstall(null);}
+        finally {setRemoving(false);}
+    };
+    // Right-click an app: Uninstall appears only for packages installed for this user, never for base apps.
+    useLayoutEffect(() => {
+        const widget = customization.appView === 'grid' ? grid.current : rows.current;
+        if (!widget) return;
+        let menu: Gtk.Menu | undefined;
+        const gesture = new Gtk.GestureMultiPress({widget, button: 3, propagation_phase: Gtk.PropagationPhase.CAPTURE});
+        const signal = gesture.connect('pressed', (_gesture, _count, x, y) => {
+            const child = widget instanceof Gtk.ListBox ? widget.get_row_at_y(y) : widget.get_child_at_pos(x, y);
+            const app = child ? matches[child.get_index()] : undefined, command = app ? userPackageCommand(app.get_id()) : null;
+            if (!app) return;
+            menu?.destroy(); menu = createAppContextMenu({info: () => {setPendingUninstall(null); setInfo(appInfoLines(app as never, command));}, uninstall: command && services.uninstallApp ? () => {setInfo(null); setPendingUninstall({app, command});} : undefined}, removing);
+            menu.show_all(); menu.popup_at_pointer(gesture.get_last_event(gesture.get_current_sequence()));
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED);
+        });
+        return () => {gesture.disconnect(signal); gesture.run_dispose(); menu?.destroy();};
+    }, [matches, customization.appView, removing, services]);
     const hide = () => { setVisible(false); setConfirmLogout(false); return true; };
     const launch = (app?: Gio.AppInfo) => {
         if (!app) return;
@@ -86,7 +113,7 @@ function LauncherView({window, services, handle}: ViewProps) {
         else if (services.motion) services.motion.hide(); else window.hide();
     }, [visible, window]);
     useImperativeHandle(handle, () => ({
-        show() { setApps(services.installedApps()); if (services.getCustomization) setCustomization(launcherCustomization(services.getCustomization())); if (!options.rememberSearch) setQuery(''); setMessage(''); setEditingWorkspace(false); setConfirmLogout(false); setVisible(true); },
+        show() { setApps(services.installedApps()); if (services.getCustomization) setCustomization(launcherCustomization(services.getCustomization())); if (!options.rememberSearch) setQuery(''); setMessage(''); setEditingWorkspace(false); setConfirmLogout(false); setPendingUninstall(null); setInfo(null); setVisible(true); },
         hide, showMessage: setMessage, requestLogout,
         onKey(event) {
             const [, key] = event.get_keyval();
@@ -203,6 +230,16 @@ function LauncherView({window, services, handle}: ViewProps) {
                     </Box>
                 </Box>}
             </Box>
+            {info && <Box className="launcher-uninstall" orientation="vertical" spacing={6}>
+                <Label id="launcher-info-title" className="launcher-app-name" xalign={0}>{info[0]}</Label>
+                {info.slice(1).map((line, i) => <Label key={i} id={`launcher-info-${i}`} className="launcher-app-description" xalign={0} wrap selectable>{line}</Label>)}
+                <Button id="launcher-info-close" halign="end" onClicked={() => setInfo(null)}>Close</Button>
+            </Box>}
+            {pendingUninstall && <Box className="launcher-uninstall" spacing={10}>
+                <Label id="launcher-uninstall-text" xalign={0} wrap hexpand>{`Uninstall ${pendingUninstall.app.get_display_name()}? The app and its launcher are removed for your user.`}</Label>
+                <Button id="launcher-uninstall-cancel" sensitive={!removing} onClicked={() => setPendingUninstall(null)}>Cancel</Button>
+                <Button id="launcher-uninstall-confirm" className="logout-confirm" sensitive={!removing} onClicked={() => {void uninstall();}}>{removing ? 'Uninstalling…' : 'Uninstall'}</Button>
+            </Box>}
             <Label className={message ? 'launcher-message' : 'launcher-hint'} xalign={0} wrap maxWidthChars={60}>
                 {message || `${customization.appView === 'grid' ? '← ↑ ↓ →' : '↑ ↓'}  Navigate     Enter  Open     Esc  Close`}
             </Label>

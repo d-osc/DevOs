@@ -40,7 +40,7 @@ fn snapshot(payload: str): json.Value {
         let item = json.at(packages, i)
         if strings.equal(json.string(json.get(item, "name")), "dev-os-package-manager") { version = json.string(json.get(item, "version")) }
     }
-    if !strings.equal(version, "0.6.2") { print("DevOsPM source must be version 0.6.2, got: " + version); return json.null_value() }
+    if !strings.equal(version, "0.6.4") { print("DevOsPM source must be version 0.6.4, got: " + version); return json.null_value() }
     let target = "/var/tmp/devos-pm-build"
     let args = Vec<str>("zigbuild", "--manifest-path", project + "/Cargo.toml", "--release", "--locked",
         "--target", "aarch64-unknown-linux-musl", "--target-dir", target)

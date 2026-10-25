@@ -40,6 +40,8 @@
     <keybind key="Super_R" onRelease="yes"><action name="Execute" command="dev-os-shell launcher" /></keybind>
     <keybind key="W-e"><action name="Execute" command="dev-os-shell files" /></keybind>
     <keybind key="W-l"><action name="Execute" command="dev-os-shell lock" /></keybind>
+    <keybind key="W-S-s"><action name="Execute" command="dev-os-shell screenshot" /></keybind>
+    <keybind key="Print"><action name="Execute" command="dev-os-shell screenshot" /></keybind>
     <keybind key="W-S-r"><action name="Execute" command="dev-os-shell reload" /></keybind>
     <keybind key="W-1"><action name="GoToDesktop" to="1" /></keybind>
     <keybind key="W-2"><action name="GoToDesktop" to="2" /></keybind>

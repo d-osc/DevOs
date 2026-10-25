@@ -7,6 +7,7 @@ export function fileContextEntry(widget: Gtk.ListBox | Gtk.FlowBox, x: number, y
 }
 export const fileMenuItems = [
     {key: 'contextOpen', title: 'Open', icon: 'document-open-symbolic'},
+    {key: 'contextInstall', title: 'Install', icon: 'system-software-install-symbolic'},
     {key: 'contextRename', title: 'Rename', icon: 'edit-rename-symbolic'},
     {key: 'contextCopyPath', title: 'Copy path', icon: 'edit-copy-symbolic'},
     {key: 'contextNewFolder', title: 'New folder', icon: 'folder-new-symbolic'},
@@ -34,7 +35,7 @@ export function createFileContextMenu(options: FileMenuOptions, actions: Partial
             content.add(new Gtk.Label({label: item.title, xalign: 0})); row.add(content);
         }
         row.name = `files-menu-${item.key}`;
-        row.sensitive = item.key === 'contextCopyPath' || item.key === 'contextHidden' || (!busy && (!['contextOpen', 'contextRename'].includes(item.key) || selected));
+        row.sensitive = item.key === 'contextCopyPath' || item.key === 'contextHidden' || (!busy && (!['contextOpen', 'contextInstall', 'contextRename'].includes(item.key) || selected));
         row.connect('activate', () => actions[item.key]?.()); menu.append(row);
     }
     const items = custom ? (options.customItems ?? []).filter(item => customMenuMatches(item, custom.target)) : [];

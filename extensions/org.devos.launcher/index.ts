@@ -6,6 +6,7 @@ import {mountLauncher} from './view.js';
 import {installedApps, searchApps} from '@dev-os/services/apps';
 import {launcherOptions, type LauncherOptions} from './options.js';
 import {OverlayMotion} from './overlay-motion.js';
+import {PackageManagerCli} from '../org.devos.appstore/package-backend.js';
 
 // Native adapter: React owns the contents and interaction state.
 export class Launcher {
@@ -31,6 +32,11 @@ export class Launcher {
             saveCustomization: patch => context.preferences.update('org.devos.launcher', true, {...context.preferences.get('org.devos.launcher').state.values, ...patch}),
             runCommand: command => context.runCommand(command),
             quit: () => context.quit(),
+            uninstallApp: async command => {
+                const packages = new PackageManagerCli(), item = (await packages.installed()).find(entry => entry.commands.includes(command));
+                if (!item) throw new Error('This app is not a package installed from a file.');
+                await packages.remove(item.id); return `${item.title} uninstalled`;
+            },
             showSettings: () => context.invoke('settings'),
             openEditor: () => context.invoke('editor'),
         });

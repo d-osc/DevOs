@@ -8,6 +8,7 @@ import {mountTabbedHeader, type TabDragHost} from '@dev-os/services/window-tabs'
 import {applyTerminalOptions} from './options.js';
 import {TerminalSettings} from './settings-view.js';
 import {TerminalCompletion} from './completion.js';
+import {connectRightClick, rightClickCopies} from './right-click.js';
 
 function TerminalSurface({terminal, completion}: {terminal: Vte.Terminal; completion?: TerminalCompletion}) {
     const host = useRef<Gtk.Box>(null);
@@ -94,6 +95,7 @@ export class TerminalWindow implements TabDragHost {
             const terminal = tab.terminal = new Vte.Terminal({hexpand: true, vexpand: true});
             const values = this.context.preferences.get('org.devos.terminal').state.values;
             applyTerminalOptions(terminal, values);
+            connectRightClick(terminal, () => ({copy: rightClickCopies(this.context.preferences.get('org.devos.terminal').state.values), format: tab.owner.clipboardFormat}));
             terminal.connect('child-exited', () => { if (!tab.disposed) tab.owner.closeTab(tab.id); });
             terminal.connect('notify::window-title', () => {
                 if (tab.disposed) return;

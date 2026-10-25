@@ -32,11 +32,13 @@ async function verify() {
         find<Gtk.Switch>('terminal-scrollOnOutput').set_active(true);
         find<Gtk.Switch>('terminal-scrollOnKeystroke').set_active(false);
         find<Gtk.Switch>('terminal-suggestions').set_active(false);
+        find<Gtk.Switch>('terminal-rightClickCopy').set_active(false);
         assert(terminal.get_font()!.to_string() === 'Monospace 11' && preferences.get('org.devos.terminal').state.values.scrollback === 10000, 'Preview does not change existing terminal settings');
         find<Gtk.Button>('terminal-settings-apply').emit('clicked');
         assert(terminal.get_font()!.to_string() === 'Monospace 14' && terminal.get_scrollback_lines() === 20000 && terminal.get_audible_bell(), 'Apply updates real VTE font, scrollback and bell');
         assert(!terminal.get_allow_hyperlink() && terminal.get_scroll_on_output() && !terminal.get_scroll_on_keystroke(), 'Real VTE behavior follows preferences');
         assert(preferences.get('org.devos.terminal').state.values.suggestions === false, 'Command suggestions can be disabled and persisted');
+        assert(preferences.get('org.devos.terminal').state.values.rightClickCopy === false, 'Right-click copy can be switched off and persisted');
         const background = terminal.get_color_background_for_draw();
         assert(Math.abs(background.red - 0xfa / 255) < .01 && Math.abs(background.blue - 0xfd / 255) < .01, 'Real VTE background follows the active (Light) theme');
         setActiveTheme('dark'); applyTerminalOptions(terminal, preferences.get('org.devos.terminal').state.values);

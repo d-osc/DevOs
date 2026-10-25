@@ -962,3 +962,17 @@ window#browser { background: @dv_s1; color: @dv_fg; }
 #browser-inspector .inspector-toolbar button:disabled { color: @dv_fg_dim; }
 #browser-inspector .inspector-toolbar .inspector-close { border-color: transparent; min-width: 16px; padding: 3px; }
 #browser-inspector .inspector-toolbar .inspector-close:hover { background: alpha(@dv_error, 0.14); color: @dv_error; }
+
+/* Screenshot (snipping tool) */
+window.snip-overlay, .snip-overlay { background: transparent; }
+.snip-toolbar { background: @dv_s3; border: 1px solid @dv_border; border-radius: 14px; padding: 6px; box-shadow: 0 8px 24px alpha(black, 0.45); }
+.snip-toolbar .snip-mode, .snip-toolbar .snip-close { min-height: 30px; padding: 2px 14px; border-radius: 9px; color: @dv_fg; background: transparent; border: 1px solid transparent; }
+.snip-toolbar .snip-mode:checked { background: @dv_accent; color: @dv_on_accent; }
+.snip-toolbar .snip-mode:hover:not(:checked), .snip-toolbar .snip-close:hover { background: @dv_s5; border-color: @dv_border_soft; }
+.snip-toast { background: @dv_s3; color: @dv_fg; border: 1px solid @dv_border; border-radius: 14px; box-shadow: 0 10px 28px alpha(black, 0.5); }
+.snip-toast-title { font-weight: bold; color: @dv_fg_strong; }
+.snip-toast-detail { color: @dv_fg_muted; font-size: 12px; }
+.snip-window { background: @dv_s0; color: @dv_fg; }
+.snip-window label { color: @dv_fg; }
+.snip-canvas { background: @dv_s1; border: 1px solid @dv_border; border-radius: 12px; }
+.snip-tools radiobutton, .snip-tools button { min-height: 28px; }

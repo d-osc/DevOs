@@ -117,3 +117,11 @@ GTK-capable Linux session. Tests cover draft isolation, Apply/Reset, native menu
 visibility/action dispatch/disabled states, custom CRUD, protected defaults,
 scope matching, command execution and literal path substitution, and file
 targeting in both layouts.
+
+## ไฟล์แพ็กเกจ (.dpk, .deb, .rpm, .tar.gz)
+
+ดับเบิลคลิกหรือกด Enter บนไฟล์ `.dpk`, `.deb`, `.rpm` จะเปิดหน้า **Install Package** ของ App Store
+(`dev-os-shell package-install <ไฟล์>`) แทน default application ส่วน `.tar.gz` จะเปิดหน้านี้เมื่อดูเหมือนแพ็กเกจเท่านั้น
+คือมี `package.json`/`dev-package.json` ที่รากของ archive หรือไฟล์ `.desktop`; archive ทั่วไปทำงานเหมือนเดิม
+คลิกขวาที่ไฟล์เหล่านี้จะมีเมนู **Install** (ไม่แสดงบนโฟลเดอร์หรือพื้นที่ว่าง ปิดได้ที่ Settings → Files → `contextInstall`)
+การติดตั้งเป็นของผู้ใช้คนเดียวผ่าน `devospm` ไม่รันสคริปต์ในแพ็กเกจ และไม่มีการตรวจลายเซ็น รายละเอียดและข้อจำกัดดู `docs/package-install.md`

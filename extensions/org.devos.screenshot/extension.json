@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.screenshot",
+  "name": "Screenshot",
+  "description": "Snipping tool: Win+Shift+S captures a rectangle, freeform shape or the whole screen to the clipboard and Pictures/Screenshots, with pen and highlighter.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.screenshot.js",
+  "order": 32,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

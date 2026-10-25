@@ -16,6 +16,7 @@
       "title": "Terminal",
       "fields": [
         {"key": "suggestions", "title": "Command suggestions", "type": "boolean", "default": true},
+        {"key": "rightClickCopy", "title": "Right-click copies selection", "type": "boolean", "default": true},
         {"key": "audibleBell", "title": "Audible bell", "type": "boolean", "default": false},
         {"key": "allowHyperlinks", "title": "Clickable links", "type": "boolean", "default": true},
         {"key": "scrollOnOutput", "title": "Follow new output", "type": "boolean", "default": false},

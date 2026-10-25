@@ -253,6 +253,7 @@ const builtinApps = [
     {group: 'dev-os-task-manager', title: 'Task Manager', icon: 'dev-os-task-manager-symbolic', id: 'dev-os-task-manager'},
     {group: 'dev-os-disk-manager', title: 'Disk Manager', icon: 'dev-os-disk-manager-symbolic', id: 'dev-os-disk-manager'},
     {group: 'dev-os-app-store', title: 'App Store', icon: 'dev-os-app-store-symbolic', id: 'dev-os-app-store'},
+    {group: 'dev-os-package-install', title: 'Install Package', icon: 'dev-os-app-store-symbolic', id: 'dev-os-package-install'},
     {group: 'dev-os-installer', title: 'Install Dev OS', icon: 'dev-os-installer-symbolic', id: 'dev-os-installer'},
     {group: 'dev-os-browser-inspector', title: 'Developer Tools', icon: 'dev-os-editor-symbolic', id: 'dev-os-browser-inspector'},
 ] as const;

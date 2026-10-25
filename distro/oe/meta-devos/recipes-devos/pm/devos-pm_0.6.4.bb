@@ -1,4 +1,4 @@
-SUMMARY = "DevOs package manager CLI 0.6.2 from the local DevOsPM project"
+SUMMARY = "DevOs package manager CLI 0.6.4 from the local DevOsPM project"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://devospm-LICENSE;md5=d0ae0cc8f17a92e392eae349dd18c071"
 FILESEXTRAPATHS:prepend := "${DEVOS_PAYLOAD_DIR}:"

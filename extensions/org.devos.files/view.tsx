@@ -14,8 +14,9 @@ import {QuickOpen} from './search-view.js';
 import type {QuickOpenHandle} from './search-view.js';
 import {fileMenuOptions, createFileContextMenu, fileContextEntry, type FileMenuOptions} from './context-menu.js';
 import {runCustomMenuItem} from './custom-menu.js';
+import {installAction} from './package-open.js';
 
-export interface BrowserOptions {gridView: boolean; showHidden: boolean; searchExcludedDirectories?: string; materialIcons?: boolean; contextMenu?: FileMenuOptions; openTerminal?(directory: string): void;}
+export interface BrowserOptions {gridView: boolean; showHidden: boolean; searchExcludedDirectories?: string; materialIcons?: boolean; contextMenu?: FileMenuOptions; openTerminal?(directory: string): void; installPackage?(path: string): void;}
 interface ViewHandle {focusAddress(): void; toggleHidden(): void; submitName(): void; setGrid(value: boolean): void; quickOpen(): void; searchKey(key: number, shift: boolean): boolean;}
 function entryIcon(entry: {path: string; directory: boolean; icon: Gio.Icon | null}) {
     const material = materialIcon(entry.path, entry.directory);
@@ -93,6 +94,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
             menu?.destroy();
             menu = createFileContextMenu(optionsMenu, {
                 contextOpen: () => {if (entry) void model.open(entry);},
+                contextInstall: installAction(entry, options.installPackage),
                 contextRename: () => {if (entry) {setName(entry.name); setEditing('rename');}},
                 contextCopyPath: () => {copyPath(entry?.path ?? current.directory); setNotice('Path copied');},
                 contextNewFolder: () => {setName(''); setEditing('create');},
@@ -108,7 +110,7 @@ function FilesView({model, search, options, handle, copyPath}: {model: FileBrows
             gesture.set_state(Gtk.EventSequenceState.CLAIMED);
         });
         return () => {gesture.disconnect(signal); gesture.run_dispose(); menu?.destroy();};
-    }, [grid, quick, entries, options.contextMenu, options.openTerminal, hidden]);
+    }, [grid, quick, entries, options.contextMenu, options.openTerminal, options.installPackage, hidden]);
     const breadcrumbs = [{label: 'File system', path: '/'}];
     let path = '';
     for (const part of state.directory.split('/').filter(Boolean)) { path += `/${part}`; breadcrumbs.push({label: part, path}); }

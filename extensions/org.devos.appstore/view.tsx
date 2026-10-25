@@ -1,8 +1,10 @@
 import {Gtk, Gio, React, Box, Label, Button, Image, SearchEntry, ScrolledWindow, useState, useEffect} from '@dev-os/core';
 import type {App, Action, StoreControls, StoreState} from './backend.js';
 import {launchDesktopApp} from '@dev-os/services/apps';
+import {PackagesList} from './package-view.js';
+import type {PackageControls} from './package-backend.js';
 const sections = ['Discover', 'Installed', 'Updates', 'Creative', 'Productivity', 'Internet', 'Media'];
-export function AppStoreView({controls}: {controls: StoreControls}) {
+export function AppStoreView({controls, packages, launchCommand}: {controls: StoreControls; packages?: PackageControls; launchCommand?(command: string): string | null}) {
     const [state, setState] = useState<StoreState | null>(null), [section, setSection] = useState('Discover');
     const [query, setQuery] = useState(''), [selected, setSelected] = useState<App | null>(null), [confirmation, setConfirmation] = useState<Action | null>(null);
     const [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState(''), [limit, setLimit] = useState(40);
@@ -20,7 +22,7 @@ export function AppStoreView({controls}: {controls: StoreControls}) {
     const recommended = state?.catalog ?? [];
     const catalog = new Map(recommended.map(app => [app.id, app]));
     let apps = section === 'Installed' ? (state?.installed ?? []).map(app => ({...catalog.get(app.id), ...app})) : section === 'Updates' ? (state?.updates ?? []).map(app => ({...catalog.get(app.id), ...app})) : recommended;
-    if (!['Discover', 'Installed', 'Updates'].includes(section)) apps = apps.filter(app => app.category === section);
+    if (!['Discover', 'Installed', 'Updates', 'Packages'].includes(section)) apps = apps.filter(app => app.category === section);
     const needle = query.trim().toLowerCase(); apps = apps.filter(app => `${app.name} ${app.id} ${app.description ?? ''}`.toLowerCase().includes(needle));
     const detailsInstalled = selected ? installed.get(selected.id) : undefined;
     const openPage = (app: App) => {try {if (app.website?.startsWith('https://')) Gio.AppInfo.launch_default_for_uri(app.website, null);} catch (reason) {setError(String(reason));}};
@@ -30,17 +32,17 @@ export function AppStoreView({controls}: {controls: StoreControls}) {
         <Box expand vexpand>
             <Box className="app-store-sidebar" orientation="vertical" spacing={6} widthRequest={170}>
                 <Label className="app-store-eyebrow" xalign={0}>YOUR STORE</Label>
-                {sections.map(name => <Button key={name} id={`app-store-tab-${name.toLowerCase()}`} className={section === name ? 'selected' : ''} sensitive={!busy} onClicked={() => {setSection(name); setSelected(null); setConfirmation(null); setLimit(40);}}>{name}</Button>)}
+                {(packages ? [...sections.slice(0, 3), 'Packages', ...sections.slice(3)] : sections).map(name => <Button key={name} id={`app-store-tab-${name.toLowerCase()}`} className={section === name ? 'selected' : ''} sensitive={!busy} onClicked={() => {setSection(name); setSelected(null); setConfirmation(null); setLimit(40);}}>{name}</Button>)}
                 <Box expand vexpand/><Label className="subtle" xalign={0} wrap>Native applications for DevOs</Label><Label className="app-store-source" xalign={0}>{state?.connected ? '● DevOs repository configured' : '○ Repository not published'}</Label>
             </Box>
             <ScrolledWindow expand hexpand vexpand hscrollbarPolicy={Gtk.PolicyType.NEVER}><Box className="app-store-content" orientation="vertical" spacing={18}>
                 {section === 'Discover' && !selected && <Box className="app-store-hero" orientation="vertical" spacing={12}><Label className="app-store-eyebrow" xalign={0}>MAKE IT YOURS</Label><Label className="app-store-hero-title" xalign={0} wrap>A little more possibility.</Label><Label xalign={0} wrap>Find the tools for your next idea. Native apps, built for DevOs.</Label><Box spacing={8}><Label className="app-store-chip">Creative tools</Label><Label className="app-store-chip">Everyday essentials</Label><Label className="app-store-chip">Native packages</Label></Box></Box>}
                 {state?.message && <Label className="app-store-notice" wrap xalign={0}>{state.message}</Label>}
-                {state && !state.connected && <Box className="app-store-card" orientation="vertical" spacing={10}><Label className="app-store-section" xalign={0}>Your DevOs repository</Label><Label wrap xalign={0}>The repository is being prepared. Apps will appear after native packages are published and the signed feed is configured by an administrator.</Label></Box>}
+                {state && !state.connected && section !== 'Packages' && <Box className="app-store-card" orientation="vertical" spacing={10}><Label className="app-store-section" xalign={0}>Your DevOs repository</Label><Label wrap xalign={0}>The repository is being prepared. Apps will appear after native packages are published and the signed feed is configured by an administrator.</Label></Box>}
                 {error && <Label id="app-store-error" className="error" wrap selectable xalign={0}>{error}</Label>}
                 {notice && <Label className="app-store-success" wrap xalign={0}>{notice}</Label>}
                 {busy && <Label id="app-store-busy" className="app-store-notice" wrap xalign={0}>{`${busy} Keep the store open until this operation finishes. Native package changes require administrator authorization.`}</Label>}
-                {selected ? <Box orientation="vertical" spacing={18}>
+                {section === 'Packages' && packages ? <PackagesList controls={packages} launch={launchCommand}/> : selected ? <Box orientation="vertical" spacing={18}>
                     <Button id="app-store-back" sensitive={!busy} onClicked={() => {setSelected(null); setConfirmation(null);}}>Back to apps</Button>
                     <Box className="app-store-card" spacing={18}><Image iconName={selected.icon || 'application-x-executable-symbolic'} pixelSize={56}/><Box orientation="vertical" spacing={8} expand><Label className="app-store-detail-title" xalign={0} wrap>{selected.name}</Label><Label className="subtle" xalign={0} selectable wrap>{selected.id}</Label><Label xalign={0}>{detailsInstalled ? `Installed · ${detailsInstalled.version || 'Version not provided'}` : 'Native DevOs package'}</Label></Box></Box>
                     <Label xalign={0} wrap>{selected.description || 'Native application distributed through the DevOs repository.'}</Label>

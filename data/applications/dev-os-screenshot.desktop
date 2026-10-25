@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot
+Comment=Capture part of the screen (Win+Shift+S)
+Exec=dev-os-shell screenshot-app
+Icon=dev-os-screenshot
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=screenshot;snip;snipping;capture;screen;
+Actions=Snip;
+
+[Desktop Action Snip]
+Name=New snip
+Exec=dev-os-shell screenshot

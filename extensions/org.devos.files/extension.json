@@ -59,6 +59,12 @@
           "default": true
         },
         {
+          "title": "Show Install in context menu",
+          "key": "contextInstall",
+          "type": "boolean",
+          "default": true
+        },
+        {
           "title": "Show Rename in context menu",
           "key": "contextRename",
           "type": "boolean",

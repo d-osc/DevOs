@@ -5,7 +5,7 @@ export function terminalOptions(values: SettingsValues = {}) {
     const scrollback = typeof values.scrollback === 'number' && Number.isFinite(values.scrollback) ? Math.max(100, Math.min(100000, Math.round(values.scrollback))) : 10000;
     return {font: typeof values.font === 'string' && values.font.trim() ? values.font.trim() : 'Monospace 11', scrollback,
         audibleBell: values.audibleBell === true, allowHyperlinks: values.allowHyperlinks !== false, suggestions: values.suggestions !== false,
-        scrollOnOutput: values.scrollOnOutput === true, scrollOnKeystroke: values.scrollOnKeystroke !== false};
+        scrollOnOutput: values.scrollOnOutput === true, scrollOnKeystroke: values.scrollOnKeystroke !== false, rightClickCopy: values.rightClickCopy !== false};
 }
 export function validTerminalFont(font: string) {
     if (!font.trim() || font.length > 160) return false;

@@ -24,6 +24,8 @@ export interface UIContext {
     useInstalledVersion?(root: string): Promise<void>;
     invoke(command: string, monitor?: Gdk.Monitor): void;
     openEditor?(path: string): boolean;
+    /** Opens the Install Package window for a .dpk/.deb/.rpm/.tar.gz file (false when the App Store extension is disabled). */
+    openPackage?(path: string): boolean;
     registerCommand(command: string, handler: UICommand): Cleanup;
     onMessage(handler: (message: string) => void): Cleanup;
     onMonitors(handler: () => void): Cleanup;

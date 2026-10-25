@@ -7,7 +7,7 @@ SRC_URI = "file://devos-runtime.tar.gz"
 S = "${UNPACKDIR}/devos-runtime"
 DEPENDS = "wayland wayland-native"
 RDEPENDS:${PN} = "gstreamer1.0 gstreamer1.0-plugins-base-videoconvertscale gstreamer1.0-plugins-base-audioconvert gstreamer1.0-plugins-base-audioresample gstreamer1.0-plugins-base-playback gstreamer1.0-plugins-good-gtk gstreamer1.0-plugins-good-video4linux2 gstreamer1.0-plugins-good-pulseaudio gstreamer1.0-plugins-good-level gstreamer1.0-plugins-good-jpeg gstreamer1.0-plugins-good-multifile gstreamer1.0-plugins-good-wavenc devlang gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc wlr-randr pulseaudio-client-tools cups dbus util-linux-setsid coreutils networkmanager-nmcli networkmanager-openvpn util-linux-rfkill glib-networking gsettings-desktop-schemas dconf bash ca-certificates adwaita-icon-theme adwaita-icon-theme-cursors librsvg-gtk util-linux-sfdisk util-linux-blkid util-linux-lsblk util-linux-findmnt util-linux-findfs util-linux-blockdev util-linux-wipefs dosfstools e2fsprogs e2fsprogs-mke2fs efibootmgr tar shadow"
-inherit pkgconfig
+inherit pkgconfig mime
 do_configure[noexec] = "1"
 do_compile() {
     wayland-scanner client-header ${S}/native/protocols/wlr-foreign-toplevel-management-unstable-v1.xml ${B}/foreign-toplevel.h
@@ -56,9 +56,12 @@ do_install() {
     install -d ${D}${datadir}/icons/default
     echo "[Icon Theme]" > ${D}${datadir}/icons/default/index.theme
     echo "Inherits=Adwaita" >> ${D}${datadir}/icons/default/index.theme
+    # .dpk needs its own shared-mime-info type; `inherit mime` runs update-mime-database on the target.
+    install -d ${D}${datadir}/mime/packages
+    install -m0644 ${S}/data/mime/packages/org.devos.package.xml ${D}${datadir}/mime/packages/
     install -d ${D}${sysconfdir}/devos
     install -m0644 ${S}/config/app-store.json ${D}${sysconfdir}/devos/app-store.json
     install -m0644 ${S}/data/polkit-1/actions/org.devos.accounts.policy ${D}${datadir}/polkit-1/actions/
 }
-FILES:${PN} += "${datadir}/icons/default ${prefix}/lib/*.dev ${datadir}/dev-os ${datadir}/polkit-1/actions ${localstatedir}/lib/devos ${sysconfdir}/devos"
+FILES:${PN} += "${datadir}/mime/packages ${datadir}/icons/default ${prefix}/lib/*.dev ${datadir}/dev-os ${datadir}/polkit-1/actions ${localstatedir}/lib/devos ${sysconfdir}/devos"
 CONFFILES:${PN} += "${sysconfdir}/devos/app-store.json"

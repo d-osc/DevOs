@@ -1,0 +1,6 @@
+[Default Applications]
+application/x-devos-package=dev-os-package-install.desktop
+application/vnd.debian.binary-package=dev-os-package-install.desktop
+application/x-deb=dev-os-package-install.desktop
+application/x-rpm=dev-os-package-install.desktop
+application/x-redhat-package-manager=dev-os-package-install.desktop

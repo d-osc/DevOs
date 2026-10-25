@@ -158,6 +158,16 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         case 'vpn': case 'hotspot': case 'airplane': case 'proxy': case 'advanced': case 'mouse': case 'keyboard': case 'bluetooth-add': case 'printers': case 'touchpad': case 'system': case 'display': case 'sound': case 'power': case 'storage': case 'about': this.invoke(`settings.${command}`); break;
         case 'reload': return this.reloadConfig() ? 0 : 1;
         case 'terminal': case 'files': case 'lock': return this.runCommand(command) ? 0 : 1;
+        case 'package-install': {
+            const files = args.slice(1);
+            if (!files.length) { this.invoke('package-install'); break; }
+            for (const file of files) {
+                const local = file.startsWith('file:') ? Gio.File.new_for_uri(file).get_path() : file;
+                if (!local) throw new Error('Package install supports local files.');
+                this.invokeWithPath('package-install', GLib.canonicalize_filename(local, cwd));
+            }
+            break;
+        }
         case 'editor': {
             const open = this.commands.get('editor');
             if (!open) throw new Error('Editor extension is unavailable');
@@ -172,6 +182,12 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         }
         }
         return 0;
+    }
+
+    invokeWithPath(command: string, path: string): void {
+        const handler = this.commands.get(command);
+        if (!handler) throw new Error(`No extension handles command ${command}`);
+        handler(undefined, path);
     }
 
     invoke(command: string, monitor?: Gdk.Monitor): void {
@@ -202,6 +218,10 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
                 const handler = this.commands.get('editor');
                 if (!handler) return false;
                 handler(undefined, path); return true;
+            },
+            openPackage: path => {
+                if (!this.commands.has('package-install')) return false;
+                this.invokeWithPath('package-install', path); return true;
             },
             registerCommand: (command, handler) => {
                 if (this.commands.has(command)) throw new Error(`Duplicate UI command ${command}`);

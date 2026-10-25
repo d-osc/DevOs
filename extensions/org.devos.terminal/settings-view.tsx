@@ -12,6 +12,7 @@ export function TerminalSettings({preferences}: {preferences: SettingsHost}) {
     const toggles = [
         {key: 'suggestions', title: 'Command suggestions', detail: 'Suggest installed commands, history, arguments and paths while typing in Bash.', icon: 'system-search-symbolic'},
         {key: 'allowHyperlinks', title: 'Clickable terminal links', detail: 'Allow applications to create clickable hyperlinks.', icon: 'insert-link-symbolic'},
+        {key: 'rightClickCopy', title: 'Right-click copies', detail: 'Copy selected text on right-click, or paste when nothing is selected. Off shows a Copy/Paste menu. Hold Shift to override programs that use the mouse.', icon: 'edit-copy-symbolic'},
         {key: 'audibleBell', title: 'Audible bell', detail: 'Play a sound when a terminal application rings the bell.', icon: 'audio-volume-high-symbolic'},
         {key: 'scrollOnOutput', title: 'Follow new output', detail: 'Jump to the bottom when new output arrives.', icon: 'go-bottom-symbolic'},
         {key: 'scrollOnKeystroke', title: 'Follow typing', detail: 'Return to the prompt when you type.', icon: 'input-keyboard-symbolic'},

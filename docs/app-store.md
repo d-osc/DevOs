@@ -41,3 +41,7 @@ The public repository, signing identity and application packages remain to be cr
 ## Validation
 
 `npm run build`; `python3 tests/app-store.test.py`; `GDK_BACKEND=wayland gjs -m dist/app-store-test.js`. Tests cover catalog allowlisting, protected packages, administrator requirements, source/signature requirements, native-versus-WSL separation, UI confirmation and cancellation. Package mutations use mocks until a real native test image and signed repository exist.
+
+## Package files and the Packages tab
+
+The App Store window also installs **local package files** (`.dpk`, `.deb`, `.rpm`, `.tar.gz`) for the current user through `devospm`, outside the signed native catalog above. Double-click such a file in Files (or right-click > Install, or drop it on the App Store window) to open the **Install Package** window; App Store > **Packages** lists what was installed this way with Remove and Roll back. These packages are unsigned user-level installs and never use polkit or opkg. Formats, trust statement and limits: `docs/package-install.md`.
