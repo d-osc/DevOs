@@ -88,3 +88,54 @@ Physical Wi-Fi hotspot/radio operation and VPN peer handshakes remain untested.
 The private D-Bus fixture also checks the 2.4 GHz band, the failure text built from
 the device state reason, and the unsupported-hardware refusal; the GTK test checks
 the suggested password and the unsupported-adapter page.
+
+
+## Connectivity: TaskFirst and WiFi SmartConnect
+
+Settings > Network & Internet > Connectivity has two cards modelled on MyASUS (the fifth MyASUS TaskFirst option, "Screen Extend"
+for GlideX, does not exist in Dev OS and is not offered).
+
+**TaskFirst** (Off by default, Productivity and Communication, Multimedia streaming, Games). MyASUS has no hardware behind this
+and neither does Dev OS: it is local egress prioritization, and the card says so. For every physical interface that is up the
+root helper installs a two-band `prio` qdisc (handle `7a10:`) with `fq_codel` in each band and `flower` filters that send the
+chosen kind of traffic into band 1: well-known TCP/UDP destination ports of the profile (web and cloud 80/443, mail, chat and
+VoIP/video-call ports; HLS, QUIC, RTMP and RTSP; Steam, Xbox/PlayStation, Unreal, Blizzard and Minecraft ports) and DSCP
+markings (EF; AF41/AF31/AF21; EF/CS5/AF41) for IPv4 and IPv6. Everything else is best effort in band 2. Limits, stated plainly:
+it affects only what this computer sends, only while the uplink is queueing, it cannot add bandwidth or speed up downloads, and
+port classification is a heuristic (apps on 443 look alike; traffic inside a VPN tunnel is not classified, because only physical
+interfaces are shaped and tunnels hide the ports). No nftables or per-process classification is used.
+
+Kernel and image: `devos-desktop.cfg` now enables `CONFIG_NET_SCH_PRIO=m`, `CONFIG_NET_SCH_FQ_CODEL=m` and
+`CONFIG_NET_CLS_FLOWER=m` (the base config had priority queues, fq_codel and nftables off; HTB, cake and netfilter are not
+needed), `devos-image.bb` installs `iproute2-tc` and `devos-session` depends on it. If `tc` or one of those modules is missing the
+card is shown disabled with the reason and nothing is changed.
+
+**WiFi SmartConnect** (Off by default). `devos-smartconnect.service` runs `devos-connectivity daemon` while the switch is on.
+Every 20 s it reads the signal of the connected network without scanning. At 60 % (about -70 dBm) or better it does nothing. Below
+that it rescans (at most once a minute), looks for other access points of the same network name, and switches only when one is
+at least 20 percent (10 dBm) stronger on 3 scans in a row, no switch happened in the last 5 minutes and the interface is not
+moving about 200 kB/s or more (a transfer or call). The switch is `nmcli device wifi connect <ssid> bssid <bssid> ifname <dev>`,
+which activates the saved network on that access point without storing the BSSID. A failed switch keeps the connection and waits
+the full interval. It polls through `nmcli` instead of subscribing to NetworkManager D-Bus signals. The last decision is shown
+under the switch.
+
+| Piece | Role |
+| --- | --- |
+| `native/devos-connectivity` -> `/usr/libexec/devos-connectivity` | POSIX sh, root. `get`, `apply`, `taskfirst off\|productivity\|streaming\|games`, `smartconnect on\|off`, `daemon`; JSON output. |
+| `bin/dev-os-connectivity` | User front end for Settings; runs the root part through `pkexec`. |
+| `data/polkit-1/actions/org.devos.connectivity.policy` | `org.devos.connectivity.change` (active local sessions, no password), same pattern as Fan Profile. |
+| `/var/lib/devos/connectivity.conf` | State: `taskfirst=<profile>`, `smartconnect=0\|1`. Values are validated; unknown ones are treated as off. |
+| `devos-connectivity.service`, `90-devos-connectivity` | `apply` at boot and from the NetworkManager dispatcher when an interface or lease changes. |
+| `devos-smartconnect.service` | The SmartConnect daemon; started by the switch and at boot (it exits when disabled). |
+| `extensions/org.devos.settings/connectivity*.ts(x)` | The page (`network-category-connectivity`). |
+
+Tests: `python3 tests/connectivity.test.py` (fake `tc` and `nmcli`, fixture scans and a fake clock: unsupported kernel, class
+installation per profile, rollback, off/apply, privileges and invalid values, SmartConnect hysteresis, sustained scans, busy
+link, switch interval, failed switch, disconnected) and `gjs -m dist/connectivity-ui-test.js` (build first). Both pass in WSL.
+
+**Not verified on real hardware:** that the UX3407NA kernel loads `sch_prio`, `sch_fq_codel` and `cls_flower` and the QCC2072
+driver's qdisc accepts the `prio` root (mac80211 drivers may bypass or replace the qdisc, in which case the filters have little
+effect); that flower matches IPv6 traffic classes on this kernel; that the NetworkManager dispatcher runs in the image; the
+pkexec path with a real polkit agent; real roaming between two access points of one network (the `nmcli` BSSID connect, signal
+percentages and roam timing on the QCC2072); and the recipes (`distro/oe/build.sh --parse` could not run here: its prepare step
+needs network access from WSL and timed out). The Live USB must be rebuilt to include this.

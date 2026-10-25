@@ -33,8 +33,6 @@ if ($Mode -eq 'updated') {
 } elseif ($Mode -eq 'bootstrap') {
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-wsl.sh"
 } elseif ($Mode -eq 'run') {
-    & wsl -d Ubuntu -u root -- sh "$linuxRoot/tools/setup/bootstrap-desktop-apps.sh"
-    if ($LASTEXITCODE -ne 0) { throw 'DevOs desktop dependencies could not be prepared. See the bootstrap error above.' }
     # Missing sources are normal on a fresh checkout. Check inside Linux so
     # expected git diagnostics cannot become terminating PowerShell 5 errors.
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/check-wsl-compositor.sh"

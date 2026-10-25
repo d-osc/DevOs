@@ -1,0 +1,120 @@
+#!/usr/bin/env d
+# Linux-side bridge for the DevOs QEMU MCP server (server.ts).
+#
+#   d qmp.dev -- qmp SOCKET     stdin: JSON list of steps, stdout: JSON list of replies
+#   d qmp.dev -- serial SOCKET  stdin: raw bytes written to the guest serial socket
+#
+# A QMP step is {"execute": name, "arguments": {...}} or {"sleep": seconds}.
+# Only private Unix sockets created by the server are used; nothing is evaluated.
+use "std/args"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/encoding"
+use "../../../lib/unix.dev" as unix
+use "../../lib/tool.dev" as tool
+
+extern fn read(fd: i32, data: *u8, size: usize): isize
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+
+fn stdinBytes(limit: i64): Vec<u8> {
+    let bytes = Vec<u8>()
+    unsafe {
+        let buffer = malloc(65536)
+        while (bytes.len() as i64) < limit {
+            let count = read(0, buffer, 65536)
+            if count <= 0 { break }
+            for i in 0..(count as i64) { bytes.push(buffer[i]) }
+        }
+        free(buffer as *void)
+    }
+    return bytes
+}
+
+fn deadline(): u64 { return time.now_ms() + 15000 }
+
+# One JSON line from the socket (QMP frames are newline-terminated).
+fn readLine(fd: i32): json.Value {
+    let bytes = Vec<u8>()
+    let limit = deadline()
+    while true {
+        let byte = unix.receive(fd, 1, limit)[0]
+        if byte == 10 { return json.parse(encoding.decode(bytes, "utf8")) }
+        bytes.push(byte)
+        tool.require(bytes.len() < 4194304, "QMP response exceeds 4 MiB.")
+    }
+    return json.object()
+}
+
+# Sends one command and waits for its reply (events in between are skipped).
+fn call(fd: i32, step: json.Value): json.Value {
+    unix.write(fd, encoding.encode(json.stringify(step) + "\n", "utf8"), deadline())
+    while true {
+        let message = readLine(fd)
+        if json.has(message, "return") || json.has(message, "error") { return message }
+    }
+    return json.object()
+}
+
+# The reply, or an error when the socket closed before one arrived.
+fn tryCall(fd: i32, request: json.Value): result.Result<json.Value> {
+    return result.attempt(fn(): json.Value { return call(fd, request) })
+}
+
+fn qmp(path: str) {
+    let raw = encoding.decode(stdinBytes(8388608), "utf8")
+    tool.require(json.valid(raw), "steps must be a list of at most 2000 items")
+    let steps = json.parse(raw)
+    tool.require(strings.equal(json.kind(steps), "array") && json.len(steps) <= 2000, "steps must be a list of at most 2000 items")
+    let fd: i32 = unix.open(path)
+    let replies = json.array()
+    readLine(fd)   # greeting
+    call(fd, json.set(json.object(), "execute", "qmp_capabilities"))
+    let closed = false
+    for i in 0..(json.len(steps) as i64) {
+        if closed { break }
+        let step = json.at(steps, i)
+        if json.has(step, "sleep") {
+            let seconds = json.float(json.get(step, "sleep"))
+            time.sleep_ms(((seconds > 5.0 ? 5.0 : seconds) * 1000.0) as i64)
+            continue
+        }
+        let request = json.set(json.object(), "execute", json.get(step, "execute"))
+        if json.has(step, "arguments") { request = json.set(request, "arguments", json.get(step, "arguments")) }
+        let outcome = tryCall(fd, request)
+        if result.isErr(outcome) {
+            # quit / system_powerdown may close the socket before replying.
+            replies = json.push(replies, json.set(json.set(json.object(), "return", json.object()), "closed", true))
+            closed = true
+        } else { replies = json.push(replies, result.unwrap(outcome)) }
+    }
+    unix.shutdown(fd)
+    print(json.stringify(replies))
+}
+
+fn serial(path: str) {
+    let data = stdinBytes(1048576)
+    let fd: i32 = unix.open(path)
+    unix.write(fd, data, deadline())
+    unix.shutdown(fd)
+    print(json.stringify(json.set(json.object(), "sent", data.len())))
+}
+
+fn main(): i32 {
+    let outcome = result.run(fn() {
+        tool.require(args.len() == 2 && (strings.equal(args.get(0), "qmp") || strings.equal(args.get(0), "serial")), "usage: qmp.dev qmp|serial SOCKET")
+        if strings.equal(args.get(0), "qmp") { qmp(args.get(1)) } else { serial(args.get(1)) }
+    })
+    if result.isErr(outcome) {
+        let message = result.message(outcome)
+        let marker = "std/result.raise: "
+        let at = strings.lastIndexOf(message, marker)
+        if at >= 0 { message = strings.substring(message, at + strings.charLength(marker), strings.charLength(message)) }
+        print(json.stringify(json.set(json.object(), "error", message)))
+        return 1
+    }
+    return 0
+}
+return tool.main(main)

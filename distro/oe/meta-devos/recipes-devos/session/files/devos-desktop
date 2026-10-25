@@ -5,6 +5,8 @@ logdir=${XDG_STATE_HOME:-$HOME/.local/state}/devos
 mkdir -p "$logdir"
 # Clear text left on the login VT before Wayland takes over.
 if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
+# Boot animation milestone (fire-and-forget, a no-op without the splash): the session is starting.
+command -v devos-splash >/dev/null 2>&1 && devos-splash --step session || true
 exec >>"$logdir/devos-desktop.log" 2>&1
 # The QEMU TCG runner exposes a 2D virtio GPU without accelerated EGL.
 case " $(cat /proc/cmdline) " in
@@ -25,8 +27,17 @@ fi
 if ! systemctl --user start --no-block pipewire.socket pipewire-pulse.socket wireplumber.service; then
     printf '%s\n' 'DevOs: user audio services could not start; check the user journal.' >&2
 fi
+# Re-apply the saved microphone noise canceling mode (no-op in Authentic Recording).
+systemctl --user start --no-block devos-microphone.service devos-speaker.service devos-touchpad-gestures.service devos-keyboard-backlight.service || true
 polkit-gnome-authentication-agent-1 &
 agent=$!
 export DEV_OS_POLKIT_AGENT_STARTED=1
 trap 'kill "$agent" 2>/dev/null || true' EXIT
-/usr/bin/dev-os-session
+# Settings > Updates installs newer Dev OS releases under ~/.local/share/dev-os-updates and selects one in history.json.
+# Start the selected release when its dependency check passes; otherwise use the image's own session. No exec: the trap above must still run.
+updates=${XDG_DATA_HOME:-$HOME/.local/share}/dev-os-updates
+if [ -f "$updates/history.json" ] && /usr/bin/dev-os-updated-session --check >/dev/null 2>&1; then
+    /usr/bin/dev-os-updated-session
+else
+    /usr/bin/dev-os-session
+fi

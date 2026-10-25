@@ -50,6 +50,18 @@ test('no literal colors outside the token definitions', () => {
         assert(colors.length === 0, `${file} still has literal colors: ${colors.slice(0, 5).join(', ')}`);
     }
 });
+test('border tokens are faint: 8-14% of the foreground in dark, 10-16% in light, and used on the main surfaces', () => {
+    const style = sources['extensions/org.devos.theme/style.css']!;
+    for (const family of themeFamilyNames) for (const name of names) {
+        const tokens = themeTokens(name, family), [lo, hi] = name === 'dark' ? [0.08, 0.14] : [0.10, 0.16];
+        for (const token of ['border', 'border_soft']) {
+            const alpha = Number(new RegExp(`@define-color dv_${token} alpha\\(@dv_fg, ([0-9.]+)\\);`).exec(tokens)?.[1]);
+            assert(alpha >= lo - 0.03 && alpha <= hi, `${family}/${name}: dv_${token} alpha ${alpha} is not faint`);
+        }
+    }
+    const rules = style.split('\n').filter(line => /@dv_border(_soft)?\b/.test(line)).join('\n');
+    for (const selector of ['window#settings', 'window#files', 'window#terminal', 'menu,', 'popover.background', '#settings .settings-card', '#settings entry', '#launcher row']) assert(rules.includes(selector), `style.css draws a faint border on ${selector}`);
+});
 test('both complete stylesheets compile in GTK', () => {
     for (const family of themeFamilyNames) for (const name of names) {
         const style = themeTokens(name, family) + sources['extensions/org.devos.theme/style.css']!;

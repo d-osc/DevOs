@@ -1,0 +1,47 @@
+# Test driver for lib/touchpad-gestures.dev: DRIVER_SCRIPT = {"extent": [minx, maxx, miny, maxy], "ops": [...]} with the ops
+#   {"op": "frames", "frames": [[[type, code, value], ...], ...]}  every frame is followed by SYN_REPORT
+#   {"op": "gate", "value": bool}   {"op": "advance", "value": seconds}
+# Prints every action the recognizer emitted as [[action, steps], ...].
+use "std/json"
+use "std/strings"
+use "../../lib/touchpad-gestures.dev" as pad
+use "../../lib/hw.dev" as hw
+
+fn main(): i32 {
+    let script = json.parse(hw.env("DRIVER_SCRIPT"))
+    let extent = hw.jget(script, "extent")
+    let e = pad.newEngine(pad.Extent(json.int(json.at(extent, 0)), json.int(json.at(extent, 1)), json.int(json.at(extent, 2)), json.int(json.at(extent, 3))))
+    let gate = true
+    let now = 100.0
+    let ops = hw.jget(script, "ops")
+    for i in 0..(json.len(ops) as i64) {
+        let op = json.at(ops, i)
+        let kind = hw.jstr(op, "op", "")
+        if strings.equal(kind, "gate") { gate = hw.jbool(op, "value", true) }
+        else if strings.equal(kind, "advance") { now = now + hw.jnum(op, "value", 0.0) }
+        else if strings.equal(kind, "frames") {
+            let frames = hw.jget(op, "frames")
+            for f in 0..(json.len(frames) as i64) {
+                let frame = json.at(frames, f)
+                for ev in 0..(json.len(frame) as i64 + 1) {
+                    let t = 0
+                    let c = 0
+                    let v = 0
+                    if ev < (json.len(frame) as i64) {
+                        let item = json.at(frame, ev)
+                        t = json.int(json.at(item, 0))
+                        c = json.int(json.at(item, 1))
+                        v = json.int(json.at(item, 2))
+                    }
+                    e.now = now
+                    e = pad.feed(e, t, c, v, gate)
+                }
+            }
+        }
+    }
+    let out = json.array()
+    for i in 0..(e.emitted.len() as i64) { out = json.push(out, json.push(json.push(json.array(), e.emitted[i].action), e.emitted[i].steps)) }
+    print(json.stringify(out))
+    return 0
+}
+return main()

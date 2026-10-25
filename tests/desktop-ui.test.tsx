@@ -201,7 +201,7 @@ asyncTest('Wayland taskbar tracks minimize, restores exact windows and updates R
         runCommand: () => { launched++; return true; }}, monitor);
     const first = makeWindow(), second = makeWindow();
     let firstClosed = false, secondClosed = false;
-    first.set_title('Dev OS Terminal · taskbar "first" ภาษาไทย'); second.set_title('Dev OS Terminal · taskbar second');
+    first.set_title('Terminal · taskbar "first" ภาษาไทย'); second.set_title('Terminal · taskbar second');
     const terminalButton = () => widgets(panelWindow).find(widget => widget.name === 'panel-terminal') as Gtk.Button;
     const waitFor = async (condition: () => boolean) => {
         for (let count = 0; count < 100; count++) {
@@ -482,6 +482,10 @@ test('extension settings pages render and fall back after contribution cleanup',
     remove(); settings.show();
     (widgets(settingsWindow).find(widget => widget.name === 'settings-nav-org.devos.updates') as Gtk.Button).emit('clicked');
     assert(widgets(settingsWindow).some(widget => widget.name === 'settings-field-repository'), 'Unregistered page falls back to JSON preferences');
+    settingsWindow.hide();
+    assert(!widgets(settingsWindow).some(widget => widget.name === 'settings-nav-org.devos.updates'), 'Hiding Settings unmounts its pages, so their pollers stop');
+    settings.show();
+    assert(widgets(settingsWindow).some(widget => widget.name === 'settings-nav-org.devos.updates'), 'Showing Settings again mounts a fresh view');
     settings.destroy(); settingsWindow.destroy(); extensions.dispose(); removeFixture(Gio.File.new_for_path(temporary));
 });
 test('icon theme changes live, falls back and restores settings on cleanup', () => {

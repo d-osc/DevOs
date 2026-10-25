@@ -9,7 +9,6 @@ use "std/args"
 use "std/crypto"
 use "std/encoding"
 use "std/datetime"
-use "../lib/posix.dev" as posix
 
 extern fn pidfd_open(pid: i32, flags: u32): i32
 extern fn process_madvise(fd: i32, vectors: *IOVec, count: usize, advice: i32, flags: u32): isize
@@ -262,6 +261,23 @@ fn cycle(warmed: json.Value): json.Value {
     return warmed
 }
 
+fn hasApps(): bool {
+    let base = "/sys/fs/cgroup/user.slice"
+    if !fs.existsSync(base) { return false }
+    let users = fs.readdirSync(base)
+    for u in 0..(users.len() as i64) {
+        if !strings.startsWith(users[u], "user-") { continue }
+        let uidText = strings.substring(users[u], 5, strings.charLength(users[u]) - 6)
+        let appSlice = base + "/" + users[u] + "/user@" + uidText + ".service/app.slice"
+        if !fs.existsSync(appSlice) { continue }
+        let entries = fs.readdirSync(appSlice)
+        for e in 0..(entries.len() as i64) {
+            if isUnitName(entries[e]) { return true }
+        }
+    }
+    return false
+}
+
 fn orderGroups(groups: Vec<str>, ranks: json.Value): Vec<str> {
     # Stable selection sort by rank descending.
     let items = Vec<str>()
@@ -284,38 +300,17 @@ fn orderGroups(groups: Vec<str>, ranks: json.Value): Vec<str> {
     return items
 }
 
-fn setupSwap(): i32 {
-    let swaps = fs.readFileSync("/proc/swaps", "utf8")
-    let lines = strings.split(swaps, "\n")
-    for i in 1..(lines.len() as i64) {
-        if strings.contains(lines[i], "/dev/zram") {
-            print("DevOs: existing zram swap preserved")
-            return 0
-        }
-    }
-    if posix.shell("modprobe zram") != 0 { return 1 }
-    let size = minOf(json.int(optGet(memoryInfo(), "MemTotal")) / 2, 8 * 1024 * 1024 * 1024)
-    let device = strings.trim(capture("zramctl --find --size ${size} --algorithm lz4"))
-    if !strings.startsWith(device, "/dev/zram") { return 1 }
-    if posix.shell("mkswap " + device) != 0 { return 1 }
-    if posix.shell("swapon --priority 100 " + device) != 0 { return 1 }
-    fs.writeFileSync("/proc/sys/vm/swappiness", "80")
-    fs.writeFileSync("/proc/sys/vm/page-cluster", "0")
-    print("DevOs: compressed swap enabled on ${device}, ${size} bytes")
-    return 0
-}
-
 fn main(): i32 {
-    if args.len() == 1 && strings.equal(args.get(0), "--setup-swap") { return setupSwap() }
     if args.len() == 1 && strings.equal(args.get(0), "--daemon") {
         let warmed = json.object()
         while true {
             warmed = cycle(warmed)
-            time.sleep_ms(5000)
+            # Nothing to rank without managed applications: look again rarely instead of every five seconds.
+            time.sleep_ms(hasApps() ? 5000 : 30000)
         }
         return 0
     }
-    print("Usage: dev-os-memory --setup-swap | --daemon")
+    print("Usage: dev-os-memory --daemon (swap is set up by devos-swap)")
     return 1
 }
 return main()

@@ -2,7 +2,8 @@
 
 The Live USB can install Dev OS onto the computer's internal disk (ARM64 UEFI). Open
 **Install Dev OS** in the launcher, or run `dev-os-shell installer`. It works only from the Live
-session, because it erases a whole disk.
+session, because it erases a whole disk. The installed system does not carry the installer: the helper removes
+`dev-os-install`, its launcher entry, its extension and its bundle from the new disk after copying.
 
 ## What it does
 
@@ -43,7 +44,7 @@ then `DONE` or `ERROR message`.
 
 ## How the installed system boots
 
-`distro/usb/prepare.py` builds two unified kernel images from the same kernel, initramfs and board
+`distro/usb/prepare.dev` builds two unified kernel images from the same kernel, initramfs and board
 device tree. `EFI/BOOT/BOOTAA64.EFI` is the Live system. `EFI/DEVOS/INSTALLED.EFI` has the command
 line `devos.root=LABEL=devos-root`; the initramfs `init` then mounts that root read-write and
 starts systemd directly, without the Live overlay, autologin or diagnostics. The hardware profile

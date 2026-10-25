@@ -1,0 +1,432 @@
+# Tests bin/dev-os-keyboard: the privileged Fn key helper (native/devos-keyboard), preferences, hardware detection, the ambient light
+# state machine (through tests/fixtures/keyboard-driver.dev) and idle sleep against a fake Wayland compositor.
+use "std/json"
+use "std/strings"
+use "std/test"
+use "../tests/lib/harness.dev" as harness
+use "../lib/hw.dev" as hw
+
+fn none(): Vec<str> { return Vec<str>() }
+fn text(value: json.Value, key: str): str { return hw.jstr(value, key, "") }
+fn flag(value: json.Value, key: str): bool { return hw.jbool(value, key, false) }
+
+# ---- fixture: a fake /sys tree and the environment hooks -----------------------------------------------------------------
+fn put(base: str, relative: str, value: str): str {
+    let file = base + "/sys/" + relative
+    harness.write(file, value + "\n")
+    return file
+}
+fn led(base: str, level: str, maximum: str): str {
+    put(base, "class/leds/asus::kbd_backlight/max_brightness", maximum)
+    return put(base, "class/leds/asus::kbd_backlight/brightness", level)
+}
+fn fnLock(base: str, value: str): str { return put(base, "devices/platform/asus-nb-wmi/fn_lock", value) }
+fn supply(base: str, name: str, kind: str, online: str) {
+    put(base, "class/power_supply/" + name + "/type", kind)
+    if strings.charLength(online) > 0 { put(base, "class/power_supply/" + name + "/online", online) }
+}
+fn envWith(base: str, allowUser: bool, extra: Vec<str>): Vec<str> {
+    # env(1) takes its options (-u) before the NAME=VALUE entries.
+    let pairs = Vec<str>("-u", "WAYLAND_DISPLAY", "DEVOS_KBD_SYS=" + base, "DEVOS_KBD_PREFS=" + base + "/config/keyboard.json", "DEVOS_KBD_STATE=" + base + "/var/keyboard.conf",
+        "DEVOS_KBD_CORE=" + harness.root() + "/native/devos-keyboard", "DEVOS_KBD_DIRECT=1", "XDG_RUNTIME_DIR=" + base + "/run")
+    if allowUser { pairs.push("DEVOS_KBD_ALLOW_USER=1") }
+    return hw.concat(pairs, extra)
+}
+fn env(base: str, extra: Vec<str>): Vec<str> { return envWith(base, true, extra) }
+fn tool(base: str, args: Vec<str>, extra: Vec<str>, expected: i64): json.Value {
+    let done = harness.sh(hw.concat(Vec<str>("sh", harness.root() + "/bin/dev-os-keyboard"), args), env(base, extra))
+    harness.equalInt(done.code, expected, "dev-os-keyboard " + strings.join(args, " ") + " -> " + done.out + done.err)
+    return json.valid(done.out) ? json.parse(done.out) : json.null_value()
+}
+struct Core { code: i64, value: json.Value }
+fn core(base: str, args: Vec<str>, user: bool): Core {
+    let pairs = envWith(base, user, none())
+    let done = harness.sh(hw.concat(Vec<str>("sh", harness.root() + "/native/devos-keyboard"), args), pairs)
+    return Core(done.code, json.valid(done.out) ? json.parse(done.out) : json.null_value())
+}
+fn a(x: str): Vec<str> { return Vec<str>(x) }
+fn a2(x: str, y: str): Vec<str> { return Vec<str>(x, y) }
+fn a3(x: str, y: str, z: str): Vec<str> { return Vec<str>(x, y, z) }
+fn lit(raw: str): json.Value { return json.parse(raw) }
+fn trimmed(file: str): str { return strings.trim(harness.read(file)) }
+
+# ---- Fn key helper -------------------------------------------------------------------------------------------------------
+fn t_fn_missing(base: str) {
+    let r = core(base, a("get"), true)
+    harness.expect(r.code == 0 && flag(r.value, "ok") && !flag(r.value, "supported") && strings.equal(text(r.value, "mode"), ""), "unsupported")
+    harness.contains(text(r.value, "reason"), "no Fn lock", "reason")
+    let set = core(base, a3("set", "fn", "normal"), true)
+    harness.equalInt(set.code, 1, "set fails")
+    harness.expect(!flag(set.value, "ok"), "not ok")
+    harness.expect(!harness.exists(base + "/sys/devices/platform/asus-nb-wmi"), "never created")
+}
+fn t_fn_set(base: str) {
+    let node = fnLock(base, "1")
+    harness.equalStr(text(core(base, a("get"), true).value, "mode"), "locked", "locked")
+    let r = core(base, a3("set", "fn", "normal"), true)
+    harness.expect(r.code == 0 && strings.equal(text(r.value, "mode"), "normal") && strings.equal(text(r.value, "saved"), "normal"), "set normal")
+    harness.equalStr(trimmed(node), "0", "node written")
+    harness.equalStr(harness.read(base + "/var/keyboard.conf"), "fn=normal\n", "state")
+    let bad = Vec<str>("Normal", "locked; reboot", "", "1")
+    for i in 0..(bad.len() as i64) { harness.equalInt(core(base, a3("set", "fn", bad[i]), true).code, 1, "rejects '" + bad[i] + "'") }
+    harness.equalInt(core(base, a3("set", "brightness", "locked"), true).code, 1, "unknown setting")
+    harness.equalStr(trimmed(node), "0", "node untouched")
+}
+fn t_fn_root(base: str) {
+    fnLock(base, "1")
+    let r = core(base, a3("set", "fn", "normal"), false)
+    if strings.charLength(hw.run(Vec<str>("id", "-u"), 5000).out) > 0 && !strings.equal(strings.trim(hw.run(Vec<str>("id", "-u"), 5000).out), "0") {
+        harness.equalInt(r.code, 1, "needs root")
+        harness.contains(text(r.value, "error"), "administrator", "error")
+    }
+}
+fn t_fn_apply(base: str) {
+    let node = fnLock(base, "1")
+    harness.equalStr(text(core(base, a("apply"), true).value, "mode"), "locked", "no state: firmware untouched")
+    harness.write(base + "/var/keyboard.conf", "fn=normal\n")
+    harness.equalStr(text(core(base, a("apply"), true).value, "mode"), "normal", "saved mode restored")
+    harness.equalStr(trimmed(node), "0", "node")
+    harness.write(base + "/var/keyboard.conf", "fn=garbage\n")
+    harness.write(node, "1\n")
+    harness.equalStr(text(core(base, a("apply"), true).value, "mode"), "locked", "garbage ignored")
+}
+fn t_fn_unreadable(base: str) {
+    fnLock(base, "banana")
+    harness.expect(!flag(core(base, a("get"), true).value, "supported"), "unsupported")
+}
+
+# ---- front end -----------------------------------------------------------------------------------------------------------
+fn t_nothing(base: str) {
+    let value = tool(base, a("get"), none(), 0)
+    harness.expect(flag(value, "ok"), "ok")
+    harness.expect(!flag(hw.jget(value, "backlight"), "supported") && !flag(hw.jget(value, "sensor"), "supported") && !flag(hw.jget(value, "idle"), "supported") && !flag(hw.jget(value, "fn"), "supported"), "nothing supported")
+    harness.same(hw.jget(value, "settings"), lit("{\"autoBrighten\":false,\"autoDim\":false,\"sleep\":\"nothing\",\"sleepBoth\":60,\"sleepBattery\":60}"), "defaults")
+    harness.same(hw.jget(value, "timeouts"), lit("[10,30,60,120,300,600]"), "timeouts")
+}
+fn t_detects(base: str) {
+    led(base, "2", "3")
+    fnLock(base, "0")
+    put(base, "bus/iio/devices/iio:device0/in_illuminance_raw", "40")
+    put(base, "bus/iio/devices/iio:device0/in_illuminance_scale", "0.5")
+    let value = tool(base, a("get"), none(), 0)
+    let backlight = hw.jget(value, "backlight")
+    harness.expect(strings.equal(text(backlight, "name"), "asus::kbd_backlight") && hw.jint(backlight, "max", 0) == 3 && hw.jint(backlight, "level", 0) == 2, "backlight")
+    harness.expect(flag(hw.jget(value, "sensor"), "supported") && hw.jnum(hw.jget(value, "sensor"), "lux", 0.0) == 20.0, "sensor 20 lux")
+    harness.expect(flag(hw.jget(value, "fn"), "supported") && strings.equal(text(hw.jget(value, "fn"), "mode"), "normal"), "fn")
+}
+fn t_sensor_needs_led(base: str) {
+    put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "12")
+    harness.expect(!flag(hw.jget(tool(base, a("get"), none(), 0), "sensor"), "supported"), "sensor alone is not useful")
+}
+fn t_prefs(base: str) {
+    tool(base, a3("set", "auto-brighten", "on"), none(), 0)
+    tool(base, a3("set", "auto-dim", "on"), none(), 0)
+    tool(base, a3("set", "sleep", "battery"), none(), 0)
+    tool(base, a3("set", "sleep-both", "300"), none(), 0)
+    let value = tool(base, a3("set", "sleep-battery", "10"), none(), 0)
+    let expected = lit("{\"autoBrighten\":true,\"autoDim\":true,\"sleep\":\"battery\",\"sleepBoth\":300,\"sleepBattery\":10}")
+    harness.same(hw.jget(value, "settings"), expected, "saved")
+    harness.same(harness.readJson(base + "/config/keyboard.json"), expected, "file")
+    let bad = Vec<Vec<str>>()
+    bad.push(a3("set", "sleep-both", "45")); bad.push(a3("set", "sleep-both", "abc")); bad.push(a3("set", "sleep", "always")); bad.push(a3("set", "auto-dim", "maybe"))
+    bad.push(a3("set", "colour", "red")); bad.push(a3("set", "sleep-battery", "-5"))
+    for i in 0..(bad.len() as i64) { tool(base, bad[i], none(), 1) }
+    harness.same(harness.readJson(base + "/config/keyboard.json"), expected, "unchanged by rejected requests")
+    harness.write(base + "/config/keyboard.json", "{\"sleep\": \"bogus\", \"sleepBoth\": 7, \"autoDim\": \"yes\", \"autoBrighten\": true}")
+    harness.same(hw.jget(tool(base, a("get"), none(), 0), "settings"), lit("{\"autoBrighten\":true,\"autoDim\":false,\"sleep\":\"nothing\",\"sleepBoth\":60,\"sleepBattery\":60}"), "validated")
+    harness.write(base + "/config/keyboard.json", "not json")
+    harness.equalStr(text(hw.jget(tool(base, a("get"), none(), 0), "settings"), "sleep"), "nothing", "corrupt file")
+}
+fn t_fn_through_helper(base: str) {
+    let node = fnLock(base, "1")
+    let value = tool(base, Vec<str>("set", "fn", "normal"), none(), 0)
+    harness.equalStr(text(hw.jget(value, "fn"), "mode") + "/" + trimmed(node), "normal/0", "written")
+    tool(base, Vec<str>("set", "fn", "weird"), none(), 1)
+}
+fn t_fn_failure(base: str) {
+    let value = tool(base, Vec<str>("set", "fn", "locked"), none(), 1)
+    harness.expect(!flag(value, "ok"), "reported")
+}
+fn t_mains(base: str) {
+    supply(base, "BAT1", "Battery", "")
+    supply(base, "ADP1", "Mains", "1")
+    harness.expect(flag(tool(base, a("get"), none(), 0), "mains"), "on AC")
+    supply(base, "ADP1", "Mains", "0")
+    harness.expect(!flag(tool(base, a("get"), none(), 0), "mains"), "on battery")
+}
+
+# ---- ambient light ---------------------------------------------------------------------------------------------------------
+struct Rig { steps: json.Value, lux: str, level: str }
+fn prefsStep(auto: bool, dim: bool): json.Value {
+    let values = lit("{\"autoBrighten\":false,\"autoDim\":false,\"sleep\":\"nothing\",\"sleepBoth\":60,\"sleepBattery\":60}")
+    values = json.set(json.set(values, "autoBrighten", auto), "autoDim", dim)
+    return json.set(json.set(json.object(), "op", "prefs"), "values", values)
+}
+fn step(op: str): json.Value { return json.set(json.object(), "op", op) }
+fn feed(steps: json.Value, lux: str, file: str, times: i64): json.Value {
+    steps = json.push(steps, json.set(json.set(json.set(step("write"), "path", file), "text", lux + "\n"), "text", lux + "\n"))
+    return json.push(steps, json.set(step("tick"), "times", times))
+}
+fn writeStep(steps: json.Value, file: str, textValue: str): json.Value { return json.push(steps, json.set(json.set(step("write"), "path", file), "text", textValue)) }
+fn drive(base: str, steps: json.Value): json.Value {
+    let extra = Vec<str>("DEVOS_KBD_TICK=0.05", "DEVOS_KBD_DEBOUNCE=3", "DEVOS_KBD_DARK=15", "DEVOS_KBD_BRIGHT=60", "DRIVER_SCRIPT=" + json.stringify(steps))
+    let done = harness.dev(harness.root() + "/tests/fixtures/keyboard-driver.dev", none(), env(base, extra), "")
+    harness.equalInt(done.code, 0, "driver: " + done.out + done.err)
+    return json.parse(strings.trim(done.out))
+}
+fn at(results: json.Value, i: i64): json.Value { return json.at(results, i) }
+
+fn t_baseline(base: str) {
+    led(base, "0", "3")
+    let lux = put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "300")
+    let steps = json.push(json.array(), prefsStep(true, true))
+    steps = feed(steps, "2", lux, 3)
+    steps = json.push(steps, step("state"))
+    let r = drive(base, steps)
+    harness.same(at(r, 0), lit("{\"level\":0,\"dark\":1}"), "first reading only sets the baseline")
+}
+fn t_dark_bright(base: str) {
+    led(base, "0", "3")
+    let lux = put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "300")
+    let steps = json.push(json.array(), prefsStep(true, true))
+    steps = feed(steps, "300", lux, 3)
+    steps = json.push(steps, step("state"))
+    steps = json.push(steps, json.set(json.set(step("lastOn"), "value", 2), "value", 2))
+    steps = feed(steps, "3", lux, 3)
+    steps = json.push(steps, step("state"))
+    steps = feed(steps, "300", lux, 3)
+    steps = json.push(steps, step("state"))
+    let r = drive(base, steps)
+    harness.equalInt(hw.jint(at(r, 0), "dark", 9), 0, "bright first")
+    harness.equalInt(hw.jint(at(r, 1), "level", 9), 2, "dark turns on with the last used level")
+    harness.equalInt(hw.jint(at(r, 2), "level", 9), 0, "bright turns off")
+}
+fn t_debounce(base: str) {
+    led(base, "0", "3")
+    let lux = put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "300")
+    let steps = json.push(json.array(), prefsStep(true, true))
+    steps = feed(steps, "300", lux, 3)
+    steps = writeStep(steps, lux, "1\n")
+    steps = json.push(steps, json.set(step("tick"), "times", 2))
+    steps = writeStep(steps, lux, "300\n")
+    steps = json.push(steps, json.set(step("tick"), "times", 6))
+    steps = json.push(steps, step("state"))
+    harness.same(at(drive(base, steps), 0), lit("{\"level\":0,\"dark\":0}"), "a short shadow is ignored")
+}
+fn t_hysteresis(base: str) {
+    let levelFile = led(base, "0", "3")
+    let lux = put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "300")
+    let steps = json.push(json.array(), prefsStep(true, true))
+    steps = feed(steps, "300", lux, 3)
+    steps = feed(steps, "2", lux, 3)
+    steps = json.push(steps, step("state"))
+    steps = writeStep(steps, levelFile, "1\n")
+    steps = feed(steps, "40", lux, 10)
+    steps = json.push(steps, step("state"))
+    let r = drive(base, steps)
+    harness.equalInt(hw.jint(at(r, 0), "level", 9), 3, "the LED maximum")
+    harness.same(at(r, 1), lit("{\"level\":1,\"dark\":1}"), "between the thresholds nothing changes")
+}
+fn t_independent(base: str) {
+    let levelFile = led(base, "0", "3")
+    let lux = put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "300")
+    let steps = json.push(json.array(), prefsStep(true, true))
+    steps = json.push(steps, prefsStep(false, true))
+    steps = feed(steps, "300", lux, 3)
+    steps = feed(steps, "2", lux, 3)
+    steps = json.push(steps, step("state"))
+    steps = writeStep(steps, levelFile, "2\n")
+    steps = feed(steps, "300", lux, 3)
+    steps = json.push(steps, step("state"))
+    steps = json.push(steps, prefsStep(true, false))
+    steps = writeStep(steps, levelFile, "2\n")
+    steps = feed(steps, "2", lux, 3)
+    steps = feed(steps, "300", lux, 3)
+    steps = json.push(steps, step("state"))
+    let r = drive(base, steps)
+    harness.equalInt(hw.jint(at(r, 0), "level", 9), 0, "brighten off: stays off")
+    harness.equalInt(hw.jint(at(r, 1), "level", 9), 0, "dim on: turns off")
+    harness.equalInt(hw.jint(at(r, 2), "level", 9), 2, "dim off: stays on")
+}
+fn t_manual_off(base: str) {
+    let levelFile = led(base, "0", "3")
+    let lux = put(base, "bus/iio/devices/iio:device0/in_illuminance_input", "300")
+    let steps = json.push(json.array(), prefsStep(true, true))
+    steps = feed(steps, "300", lux, 3)
+    steps = feed(steps, "2", lux, 3)
+    steps = writeStep(steps, levelFile, "0\n")
+    steps = json.push(steps, json.set(step("tick"), "times", 8))
+    steps = json.push(steps, step("state"))
+    harness.equalInt(hw.jint(at(drive(base, steps), 0), "level", 9), 0, "manual off stays off")
+}
+fn t_raw_scale(base: str) {
+    led(base, "0", "3")
+    put(base, "bus/iio/devices/iio:device0/in_illuminance_raw", "100")
+    put(base, "bus/iio/devices/iio:device0/in_illuminance_scale", "0.25")
+    put(base, "bus/iio/devices/iio:device0/in_illuminance_offset", "20")
+    let r = drive(base, json.push(json.array(), step("lux")))
+    harness.expect(hw.jnum(at(r, 0), "lux", 0.0) == 30.0, "raw/scale/offset conversion")
+}
+
+# ---- idle sleep against a fake compositor ------------------------------------------------------------------------------------
+struct Idle { compositor: i64, daemon: i64, log: str, cmd: str }
+fn startCompositor(base: str, name: str, flags: str): i64 {
+    let extra = Vec<str>("FAKE_WL_PATH=" + base + "/run/" + name, "FAKE_WL_LOG=" + base + "/wl.log", "FAKE_WL_CMD=" + base + "/wl.cmd", "FAKE_WL_FLAGS=" + flags)
+    harness.write(base + "/wl.cmd", "")
+    harness.write(base + "/wl.log", "")
+    let pid = harness.startBg(base, Vec<str>(harness.d(), harness.root() + "/tests/fixtures/fakes/compositor.dev", "--"), extra)
+    harness.waitFor(fn(): bool { return harness.exists(base + "/run/" + name) }, 10.0)
+    return pid
+}
+fn startDaemon(base: str, name: str): i64 {
+    let extra = Vec<str>("WAYLAND_DISPLAY=" + base + "/run/" + name, "DEVOS_KBD_TICK=0.05")
+    return harness.startBg(base, Vec<str>("sh", harness.root() + "/bin/dev-os-keyboard", "serve"), hw.concat(env(base, none()), extra))
+}
+fn prefs(base: str, sleep: str, both: i64, battery: i64) {
+    harness.write(base + "/config/keyboard.json", "{\"autoBrighten\":false,\"autoDim\":false,\"sleep\":\"" + sleep + "\",\"sleepBoth\":${both},\"sleepBattery\":${battery}}")
+}
+fn notifications(base: str): Vec<json.Value> {
+    let out = Vec<json.Value>()
+    let lines = harness.logLines(base + "/wl.log")
+    for i in 0..(lines.len() as i64) { if json.has(lines[i], "notify") { out.push(lines[i]) } }
+    return out
+}
+fn command(base: str, name: str) { harness.write(base + "/wl.cmd", harness.read(base + "/wl.cmd") + name + "\n") }
+fn levelIs(file: str, expected: i64): bool { return harness.exists(file) && strings.equal(strings.trim(harness.read(file)), "${expected}") }
+fn finish(compositor: i64, daemon: i64) { harness.stopBg(daemon); harness.stopBg(compositor) }
+
+fn t_probe(base: str) {
+    led(base, "2", "3")
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let withIdle = tool(base, a("get"), Vec<str>("WAYLAND_DISPLAY=" + base + "/run/wayland-test"), 0)
+    harness.same(hw.jget(withIdle, "idle"), lit("{\"supported\":true,\"reason\":\"\"}"), "the protocol is offered")
+    harness.stopBg(compositor)
+    hw.sleepSeconds(0.3)
+    harness.expect(!flag(hw.jget(tool(base, a("get"), Vec<str>("WAYLAND_DISPLAY=" + base + "/run/wayland-test"), 0), "idle"), "supported"), "gone compositor")
+}
+fn t_probe_bare(base: str) {
+    led(base, "2", "3")
+    let compositor = startCompositor(base, "wayland-bare", "v2")
+    let idle = hw.jget(tool(base, a("get"), Vec<str>("WAYLAND_DISPLAY=" + base + "/run/wayland-bare"), 0), "idle")
+    harness.expect(!flag(idle, "supported"), "not supported")
+    harness.contains(text(idle, "reason"), "ext-idle-notify", "reason")
+    harness.stopBg(compositor)
+}
+fn t_sleep_resume(base: str) {
+    let levelFile = led(base, "2", "3")
+    prefs(base, "both", 30, 60)
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let daemon = startDaemon(base, "wayland-test")
+    harness.expect(harness.waitFor(fn(): bool { return notifications(base).len() > 0 }, 8.0), "a notification is requested")
+    let first = notifications(base)[0]
+    harness.equalStr("${hw.jint(first, "notify", 0)}/${hw.jint(first, "timeout", 0)}/" + text(first, "seat"), "2/30000/wl_seat", "v2 input idle notification, 30 s")
+    command(base, "idled")
+    harness.expect(harness.waitFor(fn(): bool { return levelIs(levelFile, 0) }, 8.0), "idle turns the backlight off")
+    command(base, "resumed")
+    harness.expect(harness.waitFor(fn(): bool { return levelIs(levelFile, 2) }, 8.0), "input brings it back")
+    finish(compositor, daemon)
+}
+fn t_already_off(base: str) {
+    let levelFile = led(base, "0", "3")
+    prefs(base, "both", 10, 60)
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let daemon = startDaemon(base, "wayland-test")
+    harness.expect(harness.waitFor(fn(): bool { return notifications(base).len() > 0 }, 8.0), "notification")
+    command(base, "idled")
+    hw.sleepSeconds(0.3)
+    command(base, "resumed")
+    hw.sleepSeconds(0.4)
+    harness.expect(levelIs(levelFile, 0), "an already off backlight stays off")
+    finish(compositor, daemon)
+}
+fn t_nothing_no_notification(base: str) {
+    led(base, "2", "3")
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let daemon = startDaemon(base, "wayland-test")
+    hw.sleepSeconds(0.5)
+    harness.equalInt(notifications(base).len() as i64, 0, "do nothing creates no notification")
+    finish(compositor, daemon)
+}
+fn t_battery_only(base: str) {
+    let levelFile = led(base, "2", "3")
+    supply(base, "BAT1", "Battery", "")
+    supply(base, "ADP1", "Mains", "1")
+    prefs(base, "battery", 60, 120)
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let daemon = startDaemon(base, "wayland-test")
+    hw.sleepSeconds(0.6)
+    harness.equalInt(notifications(base).len() as i64, 0, "on AC: nothing to wait for")
+    supply(base, "ADP1", "Mains", "0")
+    harness.expect(harness.waitFor(fn(): bool { return notifications(base).len() > 0 }, 8.0), "on battery a notification is requested")
+    harness.equalInt(hw.jint(notifications(base)[0], "timeout", 0), 120000, "battery time")
+    command(base, "idled")
+    harness.expect(harness.waitFor(fn(): bool { return levelIs(levelFile, 0) }, 8.0), "idle")
+    supply(base, "ADP1", "Mains", "1")
+    harness.expect(harness.waitFor(fn(): bool { return levelIs(levelFile, 2) }, 8.0), "plugging in wakes the backlight again")
+    finish(compositor, daemon)
+}
+fn t_replace(base: str) {
+    led(base, "2", "3")
+    prefs(base, "both", 10, 60)
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let daemon = startDaemon(base, "wayland-test")
+    harness.expect(harness.waitFor(fn(): bool { return notifications(base).len() > 0 }, 8.0), "first notification")
+    hw.sleepSeconds(0.1)
+    prefs(base, "both", 300, 60)
+    harness.expect(harness.waitFor(fn(): bool { return notifications(base).len() == 2 }, 8.0), "replaced notification")
+    let timeouts = Vec<i64>(hw.jint(notifications(base)[0], "timeout", 0), hw.jint(notifications(base)[1], "timeout", 0))
+    harness.expect(timeouts[0] == 10000 && timeouts[1] == 300000, "10 s then 300 s")
+    let destroyed = false
+    let lines = harness.logLines(base + "/wl.log")
+    for i in 0..(lines.len() as i64) { if json.has(lines[i], "destroy") { destroyed = true } }
+    harness.expect(destroyed, "the old notification was destroyed")
+    finish(compositor, daemon)
+}
+fn t_turn_off_while_idle(base: str) {
+    let levelFile = led(base, "2", "3")
+    prefs(base, "both", 10, 60)
+    let compositor = startCompositor(base, "wayland-test", "idle,v2")
+    let daemon = startDaemon(base, "wayland-test")
+    harness.expect(harness.waitFor(fn(): bool { return notifications(base).len() > 0 }, 8.0), "notification")
+    command(base, "idled")
+    harness.expect(harness.waitFor(fn(): bool { return levelIs(levelFile, 0) }, 8.0), "idle")
+    prefs(base, "nothing", 10, 60)
+    harness.expect(harness.waitFor(fn(): bool { return levelIs(levelFile, 2) }, 8.0), "turning sleep off while idle restores the backlight")
+    finish(compositor, daemon)
+}
+
+fn boxed(body: fn(str): void): fn(): void {
+    return fn() { harness.sandbox(fn(base: str) { harness.mkdirs(base + "/sys"); harness.mkdirs(base + "/run"); body(base) }) }
+}
+
+fn main(): i32 {
+    test.case("fn: a missing node is unsupported and never created", boxed(t_fn_missing))
+    test.case("fn: set validates, writes and persists", boxed(t_fn_set))
+    test.case("fn: requires root without the test hook", boxed(t_fn_root))
+    test.case("fn: apply restores the saved mode and leaves firmware alone without state", boxed(t_fn_apply))
+    test.case("fn: an unreadable value is unsupported", boxed(t_fn_unreadable))
+    test.case("nothing is available without devices", boxed(t_nothing))
+    test.case("detects LED, sensor and Fn lock", boxed(t_detects))
+    test.case("the sensor needs a backlight to be useful", boxed(t_sensor_needs_led))
+    test.case("preferences are saved, validated and survive corruption", boxed(t_prefs))
+    test.case("fn goes through the helper", boxed(t_fn_through_helper))
+    test.case("fn failure is reported", boxed(t_fn_failure))
+    test.case("mains state", boxed(t_mains))
+    test.case("ambient: the first reading only sets the baseline", boxed(t_baseline))
+    test.case("ambient: dark turns on with the last used level and bright turns off", boxed(t_dark_bright))
+    test.case("ambient: debounce ignores a short shadow", boxed(t_debounce))
+    test.case("ambient: the hysteresis band changes nothing", boxed(t_hysteresis))
+    test.case("ambient: the switches work independently", boxed(t_independent))
+    test.case("ambient: manual off stays off until the light changes", boxed(t_manual_off))
+    test.case("ambient: raw, scale and offset conversion", boxed(t_raw_scale))
+    test.case("idle: probe reports the protocol", boxed(t_probe))
+    test.case("idle: probe without the idle protocol", boxed(t_probe_bare))
+    test.case("idle: the backlight sleeps when idle and returns on input", boxed(t_sleep_resume))
+    test.case("idle: an already off backlight stays off after resume", boxed(t_already_off))
+    test.case("idle: do nothing creates no notification", boxed(t_nothing_no_notification))
+    test.case("idle: battery only follows the mains state", boxed(t_battery_only))
+    test.case("idle: changing the time replaces the notification", boxed(t_replace))
+    test.case("idle: turning sleep off while idle restores the backlight", boxed(t_turn_off_while_idle))
+    return harness.finish()
+}
+return main()

@@ -38,6 +38,13 @@
           "description": "design, solid or picture"
         },
         {
+          "key": "style",
+          "title": "DevOs design",
+          "type": "string",
+          "default": "dunes",
+          "description": "dunes, aurora, contours, facets, waves, bokeh, orbits, horizon, mosaic, flow, ripples, fireflies, tide, planets, starfield, nebula, galaxy, meteors, eclipse, matrix, terminal, circuit, radar or network"
+        },
+        {
           "key": "useDesktopColor",
           "title": "Use theme background color",
           "type": "boolean",

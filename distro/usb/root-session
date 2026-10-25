@@ -3,7 +3,9 @@ set -eu
 [ "$(id -u)" = 0 ] && [ -f /run/devos-live/root-session-enabled ] || exit 1
 umask 077
 if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
-export DEV_OS_LOGIN=0 DEV_OS_LIVE_ROOT=1 DEV_OS_POLKIT_AGENT_STARTED=1
+# Boot animation milestone (fire-and-forget, a no-op without the splash): the session is starting.
+command -v devos-splash >/dev/null 2>&1 && devos-splash --step session || true
+export DEV_OS_LOGIN=0 DEV_OS_LIVE_ROOT=1 DEV_OS_POLKIT_AGENT_STARTED=1 DEV_OS_SKIP_DOCTOR=1
 export XDG_CURRENT_DESKTOP=DevOS:labwc XDG_SESSION_TYPE=wayland
 export PATH=/usr/bin:/usr/sbin:/usr/libexec:/bin:/sbin
 unset GREETD_SOCK
@@ -17,4 +19,8 @@ fi
 if ! systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service; then
     echo 'DevOs Live: audio services failed; check the user journal.' >&2
 fi
+# Re-apply the saved microphone noise canceling mode in the background (no-op in Authentic Recording).
+(dev-os-microphone apply >/dev/null 2>&1 &)
+(dev-os-speaker apply >/dev/null 2>&1 &)
+(dev-os-touchpad-gestures apply >/dev/null 2>&1 &)
 exec /usr/bin/dev-os-session

@@ -78,9 +78,11 @@ fn main(): i32 {
         "XDG_DATA_DIRS", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "HOME", "PATH",
         "LANG", "LC_ALL", "DEV_OS_ROOT", "DEV_OS_SHELL", "WLR_RENDERER",
         "LIBGL_ALWAYS_SOFTWARE", "GTK_THEME")
+    # Applications give way to the desktop: they are the first the kernel kills when memory runs out and get a smaller share of CPU and disk.
     let command = ("exec systemd-run --user --quiet --collect --service-type=exec --expand-environment=no" +
         " --slice=app.slice --unit=" + quote(unit) +
-        " --property=ExitType=cgroup --property=MemoryAccounting=yes")
+        " --property=ExitType=cgroup --property=MemoryAccounting=yes" +
+        " --property=OOMScoreAdjust=300 --property=CPUWeight=80 --property=IOWeight=80")
     let envParts = ""
     for i in 0..(names.len() as i64) {
         let value = envValue(names[i])

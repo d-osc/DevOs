@@ -288,7 +288,7 @@ function Get-StageSteps([string]$Name) {
             if ($CameraCandidate) {
                 $taskNewBundle = "/var/tmp/devos-kernel-x2/bundle-camera-candidate-$taskStamp"
                 $taskSteps += New-ActionStep 'WARNING' 'warning: the camera sensor wiring is UNVERIFIED; the image carries an opt-in candidate graph' { Write-Log 'WARNING: the camera wiring is unverified. This image carries the candidate graph; it may fail to probe or log errors. Not a fix.' }
-                $taskSteps += New-WslStep 'Compose board-fixes bundle with the camera candidate' @('--exec', 'python3', "$taskRootWsl/distro/usb/prepare-board-fixes.py", '--source', $BoardFixesSource, '--bundle', $BoardFixesBundle, '--output', $taskNewBundle, '--dtc', $Dtc, '--enable-camera-candidate')
+                $taskSteps += New-WslStep 'Compose board-fixes bundle with the camera candidate' @('--exec', 'env', "PATH=$taskWslPyPath", 'd', "$taskRootWsl/distro/usb/prepare-board-fixes.dev", '--', '--source', $BoardFixesSource, '--bundle', $BoardFixesBundle, '--output', $taskNewBundle, '--dtc', $Dtc, '--enable-camera-candidate')
                 $script:taskBundle = $taskNewBundle
             }
         }
@@ -451,7 +451,7 @@ function Invoke-ElevatedWrite([string]$Disk) {
         $null = Invoke-Native $taskPowerShell $taskArgs
     } else {
         Write-Log 'Requesting elevation for the write step only; approve the UAC prompt to continue.'
-        $taskElevated = Start-Process -FilePath $taskPowerShell -ArgumentList @($taskArgs | ForEach-Object { ConvertTo-ProcessArgument $_ }) -Verb RunAs -Wait -PassThru
+        $taskElevated = Start-Process -FilePath $taskPowerShell -ArgumentList @($taskArgs | ForEach-Object { ConvertTo-ProcessArgument $_ }) -Verb RunAs -WindowStyle Hidden -Wait -PassThru
         if ($taskElevated.ExitCode -ne 0) { Write-Log "The elevated writer exited with code $($taskElevated.ExitCode)." }
     }
     foreach ($taskName in @('usb-write.log')) {

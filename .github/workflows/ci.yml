@@ -1,0 +1,69 @@
+name: DevOs checks
+
+on:
+  push:
+    branches: [main, ux3407na-dev]
+  pull_request:
+    branches: [main, ux3407na-dev]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # DevLang `d` runs the system helpers' tests. The checksums below pin v0.5.5 (same as the tag-triggered Publish workflow).
+  DEVLANG_VERSION: v0.5.5
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install Linux build and test dependencies
+        # Same packages as the tag-triggered Publish workflow: gjs runs the shell tests headless, the native window
+        # tracker needs the Wayland headers, and the lock-screen test needs the pinned swaylock.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl python3-gi gir1.2-nm-1.0 python3-yaml
+          sudo sh tools/setup/bootstrap-lock.sh
+          sudo chown -R "$(id -u):$(id -g)" build
+      - name: Install pinned DevLang ${{ env.DEVLANG_VERSION }}
+        run: |
+          machine=$(uname -m)
+          case "$machine" in
+            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
+            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
+            *) exit 1 ;;
+          esac
+          archive="devlang-d-$DEVLANG_VERSION-linux-$arch.tar.gz"
+          curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/$DEVLANG_VERSION/$archive"
+          printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/devlang-d-$DEVLANG_VERSION-linux-$arch" >> "$GITHUB_PATH"
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+      - name: Shell tests under GJS
+        run: npm run check
+      - name: Python tests
+        run: /usr/bin/python3 tools/release/run_python_tests.py

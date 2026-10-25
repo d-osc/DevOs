@@ -1,0 +1,6 @@
+#!/usr/bin/env d
+# Compile a private UX3407NA DTB with upstream audio nodes; no kernel source edits.
+# Usage: d prepare-board-fixes.dev -- --source DIR --bundle DIR --output NEWDIR --dtc FILE [--enable-camera-candidate]
+#   --enable-camera-candidate appends the UNVERIFIED UX3407NA camera graph; needs a source tree with native/kernel/ux3407na-camera applied.
+use "../usb/boardtools.dev" as tools
+return tools.guarded(fn() { tools.boardFixes() })

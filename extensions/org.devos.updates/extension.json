@@ -5,6 +5,7 @@
   "entry": "org.devos.updates.js", "order": 6, "settingsVersion": 1, "enabledByDefault": true,
   "settings": [{"id": "source", "title": "Update source", "fields": [
     {"key": "repository", "title": "GitHub repository", "type": "string", "default": "d-osc/DevOs"},
-    {"key": "checkOnOpen", "title": "Check when opening Updates", "type": "boolean", "default": false}
+    {"key": "checkOnOpen", "title": "Check when opening Updates", "type": "boolean", "default": false},
+    {"key": "periodicCheck", "title": "Check for updates daily in the background", "type": "boolean", "default": false}
   ]}]
 }

@@ -1,0 +1,283 @@
+# Microphone input device and noise canceling for Dev OS Settings (the MyASUS "AI Noise-Canceling Microphone" card).
+# Entry point of bin/dev-os-microphone:  get | mode <authentic|general|conference> | device <node.name> | apply | serve | finish
+# JSON on stdout, exit 1 on failure. Everything runs as the user; no root and no polkit action is needed.
+#
+# Backend (PipeWire + WirePlumber, nothing else is invented):
+#   authentic    no processing, the chosen real microphone is the default input.
+#   general      PipeWire's echo-cancel module with the WebRTC audio-processing plugin (noise suppression, high-pass filter,
+#                transient suppression) as a virtual source "devos-mic-clean" that becomes the default input.
+#   conference   the same plus the WebRTC adaptive gain control (levels of near and far talkers are evened out).
+# Real speaker separation or identification is NOT provided by this backend and is never claimed. The modes need
+# libpipewire-module-echo-cancel.so and libspa-aec-webrtc.so; without them the helper reports them as unavailable.
+#
+# The filter runs as the user service devos-microphone.service (`serve` writes a PipeWire client config and execs
+# `pipewire -c`), so switching modes never restarts the audio daemon. `finish` waits for the virtual source and sets the
+# default input with wpctl (WirePlumber remembers it by node name). State: $XDG_CONFIG_HOME/devos/microphone.json.
+use "std/args"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../lib/hw.dev" as hw
+use "../lib/pwaudio.dev" as pw
+
+fn unit(): str { return "devos-microphone.service" }
+fn transient(): str { return "devos-microphone-session.service" }
+fn statePath(): str { return pw.configDir() + "/microphone.json" }
+fn confPath(): str { return pw.configDir() + "/microphone-filter.conf" }
+fn isMode(name: str): bool { return strings.equal(name, "authentic") || strings.equal(name, "general") || strings.equal(name, "conference") }
+
+struct State { mode: str, device: str }
+
+fn loadState(): State {
+    let data = hw.loadJson(statePath())
+    let mode = hw.jstr(data, "mode", "authentic")
+    if !isMode(mode) { mode = "authentic" }
+    return State(mode, hw.jstr(data, "device", ""))
+}
+fn saveState(state: State) {
+    hw.saveJson(statePath(), json.set(json.set(json.object(), "mode", state.mode), "device", state.device))
+}
+
+# The real microphone to use: the saved one if present, else the current default if real, else the first.
+fn sourceNames(graph: pw.Graph): Vec<str> {
+    let names = Vec<str>()
+    for i in 0..(graph.sources.len() as i64) { names.push(graph.sources[i].name) }
+    return names
+}
+fn pickDevice(state: State, graph: pw.Graph): str {
+    let names = sourceNames(graph)
+    if hw.contains(names, state.device) && strings.charLength(state.device) > 0 { return state.device }
+    if hw.contains(names, graph.defaultSource) && strings.charLength(graph.defaultSource) > 0 { return graph.defaultSource }
+    return names.len() > 0 ? names[0] : ""
+}
+
+fn setDefaultSource(name: str, graph: pw.Graph) {
+    for i in 0..(graph.sources.len() as i64) {
+        if strings.equal(graph.sources[i].name, name) { pw.setDefault(graph.sources[i].id); return }
+    }
+    if graph.hasClean && strings.equal(graph.clean.name, name) { pw.setDefault(graph.clean.id); return }
+    hw.failure("That microphone is not connected.")
+}
+
+fn hasClean(g: pw.Graph): bool { return g.hasClean }
+fn hasSources(g: pw.Graph): bool { return g.sources.len() > 0 }
+
+# ---- reporting ---------------------------------------------------------------------------------------------------------
+fn report(): json.Value {
+    let state = loadState()
+    let graph = pw.snapshot()
+    let plugins = pw.noisePlugins()
+    let out = json.object()
+    out = json.set(out, "ok", true)
+    out = json.set(out, "supported", graph.ok)
+    out = json.set(out, "reason", "")
+    out = json.set(out, "mode", state.mode)
+    out = json.set(out, "sources", json.array())
+    out = json.set(out, "device", "")
+    out = json.set(out, "running", false)
+    out = json.set(out, "active", "authentic")
+    out = json.set(out, "noise", json.set(json.set(json.object(), "available", plugins.ok), "reason", plugins.reason))
+    out = json.set(out, "warning", "")
+    if !graph.ok {
+        return json.set(out, "reason", "The audio server (PipeWire) is not running or pw-dump is not installed.")
+    }
+    let sources = json.array()
+    for i in 0..(graph.sources.len() as i64) {
+        sources = json.push(sources, json.set(json.set(json.object(), "name", graph.sources[i].name), "title", graph.sources[i].title))
+    }
+    out = json.set(out, "sources", sources)
+    out = json.set(out, "device", pickDevice(state, graph))
+    out = json.set(out, "running", graph.hasClean)
+    let active = "authentic"
+    if graph.hasClean && strings.equal(graph.defaultSource, pw.cleanName()) {
+        active = isMode(graph.clean.mode) ? graph.clean.mode : "general"
+    }
+    out = json.set(out, "active", active)
+    let warning = ""
+    if !strings.equal(state.mode, "authentic") && !plugins.ok {
+        warning = plugins.reason + " The microphone is used without processing."
+    } else if !strings.equal(state.mode, "authentic") && !strings.equal(active, state.mode) {
+        warning = graph.hasClean ? "Noise canceling is running, but another input is the default right now. Choose a mode again to use it." : "Noise canceling is not running yet. It starts with your session; the microphone is used without processing until then."
+    }
+    if graph.sources.len() == 0 { warning = "No microphone is connected." }
+    return json.set(out, "warning", warning)
+}
+
+# ---- switching ---------------------------------------------------------------------------------------------------------
+# Makes the default input match the saved mode. Waits for the virtual source when the mode needs it. `sink` is the default
+# output from before the filter loaded; it is restored if the virtual sink took over.
+fn finish(sinkBefore: str) {
+    let state = loadState()
+    let plugins = pw.noisePlugins()
+    let filtered = !strings.equal(state.mode, "authentic") && plugins.ok
+    let graph = filtered ? pw.waitFor(hasClean, pw.waitSeconds()) : pw.snapshot()
+    if !graph.ok { hw.failure("The audio server (PipeWire) is not running.") }
+    let sink = strings.charLength(sinkBefore) > 0 ? sinkBefore : graph.defaultSink
+    if filtered && graph.hasClean {
+        setDefaultSource(pw.cleanName(), graph)
+    } else {
+        let device = pickDevice(state, graph)
+        if strings.charLength(device) > 0 && !strings.equal(graph.defaultSource, device) { setDefaultSource(device, graph) }
+    }
+    # The virtual reference sink is never meant to play anything; keep the speakers as the default output.
+    let after = pw.snapshot()
+    if after.ok && strings.charLength(sink) > 0 && !strings.startsWith(sink, pw.prefix()) && !strings.equal(after.defaultSink, sink) && pw.sinkId(after, sink) >= 0 {
+        hw.run(hw.concat(hw.tool("DEVOS_MIC_WPCTL", "wpctl"), Vec<str>("set-default", "${pw.sinkId(after, sink)}")), 15000)
+    }
+    if filtered && !graph.hasClean {
+        hw.failure("The noise canceling filter did not start. See `journalctl --user -u " + unit() + "`.")
+    }
+}
+
+# Starts the filter through the user unit; images without the unit (the Live USB) get a transient one.
+fn startFilter(restart: bool) {
+    let done = pw.systemctl(Vec<str>(restart ? "restart" : "start", unit()))
+    if done.code == 0 { return }
+    if !pw.unitMissing(done.out) {
+        hw.failure("The noise canceling service could not start: " + hw.clean(strings.charLength(done.out) > 0 ? done.out : "systemctl failed"))
+    }
+    if restart { pw.systemctl(Vec<str>("stop", transient())) }
+    let started = pw.startTransient(transient(), hw.selfPath("/usr/bin/dev-os-microphone"))
+    if started.code != 0 && !strings.contains(pw.lower(started.out), "already") {
+        hw.failure("The noise canceling service could not start: " + hw.clean(strings.charLength(started.out) > 0 ? started.out : "systemd-run failed"))
+    }
+}
+
+fn switchMode(restart: bool) {
+    let state = loadState()
+    let plugins = pw.noisePlugins()
+    let before = pw.snapshot()
+    let sink = before.ok ? before.defaultSink : ""
+    if !strings.equal(state.mode, "authentic") && plugins.ok {
+        startFilter(restart)
+    } else {
+        pw.systemctl(Vec<str>("stop", unit()))
+        pw.systemctl(Vec<str>("stop", transient()))
+    }
+    finish(sink)
+}
+
+# ---- service -----------------------------------------------------------------------------------------------------------
+fn webrtc(mode: str): str {
+    let gain = strings.equal(mode, "conference") ? "true" : "false"
+    return "        webrtc.noise_suppression = true\n        webrtc.high_pass_filter = true\n        webrtc.transient_suppression = true\n        webrtc.voice_detection = false\n        webrtc.gain_control = " + gain + "\n"
+}
+fn q(text: str): str { return json.stringify(text) }
+
+fn render(mode: str, device: str): str {
+    let description = strings.equal(mode, "general") ? "Noise-canceled microphone" : "Multi-presenter microphone"
+    let lines = Vec<str>()
+    lines.push("# Generated by dev-os-microphone; changes are overwritten.")
+    lines.push("context.properties = {")
+    lines.push("    log.level = 0")
+    lines.push("}")
+    lines.push("context.spa-libs = {")
+    lines.push("    audio.convert.* = audioconvert/libspa-audioconvert")
+    lines.push("    support.*       = support/libspa-support")
+    lines.push("}")
+    lines.push("context.modules = [")
+    lines.push("    { name = libpipewire-module-rt flags = [ ifexists nofail ] }")
+    lines.push("    { name = libpipewire-module-protocol-native }")
+    lines.push("    { name = libpipewire-module-client-node }")
+    lines.push("    { name = libpipewire-module-adapter }")
+    lines.push("    { name = libpipewire-module-echo-cancel")
+    lines.push("        args = {")
+    lines.push("            library.name = aec/libspa-aec-webrtc")
+    lines.push("            aec.args = {")
+    lines.push(strings.trimEnd(webrtc(mode)))
+    lines.push("            }")
+    lines.push("            capture.props = {")
+    lines.push("                node.name = " + q(pw.prefix() + "capture"))
+    lines.push("                node.description = \"Noise canceling input\"")
+    lines.push("                target.object = " + q(device))
+    lines.push("                node.dont-fallback = true")
+    lines.push("                node.passive = true")
+    lines.push("            }")
+    lines.push("            source.props = {")
+    lines.push("                node.name = " + q(pw.cleanName()))
+    lines.push("                node.description = " + q(description))
+    lines.push("                devos.mic.mode = " + q(mode))
+    lines.push("            }")
+    lines.push("            sink.props = {")
+    lines.push("                node.name = " + q(pw.prefix() + "reference"))
+    lines.push("                node.description = \"Noise canceling reference (not for playback)\"")
+    lines.push("                priority.session = 1")
+    lines.push("            }")
+    lines.push("            playback.props = {")
+    lines.push("                node.name = " + q(pw.prefix() + "playback"))
+    lines.push("                node.passive = true")
+    lines.push("            }")
+    lines.push("        }")
+    lines.push("    }")
+    lines.push("]")
+    return strings.join(lines, "\n") + "\n"
+}
+
+fn serve(): i32 {
+    let state = loadState()
+    let plugins = pw.noisePlugins()
+    if strings.equal(state.mode, "authentic") || !plugins.ok {
+        print("dev-os-microphone: noise canceling is off" + (plugins.ok ? "" : " (" + plugins.reason + ")"))
+        return 0
+    }
+    let graph = pw.waitFor(hasSources, pw.waitSeconds() * 2.5)
+    let device = graph.ok ? pickDevice(state, graph) : ""
+    if strings.charLength(device) == 0 {
+        hw.stderr("dev-os-microphone: no microphone found; noise canceling not started")
+        return 0
+    }
+    hw.saveText(confPath(), render(state.mode, device))
+    let status = hw.execProgram(hw.concat(pw.pipewireCommand(), Vec<str>("-c", confPath())))
+    hw.stderr("dev-os-microphone: cannot start pipewire")
+    return 1
+}
+
+# ---- command line ------------------------------------------------------------------------------------------------------
+fn execute(action: str, rest: Vec<str>) {
+    if strings.equal(action, "get") { return }
+    if strings.equal(action, "mode") && rest.len() == 1 && isMode(rest[0]) {
+        let state = loadState()
+        if !strings.equal(rest[0], "authentic") {
+            let plugins = pw.noisePlugins()
+            if !plugins.ok { hw.failure(plugins.reason) }
+        }
+        state.mode = rest[0]
+        saveState(state)
+        switchMode(true)
+        return
+    }
+    if strings.equal(action, "device") && rest.len() == 1 && strings.charLength(rest[0]) > 0 && !strings.startsWith(rest[0], pw.prefix()) {
+        let graph = pw.snapshot()
+        if !graph.ok { hw.failure("The audio server (PipeWire) is not running.") }
+        if !hw.contains(sourceNames(graph), rest[0]) { hw.failure("That microphone is not connected.") }
+        let state = loadState()
+        state.device = rest[0]
+        saveState(state)
+        switchMode(true)
+        return
+    }
+    if strings.equal(action, "apply") { switchMode(false); return }
+    hw.failure("Unsupported microphone action.")
+}
+
+fn main(): i32 {
+    let action = args.len() > 0 ? args.get(0) : ""
+    let rest = Vec<str>()
+    for i in 1..(args.len() as i64) { rest.push(args.get(i)) }
+    if strings.equal(action, "serve") { return serve() }
+    if strings.equal(action, "finish") {
+        let outcome = result.run(fn() { finish("") })
+        if result.isErr(outcome) { print(json.stringify(hw.errorJson(result.message(outcome)))); return 1 }
+        return 0
+    }
+    let outcome = result.run(fn() { execute(action, rest) })
+    if result.isErr(outcome) {
+        print(json.stringify(hw.errorJson(result.message(outcome))))
+        return 1
+    }
+    let reportOutcome = result.attempt(fn(): json.Value { return report() })
+    if result.isErr(reportOutcome) { print(json.stringify(hw.errorJson(result.message(reportOutcome)))); return 1 }
+    print(json.stringify(result.unwrap(reportOutcome)))
+    return 0
+}
+return main()

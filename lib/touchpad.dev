@@ -7,10 +7,21 @@ use "std/regex"
 use "../lib/desktop.dev" as util
 
 fn defaults(): json.Value { return {tap: true, drag: true, natural: true, typing: true, leftHanded: false, speed: 50} }
-fn preferencesPath(): str {
+fn configDirectory(): str {
     let directory = process.getenv("XDG_CONFIG_HOME")
     if strings.equal(directory, "") { directory = os.homedir() + "/.config" }
-    return directory + "/dev-os/touchpad.json"
+    return directory + "/dev-os"
+}
+fn preferencesPath(): str { return configDirectory() + "/touchpad.json" }
+// The touchpad lock and the smart gestures live in their own file, written by dev-os-touchpad-gestures.
+fn gesturesPath(): str { return configDirectory() + "/touchpad-gestures.json" }
+fn locked(): bool {
+    if !fs.existsSync(gesturesPath()) { return false }
+    let raw = fs.readFileSync(gesturesPath(), "utf8")
+    if !json.valid(raw) { return false }
+    let value = json.parse(raw)
+    if !strings.equal(json.kind(value), "object") || !json.has(value, "locked") { return false }
+    return strings.equal(json.kind(json.get(value, "locked")), "bool") && json.bool(json.get(value, "locked"))
 }
 fn validate(value: json.Value): json.Value {
     if !strings.equal(json.kind(value), "object") { return json.null_value() }
@@ -35,7 +46,7 @@ fn applyXml(xml: str, value: json.Value): str {
     let settings = validate(value)
     util.require(!json.is_null(settings), "Invalid touchpad settings.")
     let speed = (json.float(json.get(settings, "speed")) - 50.0) / 50.0
-    let block = "<device category=\"touchpad\"><tap>" + option(settings, "tap") + "</tap><tapButtonMap>lrm</tapButtonMap><tapAndDrag>" + option(settings, "drag") + "</tapAndDrag><dragLock>no</dragLock><scrollMethod>twofinger</scrollMethod><naturalScroll>" + option(settings, "natural") + "</naturalScroll><disableWhileTyping>" + option(settings, "typing") + "</disableWhileTyping><leftHanded>" + option(settings, "leftHanded") + "</leftHanded><pointerSpeed>${speed}</pointerSpeed></device>"
+    let block = "<device category=\"touchpad\"><tap>" + option(settings, "tap") + "</tap><tapButtonMap>lrm</tapButtonMap><tapAndDrag>" + option(settings, "drag") + "</tapAndDrag><dragLock>no</dragLock><scrollMethod>twofinger</scrollMethod><naturalScroll>" + option(settings, "natural") + "</naturalScroll><disableWhileTyping>" + option(settings, "typing") + "</disableWhileTyping><leftHanded>" + option(settings, "leftHanded") + "</leftHanded><pointerSpeed>${speed}</pointerSpeed>" + (locked() ? "<sendEventsMode>no</sendEventsMode>" : "") + "</device>"
     let pattern = regex.compile("<device[ \\t\\r\\n]+category=\"touchpad\"[^>]*>[\\s\\S]*?</device>", "")
     let result = pattern.replace(xml, block)
     pattern.close()

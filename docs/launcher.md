@@ -20,8 +20,7 @@ restart is required after rebuilding this compositor integration.
 
 `d tools/test/desktop-animation-smoke.dev --` checks actual rendered app opening
 and closing frames, quick close, and desktop-transition interaction on the private
-compositor. `tools/test/bundled-apps-smoke.dev` exercises real Chrome and VS Code
-Wayland windows. The private WSL compositor build has XWayland disabled, so that
+compositor. The private WSL compositor build has XWayland disabled, so that
 backend is integrated through the shared source path but not runtime-tested here.
 
 Settings → Launcher now provides a layout preview, Comfortable/Compact spacing,

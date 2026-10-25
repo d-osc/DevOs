@@ -1,11 +1,14 @@
 import {
-    type GtkTypes as Gtk, React, DrawingArea, EventBox, Overlay, createRoot, Gdk, Gio, useEffect, useState, useRef, type GdkPixbufTypes, type SettingsValues
+    type GtkTypes as Gtk, React, DrawingArea, EventBox, Overlay, createRoot, Gdk, Gio, GLib, useEffect, useState, useRef, type GdkPixbufTypes, type SettingsValues
 } from '@dev-os/core';
 import Cairo from 'cairo';
 import {loadPicture, pictureLayout, type WallpaperConfig} from './wallpaper.js';
 import {DesktopWidgets} from './desktop-widgets.js';
+import {designStyle, drawDesign} from './design.js';
+import {isMotion} from './motion.js';
+import {motionInterval, readOnBattery} from './pace.js';
 
-export interface BackgroundConfig {name: string; background: string; accent: string; foreground?: string; muted?: string;}
+export interface BackgroundConfig {name: string; background: string; accent: string; foreground?: string; muted?: string; style?: string;}
 function rgb(color: string): [number, number, number] {
     return [parseInt(color.slice(1, 3), 16) / 255, parseInt(color.slice(3, 5), 16) / 255,
         parseInt(color.slice(5, 7), 16) / 255];
@@ -13,60 +16,11 @@ function rgb(color: string): [number, number, number] {
 export function drawBackground(canvas: Gtk.DrawingArea, context: Cairo.Context, config: BackgroundConfig, size?: {width: number; height: number}): boolean {
     const width = size?.width ?? canvas.get_allocated_width();
     const height = size?.height ?? canvas.get_allocated_height();
-    context.setSourceRGB(...rgb(config.background));
-    context.paint();
-    const glow = new Cairo.RadialGradient(width * .7, height * .48, 0,
-        width * .7, height * .48, width * .6);
-    glow.addColorStopRGBA(0, ...rgb(config.accent), .30);
-    glow.addColorStopRGBA(1, ...rgb(config.accent), 0);
-    context.setSource(glow);
-    context.paint();
-    context.setSourceRGBA(...rgb(config.foreground ?? '#9fd4ce'), .045);
-    context.setLineWidth(1);
-    for (let x = 0; x < width; x += 72) {
-        context.moveTo(x + .5, 0); context.lineTo(x + .5, height);
-    }
-    for (let y = 0; y < height; y += 72) {
-        context.moveTo(0, y + .5); context.lineTo(width, y + .5);
-    }
-    context.stroke();
-    context.save();
-    context.translate(width * .72, height * .48);
-    context.rotate(-.42);
-    const radius = Math.min(width * .21, height * .31);
-    for (let index = 0; index < 14; index++) {
-        context.save();
-        context.rotate(index * .09);
-        context.scale(1, .5 + index * .025);
-        context.arc(0, 0, radius * (.75 + index * .018), 0, Math.PI * 2);
-        context.setSourceRGBA(...rgb(config.accent), .10 + index * .012);
-        context.setLineWidth(1.1);
-        context.stroke(); context.restore();
-    }
-    context.restore();
-    const left = Math.max(36, width * .085);
-    const baseline = height * .38;
-    const scale = Math.min(1.25, Math.max(.65, width / 1440));
-    const text = (value: string, x: number, y: number, size: number, color: [number, number, number, number], bold = false) => {
-        context.selectFontFace('Sans', Cairo.FontSlant.NORMAL,
-            bold ? Cairo.FontWeight.BOLD : Cairo.FontWeight.NORMAL);
-        context.setFontSize(size * scale);
-        context.setSourceRGBA(...color); context.moveTo(x, y); context.showText(value);
-    };
-    text(`${config.name.toUpperCase()}  /  WAYLAND`, left, baseline, 12,
-        [...rgb(config.accent), 1], true);
-    const strong: [number, number, number, number] = [...rgb(config.foreground ?? '#e6f2f5'), 1];
-    const quiet: [number, number, number, number] = [...rgb(config.muted ?? '#94aab2'), 1];
-    text('Make room', left, baseline + 65 * scale, 48, strong, true);
-    text('for your ideas.', left, baseline + 125 * scale, 48, strong, true);
-    text('A small beginning. An open desktop.', left, baseline + 173 * scale, 16, quiet);
-    text('SUPER + SPACE   Applications     /     SUPER + ENTER   Terminal',
-        left, height - 64 * scale, 12, quiet);
-    text('WAYLAND SESSION    ·    GJS / GTK', left, height - 36 * scale, 10, [...rgb(config.muted ?? '#94aab2'), .7]);
+    drawDesign(context, config, width, height);
     return false;
 }
 
-export function WallpaperCanvas({config, preview = false, onError}: {config: WallpaperConfig; preview?: boolean; onError?(message: string): void}) {
+export function WallpaperCanvas({config, preview = false, paused = false, onError}: {config: WallpaperConfig; preview?: boolean; paused?: boolean; onError?(message: string): void}) {
     const [picture, setPicture] = useState<{path: string; pixels: GdkPixbufTypes.Pixbuf} | null>(null);
     const canvasRef = useRef<Gtk.DrawingArea | null>(null);
     useEffect(() => {
@@ -78,6 +32,22 @@ export function WallpaperCanvas({config, preview = false, onError}: {config: Wal
         });
         return () => canvas.disconnect(signal);
     }, [preview]);
+    useEffect(() => {
+        const canvas = canvasRef.current, style = designStyle(config.style);
+        if (!canvas || paused || config.mode !== 'design' || !isMotion(style)) return;
+        // One timer at a time, re-armed after each frame so the pace follows the power source (checked every 30 s). Frames are drawn at
+        // a low priority: input and the panel always go first.
+        let source = 0, battery = readOnBattery(), checked = GLib.get_monotonic_time();
+        const frame = () => {
+            source = 0;
+            if (canvas.get_mapped()) canvas.queue_draw();
+            if (GLib.get_monotonic_time() - checked > 30e6) { battery = readOnBattery(); checked = GLib.get_monotonic_time(); }
+            source = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, motionInterval(style, battery), frame);
+            return GLib.SOURCE_REMOVE;
+        };
+        source = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, motionInterval(style, battery), frame);
+        return () => { if (source) GLib.source_remove(source); };
+    }, [config.mode, config.style, paused]);
     useEffect(() => {
         const cancel = new Gio.Cancellable();
         setPicture(null); onError?.('');
@@ -92,8 +62,9 @@ export function WallpaperCanvas({config, preview = false, onError}: {config: Wal
         const width = canvas.get_allocated_width(), height = canvas.get_allocated_height();
         if (config.mode === 'design') {
             if (preview) {
-                context.save(); context.scale(width / 1920, height / 1080);
-                drawBackground(canvas, context, config, {width: 1920, height: 1080});
+                // The preview is a few hundred pixels wide: draw it at 720p, not full HD.
+                context.save(); context.scale(width / 1280, height / 720);
+                drawBackground(canvas, context, config, {width: 1280, height: 720});
                 context.restore(); return false;
             }
             return drawBackground(canvas, context, config);
@@ -108,11 +79,11 @@ export function WallpaperCanvas({config, preview = false, onError}: {config: Wal
         return false;
     }} />;
 }
-export function BackgroundView({config, widgets = {}, changed, desktopKey = 'default'}: {config: BackgroundConfig | WallpaperConfig; widgets?: SettingsValues; changed?(values: SettingsValues): void; desktopKey?: string}) {
-    return <EventBox expand fill hexpand vexpand><Overlay id="desktop-widgets" expand fill hexpand vexpand><WallpaperCanvas config={{mode: 'design', imagePath: '', fit: 'cover', ...config}} /><DesktopWidgets key={desktopKey} values={widgets} changed={changed} /></Overlay></EventBox>;
+export function BackgroundView({config, widgets = {}, changed, desktopKey = 'default', paused = false}: {config: BackgroundConfig | WallpaperConfig; widgets?: SettingsValues; changed?(values: SettingsValues): void; desktopKey?: string; paused?: boolean}) {
+    return <EventBox expand fill hexpand vexpand><Overlay id="desktop-widgets" expand fill hexpand vexpand><WallpaperCanvas paused={paused} config={{mode: 'design', imagePath: '', fit: 'cover', ...config}} /><DesktopWidgets key={desktopKey} values={widgets} changed={changed} /></Overlay></EventBox>;
 }
-export function mountBackground(window: Gtk.ApplicationWindow, config: BackgroundConfig, widgets: SettingsValues = {}, changed?: (values: SettingsValues) => void, desktopKey = 'default') {
+export function mountBackground(window: Gtk.ApplicationWindow, config: BackgroundConfig, widgets: SettingsValues = {}, changed?: (values: SettingsValues) => void, desktopKey = 'default', paused = false) {
     const root = createRoot(window);
-    root.render(<BackgroundView config={config} widgets={widgets} changed={changed} desktopKey={desktopKey} />);
+    root.render(<BackgroundView config={config} widgets={widgets} changed={changed} desktopKey={desktopKey} paused={paused} />);
     return root;
 }

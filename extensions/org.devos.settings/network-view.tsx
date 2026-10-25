@@ -1,12 +1,14 @@
-import {React, Box, Label, Button, Image, ScrolledWindow, Gtk, useState, useEffect} from '@dev-os/core';
+import {React, Box, Label, Button, Image, ScrolledWindow, Gtk} from '@dev-os/core';
 import {WifiSettings} from './wifi-view.js';
 import {NativeNetworkSettings, type NativeNetworkPage} from './network-pages.js';
 import {ProxySettings} from './proxy-view.js';
-export type NetworkPage = 'network' | 'wifi' | 'proxy' | NativeNetworkPage;
-export const isNetworkPage = (page: string): page is NetworkPage => ['network','wifi','vpn','hotspot','airplane','proxy','advanced'].includes(page);
+import {ConnectivitySettings} from './connectivity-view.js';
+export type NetworkPage = 'network' | 'wifi' | 'proxy' | 'connectivity' | NativeNetworkPage;
+export const isNetworkPage = (page: string): page is NetworkPage => ['network','wifi','connectivity','vpn','hotspot','airplane','proxy','advanced'].includes(page);
 
 export const networkPages = [
     {id: 'wifi', title: 'Wi-Fi', icon: 'network-wireless-symbolic', description: 'Nearby networks, saved connections and signal strength'},
+    {id: 'connectivity', title: 'Connectivity', icon: 'network-transmit-symbolic', description: 'TaskFirst traffic priority and WiFi SmartConnect'},
     {id: 'vpn', title: 'VPN', icon: 'network-vpn-symbolic', description: 'Add and manage your VPN connections'},
     {id: 'hotspot', title: 'Mobile hotspot', icon: 'network-wireless-hotspot-symbolic', description: 'Share your internet connection with other devices'},
     {id: 'airplane', title: 'Airplane mode', icon: 'airplane-mode-symbolic', description: 'Manage wireless radios and airplane mode'},
@@ -16,6 +18,7 @@ export const networkPages = [
 
 export function NetworkSettings({page, navigate}: {page: NetworkPage; navigate(page: string): void}) {
     if (page === 'proxy') return <ProxySettings back={() => navigate('network')} />;
+    if (page === 'connectivity') return <ConnectivitySettings back={() => navigate('network')} />;
     if (page !== 'network' && page !== 'wifi') return <NativeNetworkSettings key={page} page={page} back={() => navigate('network')} />;
     if (page === 'wifi') return <Box orientation="vertical" expand fill>
         <Box className="network-breadcrumb" spacing={6}>

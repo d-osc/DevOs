@@ -7,9 +7,10 @@ import {
 import {ROOT} from '@dev-os/config';
 import {clockFormat} from '@dev-os/extensions';
 import type {DeviceControls, DeviceState} from './devices.js';
-import {PanelBattery} from './battery-view.js';
+import {PanelBattery, PanelFullCharge} from './battery-view.js';
+import type {BatteryCareControls} from '../org.devos.settings/battery-care.js';
 import {batteryPresentation} from './battery.js';
-import {windowGroup, type WindowControls, type DesktopWindow, type KeyboardLayout} from '@dev-os/services/windows';
+import {windowGroup, builtinWindowApp, type WindowControls, type DesktopWindow, type KeyboardLayout} from '@dev-os/services/windows';
 import {findDesktopApp, desktopApps as installedDesktopApps} from '@dev-os/services/apps';
 import {panelOptions, type PanelOptions} from './options.js';
 import {Accounts, type AccountResult} from '../org.devos.settings/accounts.js';
@@ -44,6 +45,8 @@ export interface PanelApplication {
     showSettings?(): void;
     showWifi?(): void;
     showLanguage?(): void;
+    /** Charge-limit controls for the quick Instant Full-Charge switch; defaults to the real helper. */
+    batteryCare?: BatteryCareControls;
     showTime?(): void;
     switchUser?(username?: string): void;
     showAccounts?(): void;
@@ -134,7 +137,7 @@ export function PanelLanguageChoices({layouts, choose, settings}: {layouts: read
         <Label className="popup-title" xalign={0}>Keyboard language</Label>
         {layouts.map(layout => <Button key={layout.index} id={`panel-language-${layout.index}`} className={layout.active ? 'language-selected' : ''} onClicked={() => choose(layout.index)}><Box spacing={10}><Label widthChars={3}>{keyboardLabel(layout.name)}</Label><Label xalign={0} expand>{layout.name}</Label>{layout.active && <Image iconName="emblem-ok-symbolic" pixelSize={14} />}</Box></Button>)}
         {!layouts.length && <Label className="popup-muted" xalign={0} wrap>Restart the DevOs session to load the language indicator.</Label>}
-        {settings && <Button id="panel-language-settings" onClicked={settings}><Box spacing={8}><Image iconName="preferences-system-symbolic" pixelSize={16} /><Label>Language settings</Label></Box></Button>}
+        {settings && <Button id="panel-language-settings" onClicked={settings}><Box spacing={8}><Image iconName="dev-os-settings-symbolic" pixelSize={16} /><Label>Language settings</Label></Box></Button>}
     </Box>;
 }
 export function PanelLanguage({controls, showSettings, position}: {controls?: WindowControls; showSettings?(): void; position?: 'top' | 'bottom'}) {
@@ -149,7 +152,7 @@ function QuickSettings({application, device}: {application: PanelApplication; de
     const controls = application.devices;
     return <Box className="quick-settings" orientation="vertical" spacing={18} borderWidth={20} widthRequest={320}>
         <Box><Label className="popup-title" xalign={0} expand>Quick settings</Label>
-            {application.showSettings && <Button className="popup-icon" tooltip="Settings" onClicked={() => application.showSettings?.()}><Image iconName="preferences-system-symbolic" pixelSize={18} /></Button>}
+            {application.showSettings && <Button className="popup-icon" tooltip="Settings" onClicked={() => application.showSettings?.()}><Image iconName="dev-os-settings-symbolic" pixelSize={18} /></Button>}
         </Box>
         <Box spacing={10} homogeneous>
             <Button id="panel-wifi" className={`device-tile ${device.wifi ? 'device-on' : ''}`} sensitive={(!!application.showWifi || device.wifi !== null) && !device.busy}
@@ -176,6 +179,7 @@ function QuickSettings({application, device}: {application: PanelApplication; de
         </Box>
         {device.brightness == null && <Label className="popup-muted" wrap xalign={0}>Brightness unavailable: no kernel backlight device.</Label>}
         {(device.batteryFound || device.acFound) && <Label className="popup-muted" xalign={0}>{batteryPresentation(device.battery, device.batteryStatus, {found: device.batteryFound, acOnline: device.acOnline}).tooltip}</Label>}
+        {device.batteryFound && <PanelFullCharge controls={application.batteryCare} />}
         {device.error && <Label className="error" wrap xalign={0}>{device.error}</Label>}
     </Box>;
 }
@@ -244,15 +248,16 @@ function PanelView({application, monitor, message}: {application: PanelApplicati
     return <Box className="panel-content" spacing={options.spacing} marginStart={6} marginEnd={6}>
         <Box spacing={options.itemSpacing} valign="center">
 
-            <Button id="panel-menu" className="panel-app menu-button" tooltip="Applications · Super / Windows" onClicked={() => application.launcher.toggle(monitor)}><Image iconName="view-app-grid-symbolic" pixelSize={options.iconSize} /></Button>
+            <Button id="panel-menu" className="panel-app menu-button" tooltip="Applications · Super / Windows" onClicked={() => application.launcher.toggle(monitor)}><Image iconName="dev-os-symbolic" pixelSize={options.iconSize} /></Button>
             {application.toggleTaskView && <Button id="panel-task-view" className="panel-app" tooltip="Task View · Super + Tab" onClicked={() => application.toggleTaskView!(monitor)}><Image iconName="view-grid-symbolic" pixelSize={options.iconSize} /></Button>}
-            {options.showPinned && <TaskButton application={application} id="panel-terminal" title="Terminal" iconName="utilities-terminal-symbolic" windows={groups.get('terminal') ?? []} launch={() => application.runCommand('terminal')} />}
-            {options.showPinned && <TaskButton application={application} id="panel-files" title="Files" iconName="folder-symbolic" windows={groups.get('files') ?? []} launch={() => application.runCommand('files')} />}
+            {options.showPinned && <TaskButton application={application} id="panel-terminal" title="Terminal" iconName="dev-os-terminal-symbolic" windows={groups.get('terminal') ?? []} launch={() => application.runCommand('terminal')} />}
+            {options.showPinned && <TaskButton application={application} id="panel-files" title="Files" iconName="dev-os-files-symbolic" windows={groups.get('files') ?? []} launch={() => application.runCommand('files')} />}
             {[...groups].filter(([group]) => !options.showPinned || !['terminal', 'files'].includes(group)).map(([group, items]) => {
                 const desktop = findDesktopApp(desktopApps, group);
-                const icon = group === 'settings' ? null : desktop?.get_icon();
-                return <TaskButton key={group} application={application} id={`panel-task-${items[0].id}`} title={desktop?.get_display_name() || items[0].title || group}
-                    gicon={icon} iconName={group === 'settings' ? 'preferences-system-symbolic' : group === 'terminal' ? 'utilities-terminal-symbolic' : group === 'files' ? 'folder-symbolic' : 'application-x-executable-symbolic'} windows={items} />;
+                const builtin = builtinWindowApp(group);
+                const icon = builtin ? null : desktop?.get_icon();
+                return <TaskButton key={group} application={application} id={`panel-task-${items[0].id}`} title={builtin?.title || desktop?.get_display_name() || items[0].title || group}
+                    gicon={icon} iconName={builtin?.icon || 'application-x-executable-symbolic'} windows={items} />;
             })}
         </Box>
         <Box expand />

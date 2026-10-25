@@ -1,0 +1,14 @@
+{
+  "id": "org.devos.displaycare",
+  "name": "Display Care",
+  "description": "OLED care effects: Pixel refresh screen saver, Target Mode and Adaptive Edge Brightness dimming layers.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.displaycare.js",
+  "order": 45,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": []
+}

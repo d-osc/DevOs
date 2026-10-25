@@ -1,0 +1,6 @@
+#!/usr/bin/env d
+# Stage independent DevOs Live USB inputs; never open a physical disk.
+# Usage: d distro/usb/prepare.dev -- prepare|check|build|export|diagnose|firmware-check [--output DIR] [--images DIR] [--kernel FILE]
+#          [--rootfs FILE] [--kernel-bundle DIR] [--firmware DIR] [--export-directory DIR] [--busybox FILE]
+use "../usb/usbimage.dev" as image
+return image.main()

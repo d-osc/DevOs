@@ -10,6 +10,13 @@ function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget i
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 const index = readJson(`${ROOT}/data/icons/fa/index.json`) as {mapping: Record<string, string>; sets: Record<string, number>};
 const names = Object.keys(index.mapping).map(name => `${name}-symbolic`);
+const appIcons = Object.keys(index.mapping).filter(name => name.startsWith('dev-os-'));
+const theme = Gtk.IconTheme.get_default(); theme.prepend_search_path(`${ROOT}/data/icons`);
+assert(appIcons.length === 11, 'All eleven base applications use assets/ outlines');
+for (const name of appIcons) {
+    for (const suffix of ['', '-symbolic']) assert(theme.load_icon(`${name}${suffix}`, 48, Gtk.IconLookupFlags.FORCE_SIZE), `${name}${suffix} loads in GTK`);
+    assert(resolveIcon(`${name}-symbolic`, DEFAULT_CHOICE), `${name} resolves through the selected Font Awesome pack`);
+}
 
 // Pack/style table matches the files generated from assets/.
 const combos = PACKS.flatMap(pack => PACK_STYLES[pack].map(style => `${pack}-${style}`)).sort();

@@ -266,8 +266,8 @@ export function SettingsView({services, initialPage = 'system', onPageChanged}: 
 }
 export function mountSettings(window: Gtk.ApplicationWindow, services: SettingsServices) {
     const root = createRoot(window);
-    const header = mountWindowHeader(window, {title: 'Settings', iconName: 'preferences-system-symbolic',
-        windowIconName: 'preferences-system', iconId: 'settings-window-icon'});
+    const header = mountWindowHeader(window, {title: 'Settings', iconName: 'dev-os-settings-symbolic',
+        windowIconName: 'dev-os-settings', iconId: 'settings-window-icon'});
     let generation = 0;
     let lastPage = 'system';
     const show = (page?: string) => {
@@ -277,5 +277,9 @@ export function mountSettings(window: Gtk.ApplicationWindow, services: SettingsS
         root.render(<SettingsView key={++generation} services={services} initialPage={target} onPageChanged={value => {lastPage = value;}} />); window.show(); window.present();
     };
     show();
-    return {show, destroy: () => { root.unmount(); header.destroy(); }};
+    // Closing Settings only hides the window. Unmount the pages then: every card polls its helper (battery, fan, swap, audio, ...)
+    // and holds its widgets, and none of that should run or stay in memory while nobody can see it. show() mounts a fresh view.
+    let alive = true;
+    window.connect('hide', () => { if (alive) { generation++; root.render(<></>); } });
+    return {show, destroy: () => { alive = false; root.unmount(); header.destroy(); }};
 }

@@ -1,8 +1,10 @@
 import {React, Gtk, Box, Label, Button, Image, ScrolledWindow} from '@dev-os/core';
 import {AudioSettings} from '../org.devos.settings/audio-view.js';
 import type {AudioControls} from '../org.devos.settings/audio.js';
+import {MicNoiseSettings} from '../org.devos.settings/mic-noise-view.js';
+import type {MicNoiseControls} from '../org.devos.settings/mic-noise.js';
 
-export function MicrophoneSettings({open, controls}: {open(): void; controls?: AudioControls}) {
+export function MicrophoneSettings({open, controls, noise}: {open(): void; controls?: AudioControls; noise?: MicNoiseControls}) {
     return <Box className="settings-content microphone-settings-page" orientation="vertical" expand fill>
         <Box className="settings-page-header" orientation="vertical" spacing={6}>
             <Label className="settings-eyebrow" xalign={0}>AUDIO / VOICE &amp; RECORDING</Label>
@@ -20,6 +22,7 @@ export function MicrophoneSettings({open, controls}: {open(): void; controls?: A
                     </Box>
                 </Box>
                 <AudioSettings inputOnly controls={controls} />
+                <MicNoiseSettings controls={noise} />
                 <Box className="settings-card microphone-test-card" orientation="vertical" spacing={14}>
                     <Box spacing={12}><Image iconName="audio-volume-high-symbolic" pixelSize={22} /><Box orientation="vertical" spacing={5} expand><Label className="section-heading" xalign={0}>Hear how you sound</Label><Label className="settings-description" xalign={0} wrap>Watch the live input meter, then record a short sample.</Label></Box></Box>
                     <Box><Button id="microphone-settings-open" className="suggested-action" onClicked={open}><Box spacing={9}><Image iconName="media-record-symbolic" pixelSize={16} /><Label>Open Microphone</Label></Box></Button></Box>

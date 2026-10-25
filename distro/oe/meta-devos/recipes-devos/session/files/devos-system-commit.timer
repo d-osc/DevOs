@@ -1,0 +1,9 @@
+[Unit]
+Description=Check once after boot whether a system update started correctly
+
+[Timer]
+OnBootSec=90
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

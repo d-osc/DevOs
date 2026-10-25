@@ -8,7 +8,6 @@ export function splitInput(input: CommandInput) {
 }
 const arguments_: Record<string, Record<string, string>> = {
     git: {status: 'Show working tree changes', diff: 'Inspect changes', log: 'Show commit history', add: 'Stage files', commit: 'Create a commit', branch: 'List or manage branches', switch: 'Switch branches', checkout: 'Switch branches or restore files', pull: 'Fetch and integrate changes', push: 'Push commits', fetch: 'Fetch remote changes', clone: 'Clone a repository', restore: 'Restore working tree files'},
-    npm: {install: 'Install dependencies', run: 'Run a package script', test: 'Run tests', start: 'Start the application', ci: 'Install locked dependencies', build: 'Build the package', init: 'Create package.json'},
     systemctl: {status: 'Show service status', start: 'Start a service', stop: 'Stop a service', restart: 'Restart a service', enable: 'Enable at boot', disable: 'Disable at boot', 'list-units': 'List units', 'list-unit-files': 'List installed units'},
     ip: {address: 'Show or configure addresses', link: 'Show or configure interfaces', route: 'Show or configure routes'},
     nmcli: {device: 'Manage network devices', connection: 'Manage saved connections', general: 'Show network status', radio: 'Manage wireless radios'},

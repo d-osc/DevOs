@@ -9,51 +9,32 @@ SHA-256 verification and provenance recorded in `/usr/share/devlang` and
 `/usr/share/gh`. GitHub CLI uses the system CA store and Git for repository
 operations.
 
-### Language toolchains
+### Not in the image
 
-The OpenEmbedded `devos-image` (not the minimal `distro/base` console
-initramfs, which carries no Git either) also installs, from the pinned
-openembedded-core / meta-openembedded (`meta-oe`) layers:
+To keep the image small the desktop image no longer ships VS Code, Google Chrome,
+Rust (`rustc`, `cargo`, the Rust standard library and the LLVM it pulled in), Node.js,
+`nvm`, Python (interpreter, `pip`, `venv`) and the GCC toolchain that Rust required.
+QEMU was never part of the image; it only runs on the development host (`qemu.ps1`,
+the `devos-qemu` MCP server). Install language toolchains per user or on the host
+instead. DevLang (`d`) is the project's scripting and native language and stays in
+the image.
 
-- Python 3.14 with `pip`, `venv`, `ensurepip` and the full stdlib
-- Node.js 22 with `npm`/`npx`
-- Rust 1.94 (`rustc`) and `cargo`; OE's `rust` package also pulls in
-  `gcc`, `g++` and `binutils` so cargo can link.
+The Settings helpers `dev-os-display-care`, `dev-os-keyboard`, `dev-os-microphone`,
+`dev-os-speaker` and `dev-os-touchpad-gestures` were Python scripts and are now DevLang
+programs (`lib/*.dev`, started by small `sh` launchers in `bin/`, because `d` takes
+program arguments only after `--`). `lib/hw.dev` (processes, JSON state, numbers),
+`lib/pwaudio.dev` (PipeWire graph) and `lib/wayland.dev` (Wayland wire protocol over
+libc FFI, including SCM_RIGHTS) are shared. The image installs no `python3-*` package, and
+`bbappend`s in `recipes-support/nopython` drop the optional `python3-core` dependency of
+`btrfs-tools`, `xfsprogs`, `libpwquality` and `ibus`. `tests/oe-image-toolchains.test.py`
+guards this.
 
-Verify on a booted image:
+## Desktop applications
 
-```sh
-python3 --version && python3 -m pip --version && python3 -m venv /tmp/v
-node --version && npm --version
-rustc --version && cargo --version
-```
-
-Cost: expect roughly +1 GB of rootfs (rustc/std ~400 MB, gcc/g++ ~250 MB,
-Node ~100 MB, Python modules already shipped) and, on a cold sstate cache,
-several extra hours of build time (target `rust` and `nodejs` compile
-LLVM/V8; `rust-native` is also built). Warm sstate rebuilds are fast.
-`IMAGE_ROOTFS_EXTRA_SPACE` already leaves headroom. These sizes are estimates
-until measured from a real build.
-
-## Bundled desktop applications
-
-The `devos-image` desktop image includes Google Chrome 155.0.8059.84 and
-Microsoft Visual Studio Code 1.142.0. Both appear in Applications, run as the
-session user, and use native Wayland. `code .` opens the current directory.
-The small console recovery image does not include graphical applications.
-
-The recipes in `distro/oe/meta-devos/recipes-apps/vendor/` support ARM64 and x64.
-They fetch official vendor packages using pinned release URLs and SHA-256
-checksums, and copy only application files/icons/MIME data into the image.
-Debian package installation scripts, repositories and a Debian root filesystem
-are not included. OpenEmbedded builds the runtime libraries as part of DevOs.
-X11 client libraries are included because the vendor binaries link them, while
-the launchers select Wayland. Chromium/Electron sandboxing remains enabled.
-Chrome uses GTK desktop integration; its optional Qt5/Qt6 theme adapters are
-omitted because this image does not ship either Qt runtime. Both vendor packages
-declare their Bash launcher and hicolor icon theme dependencies.
-The vendor recipes retain upstream binaries and their included license notices;
-their recipe license is `CLOSED`, separate from DevOs and upstream runtime libraries.
+The `devos-image` desktop ships only Dev OS's own apps (Terminal, Editor, Files,
+Settings, Camera, Task Manager and so on). The Editor is a Monaco editor hosted in
+WebKitGTK (`dist/editor`), not VS Code. The native Dev OS Browser uses WebKitGTK with tabs, web search and navigation. Open it from the Launcher or run `dev-os-shell browser`. The small console recovery image does not
+include graphical applications.
 
 Build the desktop image normally:
 
@@ -63,46 +44,8 @@ Build the desktop image normally:
 .\distro.ps1 desktop-build
 ```
 
-Updating the bundled versions requires updating each recipe's version/URL and
-both architecture checksums, then rebuilding the image. The image does not use
-the vendor apt repository for updates.
-
-For the WSL development host, `dev.ps1 run` calls
-`tools/setup/bootstrap-desktop-apps.sh` as WSL root only to prepare missing Linux
-applications. Those apt-based helpers are for the host, not the target OS.
-VS Code lives in `/usr/lib/devos-vscode`, with `/usr/share/code` linking there.
-The recipe removes foreign-architecture search tools and rebuilds the bundled
-seccomp helper from source for the target, using libseccomp-native to generate
-its BPF filter. Architecture and library-location QA remain enabled.
-VS Code uses `/usr/share/code/bin/code`; DevOs owns its `/usr/bin/code` wrapper
-in the target to avoid recursion and select Wayland. The upstream `code.desktop`
-entry is hidden in favor of the DevOs entry to avoid duplicate launcher results.
-
 Validation:
 
 - `bash distro/oe/build.sh --parse` checks recipes and the image dependency graph.
-- `d tools/test/vendor-apps-packaging.dev -- /var/tmp/devos-vendor-apps`
-  validates both architectures' official archives/checksums and executes the
-  actual recipe install bodies in temporary roots, including sandbox permissions.
-  This also requires `apply-seccomp-arm64` and `apply-seccomp-amd64` in that
-  directory, copied from each target recipe's build output (`apply-seccomp`).
-- `d tools/test/bundled-apps-smoke.dev --` opens isolated Chrome and VS Code
-  profiles inside a private DevOs Wayland session, verifies both native windows,
-  captures screenshots in `build/bundled-apps/`, and closes only its own processes.
+- `python3 tests/oe-image-toolchains.test.py` checks that the removed components stay out of `IMAGE_INSTALL`.
 - A full image build and target boot are separate from development-host testing.
-
-Official package sources: [Chrome for Linux](https://www.google.com/chrome/)
-and [VS Code for Linux](https://code.visualstudio.com/docs/setup/linux).
-
-Chrome launcher actions use `bin/dev-os-browser`. WSL uses `--disable-gpu`
-to avoid inaccessible EGL devices in nested sessions; native Linux keeps its
-normal GPU selection. `DEV_OS_BROWSER_SOFTWARE_RENDERING=0` overrides this,
-and `1` forces software rendering. The browser sandbox remains enabled.
-
-The compositor skips persistent close-animation buffer caches for Chrome,
-Chromium and VS Code. Keeping those client buffers locked can prevent their next
-frame from being submitted. Opening animations remain enabled; closing uses
-whatever live scene data is still available at unmap.
-
-Run `d tools/test/bundled-apps-smoke.dev -- --web` to verify that a real Chrome
-Wayland window loads GitHub sign-in over HTTPS with an isolated test profile.

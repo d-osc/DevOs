@@ -5,6 +5,8 @@ logdir=${XDG_STATE_HOME:-$HOME/.local/state}/devos
 mkdir -p "$logdir"
 # Clear text left on the login VT before Wayland takes over.
 if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
+# Boot animation milestone (fire-and-forget, a no-op without the splash): the session is starting.
+command -v devos-splash >/dev/null 2>&1 && devos-splash --step session || true
 exec >>"$logdir/devos-greeter.log" 2>&1
 # The QEMU TCG runner exposes a 2D virtio GPU without accelerated EGL.
 case " $(cat /proc/cmdline) " in
@@ -14,6 +16,11 @@ export DEV_OS_ROOT=/usr/share/dev-os
 export GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland
 export XDG_DATA_DIRS=/usr/share/dev-os/data:/usr/local/share:/usr/share
 if [ "${1:-}" = --ui ]; then
+    # Continue the boot animation as a window over the compositor until the login screen says it is ready.
+    if [ -d /run/devos-splash.d ] && [ -r /usr/libexec/devos-splash-window.js ]; then
+        devos-splash --step compositor || true
+        gjs -m /usr/libexec/devos-splash-window.js >/dev/null 2>&1 &
+    fi
     polkit-gnome-authentication-agent-1 &
     agent=$!
     trap 'kill "$agent" 2>/dev/null || true' EXIT

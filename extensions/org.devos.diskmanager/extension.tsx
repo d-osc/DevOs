@@ -43,7 +43,7 @@ export default {id: 'org.devos.diskmanager', activate(context) {
     context.registerCommand('disk-manager', () => {
         context.invoke('launcher.hide'); if (window) {window.present(); return;}
         window = new Gtk.ApplicationWindow({application: context.application, title: 'Disk Manager', default_width: 1040, default_height: 720}); window.name = 'disk-manager';
-        const controls = new Disks(), root = createRoot(window), header = mountWindowHeader(window, {title: 'Disk Manager', iconName: 'drive-harddisk-symbolic'});
+        const controls = new Disks(), root = createRoot(window), header = mountWindowHeader(window, {title: 'Disk Manager', iconName: 'dev-os-disk-manager-symbolic', windowIconName: 'dev-os-disk-manager'});
         root.render(<DiskManager controls={controls}/>); window.connect('destroy', () => {root.unmount(); header.destroy(); controls.destroy(); window = undefined;}); window.show_all(); window.present();
     }); return () => window?.destroy();
 }} satisfies UIExtension;

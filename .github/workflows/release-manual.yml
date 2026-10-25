@@ -1,0 +1,277 @@
+name: Build and publish DevOs release
+
+# Manual release with notes from $RELEASE_NOTES_DIR/<version>.md (the tag-triggered "Publish Dev OS release" in
+# release.yml reads docs/releases/<tag>.md too). Publishes, for the dispatched ref:
+#   dev-os-linux-x64.tar.gz, dev-os-linux-arm64.tar.gz   update packages for Settings > Updates (tools/build/release.ts)
+#   devos-<version>-runtime.tar.gz                       desktop payload for the OpenEmbedded image (tools/release/package.py)
+#   devos-<version>-source.tar.gz
+#   dev-os-patch-<from>-to-<version>-<platform>.tar.gz   file-level patch from the previous release (when it has a manifest)
+#   SHA256SUMS (every asset) and, when the DEVOS_UPDATE_SIGNING_KEY secret is set, SHA256SUMS.sig (Ed25519)
+# Settings > Updates reads these (docs/updates.md describes the format and the trust model).
+# Optional, on a self-hosted ARM64 runner (inputs build_image / build_system_bundle; the OpenEmbedded build needs 100+ GB, hours and the
+# kernel bundle and firmware that are not in the repository, so a GitHub-hosted runner cannot do it):
+#   devos-live-<version>-arm64-ux3407na.img.zst.part-NN  the Live USB image, zstd-compressed and split below the 2 GiB asset limit
+#   dev-os-system-linux-arm64.tar.gz + .json             system update (boot image, kernel modules, firmware) for Settings > Updates
+#   IMAGE-INFO.txt                                       how to join and verify the parts
+# tools/release/build-image-release.sh does the work (same steps as tools/live/release-live-usb.ps1); see docs/releases/README.md.
+# The archives include the Font Awesome files (assets/, data/icons/fa/) like every other tracked file.
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      build_image:
+        default: false
+        type: boolean
+      build_system_bundle:
+        default: false
+        type: boolean
+      image_runner:
+        default: '["self-hosted","linux","ARM64","devos-image"]'
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag such as v0.3.7 (vMAJOR.MINOR.PATCH, must equal package.json, must not exist yet)
+        required: true
+        type: string
+      build_image:
+        description: Also build the Live USB image on the self-hosted runner and publish it in parts (hours; needs the runner)
+        required: false
+        default: false
+        type: boolean
+      build_system_bundle:
+        description: Also build the system update (kernel/boot image, modules, firmware) on the self-hosted runner
+        required: false
+        default: false
+        type: boolean
+      image_runner:
+        description: Runner labels (JSON array) of the ARM64 build host for the two options above
+        required: false
+        default: '["self-hosted","linux","ARM64","devos-image"]'
+        type: string
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  # Directory of <version>.md release notes; tools/release/package.py reads the same variable.
+  RELEASE_NOTES_DIR: docs/releases
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check version and release notes
+        run: python tools/release/package.py check --version "$RELEASE_VERSION"
+      - name: Refuse a version that is already tagged
+        if: github.event_name != 'push'
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_VERSION" >/dev/null; then
+            echo "::error::Tag $RELEASE_VERSION already exists; bump package.json to a new version"
+            exit 1
+          fi
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+            archives: true
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            archives: false
+    runs-on: ${{ matrix.runner }}
+    env:
+      DEV_OS_RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
+      - name: Install pinned DevLang tool runtime
+        run: |
+          machine=$(uname -m)
+          case "$machine" in
+            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
+            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
+            *) exit 1 ;;
+          esac
+          archive="devlang-d-v0.5.5-linux-$arch.tar.gz"
+          curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/v0.5.5/$archive"
+          printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/devlang-d-v0.5.5-linux-$arch" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: npm run build
+      - name: Package the update archive
+        run: node tools/build/release.ts
+      - name: Build a patch from the previous release
+        # Optional: users on the previous version download a few MB instead of the full package. No previous release, or
+        # one from before manifests existed, simply means no patch; the full package is always published.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          package="build/release/dev-os-$PLATFORM.tar.gz"
+          previous=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          if [ -z "$previous" ]; then echo "::notice::No previous release, so no patch for $PLATFORM"; else
+            mkdir -p build/previous
+            if gh release download "$previous" --pattern "dev-os-$PLATFORM.tar.gz" --dir build/previous                && tar -tzf "build/previous/dev-os-$PLATFORM.tar.gz" dev-os/manifest.json >/dev/null 2>&1; then
+              gjs -m dist/make-patch.js --from "build/previous/dev-os-$PLATFORM.tar.gz" --to "$package" --output build/release
+            else
+              echo "::notice::$previous has no $PLATFORM package with a manifest, so no patch"
+            fi
+          fi
+          # SHA256SUMS of this runner's files (the publish job checks every artifact against it).
+          (cd build/release && sha256sum dev-os-*.tar.gz > SHA256SUMS)
+      - name: Package runtime and source archives
+        if: matrix.archives
+        run: python tools/release/package.py build --version "$RELEASE_VERSION" --output build/release-devos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: build/release/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.archives
+        with:
+          name: release-devos
+          path: build/release-devos/
+          if-no-files-found: error
+  image:
+    # Needs a self-hosted ARM64 Linux runner with the build tools (docs/releases/README.md) and the repository variables
+    # DEVOS_KERNEL_BUNDLE and DEVOS_FIRMWARE_DIR (paths on that host). Skipped unless one of the inputs is set.
+    needs: checks
+    if: ${{ inputs.build_image || inputs.build_system_bundle }}
+    runs-on: ${{ fromJSON(inputs.image_runner) }}
+    timeout-minutes: 1440
+    env:
+      DEV_OS_RELEASE_VERSION: ${{ inputs.version }}
+      DEVOS_KERNEL_BUNDLE: ${{ vars.DEVOS_KERNEL_BUNDLE }}
+      DEVOS_FIRMWARE_DIR: ${{ vars.DEVOS_FIRMWARE_DIR }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm ci
+      - name: Install image build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0
+      - name: Build the image and the system update
+        env:
+          BUILD_IMAGE: ${{ inputs.build_image }}
+          BUILD_SYSTEM_BUNDLE: ${{ inputs.build_system_bundle }}
+        run: |
+          flags=""
+          if [ "$BUILD_IMAGE" != "true" ]; then flags="$flags --no-image"; fi
+          if [ "$BUILD_SYSTEM_BUNDLE" != "true" ]; then flags="$flags --no-bundle"; fi
+          rm -rf build/release-image
+          # shellcheck disable=SC2086
+          bash tools/release/build-image-release.sh --version "$RELEASE_VERSION" --output build/release-image $flags
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image
+          path: build/release-image/
+          if-no-files-found: error
+  publish:
+    needs: [build, image]
+    # The image job is optional: publish when the packages built and the image job either succeeded or was not requested.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.image.result == 'success' || needs.image.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+      - name: Assemble verified assets
+        shell: python
+        env:
+          BUILD_IMAGE: ${{ inputs.build_image }}
+          BUILD_SYSTEM_BUNDLE: ${{ inputs.build_system_bundle }}
+        run: |
+          from pathlib import Path
+          import hashlib, shutil, subprocess
+          destination=Path('publish');destination.mkdir()
+          for manifest in sorted(Path('release-assets').rglob('SHA256SUMS')):
+              for line in manifest.read_text().splitlines():
+                  digest,name=line.split('  ',1)
+                  source=(manifest.parent/name).resolve()
+                  if not source.is_relative_to(manifest.parent.resolve()) or hashlib.sha256(source.read_bytes()).hexdigest()!=digest:
+                      raise SystemExit('Invalid artifact checksum')
+                  if (destination/name).exists():raise SystemExit('Duplicate release asset')
+                  shutil.copy2(source,destination/name)
+          assets=sorted(destination.iterdir())
+          version=__import__('os').environ['RELEASE_VERSION']
+          required={'dev-os-linux-x64.tar.gz','dev-os-linux-arm64.tar.gz','devos-%s-runtime.tar.gz'%version[1:],'devos-%s-source.tar.gz'%version[1:]}
+          if __import__('os').environ['BUILD_SYSTEM_BUNDLE'] == 'true':
+              required.update({'dev-os-system-linux-arm64.tar.gz', 'dev-os-system-linux-arm64.json'})
+          if __import__('os').environ['BUILD_IMAGE'] == 'true':
+              required.update({'IMAGE-INFO.txt', 'devos-live-%s-arm64-ux3407na.img.zst.part-00'%version[1:]})
+          import re
+          patch=re.compile(r'dev-os-patch-\d+\.\d+\.\d+-to-%s-linux-(x64|arm64)\.tar\.gz'%re.escape(version[1:]))
+          image=re.compile(r'devos-live-%s-arm64-ux3407na\.img\.zst\.part-\d\d|IMAGE-INFO\.txt|dev-os-system-linux-arm64\.(tar\.gz|json)'%re.escape(version[1:]))
+          extra=[x.name for x in assets if x.name not in required]
+          # Everything beyond the four required archives must be a patch to this very version, an image part or the system update.
+          if not required<={x.name for x in assets} or any(not (patch.fullmatch(name) or image.fullmatch(name)) for name in extra):
+              raise SystemExit('Unexpected release assets: %s'%', '.join(x.name for x in assets))
+          for asset in assets:
+              if asset.stat().st_size>=2**31:raise SystemExit(asset.name+' exceeds the 2 GiB release asset limit')
+          (destination/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in assets))
+      - name: Sign SHA256SUMS
+        # Ed25519 over the checksum file (see docs/updates.md). Installed systems that ship a public key in
+        # data/update-keys/ only accept signed releases, so a repository with a key must also have the secret.
+        env:
+          DEVOS_UPDATE_SIGNING_KEY: ${{ secrets.DEVOS_UPDATE_SIGNING_KEY }}
+        run: |
+          set -eu
+          keys=$(ls data/update-keys/*.pub 2>/dev/null || true)
+          if [ -z "${DEVOS_UPDATE_SIGNING_KEY:-}" ]; then
+            if [ -n "$keys" ]; then echo "::error::data/update-keys has a public key but the DEVOS_UPDATE_SIGNING_KEY secret is not set; installed systems would refuse this release"; exit 1; fi
+            echo "::warning::DEVOS_UPDATE_SIGNING_KEY is not set: SHA256SUMS is not signed (checksum-only updates)"
+            exit 0
+          fi
+          umask 077
+          key=$(mktemp)
+          printf '%s\n' "$DEVOS_UPDATE_SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -inkey "$key" -rawin -in publish/SHA256SUMS -out publish/SHA256SUMS.sig
+          rm -f "$key"
+          # Never publish a signature the shipped public key would reject (wrong or rotated secret).
+          for pub in $keys; do
+            if openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in publish/SHA256SUMS -sigfile publish/SHA256SUMS.sig >/dev/null; then ok=1; fi
+          done
+          if [ -n "$keys" ] && [ -z "${ok:-}" ]; then echo "::error::The signature does not verify with data/update-keys/*.pub"; exit 1; fi
+      - name: Publish release after every architecture passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [ "$GITHUB_EVENT_NAME" = push ]; then flags=(--verify-tag); fi
+          gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA" --title "DevOs $RELEASE_VERSION" --notes-file "$RELEASE_NOTES_DIR/$RELEASE_VERSION.md" "${flags[@]}"

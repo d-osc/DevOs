@@ -1,0 +1,9 @@
+#!/bin/sh
+# Launcher for lib/keyboard-cli.dev (DevLang takes program arguments only after `--`; the implementation is DevLang, no Python).
+self=$(readlink -f "$0")
+here=$(dirname "$self")
+DEVOS_SELF=$self
+export DEVOS_SELF
+d=$(command -v d || true)
+[ -n "$d" ] || d=${HOME:-/root}/.local/bin/d
+exec "$d" "$here/../lib/keyboard-cli.dev" -- "$@"

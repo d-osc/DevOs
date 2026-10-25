@@ -1,4 +1,4 @@
-import {familyPalettes, palettes, type Palette, type ThemeFamily, type ThemeName} from './theme-palette.js';
+import {familyPalettes, type Palette, type ThemeFamily, type ThemeName} from './theme-palette.js';
 export {familyPalettes, palettes, paletteSources, syntaxRules, type Palette, type PaletteToken, type ThemeFamily, type ThemeName, type TokenRule} from './theme-palette.js';
 
 export type ThemeMode = 'auto' | 'dark' | 'light';
@@ -101,6 +101,8 @@ export function themeTokens(name: ThemeName, family: ThemeFamily = 'vscode'): st
         s0: p.s0, s1: p.s1, s2: p.s2, s3: p.s3, s4: p.s4, s5: p.s5,
         s6: 'mix(@dv_s5, @dv_fg, 0.10)', s7: 'mix(@dv_s5, @dv_fg, 0.22)',
         line0: p.line0, line1: p.line1, line2: 'mix(@dv_line1, @dv_line3, 0.5)', line3: p.line3,
+        // Hairlines for surface edges: the foreground at a few percent, so they read the same on every surface level.
+        border: `alpha(@dv_fg, ${name === 'dark' ? 0.12 : 0.14})`, border_soft: `alpha(@dv_fg, ${name === 'dark' ? 0.08 : 0.10})`,
         fg: p.fg, fg_strong: p.fgStrong, fg_muted: p.fgMuted, fg_dim: p.fgDim,
         accent: p.accent, accent_hover: p.accentHover, accent_fg: p.accentFg, on_accent: p.onAccent, focus: p.focus, badge: p.badge,
         accent_t1: tint('s2', 'accent', 0.14), accent_t2: tint('s2', 'accent', 0.22), accent_t3: tint('s2', 'accent', 0.34), accent_t4: tint('s2', 'accent', 0.5),

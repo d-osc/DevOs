@@ -1,0 +1,92 @@
+#!/usr/bin/env d
+# Verify camera dependencies, or apply them to a NEW private source copy.
+#
+# Usage: d prepare-source.dev -- --source DIR [--output NEWDIR]
+# Does not compile a kernel, enable a board sensor or change boot media.
+use "std/crypto"
+use "std/fs"
+use "std/json"
+use "std/module"
+use "std/path"
+use "std/strings"
+use "std/result"
+use "../../../tools/lib/tool.dev" as tool
+use "../../../lib/desktop.dev" as util
+
+fn here(): str { return path.dirname(tool.resolve(module.entry())) }
+
+fn digest(file: str): str {
+    return hex(crypto.hash("sha256", fs.read_bytes(file)))
+}
+fn hex(bytes: Vec<u8>): str {
+    let digits = "0123456789abcdef"
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let value = bytes[i] as i64
+        out = out + strings.charAt(digits, value / 16) + strings.charAt(digits, value % 16)
+    }
+    return out
+}
+
+# The series.json record after checking every pinned file, patch checksum and patch target.
+fn validate(source: str): json.Value {
+    let record = json.parse(tool.read(here() + "/series.json"))
+    let files = json.get(record, "sourceFiles")
+    let names = json.keys(files)
+    for i in 0..(names.len() as i64) {
+        let relative = names[i]
+        let expected = json.string(json.get(files, relative))
+        let actual = fs.is_file(source + "/" + relative) ? digest(source + "/" + relative) : ""
+        tool.require(strings.equal(actual, expected), "Wrong or modified pinned source: " + relative)
+    }
+    let patches = json.get(record, "patches")
+    for p in 0..(json.len(patches) as i64) {
+        let patch = json.at(patches, p)
+        let file = here() + "/" + json.string(json.get(patch, "file"))
+        tool.require(strings.equal(digest(file), json.string(json.get(patch, "sha256"))), "Camera patch checksum mismatch: " + json.string(json.get(patch, "file")))
+        let lines = strings.split(tool.read(file), "\n")
+        for l in 0..(lines.len() as i64) {
+            if !strings.startsWith(lines[l], "--- a/") { continue }
+            let relative = strings.substring(lines[l], 6, strings.charLength(lines[l]))
+            tool.require(json.has(files, relative), "Unexpected patch target: " + relative)
+        }
+    }
+    return record
+}
+
+fn applyIn(tree: str, record: json.Value) {
+    # `patch` runs in the tree: the tool wrapper has no cwd, so go through sh.
+    let patches = json.get(record, "patches")
+    for p in 0..(json.len(patches) as i64) {
+        let file = here() + "/" + json.string(json.get(json.at(patches, p), "file"))
+        tool.checked(Vec<str>("sh", "-c", "cd " + util.quote(tree) + " && patch --batch --forward --fuzz=0 -p1 -i " + util.quote(file)), Map<str,str>(), "", 120000)
+    }
+}
+
+fn main(): i32 {
+    let source = tool.resolve(tool.option("--source", ""))
+    tool.require(strings.charLength(tool.option("--source", "")) > 0, "--source is required")
+    let output = tool.option("--output", "")
+    let record = validate(source)
+    tool.scope("devos-camera-check-", fn(directory: str) {
+        let names = json.keys(json.get(record, "sourceFiles"))
+        for i in 0..(names.len() as i64) {
+            let target = directory + "/" + names[i]
+            tool.exec(Vec<str>("mkdir", "-p", path.dirname(target)))
+            tool.copy(source + "/" + names[i], target)
+        }
+        applyIn(directory, record)
+    })
+    if strings.charLength(output) > 0 {
+        let destination = tool.resolve(output)
+        tool.require(!fs.existsSync(destination) && !strings.equal(destination, source) && !strings.startsWith(destination, source + "/"), "Choose a new output directory outside the original source")
+        tool.exec(Vec<str>("cp", "-a", "--", source, destination))
+        applyIn(destination, record)
+        tool.write(destination + "/devos-camera-provenance.json", json.pretty(record) + "\n")
+    }
+    validate(source)   # The pinned original must remain unchanged.
+    print("PASS: all ${json.len(json.get(record, "patches"))} camera dependency patches apply without fuzz; original source unchanged.")
+    print("INCOMPLETE: UX3407NA board sensor/power/CSI graph and physical capture validation still required.")
+    return 0
+}
+return tool.main(main)

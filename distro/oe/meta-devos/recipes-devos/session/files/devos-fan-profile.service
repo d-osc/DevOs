@@ -1,0 +1,12 @@
+[Unit]
+Description=DevOs fan profile (Performance / Standard / Whisper)
+After=local-fs.target power-profiles-daemon.service
+ConditionPathExists=/usr/libexec/devos-fan-profile
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=/usr/libexec/devos-fan-profile apply
+
+[Install]
+WantedBy=multi-user.target

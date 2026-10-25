@@ -1,0 +1,318 @@
+#!/bin/sh
+# System updates: kernel + initramfs + bootloader stub (the unified kernel image on the EFI system partition), firmware,
+# kernel modules and system files under /usr. Installed as /usr/libexec/devos-system-update (polkit org.devos.system.update)
+# and used by dev-os-system-update; the boot-time devos-system-commit.service runs `commit`.
+# Usage: devos-system-update status | apply --archive FILE --name ASSET --sha256 HEX [--sums FILE --sig FILE]
+#                           | commit | cancel | rollback                                  (JSON on stdout, exit 1 on failure)
+#
+# Bundle (tar.gz, top directory dev-os-system/):  system.list (the only manifest this script reads), esp/<path under the ESP>,
+# root/<path under />.  system.list lines:
+#   format 1 | version X.Y.Z | platform linux-arm64 | kernel <uname -r of the bundled kernel or empty> | min X.Y.Z
+#   components kernel initramfs bootloader firmware packages
+#   F esp|root 644|755 <sha256> <size> <path>      a file    R <path>   a root file to delete
+#
+# Safety model
+#  * Everything is copied to a root-owned staging directory first and verified there (hash of the archive, Ed25519 signature
+#    of SHA256SUMS when /usr/share/dev-os/data/update-keys has a key, tar listing, every file against system.list, free space).
+#  * Paths are allow-listed: ESP files only EFI/DEVOS/*.EFI; root files only below usr/ (never the polkit actions, this script
+#    or setuid modes). Links, devices and absolute or .. paths are refused.
+#  * Root files that are replaced or removed are backed up first; any failure restores them and changes nothing else.
+#  * The new boot image is installed next to the current one (EFI/DEVOS-NEXT) and started ONCE with BootNext. The current
+#    entry stays the default, so a kernel that does not boot falls back to the old one at the next power cycle. After a
+#    successful boot `commit` promotes it. Without efibootmgr/UEFI variables it replaces in place (previous kept as .prev).
+#  * Never touched: partitions, other EFI entries (Windows), the Live USB (refused), anything outside the allow-list.
+# Test hooks: DEVOS_SYS_ROOT, DEVOS_SYS_ESP, DEVOS_SYS_STATE, DEVOS_SYS_KEYS, DEVOS_SYS_LIVE=0|1, DEVOS_SYS_EFIBOOTMGR (command or
+# "none"), DEVOS_SYS_UNAME_R, DEVOS_SYS_MACHINE, DEVOS_SYS_BOOT_ID, DEVOS_SYS_OSRELEASE, DEVOS_SYS_ESP_SOURCE, DEVOS_SYS_SYSFS,
+# DEVOS_SYS_FREE_KB (both file systems), DEVOS_SYS_ALLOW_USER=1, DEVOS_SYS_FAIL_AFTER=<step> (failure injection).
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+ROOT=${DEVOS_SYS_ROOT:-}
+STATE=${DEVOS_SYS_STATE:-/var/lib/devos-system}
+ESP=${DEVOS_SYS_ESP:-/boot/efi}
+KEYS=${DEVOS_SYS_KEYS:-/usr/share/dev-os/data/update-keys}
+EFIBOOTMGR=${DEVOS_SYS_EFIBOOTMGR:-efibootmgr}
+OPENSSL=${DEVOS_SYS_OPENSSL:-openssl}
+OSRELEASE=${DEVOS_SYS_OSRELEASE:-/etc/os-release}
+SYSFS=${DEVOS_SYS_SYSFS:-/sys}
+NEXT=EFI/DEVOS-NEXT
+
+json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' '; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$(json "$1")"; exit 1; }
+get() { [ -f "$STATE/state" ] && sed -n "s/^$1=//p" "$STATE/state" | tail -1; }
+put() { # put key value: rewrite one key, atomically
+    mkdir -p "$STATE" || return 1
+    { [ -f "$STATE/state" ] && grep -v "^$1=" "$STATE/state"; [ -n "$2" ] && printf '%s=%s\n' "$1" "$2"; } > "$STATE/state.tmp" 2>/dev/null
+    mv -f "$STATE/state.tmp" "$STATE/state"
+}
+machine() { case "${DEVOS_SYS_MACHINE:-$(uname -m)}" in x86_64) echo linux-x64 ;; aarch64) echo linux-arm64 ;; *) echo unsupported ;; esac; }
+kernel() { echo "${DEVOS_SYS_UNAME_R:-$(uname -r)}"; }
+boot_id() { echo "${DEVOS_SYS_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)}"; }
+is_live() { [ "${DEVOS_SYS_LIVE:-}" = 1 ] || { [ -z "${DEVOS_SYS_LIVE:-}" ] && [ -d /run/devos-live ]; }; }
+semver() { printf '%s' "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; }
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
+installed_version() {
+    v=$(get version)
+    [ -n "$v" ] || v=$(sed -n 's/^VERSION_ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$OSRELEASE" 2>/dev/null | head -n 1)
+    semver "$v" || v=0.0.0
+    echo "$v"
+}
+have_efi() { [ "$EFIBOOTMGR" != none ] && command -v "$EFIBOOTMGR" >/dev/null 2>&1 && { [ -n "${DEVOS_SYS_ESP_SOURCE:-}" ] || [ -d /sys/firmware/efi ]; }; }
+esp_ready() { [ -d "$ESP/EFI" ]; }
+free_kb() { [ -n "${DEVOS_SYS_FREE_KB:-}" ] && { echo "$DEVOS_SYS_FREE_KB"; return; }; df -Pk "$1" | awk 'END {print $4}'; }
+need_root() { [ "$(id -u)" = 0 ] || [ "${DEVOS_SYS_ALLOW_USER:-}" = 1 ] || fail "Administrator access is required."; }
+step() { [ "${DEVOS_SYS_FAIL_AFTER:-}" = "$1" ] && return 1; return 0; }
+
+ok_root_path() {
+    printf '%s' "$1" | grep -Eq '^usr/(lib|bin|sbin|libexec|share)/[A-Za-z0-9._+@/-]+$' || return 1
+    case "$1" in
+        *..*|*//*|usr/libexec/devos-system-update|usr/share/polkit-1/*|usr/lib/polkit-1/*|usr/lib/systemd/system/devos-system-*) return 1 ;;
+    esac
+}
+ok_esp_path() { printf '%s' "$1" | grep -Eq '^EFI/DEVOS/[A-Za-z0-9._-]+\.EFI$'; }
+
+status() {
+    live=false; is_live && live=true
+    efi=false; have_efi && efi=true
+    esp=false; esp_ready && esp=true
+    pending=$(get pending); can=false
+    [ -n "$(get previous_version)" ] && [ -d "$STATE/backup" ] && can=true
+    printf '{"ok":true,"version":"%s","kernel":"%s","machine":"%s","live":%s,"efi":%s,"esp":%s,"safeBoot":%s,"pending":"%s","pendingKernel":"%s","canRollback":%s,"lastError":"%s","signed":%s}\n' \
+        "$(installed_version)" "$(kernel)" "$(machine)" "$live" "$efi" "$esp" "$efi" "$(json "$pending")" "$(json "$(get pending_kernel)")" "$can" "$(json "$(get last_error)")" \
+        "$(ls "$KEYS"/*.pub >/dev/null 2>&1 && echo true || echo false)"
+}
+
+restore_root() { # put every backed-up root file back and delete the ones the update created
+    [ -d "$STATE/backup" ] || return 0
+    if [ -f "$STATE/backup/created" ]; then
+        while IFS= read -r path; do [ -n "$path" ] && rm -f "$ROOT/$path"; done < "$STATE/backup/created"
+    fi
+    if [ -d "$STATE/backup/root" ]; then
+        (cd "$STATE/backup/root" && find . -type f | sed 's#^\./##') | while IFS= read -r path; do
+            mkdir -p "$ROOT/$(dirname "$path")"
+            cp -p "$STATE/backup/root/$path" "$ROOT/$path.restore.$$" && mv -f "$ROOT/$path.restore.$$" "$ROOT/$path"
+        done
+    fi
+}
+drop_next() { # remove the staged boot image and its firmware entry
+    num=$(get bootnum)
+    if [ -n "$num" ] && have_efi; then "$EFIBOOTMGR" -N >/dev/null 2>&1; "$EFIBOOTMGR" -B -b "$num" >/dev/null 2>&1; fi
+    rm -rf "$ESP/$NEXT"
+}
+
+apply() {
+    archive= name= sha= sums= sig=
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --archive) archive=$2 ;; --name) name=$2 ;; --sha256) sha=$2 ;; --sums) sums=$2 ;; --sig) sig=$2 ;;
+            *) fail "Unknown option $1" ;;
+        esac
+        shift 2 || fail "Missing value"
+    done
+    need_root
+    is_live && fail "Live USB is not updated in place: write a newer Dev OS image instead."
+    [ -f "$archive" ] || fail "The update file was not found."
+    printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+\.tar\.gz$' || fail "Invalid update file name."
+    printf '%s' "$sha" | grep -Eq '^[a-f0-9]{64}$' || fail "A SHA-256 of the update file is required."
+    [ -z "$(get pending)" ] || fail "A system update is waiting for a restart. Restart first, then check again."
+    mkdir -p "$STATE" && mkdir "$STATE/lock" 2>/dev/null || fail "Another system update is running."
+    stage="$STATE/staging"
+    trap 'rm -rf "$STATE/lock" "$stage"' EXIT
+    rm -rf "$stage"; mkdir -p "$stage/x" || fail "Cannot create the staging directory."
+    cp "$archive" "$stage/bundle.tar.gz" || fail "Cannot copy the update file."
+    [ "$(sha256sum "$stage/bundle.tar.gz" | cut -d' ' -f1)" = "$sha" ] || fail "SHA-256 of the update file does not match."
+    # Signature: with a key shipped in the image only a correctly signed release installs.
+    keys=$(ls "$KEYS"/*.pub 2>/dev/null)
+    if [ -n "$keys" ]; then
+        [ -f "$sums" ] && [ -f "$sig" ] || fail "This system only installs signed updates: SHA256SUMS and SHA256SUMS.sig are required."
+        cp "$sums" "$stage/SHA256SUMS" && cp "$sig" "$stage/SHA256SUMS.sig" || fail "Cannot copy the signature files."
+        verified=
+        for key in $keys; do
+            "$OPENSSL" pkeyutl -verify -pubin -inkey "$key" -rawin -in "$stage/SHA256SUMS" -sigfile "$stage/SHA256SUMS.sig" >/dev/null 2>&1 && verified=1 && break
+        done
+        [ -n "$verified" ] || fail "The release signature is invalid (or openssl is missing). Nothing was changed."
+        listed=$(awk -v n="$name" '$2 == n {print $1}' "$stage/SHA256SUMS")
+        [ "$listed" = "$sha" ] || fail "The update file is not in the signed SHA256SUMS with this checksum."
+    elif [ -f "$sums" ]; then
+        listed=$(awk -v n="$name" '$2 == n {print $1}' "$sums")
+        [ -z "$listed" ] || [ "$listed" = "$sha" ] || fail "The update file does not match SHA256SUMS."
+    fi
+    # Archive: only files and directories under dev-os-system/, safe names, bounded size.
+    tar -tzf "$stage/bundle.tar.gz" > "$stage/names" 2>/dev/null && tar -tvzf "$stage/bundle.tar.gz" > "$stage/details" 2>/dev/null || fail "The update file is not a valid archive."
+    [ "$(wc -l < "$stage/names")" -le 200000 ] || fail "The update has too many files."
+    grep -Ev '^dev-os-system(/[A-Za-z0-9._+@/-]*)?$' "$stage/names" | grep -q . && fail "Unsafe path in the update."
+    grep -E '(^|/)\.\.?(/|$)' "$stage/names" | grep -q . && fail "Unsafe path in the update."
+    cut -c1 "$stage/details" | grep -Ev '^[-d]$' | grep -q . && fail "The update contains links or special files, which are not allowed."
+    tar -xzf "$stage/bundle.tar.gz" -C "$stage/x" --strip-components=1 --no-same-owner --no-same-permissions || fail "Could not unpack the update."
+    list="$stage/x/system.list"
+    [ -f "$list" ] || fail "The update has no system.list."
+    grep -q '^format 1$' "$list" || fail "Unsupported update format."
+    version=$(sed -n 's/^version //p' "$list"); platform=$(sed -n 's/^platform //p' "$list")
+    kern=$(sed -n 's/^kernel //p' "$list"); min=$(sed -n 's/^min //p' "$list"); components=$(sed -n 's/^components //p' "$list")
+    semver "$version" && semver "${min:-0.0.0}" || fail "The update has an invalid version."
+    [ "$platform" = "$(machine)" ] || fail "This update is for $platform; this computer is $(machine)."
+    case "$kern" in *[!A-Za-z0-9._+-]*) fail "Invalid kernel release in the update." ;; esac
+    current=$(installed_version)
+    newer "$version" "$current" || fail "System version $version is not newer than the installed $current."
+    [ -z "$min" ] || [ "$min" = 0.0.0 ] || [ "$min" = "$current" ] || newer "$current" "$min" || fail "This update needs system version $min first (installed: $current)."
+    : > "$stage/files"; : > "$stage/removes"; esp_total=0; root_total=0; has_esp=0
+    while IFS=' ' read -r kind area mode hash size path; do
+        case "$kind" in
+            F)
+                printf '%s' "$hash" | grep -Eq '^[a-f0-9]{64}$' && printf '%s' "$size" | grep -Eq '^[0-9]+$' || fail "Invalid file entry in the update."
+                case "$mode" in 644|755) ;; *) fail "Invalid file mode in the update." ;; esac
+                case "$area" in
+                    esp) ok_esp_path "$path" || fail "Path $path is not allowed on the EFI partition."; esp_total=$((esp_total + size)); has_esp=1 ;;
+                    root) ok_root_path "$path" || fail "Path $path is not allowed in the system."; root_total=$((root_total + size)) ;;
+                    *) fail "Invalid file area in the update." ;;
+                esac
+                printf '%s  %s/%s\n' "$hash" "$area" "$path" >> "$stage/files"
+                printf '%s %s %s %s\n' "$area" "$mode" "$path" "$hash" >> "$stage/plan" ;;
+            R) ok_root_path "$area" || fail "Path $area is not allowed in the system."; printf '%s\n' "$area" >> "$stage/removes" ;;
+        esac
+    done < "$list"
+    # The unpacked tree must be exactly what system.list says: contents and file set.
+    (cd "$stage/x" && sha256sum --check --quiet --strict "$stage/files" >/dev/null 2>&1) || fail "A file in the update does not match its checksum."
+    (cd "$stage/x" && find esp root -type f 2>/dev/null | sort) > "$stage/found"
+    sed 's/^[a-f0-9]* *//' "$stage/files" | sort > "$stage/expected"
+    cmp -s "$stage/found" "$stage/expected" || fail "The update contains files that system.list does not list."
+    # Space on both file systems, before anything is touched.
+    if [ "$has_esp" = 1 ]; then
+        esp_ready || fail "The EFI system partition is not mounted at $ESP."
+        [ "$(free_kb "$ESP")" -gt $((esp_total * 3 / 1024 + 8192)) ] || fail "Not enough free space on the EFI system partition (about $((esp_total * 3 / 1048576 + 8)) MB needed)."
+    fi
+    [ "$(free_kb "${ROOT:-/}")" -gt $((root_total * 2 / 1024 + 65536)) ] || fail "Not enough free disk space (about $((root_total * 2 / 1048576 + 64)) MB needed). Nothing was changed."
+    # 1. Back up what will be replaced or removed.
+    rm -rf "$STATE/backup"; mkdir -p "$STATE/backup/root"; : > "$STATE/backup/created"
+    if [ -f "$stage/plan" ]; then
+        while read -r area mode path hash; do
+            [ "$area" = root ] || continue
+            if [ -f "$ROOT/$path" ]; then mkdir -p "$STATE/backup/root/$(dirname "$path")"; cp -p "$ROOT/$path" "$STATE/backup/root/$path" || { rm -rf "$STATE/backup"; fail "Cannot back up $path."; }
+            else printf '%s\n' "$path" >> "$STATE/backup/created"; fi
+        done < "$stage/plan"
+    fi
+    while IFS= read -r path; do
+        [ -n "$path" ] && [ -f "$ROOT/$path" ] && { mkdir -p "$STATE/backup/root/$(dirname "$path")"; cp -p "$ROOT/$path" "$STATE/backup/root/$path"; }
+    done < "$stage/removes"
+    # 2. Root files: write beside, then rename.
+    applied=0
+    if [ -f "$stage/plan" ]; then
+        while read -r area mode path hash; do
+            [ "$area" = root ] || continue
+            if ! { mkdir -p "$ROOT/$(dirname "$path")" && install -m "$mode" "$stage/x/root/$path" "$ROOT/$path.new.$$" && mv -f "$ROOT/$path.new.$$" "$ROOT/$path"; }; then
+                rm -f "$ROOT/$path.new.$$"; restore_root; rm -rf "$STATE/backup"; fail "Could not write $path. The system was restored; nothing was changed."
+            fi
+            applied=$((applied + 1))
+        done < "$stage/plan"
+    fi
+    while IFS= read -r path; do [ -n "$path" ] && rm -f "$ROOT/$path"; done < "$stage/removes"
+    step root || { restore_root; rm -rf "$STATE/backup"; fail "Update interrupted after the system files. The system was restored."; }
+    # 3. Boot image: next to the current one, started once.
+    mode=none
+    if [ "$has_esp" = 1 ]; then
+        mode=inplace
+        rm -rf "$ESP/$NEXT"
+        copied=
+        while read -r area fmode path hash; do
+            [ "$area" = esp ] || continue
+            target="$ESP/$NEXT/${path#EFI/}"
+            mkdir -p "$(dirname "$target")" && cp "$stage/x/esp/$path" "$target" && [ "$(sha256sum "$target" | cut -d' ' -f1)" = "$hash" ] || copied=failed
+        done < "$stage/plan"
+        sync
+        if [ -n "$copied" ] || ! step esp; then
+            rm -rf "$ESP/$NEXT"; restore_root; rm -rf "$STATE/backup"
+            fail "Could not write the new boot image to the EFI partition. The system was restored; nothing was changed."
+        fi
+        if have_efi && [ -f "$ESP/$NEXT/DEVOS/DEVOS.EFI" ]; then
+            if bootnext_entry; then mode=bootnext; fi
+        fi
+    fi
+    if [ "$mode" = inplace ]; then promote; rm -rf "$ESP/$NEXT"; fi
+    put pending "$version"; put pending_kernel "$kern"; put pending_mode "$mode"; put pending_boot_id "$(boot_id)"; put pending_components "$components"
+    put previous_version "$current"; put last_error ""
+    printf '{"ok":true,"reboot":true,"version":"%s","kernel":"%s","components":"%s","safeBoot":%s,"files":%s}\n' \
+        "$(json "$version")" "$(json "$kern")" "$(json "$components")" "$([ "$mode" = bootnext ] && echo true || echo false)" "$applied"
+}
+
+bootnext_entry() { # create a firmware entry for the staged image and use it for the next boot only
+    src=${DEVOS_SYS_ESP_SOURCE:-$(findmnt -no SOURCE "$ESP" 2>/dev/null)}
+    base=${src##*/}
+    part=$(cat "$SYSFS/class/block/$base/partition" 2>/dev/null)
+    disk="/dev/$(basename "$(readlink -f "$SYSFS/class/block/$base/..")")"
+    if [ -z "${DEVOS_SYS_ESP_SOURCE:-}" ]; then [ -n "$part" ] && [ -b "$disk" ] || return 1
+    else part=${part:-1}; disk=${disk:-/dev/test}; fi
+    order=$("$EFIBOOTMGR" 2>/dev/null | sed -n 's/^BootOrder: *//p')
+    out=$("$EFIBOOTMGR" -c -d "$disk" -p "$part" -L "Dev OS (update)" -l '\EFI\DEVOS-NEXT\DEVOS\DEVOS.EFI' 2>/dev/null) || return 1
+    num=$(printf '%s\n' "$out" | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\* Dev OS (update).*/\1/p' | head -n 1)
+    [ -n "$num" ] || return 1
+    # `-c` puts the new entry first in the boot order; put the old order back so only BootNext selects it.
+    [ -n "$order" ] && "$EFIBOOTMGR" -o "$order" >/dev/null 2>&1
+    "$EFIBOOTMGR" -n "$num" >/dev/null 2>&1 || { "$EFIBOOTMGR" -B -b "$num" >/dev/null 2>&1; return 1; }
+    put bootnum "$num"
+}
+
+promote() { # make the staged boot image the permanent one; the old one stays as .prev
+    [ -d "$ESP/$NEXT" ] || return 0
+    (cd "$ESP/$NEXT" && find . -type f | sed 's#^\./##') | while IFS= read -r rel; do
+        final="$ESP/EFI/$rel"
+        mkdir -p "$(dirname "$final")"
+        [ -f "$final" ] && cp -p "$final" "$final.prev"
+        cp "$ESP/$NEXT/$rel" "$final.new" && mv -f "$final.new" "$final"
+        # The removable-media fallback path boots the same installed image.
+        if [ "$rel" = DEVOS/DEVOS.EFI ] && [ -d "$ESP/EFI/BOOT" ]; then
+            [ -f "$ESP/EFI/BOOT/BOOTAA64.EFI" ] && cp -p "$ESP/EFI/BOOT/BOOTAA64.EFI" "$ESP/EFI/BOOT/BOOTAA64.EFI.prev"
+            cp "$ESP/$NEXT/$rel" "$ESP/EFI/BOOT/BOOTAA64.EFI.new" && mv -f "$ESP/EFI/BOOT/BOOTAA64.EFI.new" "$ESP/EFI/BOOT/BOOTAA64.EFI"
+        fi
+    done
+    sync
+}
+
+commit() {
+    need_root
+    pending=$(get pending)
+    [ -n "$pending" ] || { printf '{"ok":true,"committed":false}\n'; exit 0; }
+    [ "$(boot_id)" != "$(get pending_boot_id)" ] || { printf '{"ok":true,"committed":false,"reason":"not restarted yet"}\n'; exit 0; }
+    want=$(get pending_kernel)
+    if [ -n "$want" ] && [ "$want" != "$(kernel)" ]; then
+        # The firmware fell back to the old boot image: the new kernel did not start. Undo the system files as well.
+        drop_next; restore_root; rm -rf "$STATE/backup"
+        put pending ""; put pending_kernel ""; put pending_mode ""; put bootnum ""; put pending_boot_id ""; put previous_version ""
+        put last_error "The system update to $pending did not start (running $(kernel), expected $want). The previous system was restored."
+        printf '{"ok":true,"committed":false,"rolledBack":true,"version":"%s"}\n' "$(json "$pending")"; exit 0
+    fi
+    mode=$(get pending_mode)
+    [ "$mode" = bootnext ] && promote
+    drop_next
+    put version "$pending"; put pending ""; put pending_kernel ""; put pending_mode ""; put bootnum ""; put pending_boot_id ""; put last_error ""
+    printf '{"ok":true,"committed":true,"version":"%s"}\n' "$(json "$pending")"
+}
+
+cancel() { # give up a not yet restarted update
+    need_root
+    [ -n "$(get pending)" ] || fail "No system update is waiting."
+    drop_next; restore_root; rm -rf "$STATE/backup"
+    put pending ""; put pending_kernel ""; put pending_mode ""; put bootnum ""; put pending_boot_id ""; put previous_version ""
+    printf '{"ok":true,"cancelled":true}\n'
+}
+
+rollback() { # undo the last committed system update; takes effect after a restart
+    need_root
+    is_live && fail "Live USB is not updated in place."
+    [ -z "$(get pending)" ] || fail "A system update is waiting for a restart; cancel it or restart first."
+    [ -n "$(get previous_version)" ] && [ -d "$STATE/backup" ] || fail "There is no system update to undo."
+    restore_root
+    for prev in "$ESP"/EFI/DEVOS/*.prev "$ESP"/EFI/BOOT/BOOTAA64.EFI.prev; do
+        [ -f "$prev" ] && mv -f "$prev" "${prev%.prev}"
+    done
+    sync
+    previous=$(get previous_version)
+    put version "$previous"; put previous_version ""; rm -rf "$STATE/backup"
+    printf '{"ok":true,"reboot":true,"version":"%s"}\n' "$(json "$previous")"
+}
+
+case "${1:-}" in
+    status) status ;;
+    apply) shift; apply "$@" ;;
+    commit) commit ;;
+    cancel) cancel ;;
+    rollback) rollback ;;
+    *) fail "Unsupported system update action." ;;
+esac

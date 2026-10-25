@@ -32,13 +32,15 @@ const linux = (argv: string[], input?: Buffer | string, timeoutMs?: number) =>
     windows ? run('wsl.exe', ['-d', distro, '--exec', ...argv], input, timeoutMs) : run(argv[0], argv.slice(1), input, timeoutMs);
 const text = (result: Result) => result.stdout.toString('utf8');
 
+// The bridge is a DevLang program: `d` takes program arguments only after `--`, and may live in ~/.local/bin (not on a non-login PATH).
+const devlang = (script: string, ...rest: string[]) => ['sh', '-c', 'd=$(command -v d || echo "$HOME/.local/bin/d"); exec "$d" "$@"', 'sh', script, '--', ...rest];
 let helperPath = '';
 async function helper() {
     if (helperPath) return helperPath;
-    const local = fileURLToPath(new URL('./qmp.py', import.meta.url));
+    const local = fileURLToPath(new URL('./qmp.dev', import.meta.url));
     if (!windows) return helperPath = local;
     const converted = await linux(['wslpath', '-a', local.replace(/\\/g, '/')]);
-    if (converted.code !== 0) throw new ToolError(`Cannot resolve qmp.py in WSL: ${converted.stderr}`);
+    if (converted.code !== 0) throw new ToolError(`Cannot resolve qmp.dev in WSL: ${converted.stderr}`);
     return helperPath = text(converted).trim();
 }
 
@@ -72,7 +74,7 @@ const need = async (path: string, label: string) => {
 };
 
 async function qmpSteps(name: string, steps: Json[], timeoutMs = 30000): Promise<Json[]> {
-    const result = await linux(['python3', await helper(), 'qmp', `${qemuPath(name)}/qmp.sock`], JSON.stringify(steps), timeoutMs);
+    const result = await linux(devlang(await helper(), 'qmp', `${qemuPath(name)}/qmp.sock`), JSON.stringify(steps), timeoutMs);
     if (result.code !== 0) {
         if (!await alive(name)) throw new ToolError(`VM "${name}" is not running.`);
         throw new ToolError(`QMP failed: ${text(result) || result.stderr}`);
@@ -299,7 +301,7 @@ const tools: {name: string; description: string; readOnly?: boolean; destructive
             const name = nameOf(args); await running(name);
             const data = String(args.text ?? '');
             if (!data || data.length > 1000) throw new ToolError('text must be 1-1000 characters.');
-            const result = await linux(['python3', await helper(), 'serial', `${qemuPath(name)}/serial.sock`], data);
+            const result = await linux(devlang(await helper(), 'serial', `${qemuPath(name)}/serial.sock`), data);
             if (result.code !== 0) throw new ToolError(`Serial write failed: ${text(result)}`);
             return [{type: 'text', text: `Sent ${data.length} characters to the serial console.`}];
         }},

@@ -1,0 +1,36 @@
+# Test driver for lib/keyboard.dev: runs a JSON script (DRIVER_SCRIPT) against the ambient-light state machine and prints one
+# result per "state" or "lux" step. Steps: write {path,text} | tick {times} | lastOn {value} | prefs {values} | state | lux.
+use "std/json"
+use "std/fs"
+use "std/strings"
+use "../../lib/keyboard.dev" as kbd
+use "../../lib/hw.dev" as hw
+
+fn main(): i32 {
+    let steps = json.parse(hw.env("DRIVER_SCRIPT"))
+    let b = kbd.newBacklight(kbd.findLed())
+    let out = json.array()
+    for i in 0..(json.len(steps) as i64) {
+        let step = json.at(steps, i)
+        let op = hw.jstr(step, "op", "")
+        if strings.equal(op, "write") { fs.writeFileSync(hw.jstr(step, "path", ""), hw.jstr(step, "text", "")) }
+        else if strings.equal(op, "tick") {
+            for t in 0..hw.jint(step, "times", 1) { b = kbd.sensorTick(b) }
+        }
+        else if strings.equal(op, "lastOn") { b.lastOn = hw.jint(step, "value", 0) }
+        else if strings.equal(op, "prefs") {
+            kbd.savePrefs(kbd.validate(hw.jget(step, "values")))
+            b = kbd.reload(b)
+        }
+        else if strings.equal(op, "state") {
+            out = json.push(out, json.set(json.set(json.object(), "level", kbd.getLevel(b.led)), "dark", b.dark))
+        }
+        else if strings.equal(op, "lux") {
+            let lux = kbd.readLux()
+            out = json.push(out, json.set(json.object(), "lux", lux.ok ? json.value(lux.value) : json.null_value()))
+        }
+    }
+    print(json.stringify(out))
+    return 0
+}
+return main()

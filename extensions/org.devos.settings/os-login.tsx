@@ -1,5 +1,7 @@
-import {React, Gtk, Gio, GLib, Box, Label, Button, Entry, ComboBoxText, ScrolledWindow, useEffect, useState} from '@dev-os/core';
+import {React, Gtk, Gio, GLib, Box, Label, Button, Entry, Image, ComboBoxText, ScrolledWindow, useEffect, useState} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
+import {powerCapabilities, requestPower, type PowerAction} from '../org.devos.panel/power.js';
+import {brandIcon} from './login-view.js';
 import {AccountAvatar} from './avatar.js';
 import {NewUserWizard} from './new-user.js';
 
@@ -35,7 +37,24 @@ export class GreeterBridge implements GreeterControls {
     destroy() {this.process.force_exit();}
 }
 
-export function OSLogin({onContinue, controls, createEnrollmentControls}: {onContinue(): void; controls?: GreeterControls; createEnrollmentControls?(): GreeterControls}) {
+export interface PowerControls {capabilities(): Promise<Record<PowerAction, boolean>>; request(action: PowerAction): Promise<void>;}
+const greeterPower: PowerControls = {capabilities: () => powerCapabilities(true), request: action => requestPower(action, true)};
+const powerLabels: Record<PowerAction, string> = {sleep: 'Sleep', restart: 'Restart', shutdown: 'Shutdown'};
+const powerIcons: Record<PowerAction, string> = {sleep: 'weather-clear-night-symbolic', restart: 'system-reboot-symbolic', shutdown: 'system-shutdown-symbolic'};
+// Restart and Shutdown confirm like the panel's power menu; Sleep is harmless and runs at once.
+export function GreeterPower({power}: {power: PowerControls}) {
+    const [available, setAvailable] = useState<Record<PowerAction, boolean>>({sleep: false, restart: false, shutdown: false});
+    const [selected, select] = useState<PowerAction | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
+    useEffect(() => {let alive = true; void power.capabilities().then(value => {if (alive) setAvailable(value);}).catch(() => undefined); return () => {alive = false;};}, [power]);
+    const run = (action: PowerAction) => {setBusy(true); setError(''); void power.request(action).then(() => select(null)).catch(reason => setError(String(reason))).finally(() => setBusy(false));};
+    return <Box className="login-power" orientation="vertical" spacing={8} halign="end">
+        <Box spacing={8} halign="end">{(Object.keys(powerLabels) as PowerAction[]).map(action => <Button key={action} id={`login-power-${action}`} className="login-secondary" sensitive={available[action] && !busy} tooltip={available[action] ? powerLabels[action] : `${powerLabels[action]} is unavailable on this system`} onClicked={() => {setError(''); if (action === 'sleep') run(action); else select(action);}}><Box spacing={6}><Image iconName={powerIcons[action]} pixelSize={16} /><Label>{powerLabels[action]}</Label></Box></Button>)}</Box>
+        {selected && <Box spacing={8} halign="end"><Label>{powerLabels[selected]} this device?</Label><Button id="login-power-cancel" sensitive={!busy} onClicked={() => select(null)}>Cancel</Button><Button id="login-power-confirm" className="login-primary" sensitive={!busy} onClicked={() => run(selected)}>{busy ? 'Please wait…' : powerLabels[selected]}</Button></Box>}
+        {!!error && <Label id="login-power-error" className="login-error" wrap maxWidthChars={44}>{error}</Label>}
+    </Box>;
+}
+
+export function OSLogin({onContinue, controls, createEnrollmentControls, power}: {onContinue(): void; controls?: GreeterControls; createEnrollmentControls?(): GreeterControls; power?: PowerControls}) {
     const [backend] = useState(() => controls ?? new GreeterBridge());
     const [state, setState] = useState<GreeterResult>({}), [username, setUsername] = useState(''), [password, setPassword] = useState('');
     const [busy, setBusy] = useState(true), [error, setError] = useState(''), [code, setCode] = useState('');
@@ -59,7 +78,7 @@ export function OSLogin({onContinue, controls, createEnrollmentControls}: {onCon
         return () => {alive = false; if (timer) GLib.source_remove(timer);};
     }, [code, backend]);
     return <Box className="login-screen" orientation="vertical" expand fill>
-        <Box className="login-topbar" spacing={10}><Label className="login-brand">D</Label><Label className="login-wordmark">DevOs</Label></Box>
+        <Box className="login-topbar" spacing={10}><Image className="login-brand" gicon={brandIcon} pixelSize={34} /><Label className="login-wordmark">DevOs</Label></Box>
         <ScrolledWindow expand fill hscrollbarPolicy={Gtk.PolicyType.NEVER}><Box orientation="vertical" valign="center" halign="center" expand fill marginTop={24} marginBottom={24}>
             <Box className="login-card" widthRequest={440} orientation="vertical" spacing={18}>
                 <Label className="login-eyebrow">YOUR PERSONAL WORKSPACE</Label><Label className="login-title">Sign in to DevOs</Label>
@@ -69,6 +88,7 @@ export function OSLogin({onContinue, controls, createEnrollmentControls}: {onCon
                         <Entry id="os-login-password" password text={password} placeholder="Local password" sensitive={!busy && !!username} onChanged={entry => setPassword(entry.get_text())} onActivate={() => {if (!busy && username && password) void perform('password');}} />
                         <Button id="os-login-local" className="login-primary" sensitive={!busy && !!username && !!password} onClicked={() => {void perform('password');}}>Sign in</Button>
                         <Button id="os-login-github" className="login-secondary" sensitive={!busy && !!username && username !== 'root'} onClicked={() => {void perform('begin');}}>Sign in with linked GitHub</Button>
+                        {state.liveRoot && username === 'root' && <Label id="os-login-live-hint" className="login-subtitle" wrap maxWidthChars={44}>Live USB only: sign in as root with the password "root". Installed systems keep root locked.</Label>}
                         <Label className="login-subtitle" wrap maxWidthChars={44}>Each user has a separate home folder. Link GitHub from Accounts after your first local sign-in.</Label>
                     </Box>}
                 </Box>}
@@ -77,6 +97,6 @@ export function OSLogin({onContinue, controls, createEnrollmentControls}: {onCon
                 <Button id="os-login-guest" className="login-secondary" sensitive={!busy && !code && !enrolling} onClicked={() => {void perform('guest');}}>Continue as Guest</Button>
             </Box>
         </Box></ScrolledWindow>
-        <Box className="login-bottom"><Label>DEVOS / LINUX USER LOGIN</Label></Box>
+        <Box className="login-bottom" spacing={12}><Label>DEVOS / LINUX USER LOGIN</Label><Box expand fill /><GreeterPower power={power ?? greeterPower} /></Box>
     </Box>;
 }

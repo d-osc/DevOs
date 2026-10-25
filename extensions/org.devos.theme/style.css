@@ -84,6 +84,8 @@ menu.files-context-menu menuitem:disabled, menu.desktop-context-menu menuitem:di
 #settings .settings-app-card { padding: 22px 18px; }
 #settings .settings-sidebar-compact button.settings-nav { padding: 4px 10px; }
 window#panel.panel-top { border-top: none; border-bottom: 1px solid @dv_line1; }
+window#panel.panel-translucent { background: alpha(@dv_s1, 0.72); }
+window#panel.panel-opaque { background: @dv_s1; }
 #panel .clock-single-line .clock-time { font-size: 12px; }
 #settings .panel-settings-stage { padding: 18px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); border: 1px solid @dv_line1; border-radius: 16px; }
 #settings .panel-preview-desktop { background: linear-gradient(135deg, @dv_accent_t3, @dv_s4 70%, @dv_s5); border: 1px solid @dv_line2; border-radius: 10px; }
@@ -333,6 +335,10 @@ window#settings { background: @dv_s1; color: @dv_fg_strong; }
 #settings .power-charge-bar progress { background: @dv_accent; border-radius: 5px; }
 #settings .touchpad-device { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 13px; padding: 20px; }
 #settings .touchpad-device-icon { background: @dv_accent_t3; border-radius: 13px; color: @dv_accent_fg; }
+#settings .tp-pad { background: @dv_s1; border: 1px solid @dv_line1; border-radius: 6px; }
+#settings .tp-zone { background: @dv_accent_t1; }
+#settings .tp-zone-on { background: @dv_accent_t3; }
+#settings .tp-zone-corner { border-radius: 0 5px 0 12px; }
 #settings .touchpad-option { padding: 17px 20px; }
 #settings .wifi-refresh { background: transparent; border-color: @dv_line1; padding: 9px 12px; }
 #settings .wifi-refresh label { font-size: 11px; }
@@ -420,6 +426,7 @@ window#settings { background: @dv_s1; color: @dv_fg_strong; }
 #settings .settings-saved { color: @dv_accent_fg; }
 #settings .settings-pending { color: @dv_warning; }
 #settings .error { color: @dv_error; font-size: 11px; }
+#settings .settings-notice { color: @dv_error; font-size: 11px; }
 #settings .settings-error-banner { color: @dv_error; background: @dv_s4; border: 1px solid @dv_error_t2; padding: 12px; border-radius: 8px; }
 #settings .settings-empty image { color: @dv_fg_muted; }
 #settings scrollbar { background: transparent; }
@@ -433,7 +440,7 @@ window#settings .app-titlebar button:hover { background: @dv_s4; }
 #settings .updates-command { background: @dv_s0; border: 1px solid @dv_line2; border-radius: 7px; padding: 10px; font-family: monospace; font-size: 11px; color: @dv_accent_fg; }
 window#files { background: @dv_s0; color: @dv_fg; }
 .app-titlebar {
-  background: @dv_s1; color: @dv_fg_strong; border-bottom: 1px solid @dv_accent_t4;
+  background: @dv_s1; color: @dv_fg_strong; border-bottom: 1px solid @dv_border;
   border-radius: 8px 8px 0 0; padding: 5px 8px; box-shadow: none; min-height: 24px;
 }
 #files .app-titlebar button, #settings .app-titlebar button, .app-titlebar button { background: transparent; border-color: transparent; padding: 4px 6px; }
@@ -648,7 +655,8 @@ window#launcher.animated-overlay, window#task-view.animated-overlay { background
 /* Standalone desktop welcome screen. */
 .login-screen { background: radial-gradient(ellipse at 15% 10%, alpha(@dv_accent_t4, 0.28), transparent 65%), linear-gradient(135deg, @dv_s0, @dv_s0 65%, @dv_s1); color: @dv_fg_strong; }
 .login-topbar { padding: 24px 36px; }
-.login-brand { background: @dv_accent; color: @dv_on_accent; border-radius: 10px; padding: 6px 12px; font-size: 19px; font-weight: 800; }
+.login-brand { background: transparent; }
+.about-brand image { border-radius: 10px; }
 .login-wordmark { font-size: 18px; font-weight: bold; letter-spacing: 1px; }
 .login-top-note { color: @dv_accent_fg; font-size: 12px; }
 .login-card { background: alpha(@dv_s2, 0.96); border: 1px solid @dv_line1; border-radius: 24px; padding: 30px 36px 22px; box-shadow: 0 18px 56px alpha(@dv_shadow, 0.28); }
@@ -702,7 +710,6 @@ button.login-primary:focus, button.login-secondary:focus { outline: 2px solid @d
 #settings .login-screen button.login-secondary:hover { background: @dv_s5; border-color: @dv_accent; }
 #settings .login-screen .login-eyebrow { color: @dv_accent_fg; }
 #settings .login-screen .login-subtitle { color: @dv_fg_muted; }
-#settings .login-screen .login-brand { color: @dv_on_accent; }
 
 /* Process monitor */
 #task-manager { background: @dv_s0; color: @dv_fg; }
@@ -881,3 +888,77 @@ window#snap { background: transparent; }
 #installer .installer-navigation { margin-top: 16px; }
 #installer progressbar trough { background: @dv_s3; min-height: 9px; border: 0; border-radius: 8px; }
 #installer progressbar progress { background: @dv_accent; min-height: 9px; border-radius: 8px; }
+/* Faint hairlines: every surface gets a 1px edge in the foreground at a few percent. Borders keep their width
+   (or are inset shadows), so nothing changes size. */
+window#settings, window#files, window#terminal, window#editor, window#task-manager, window#disk-manager, window#app-store, window.media-window { border: 1px solid @dv_border; }
+window#panel { border-color: @dv_border; }
+window#panel.panel-top { border-bottom-color: @dv_border; }
+.app-titlebar.tabbed-titlebar, #editor .app-titlebar.tabbed-titlebar, window#settings .app-titlebar { border-bottom-color: @dv_border; }
+menu, .popup menu, popover.background, popover contents, tooltip.background { border: 1px solid @dv_border; }
+.panel-popup, #panel .panel-popup { border-color: @dv_border; }
+#settings .settings-sidebar, #files .files-sidebar, #installer .installer-sidebar, .app-store-sidebar { border-color: @dv_border_soft; }
+#settings .settings-action-bar, #settings .settings-page-header, #files .files-toolbar, #files .files-statusbar, #editor .editor-status, .app-store-topbar { border-color: @dv_border_soft; }
+#settings .settings-card, #settings .wifi-radio-card, #settings .wifi-connection, #settings .wifi-network-list, #settings .power-mode, #settings .power-empty,
+.task-stat, .disk-summary, .disk-partition, .app-store-card, #app-store button.app-store-app, #installer .installer-info-card, #snap-panel .snap-group-card, #snap-panel button.snap-layout-card { border-color: @dv_border; }
+#settings .settings-card-header, #settings .field-divider, #settings .wifi-row-divider, #settings button.network-category-divider { border-color: @dv_border_soft; }
+#settings entry, #files entry, #launcher entry, #installer .installer-body entry, #task-manager entry, #app-store entry, #settings spinbutton { border-color: @dv_border; }
+#settings button, #files button, #task-manager button, #disk-manager button, #app-store button, #installer .installer-body button, .media-window .media-content button, .panel-popup button { border-color: @dv_border; }
+.panel-popup .alert-card, .panel-popup .device-tile, #settings .audio-empty, #settings .power-unavailable, #settings .touchpad-option, #launcher .launcher-workspace-item, #launcher .launcher-app-icon, #settings .about-card, #files .quick-search-notice { box-shadow: inset 0 0 0 1px @dv_border_soft; }
+#launcher row, #files row, #files flowboxchild, #launcher flowboxchild, #settings .settings-nav, #settings .wifi-network-row, button.task-process { border-color: @dv_border_soft; }
+
+/* Browser: quiet chrome and a native start page shared by light and dark themes. */
+window#browser { background: @dv_s1; color: @dv_fg; }
+#browser .app-titlebar.tabbed-titlebar { background: @dv_s1; border-bottom: none; min-height: 28px; padding: 0 6px; }
+#browser .window-tabs { padding: 0 4px; }
+#browser .window-tab { border-radius: 7px 7px 0 0; padding: 0; }
+#browser .window-tab-active { background: @dv_s2; border-color: @dv_line1; border-bottom-color: @dv_s2; }
+#browser .window-tab label { color: @dv_fg_muted; font-size: 11px; }
+#browser .window-tab-active label { color: @dv_fg_strong; }
+#browser .browser-toolbar { background: @dv_s2; padding: 5px 12px; border-bottom: 1px solid @dv_line1; }
+#browser .browser-toolbar button { background: transparent; background-image: none; color: @dv_fg_muted; border: 1px solid transparent; border-radius: 7px; box-shadow: none; min-width: 18px; min-height: 18px; padding: 4px; }
+#browser .browser-toolbar button:hover { background: @dv_s4; color: @dv_fg_strong; }
+#browser .browser-toolbar button:disabled { color: @dv_fg_dim; }
+#browser .browser-toolbar button:focus { border-color: @dv_accent; }
+#browser entry { background: @dv_s0; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 12px; padding: 9px 14px; min-height: 18px; box-shadow: none; caret-color: @dv_accent_fg; }
+#browser entry:focus { border-color: @dv_accent; box-shadow: 0 0 0 2px alpha(@dv_accent, 0.10); }
+#browser entry image { color: @dv_fg_muted; padding-right: 8px; }
+#browser .browser-shortcut { color: @dv_fg_dim; font-size: 10px; padding: 0 6px; }
+#browser .browser-progress trough { background: @dv_s2; border: 0; border-radius: 0; min-height: 2px; }
+#browser .browser-progress progress { background: @dv_accent; border: 0; border-radius: 0; min-height: 2px; }
+#browser .browser-start { background: linear-gradient(145deg, @dv_accent_t1, @dv_s0 60%); }
+#browser .browser-emblem { color: @dv_accent_fg; background: alpha(@dv_accent, 0.10); border: 1px solid alpha(@dv_accent, 0.18); border-radius: 24px; padding: 20px; }
+#browser .browser-eyebrow { color: @dv_accent_fg; font-size: 10px; font-weight: 700; letter-spacing: 3px; }
+#browser .browser-heading { color: @dv_fg_strong; font-size: 30px; font-weight: 600; letter-spacing: -1px; }
+#browser .browser-description { color: @dv_fg_muted; font-size: 12px; }
+#browser entry.browser-start-search { padding: 16px 20px; border-radius: 16px; background: @dv_s2; font-size: 14px; box-shadow: 0 8px 28px alpha(@dv_shadow, 0.10); }
+#browser button.browser-quicklink { background: @dv_s2; background-image: none; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 15px; padding: 20px 24px; min-width: 116px; box-shadow: none; }
+#browser button.browser-quicklink:hover { background: alpha(@dv_accent, 0.08); border-color: alpha(@dv_accent, 0.45); }
+#browser button.browser-quicklink:focus { border-color: @dv_accent; }
+#browser .browser-quicklink image { color: @dv_accent_fg; margin-bottom: 4px; }
+#browser .browser-link-title { color: @dv_fg_strong; font-size: 13px; font-weight: 600; }
+#browser .browser-quicklink .browser-description { font-size: 10px; }
+#browser .browser-footer { color: @dv_fg_dim; font-size: 10px; }
+#browser .browser-status { background: @dv_s2; color: @dv_error; padding: 8px 16px; border-top: 1px solid @dv_line1; font-size: 11px; }
+#browser .app-titlebar.tabbed-titlebar button { background: transparent; background-image: none; box-shadow: none; text-shadow: none; color: @dv_fg_muted; border: 1px solid transparent; border-radius: 7px; min-height: 18px; min-width: 18px; padding: 4px 6px; }
+#browser .app-titlebar.tabbed-titlebar button:hover { background: @dv_s4; color: @dv_fg_strong; }
+#browser .app-titlebar .tab-select { border: none; padding: 3px 8px; min-height: 16px; }
+#browser .app-titlebar .tab-close { padding: 3px; margin-right: 3px; }
+#browser .app-titlebar .tab-close:hover { background: alpha(@dv_error, 0.14); color: @dv_error; }
+
+#browser .browser-toolbar entry { padding: 5px 12px; min-height: 18px; border-radius: 9px; font-size: 12px; }
+#browser .app-titlebar.tabbed-titlebar { min-height: 26px; }
+#browser .app-titlebar.tabbed-titlebar .window-tab { margin: 0; padding: 0; }
+#browser .app-titlebar.tabbed-titlebar .tab-select { min-height: 16px; min-width: 0; padding: 2px 5px; margin: 0; }
+#browser .app-titlebar.tabbed-titlebar .tab-close { min-height: 12px; min-width: 12px; padding: 2px; margin: 0 3px 0 0; border: none; }
+#browser .app-titlebar.tabbed-titlebar .tab-add { min-height: 16px; min-width: 16px; padding: 2px 4px; margin: 0; }
+
+#browser-inspector, window#browser-devtools { background: @dv_s1; color: @dv_fg; }
+#browser-inspector .inspector-toolbar { background: @dv_s2; border-top: 1px solid @dv_border; border-bottom: 1px solid @dv_border; padding: 7px 12px; }
+#browser-inspector .inspector-title { color: @dv_accent_fg; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+#browser-inspector .inspector-location { color: @dv_fg_muted; font-size: 11px; }
+#browser-inspector .inspector-toolbar button { background: transparent; background-image: none; color: @dv_fg_muted; border: 1px solid @dv_line1; border-radius: 6px; box-shadow: none; padding: 4px 9px; min-height: 16px; font-size: 11px; }
+#browser-inspector .inspector-toolbar button:hover { background: @dv_s4; color: @dv_fg_strong; border-color: @dv_line3; }
+#browser-inspector .inspector-toolbar button:focus { border-color: @dv_accent; }
+#browser-inspector .inspector-toolbar button:disabled { color: @dv_fg_dim; }
+#browser-inspector .inspector-toolbar .inspector-close { border-color: transparent; min-width: 16px; padding: 3px; }
+#browser-inspector .inspector-toolbar .inspector-close:hover { background: alpha(@dv_error, 0.14); color: @dv_error; }

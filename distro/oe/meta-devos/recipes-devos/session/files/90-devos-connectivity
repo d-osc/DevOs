@@ -1,0 +1,4 @@
+#!/bin/sh
+# NetworkManager dispatcher: re-apply TaskFirst when an interface or the default route changes.
+case "$2" in up|down|dhcp4-change|dhcp6-change|connectivity-change) [ -x /usr/libexec/devos-connectivity ] && /usr/libexec/devos-connectivity apply >/dev/null 2>&1 ;; esac
+exit 0

@@ -5,6 +5,7 @@ import {layerWindow} from '@dev-os/services/layers';
 import {mountPanel} from './view.js';
 import {Devices} from './devices.js';
 import {panelOptions} from './options.js';
+import {attachPanelCare} from '../org.devos.displaycare/panel-care.js';
 import {preparePanelAppearance} from './appearance.js';
 import {createPanelMenu} from './context-menu.js';
 import {runCustomMenuItem} from '../org.devos.files/custom-menu.js';
@@ -16,6 +17,7 @@ export class Panel {
     private menu?: Gtk.Menu;
     private gesture: Gtk.GestureMultiPress;
     private preferencesCleanup: () => void;
+    private careCleanup: () => void;
     private disposed = false;
     constructor(context: UIContext, monitor: Gdk.Monitor) {
         const options = panelOptions(context.preferences.get('org.devos.panel').state.values, context.config().panel_height);
@@ -58,7 +60,8 @@ export class Panel {
         });
         this.preferencesCleanup = context.preferences.subscribe(() => {this.menu?.destroy(); this.menu = undefined;});
         this.window.show();
+        this.careCleanup = attachPanelCare(context, this.window, monitor, options.position, () => !!this.menu?.get_visible());
     }
     showMessage(message: string) { this.view.showMessage(message); }
-    destroy() { this.disposed = true; this.preferencesCleanup(); this.menu?.destroy(); this.gesture.run_dispose(); this.devices.destroy(); this.view.root.unmount(); this.window.destroy(); }
+    destroy() { this.disposed = true; this.careCleanup(); this.preferencesCleanup(); this.menu?.destroy(); this.gesture.run_dispose(); this.devices.destroy(); this.view.root.unmount(); this.window.destroy(); }
 }

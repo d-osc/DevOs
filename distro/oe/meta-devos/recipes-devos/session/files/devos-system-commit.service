@@ -1,0 +1,8 @@
+[Unit]
+Description=Finish a pending Dev OS system update (promote the new boot image after a good boot)
+ConditionPathExists=/var/lib/devos-system/state
+ConditionPathExists=/usr/libexec/devos-system-update
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/devos-system-update commit

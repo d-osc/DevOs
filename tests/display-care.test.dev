@@ -1,0 +1,256 @@
+# Tests bin/dev-os-display-care: state validation and persistence, the gamma ramp maths (tests/fixtures/display-care-driver.dev) and the
+# `serve` daemon against a fake Wayland compositor with wlr-gamma-control and ext-idle-notify.
+use "std/json"
+use "std/strings"
+use "std/test"
+use "../tests/lib/harness.dev" as harness
+use "../lib/hw.dev" as hw
+
+fn size(): i64 { return 256 }
+fn none(): Vec<str> { return Vec<str>() }
+fn text(value: json.Value, key: str): str { return hw.jstr(value, key, "") }
+fn flag(value: json.Value, key: str): bool { return hw.jbool(value, key, false) }
+fn defaults(): json.Value {
+    return json.parse("{\"splendid\":\"normal\",\"temperature\":0,\"eyeCare\":3,\"gamut\":\"native\",\"dimming\":100,\"pixelRefresh\":true,\"autoHidePanel\":false,\"panelTransparency\":true,\"targetMode\":false,\"edgeBrightness\":0}")
+}
+
+# Environment of the helper: config, runtime dir, a stub for the service starter and the backlight tool, a fake /sys.
+fn env(base: str, extra: Vec<str>): Vec<str> {
+    return hw.concat(Vec<str>("XDG_CONFIG_HOME=" + base + "/config", "XDG_RUNTIME_DIR=" + base + "/run", "WAYLAND_DISPLAY=wayland-missing", "DEVOS_DISPLAY_SPAWN=" + base + "/stub",
+        "DEVOS_DISPLAY_BACKLIGHT=" + base + "/stub", "DEVOS_DISPLAY_SYS=" + base + "/sys"), extra)
+}
+struct Done { code: i64, value: json.Value, err: str }
+fn helper(base: str, args: Vec<str>, extra: Vec<str>): Done {
+    let done = harness.sh(hw.concat(Vec<str>("sh", harness.root() + "/bin/dev-os-display-care"), args), env(base, extra))
+    return Done(done.code, json.valid(done.out) ? json.parse(done.out) : json.object(), done.err)
+}
+fn ok(base: str, args: Vec<str>): json.Value {
+    let done = helper(base, args, none())
+    harness.equalInt(done.code, 0, "dev-os-display-care " + strings.join(args, " "))
+    return done.value
+}
+fn a(x: str): Vec<str> { return Vec<str>(x) }
+fn set(key: str, value: str): Vec<str> { return Vec<str>("set", key, value) }
+fn prepare(base: str) {
+    harness.mkdirs(base + "/run")
+    harness.fakeTool(base, "stub", "echo \"$*\" >> " + base + "/calls.log\nexit 0\n")
+}
+fn saved(base: str): json.Value { return harness.readJson(base + "/config/devos/display-care.json") }
+
+fn compositor(base: str, flags: str): i64 {
+    harness.write(base + "/wl.cmd", "")
+    harness.write(base + "/wl.log", "")
+    let pid = harness.startBg(base, Vec<str>(harness.d(), harness.root() + "/tests/fixtures/fakes/compositor.dev", "--"),
+        Vec<str>("FAKE_WL_PATH=" + base + "/run/wayland-test", "FAKE_WL_LOG=" + base + "/wl.log", "FAKE_WL_CMD=" + base + "/wl.cmd", "FAKE_WL_FLAGS=" + flags, "FAKE_WL_SIZE=256"))
+    harness.waitFor(fn(): bool { return harness.exists(base + "/run/wayland-test") }, 10.0)
+    return pid
+}
+fn serve(base: str, extra: Vec<str>): i64 {
+    return harness.startBg(base, Vec<str>("sh", harness.root() + "/bin/dev-os-display-care", "serve"), env(base, hw.concat(Vec<str>("WAYLAND_DISPLAY=wayland-test"), extra)))
+}
+fn ramps(base: str): Vec<json.Value> {
+    let out = Vec<json.Value>()
+    let lines = harness.logLines(base + "/wl.log")
+    for i in 0..(lines.len() as i64) { if json.has(lines[i], "ramp") { out.push(json.get(lines[i], "ramp")) } }
+    return out
+}
+fn countKey(base: str, key: str): i64 {
+    let n = 0
+    let lines = harness.logLines(base + "/wl.log")
+    for i in 0..(lines.len() as i64) { if json.has(lines[i], key) { n = n + 1 } }
+    return n
+}
+fn at(ramp: json.Value, i: i64): i64 { return json.int(json.at(ramp, i)) }
+
+fn t_defaults(base: str) {
+    prepare(base)
+    let done = helper(base, a("get"), none())
+    harness.equalInt(done.code, 0, "get")
+    harness.same(hw.jget(done.value, "settings"), defaults(), "defaults")
+    harness.expect(!flag(hw.jget(done.value, "gamma"), "available"), "no gamma")
+    harness.contains(text(hw.jget(done.value, "gamma"), "reason"), "No Wayland compositor", "reason")
+    harness.expect(!flag(hw.jget(done.value, "ereading"), "available"), "no e-reading")
+    harness.contains(text(hw.jget(done.value, "ereading"), "reason"), "black and white", "e-reading reason")
+    harness.expect(!flag(hw.jget(done.value, "gamut"), "available"), "no gamut")
+    harness.same(hw.jget(hw.jget(done.value, "gamut"), "options"), json.parse("[\"native\"]"), "only native")
+    let settings = hw.jget(done.value, "settings")
+    harness.expect(flag(settings, "pixelRefresh") && flag(settings, "panelTransparency") && !flag(settings, "autoHidePanel"), "toggles")
+}
+fn t_set(base: str) {
+    prepare(base)
+    let good = Vec<Vec<str>>()
+    good.push(set("dimming", "40")); good.push(set("splendid", "eyecare")); good.push(set("eyeCare", "5")); good.push(set("temperature", "-20"))
+    good.push(set("edgeBrightness", "3")); good.push(set("targetMode", "on")); good.push(set("pixelRefresh", "off")); good.push(set("autoHidePanel", "true")); good.push(set("panelTransparency", "off"))
+    for i in 0..(good.len() as i64) { harness.equalInt(helper(base, good[i], none()).code, 0, strings.join(good[i], " ")) }
+    let value = saved(base)
+    harness.same(value, json.parse("{\"dimming\":40,\"splendid\":\"eyecare\",\"eyeCare\":5,\"temperature\":-20,\"edgeBrightness\":3,\"targetMode\":true,\"pixelRefresh\":false,\"autoHidePanel\":true,\"panelTransparency\":false,\"gamut\":\"native\"}"), "saved")
+    harness.expect(harness.waitFor(fn(): bool { return harness.exists(base + "/calls.log") && strings.contains(harness.read(base + "/calls.log"), "serve") }, 10.0), "set starts serve")
+    let bad = Vec<Vec<str>>()
+    bad.push(set("dimming", "101")); bad.push(set("dimming", "-1")); bad.push(set("dimming", "abc")); bad.push(set("temperature", "51")); bad.push(set("eyeCare", "0"))
+    bad.push(set("edgeBrightness", "5")); bad.push(set("splendid", "ereading")); bad.push(set("splendid", "cinema")); bad.push(set("gamut", "srgb")); bad.push(set("targetMode", "maybe"))
+    for i in 0..(bad.len() as i64) {
+        let done = helper(base, bad[i], none())
+        harness.equalInt(done.code, 1, "rejects " + strings.join(bad[i], " "))
+        harness.expect(!flag(done.value, "ok"), "not ok")
+    }
+    harness.same(saved(base), value, "unchanged by rejected requests")
+}
+fn t_damaged(base: str) {
+    prepare(base)
+    harness.write(base + "/config/devos/display-care.json", "{\"dimming\":12,\"splendid\":\"ereading\",\"temperature\":900,\"gamut\":\"dci-p3\",\"targetMode\":true,\"eyeCare\":\"x\"}")
+    let settings = hw.jget(ok(base, a("get")), "settings")
+    harness.equalStr("${hw.jint(settings, "dimming", 0)}/" + text(settings, "splendid") + "/${hw.jint(settings, "temperature", 9)}/" + text(settings, "gamut") + "/" + (flag(settings, "targetMode") ? "t" : "f") + "/${hw.jint(settings, "eyeCare", 0)}", "12/normal/0/native/t/3", "per value fallback")
+    harness.write(base + "/config/devos/display-care.json", "{broken")
+    harness.same(hw.jget(ok(base, a("get")), "settings"), defaults(), "broken file")
+}
+fn t_reset(base: str) {
+    prepare(base)
+    let changes = Vec<Vec<str>>()
+    changes.push(set("dimming", "30")); changes.push(set("splendid", "manual")); changes.push(set("temperature", "30")); changes.push(set("targetMode", "on")); changes.push(set("pixelRefresh", "off"))
+    for i in 0..(changes.len() as i64) { helper(base, changes[i], none()) }
+    let value = ok(base, a("reset"))
+    let settings = hw.jget(value, "settings")
+    harness.equalStr("${hw.jint(settings, "dimming", 0)}/" + text(settings, "splendid") + "/${hw.jint(settings, "temperature", 9)}/" + text(settings, "gamut"), "100/normal/0/native", "splendid group restored")
+    harness.expect(flag(settings, "targetMode") && !flag(settings, "pixelRefresh"), "other settings kept")
+    harness.same(hw.jget(value, "brightness"), json.parse("{\"ok\":true,\"percent\":70}"), "backlight")
+    harness.contains(harness.read(base + "/calls.log"), "set 70", "backlight stub called")
+}
+fn t_reset_missing_backlight(base: str) {
+    prepare(base)
+    harness.fakeTool(base, "broken", "echo No kernel backlight device is available.\nexit 1\n")
+    let done = helper(base, a("reset"), Vec<str>("DEVOS_DISPLAY_BACKLIGHT=" + base + "/broken"))
+    harness.equalInt(done.code, 0, "reset")
+    harness.expect(!flag(hw.jget(done.value, "brightness"), "ok"), "reported, not hidden")
+    harness.contains(text(hw.jget(done.value, "brightness"), "reason"), "No kernel backlight", "reason")
+}
+fn t_ramps(base: str) {
+    let cases = json.parse("[{},{\"dimming\":0},{\"dimming\":50},{\"splendid\":\"manual\",\"temperature\":-50},{\"splendid\":\"manual\",\"temperature\":50},{\"splendid\":\"manual\",\"temperature\":0},{\"splendid\":\"eyecare\",\"eyeCare\":1},{\"splendid\":\"eyecare\",\"eyeCare\":5},{\"splendid\":\"vivid\"}]")
+    let done = harness.dev(harness.root() + "/tests/fixtures/display-care-driver.dev", none(), Vec<str>("DRIVER_SCRIPT=" + json.stringify(cases)), "")
+    harness.equalInt(done.code, 0, "driver " + done.err)
+    let results = json.parse(strings.trim(done.out))
+    let table = fn(i: i64, channel: i64): json.Value { return json.at(hw.jget(json.at(results, i), "ramp"), 0) }
+    let first = fn(i: i64, channel: i64): i64 { return json.int(json.at(hw.jget(json.at(results, i), "ramp"), channel * 256)) }
+    let last = fn(i: i64, channel: i64): i64 { return json.int(json.at(hw.jget(json.at(results, i), "ramp"), channel * 256 + 255)) }
+    let mid = fn(i: i64, channel: i64, offset: i64): i64 { return json.int(json.at(hw.jget(json.at(results, i), "ramp"), channel * 256 + offset)) }
+    harness.expect(flag(json.at(results, 0), "identity"), "defaults are the identity")
+    harness.equalInt(first(0, 0), 0, "identity starts at 0")
+    harness.equalInt(last(0, 0), 65535, "identity ends at full scale")
+    harness.equalInt(last(1, 1), 16384, "Dimming never goes black")
+    harness.equalInt(last(2, 0), 40959, "half dimming")
+    harness.expect(last(3, 2) < last(3, 0) && last(4, 0) < last(4, 2), "Negative is warm, positive is cool")
+    let top = 0
+    for i in 3..5 { for c in 0..3 { if last(i, c) > top { top = last(i, c) } } }
+    harness.equalInt(top, 65535, "Temperature only removes light")
+    for k in 0..768 { harness.equalInt(json.int(json.at(hw.jget(json.at(results, 5), "ramp"), k)), json.int(json.at(hw.jget(json.at(results, 0), "ramp"), k)), "neutral temperature is the identity") }
+    let ratio = (last(7, 2) as f64) / 65535.0
+    harness.expect(ratio > 0.695 && ratio < 0.705, "Eye Care level 5 blue ratio about 0.70")
+    harness.expect(last(7, 2) < last(6, 2) && last(6, 2) < 65535 && last(7, 0) == 65535, "eye care levels")
+    harness.expect(mid(8, 0, 64) < mid(0, 0, 64) && mid(8, 0, 192) > mid(0, 0, 192) && last(8, 0) == 65535, "Vivid is an S-curve with fixed end points")
+    for i in 0..9 {
+        if i == 0 || i == 2 || i == 5 || i == 6 || i == 7 { continue }
+        for c in 0..3 { for k in 1..256 { harness.expect(mid(i, c, k) >= mid(i, c, k - 1), "Ramps are monotonic") } }
+    }
+}
+fn t_probe(base: str) {
+    prepare(base)
+    compositor(base, "output,gamma,idle,take_gamma")
+    let done = helper(base, a("get"), Vec<str>("WAYLAND_DISPLAY=wayland-test"))
+    harness.expect(flag(hw.jget(done.value, "gamma"), "available") && flag(hw.jget(done.value, "idle"), "available"), "both offered")
+    harness.equalInt(done.code, 0, "get")
+}
+fn t_missing_protocols(base: str) {
+    prepare(base)
+    compositor(base, "output")
+    let value = helper(base, a("get"), Vec<str>("WAYLAND_DISPLAY=wayland-test")).value
+    harness.expect(!flag(hw.jget(value, "gamma"), "available"), "no gamma")
+    harness.contains(text(hw.jget(value, "gamma"), "reason"), "wlr-gamma-control", "gamma reason")
+    harness.expect(!flag(hw.jget(value, "idle"), "available"), "no idle")
+    harness.contains(text(hw.jget(value, "idle"), "reason"), "idle", "idle reason")
+}
+fn t_battery(base: str) {
+    prepare(base)
+    harness.write(base + "/sys/class/power_supply/BAT0/type", "Battery\n")
+    harness.write(base + "/sys/class/power_supply/AC/type", "Mains\n")
+    harness.write(base + "/sys/class/power_supply/AC/online", "0\n")
+    harness.same(hw.jget(ok(base, a("get")), "battery"), json.parse("{\"present\":true,\"onBattery\":true}"), "on battery")
+    harness.write(base + "/sys/class/power_supply/AC/online", "1\n")
+    harness.same(hw.jget(ok(base, a("get")), "battery"), json.parse("{\"present\":true,\"onBattery\":false}"), "on AC")
+}
+fn t_serve_ramp(base: str) {
+    prepare(base)
+    compositor(base, "output,gamma,idle,take_gamma")
+    ok(base, set("dimming", "50"))
+    serve(base, none())
+    harness.expect(harness.waitFor(fn(): bool { return ramps(base).len() > 0 }, 15.0), "A ramp reaches the compositor")
+    let ramp = ramps(base)[ramps(base).len() - 1]
+    harness.expect(at(ramp, 255) == 40959 && at(ramp, 511) == 40959 && at(ramp, 767) == 40959, "dimming ramp")
+    ok(base, set("splendid", "eyecare"))
+    ok(base, set("eyeCare", "5"))
+    harness.expect(harness.waitFor(fn(): bool { let list = ramps(base); return list.len() > 0 && at(list[list.len() - 1], 767) < at(list[list.len() - 1], 255) }, 15.0), "Eye Care lowers the blue table below red")
+    ok(base, a("reset"))
+    harness.expect(harness.waitFor(fn(): bool { return countKey(base, "released") >= 1 }, 15.0), "All-default settings release the gamma control")
+}
+fn t_serve_other_client(base: str) {
+    prepare(base)
+    compositor(base, "output,gamma,idle")
+    ok(base, set("dimming", "60"))
+    let done = harness.sh(Vec<str>("sh", harness.root() + "/bin/dev-os-display-care", "serve"), env(base, Vec<str>("WAYLAND_DISPLAY=wayland-test", "DEVOS_DISPLAY_ONCE=1")))
+    harness.equalInt(done.code, 0, "exits cleanly")
+    harness.contains(done.err, "another client controls the gamma", "leaves it alone")
+    harness.equalInt(ramps(base).len() as i64, 0, "no ramp was sent")
+}
+fn t_pixel_refresh(base: str) {
+    prepare(base)
+    compositor(base, "output,gamma,idle,take_gamma")
+    serve(base, Vec<str>("DEVOS_DISPLAY_IDLE_MS=12345"))
+    let flagFile = base + "/run/devos-pixel-refresh"
+    harness.expect(harness.waitFor(fn(): bool { return countKey(base, "notify") > 0 }, 15.0), "An idle notification is requested")
+    let first = Vec<json.Value>()
+    let lines = harness.logLines(base + "/wl.log")
+    for i in 0..(lines.len() as i64) { if json.has(lines[i], "notify") { first.push(lines[i]) } }
+    harness.equalInt(hw.jint(first[0], "timeout", 0), 12345, "timeout")
+    harness.write(base + "/wl.cmd", "idled\n")
+    harness.expect(harness.waitFor(fn(): bool { return harness.exists(flagFile) }, 10.0), "Idle creates the flag")
+    harness.write(base + "/wl.cmd", "idled\nresumed\n")
+    harness.expect(harness.waitFor(fn(): bool { return !harness.exists(flagFile) }, 10.0), "Activity removes it")
+    harness.write(base + "/wl.cmd", "idled\nresumed\nidled\n")
+    harness.expect(harness.waitFor(fn(): bool { return harness.exists(flagFile) }, 10.0), "idle again")
+    ok(base, set("pixelRefresh", "off"))
+    harness.expect(harness.waitFor(fn(): bool { return !harness.exists(flagFile) && countKey(base, "destroy") > 0 }, 15.0), "Turning Pixel refresh off cancels the notification and clears the flag")
+}
+fn t_single_instance(base: str) {
+    prepare(base)
+    compositor(base, "output,gamma,idle,take_gamma")
+    serve(base, none())
+    harness.expect(harness.waitFor(fn(): bool { return countKey(base, "notify") > 0 }, 15.0), "The first copy is running")
+    let second = harness.sh(Vec<str>("sh", harness.root() + "/bin/dev-os-display-care", "serve"), env(base, Vec<str>("WAYLAND_DISPLAY=wayland-test")))
+    harness.equalInt(second.code, 0, "A second copy leaves quietly")
+}
+fn t_nothing_offered(base: str) {
+    prepare(base)
+    compositor(base, "output")
+    let done = harness.sh(Vec<str>("sh", harness.root() + "/bin/dev-os-display-care", "serve"), env(base, Vec<str>("WAYLAND_DISPLAY=wayland-test")))
+    harness.equalInt(done.code, 0, "exit status")
+    harness.contains(done.err, "neither", "explains")
+}
+
+fn boxed(body: fn(str): void): fn(): void { return fn() { harness.sandbox(body) } }
+
+fn main(): i32 {
+    test.case("defaults and reasons without a compositor", boxed(t_defaults))
+    test.case("set validates, persists and starts the service", boxed(t_set))
+    test.case("damaged state falls back per value", boxed(t_damaged))
+    test.case("reset restores the Splendid group and the backlight only", boxed(t_reset))
+    test.case("reset reports a missing backlight instead of hiding it", boxed(t_reset_missing_backlight))
+    test.case("ramp maths", boxed(t_ramps))
+    test.case("get probes the compositor", boxed(t_probe))
+    test.case("get explains missing protocols", boxed(t_missing_protocols))
+    test.case("battery state for adaptive edge", boxed(t_battery))
+    test.case("serve sends the saved ramp and follows changes", boxed(t_serve_ramp))
+    test.case("serve leaves outputs that another client controls", boxed(t_serve_other_client))
+    test.case("the pixel refresh flag follows idle notifications", boxed(t_pixel_refresh))
+    test.case("only one serve runs per session", boxed(t_single_instance))
+    test.case("serve exits when the compositor offers nothing", boxed(t_nothing_offered))
+    return harness.finish()
+}
+return main()

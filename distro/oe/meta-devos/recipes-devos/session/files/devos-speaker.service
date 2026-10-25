@@ -1,0 +1,23 @@
+[Unit]
+Description=DevOs speaker sound modes and voice-only filter (PipeWire filter-chain)
+After=pipewire.service wireplumber.service
+Wants=pipewire.socket
+ConditionPathExists=/usr/bin/dev-os-speaker
+
+[Service]
+Type=simple
+# Background helper: never compete with the desktop for CPU or disk, and be the first to go when memory runs out.
+Nice=10
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=300
+MemoryHigh=96M
+MemoryMax=192M
+# Supervises one `pipewire -c` filter process and rebuilds it when the saved settings change or a call starts.
+Environment=DEVOS_MIC_WAIT=45
+ExecStart=/usr/bin/dev-os-speaker serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

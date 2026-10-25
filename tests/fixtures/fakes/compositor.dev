@@ -1,0 +1,233 @@
+# A fake Wayland compositor for the keyboard and display-care tests. It speaks just enough of the wire protocol: wl_registry globals,
+# wl_seat, ext_idle_notifier_v1, wl_output and zwlr_gamma_control_manager_v1 (it receives the gamma table file descriptor).
+# Environment: FAKE_WL_PATH (socket), FAKE_WL_LOG (JSON lines of everything the client asked for), FAKE_WL_CMD (a file the test appends
+# commands to: "idled", "resumed", "quit"), FAKE_WL_FLAGS (comma list: idle, gamma, output, take_gamma), FAKE_WL_SIZE (gamma size, default 256).
+use "std/json"
+use "std/strings"
+use "std/fs"
+use "std/time"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/wayland.dev" as wl
+
+extern fn socket(domain: i32, type: i32, protocol: i32): i32
+extern fn bind(fd: i32, address: *u8, length: u32): i32
+extern fn listen(fd: i32, backlog: i32): i32
+extern fn accept(fd: i32, address: *u8, length: *u8): i32
+extern fn close(fd: i32): i32
+extern fn poll(fds: *u8, count: usize, timeout: i32): i32
+extern fn recvmsg(fd: i32, message: *u8, flags: i32): isize
+extern fn pread(fd: i32, data: *u8, size: usize, offset: i64): isize
+extern fn unlink(path: str): i32
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+
+fn log(value: json.Value) { fs.appendFileSync(hw.env("FAKE_WL_LOG"), json.stringify(value) + "\n") }
+fn has(flag: str): bool { return hw.contains(strings.split(hw.env("FAKE_WL_FLAGS"), ","), flag) }
+
+fn listenOn(path: str): i32 {
+    unsafe { unlink(path) }
+    let fd: i32 = 0 - 1
+    unsafe {
+        let address = malloc(110)
+        for i in 0..110 { address[i] = 0 }
+        let family = address as *u16
+        family[0] = 1
+        let raw = encoding.encode(path, "utf8")
+        for i in 0..(raw.len() as i64) { address[2 + i] = raw[i] }
+        fd = socket(1, 1, 0)
+        bind(fd, address, 110)
+        listen(fd, 8)
+        free(address as *void)
+    }
+    return fd
+}
+
+struct Received { count: i64, data: Vec<u8>, fd: i32 }
+
+# One recvmsg: the bytes plus a passed file descriptor (SCM_RIGHTS) when there is one.
+fn receive(fd: i32): Received {
+    let data = Vec<u8>()
+    let passed: i32 = 0 - 1
+    let count = 0 - 1
+    unsafe {
+        let buffer = malloc(65536)
+        let iov = malloc(16)
+        let words = iov as *u64
+        words[0] = buffer as u64
+        words[1] = 65536
+        let control = malloc(64)
+        for i in 0..64 { control[i] = 0 }
+        let header = malloc(56)
+        for i in 0..56 { header[i] = 0 }
+        let h = header as *u64
+        h[2] = iov as u64
+        h[3] = 1
+        h[4] = control as u64
+        h[5] = 64
+        let got = recvmsg(fd, header, 0)
+        count = got as i64
+        if got > 0 {
+            for i in 0..(got as i64) { data.push(buffer[i]) }
+            let ints = control as *i32
+            let level = ints[2]
+            let kind = ints[3]
+            if level == 1 && kind == 1 { passed = ints[4] }
+        }
+        free(buffer as *void)
+        free(iov as *void)
+        free(control as *void)
+        free(header as *void)
+    }
+    return Received(count, data, passed)
+}
+
+fn send(fd: i32, obj: i64, op: i64, payload: Vec<u8>) { wl.sendAll(fd, wl.message(obj, op, payload)) }
+
+fn registryEvent(fd: i32, registry: i64, name: i64, interface: str, version: i64) {
+    let payload = wl.put32(Vec<u8>(), name)
+    payload = wl.putString(payload, interface)
+    payload = wl.put32(payload, version)
+    send(fd, registry, 0, payload)
+}
+
+fn main(): i32 {
+    let path = hw.env("FAKE_WL_PATH")
+    let size = hw.toInt(hw.envOr("FAKE_WL_SIZE", "256"), 256)
+    let server = listenOn(path)
+    let cmd = hw.env("FAKE_WL_CMD")
+    let seen = 0
+    # Per client parallel vectors; ids are (client, object id) -> interface.
+    let fds = Vec<i32>()
+    let buffers = Vec<Vec<u8>>()
+    let registries = Vec<i64>()
+    let objectClient = Vec<i64>()
+    let objectId = Vec<i64>()
+    let objectKind = Vec<str>()
+    let notifications = Vec<i64>()
+    let notificationClient = Vec<i64>()
+    let gamma = has("gamma")
+    let quit = false
+    while !quit {
+        # Poll the listening socket and the clients for 50 ms, then look at the command file.
+        let count = 1 + (fds.len() as i64)
+        unsafe {
+            let table = malloc((count * 8) as usize)
+            let ints = table as *i32
+            ints[0] = server
+            let ev0 = (table + 4) as *i16
+            ev0[0] = 1
+            ev0[1] = 0
+            for i in 0..(fds.len() as i64) {
+                let pfd = (table + (i + 1) * 8) as *i32
+                pfd[0] = fds[i]
+                let ev = (table + (i + 1) * 8 + 4) as *i16
+                ev[0] = 1
+                ev[1] = 0
+            }
+            poll(table, count as usize, 50)
+            let readyServer = ev0[1] != 0
+            let ready = Vec<i64>()
+            for i in 0..(fds.len() as i64) {
+                let ev = (table + (i + 1) * 8 + 4) as *i16
+                if ev[1] != 0 { ready.push(i) }
+            }
+            free(table as *void)
+            if readyServer {
+                let client = accept(server, null, null)
+                if client >= 0 { fds.push(client); buffers.push(Vec<u8>()); registries.push(0) }
+            }
+            for r in 0..(ready.len() as i64) {
+                let at = ready[r]
+                let got = receive(fds[at])
+                if got.count <= 0 { close(fds[at]); fds[at] = 0 - 1; continue }
+                let pending = buffers[at]
+                for i in 0..(got.data.len() as i64) { pending.push(got.data[i]) }
+                let offset = 0
+                let total = pending.len() as i64
+                while total - offset >= 8 {
+                    let obj = wl.get32(pending, offset)
+                    let word = wl.get32(pending, offset + 4)
+                    let msgSize = word >> 16
+                    if msgSize < 8 || total - offset < msgSize { break }
+                    let body = Vec<u8>()
+                    for i in (offset + 8)..(offset + msgSize) { body.push(pending[i]) }
+                    let op = word & 65535
+                    offset = offset + msgSize
+                    let kind = ""
+                    for k in 0..(objectId.len() as i64) { if objectClient[k] == at && objectId[k] == obj { kind = objectKind[k] } }
+                    if obj == 1 && op == 1 {
+                        registries[at] = wl.get32(body, 0)
+                        if has("output") { registryEvent(fds[at], registries[at], 1, "wl_output", 4) }
+                        if gamma { registryEvent(fds[at], registries[at], 2, "zwlr_gamma_control_manager_v1", 1) }
+                        registryEvent(fds[at], registries[at], 3, "wl_seat", 7)
+                        if has("idle") { registryEvent(fds[at], registries[at], 4, "ext_idle_notifier_v1", has("v2") ? 2 : 1) }
+                    } else if obj == 1 && op == 0 {
+                        send(fds[at], wl.get32(body, 0), 0, wl.put32(Vec<u8>(), 0))
+                    } else if obj == registries[at] && op == 0 {
+                        let nameLength = wl.get32(body, 4)
+                        let interface = wl.getString(body, 4)
+                        let tail = 8 + wl.padded(nameLength)
+                        let version = wl.get32(body, tail)
+                        let id = wl.get32(body, tail + 4)
+                        objectClient.push(at); objectId.push(id); objectKind.push(interface)
+                        log(json.set(json.set(json.object(), "bind", interface), "version", version))
+                    } else if strings.equal(kind, "zwlr_gamma_control_manager_v1") && op == 0 {
+                        let control = wl.get32(body, 0)
+                        objectClient.push(at); objectId.push(control); objectKind.push("gamma")
+                        if has("take_gamma") { send(fds[at], control, 0, wl.put32(Vec<u8>(), size)) } else { send(fds[at], control, 1, Vec<u8>()) }
+                    } else if strings.equal(kind, "gamma") && op == 0 {
+                        if got.fd >= 0 {
+                            let table2 = Vec<i64>()
+                            let raw = malloc(size * 6)
+                            let n = pread(got.fd, raw, size * 6, 0)
+                            let words16 = raw as *u16
+                            for i in 0..(size * 3) { table2.push(words16[i] as i64) }
+                            free(raw as *void)
+                            close(got.fd)
+                            let list = json.array()
+                            for i in 0..(table2.len() as i64) { list = json.push(list, table2[i]) }
+                            log(json.set(json.object(), "ramp", list))
+                        }
+                    } else if strings.equal(kind, "gamma") && op == 1 {
+                        log(json.set(json.object(), "released", 1))
+                    } else if strings.equal(kind, "ext_idle_notifier_v1") && (op == 1 || op == 2) {
+                        let id = wl.get32(body, 0)
+                        let timeout = wl.get32(body, 4)
+                        let seat = wl.get32(body, 8)
+                        let seatKind = ""
+                        for k in 0..(objectId.len() as i64) { if objectClient[k] == at && objectId[k] == seat { seatKind = objectKind[k] } }
+                        objectClient.push(at); objectId.push(id); objectKind.push("notification")
+                        notifications.push(id); notificationClient.push(at)
+                        log(json.set(json.set(json.set(json.set(json.object(), "notify", op), "timeout", timeout), "seat", seatKind), "object", id))
+                    } else if strings.equal(kind, "notification") && op == 0 {
+                        log(json.set(json.object(), "destroy", obj))
+                        let kept = Vec<i64>()
+                        let keptClients = Vec<i64>()
+                        for k in 0..(notifications.len() as i64) { if notifications[k] != obj { kept.push(notifications[k]); keptClients.push(notificationClient[k]) } }
+                        notifications = kept
+                        notificationClient = keptClients
+                    }
+                }
+                let rest = Vec<u8>()
+                for i in offset..total { rest.push(pending[i]) }
+                buffers[at] = rest
+            }
+        }
+        if strings.charLength(cmd) > 0 && fs.existsSync(cmd) {
+            let lines = strings.split(hw.readText(cmd), "\n")
+            for i in seen..(lines.len() as i64) {
+                let line = strings.trim(lines[i])
+                if strings.charLength(line) == 0 { continue }
+                if strings.equal(line, "quit") { quit = true }
+                if (strings.equal(line, "idled") || strings.equal(line, "resumed")) && notifications.len() > 0 {
+                    let last = (notifications.len() as i64) - 1
+                    send(fds[notificationClient[last]], notifications[last], strings.equal(line, "idled") ? 0 : 1, Vec<u8>())
+                }
+                seen = i + 1
+            }
+        }
+    }
+    return 0
+}
+return main()

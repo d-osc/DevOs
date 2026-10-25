@@ -348,6 +348,11 @@ cmd_run() {
         [ ! -e "/$item" ] || { mkdir -p "$WORK/$(dirname "$item")"; cp -R "/$item" "$WORK/$item"; }
     done
 
+    # The installer only belongs on the Live USB: the installed system does not carry it.
+    for item in usr/bin/dev-os-install usr/share/dev-os/bin/dev-os-install usr/share/dev-os/data/applications/dev-os-installer.desktop         usr/share/applications/dev-os-installer.desktop usr/share/dev-os/extensions/org.devos.installer usr/share/dev-os/dist/org.devos.installer.js; do
+        rm -rf "$WORK/$item"
+    done
+
     step 8 "Installing the boot entry"
     place_boot_entry "$WORK"
     if command -v efibootmgr >/dev/null 2>&1 && [ -d /sys/firmware/efi ]; then

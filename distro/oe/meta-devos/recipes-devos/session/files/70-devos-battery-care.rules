@@ -1,0 +1,3 @@
+# The Snapdragon battery manager (qcom_battmgr) and other drivers register the battery after boot; re-apply the saved
+# Battery Care limit as soon as a battery power supply appears.
+ACTION=="add", SUBSYSTEM=="power_supply", ATTR{type}=="Battery", TAG+="systemd", ENV{SYSTEMD_WANTS}+="devos-battery-care.service"

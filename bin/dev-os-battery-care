@@ -1,0 +1,35 @@
+#!/bin/sh
+# Settings / panel front end for Battery Care Mode and Instant Full-Charge Mode.
+# Usage: dev-os-battery-care get | care on|off | full on|off | quick on|off      (JSON on stdout, exit 1 on failure)
+# `get` and `quick` run as the user; charge-limit changes go through pkexec to /usr/libexec/devos-battery-care
+# (polkit action org.devos.battery.care). `quick` is the per-user "show Instant Full-Charge in the panel" choice.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+here=$(dirname "$0")
+core=${DEVOS_BATTERY_CARE_CORE:-/usr/libexec/devos-battery-care}
+[ -x "$core" ] || core="$here/../native/devos-battery-care"
+[ -f "$core" ] || { echo '{"ok":false,"error":"Battery care is not installed."}'; exit 1; }
+conf=${DEVOS_BATTERY_QUICK_CONF:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/dev-os/battery-care.conf}
+quick() { [ "$(sed -n 's/^quick=\([01]\)$/\1/p' "$conf" 2>/dev/null | head -n 1)" != 0 ]; }
+privileged() {
+    if [ "$(id -u)" = 0 ] || [ -n "$DEVOS_BATTERY_ALLOW_USER" ]; then sh "$core" "$@"; else pkexec "$core" "$@"; fi
+}
+show() {
+    out=$(sh "$core" get) || { echo "$out"; exit 1; }
+    if quick; then q=true; else q=false; fi
+    printf '%s,"quick":%s}\n' "${out%\}}" "$q"
+}
+case "$1" in
+    get) show ;;
+    care|full)
+        case "$2" in on|off) ;; *) echo '{"ok":false,"error":"Expected on or off."}'; exit 1 ;; esac
+        if ! out=$(privileged "$1" "$2"); then
+            [ -n "$out" ] && echo "$out" || echo '{"ok":false,"error":"The charge limit was not changed. Administrator access was denied or failed."}'
+            exit 1
+        fi
+        show ;;
+    quick)
+        case "$2" in on) v=1 ;; off) v=0 ;; *) echo '{"ok":false,"error":"Expected on or off."}'; exit 1 ;; esac
+        mkdir -p "$(dirname "$conf")" && printf 'quick=%s\n' "$v" >"$conf.$$" && mv -f "$conf.$$" "$conf" || { echo '{"ok":false,"error":"Could not save the preference."}'; exit 1; }
+        show ;;
+    *) echo '{"ok":false,"error":"Unsupported battery care action."}'; exit 1 ;;
+esac
