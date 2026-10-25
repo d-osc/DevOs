@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown option $1" >&2; exit 2 ;;
     esac
 done
-[[ $version =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo '--version must be vMAJOR.MINOR.PATCH' >&2; exit 2; }
+[[ $version =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-ux3407na-dev)?$ ]] || { echo '--version must be vMAJOR.MINOR.PATCH, optionally followed by -ux3407na-dev' >&2; exit 2; }
 [ -n "$output" ] || { echo '--output is required' >&2; exit 2; }
 [ "$(uname -m)" = aarch64 ] || { echo 'The UX3407NA image is built on an ARM64 Linux host.' >&2; exit 2; }
 for tool in d sfdisk mcopy debugfs zstd split sha256sum gjs; do command -v "$tool" >/dev/null || { echo "Missing build-host tool: $tool" >&2; exit 2; }; done
@@ -36,6 +36,7 @@ if [ -f "$root/distro/usb/prepare.dev" ]; then prepare=(d "$root/distro/usb/prep
 mkdir -p "$output"
 output=$(CDPATH= cd -- "$output" && pwd)
 name=${version#v}
+build_version=${name%-ux3407na-dev}
 staging_root=${DEVOS_STAGING_ROOT:-/var/tmp/devos-usb}
 
 if [ "$bundle_only" = 0 ]; then
@@ -44,7 +45,7 @@ if [ "$bundle_only" = 0 ]; then
     [ -d "$DEVOS_KERNEL_BUNDLE" ] && [ -d "$DEVOS_FIRMWARE_DIR" ] || { echo 'Kernel bundle or firmware directory not found' >&2; exit 2; }
     if pgrep -a bitbake >/dev/null; then echo 'A bitbake process is already running; not starting a second build.' >&2; exit 75; fi
     # The release version must be what the shell reports: build with it, as tools/build/release.ts does.
-    (cd "$root" && DEV_OS_RELEASE_VERSION=$name npm run build)
+    (cd "$root" && DEV_OS_RELEASE_VERSION=$build_version npm run build)
     DEVOS_KERNEL_PROJECT=${DEVOS_KERNEL_PROJECT:-} bash "$root/distro/oe/build.sh" --build
     bash "$root/distro/usb/busybox.sh"
     "${prepare[@]}" firmware-check --firmware "$DEVOS_FIRMWARE_DIR"
@@ -83,7 +84,7 @@ if [ "$firmware" = 1 ] && debugfs -R "rdump /usr/lib/firmware $work/rootfs/usr/l
 fi
 args=()
 for path in "${paths[@]}"; do args+=(--root-path "$path"); done
-gjs -m "$root/dist/make-system-bundle.js" --version "${version#v}" --platform linux-arm64 --kernel "$kernel" --uki "$work/DEVOS.EFI" \
+gjs -m "$root/dist/make-system-bundle.js" --version "$build_version" --platform linux-arm64 --kernel "$kernel" --uki "$work/DEVOS.EFI" \
     --rootfs "$work/rootfs" "${args[@]}" --dereference --output "$output"
 
 fi

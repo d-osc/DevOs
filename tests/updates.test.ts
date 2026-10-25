@@ -4,7 +4,7 @@ import {
 import System from 'system';
 import {ROOT} from '@dev-os/config';
 import {Updates, parseSwaylockRelease, parseSwaylockVersion, type UpdateTransport} from '@dev-os/updates';
-import {newer, platform, parseRelease, validateArchive, repository, type Release} from '@dev-os/updates/protocol';
+import {version, newer, platform, parseRelease, validateArchive, repository, type Release} from '@dev-os/updates/protocol';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function fails(callback: () => unknown) { let failed = false; try { callback(); } catch { failed = true; } assert(failed, 'Expected rejection'); }
@@ -39,6 +39,10 @@ function fixture(base: string, releaseVersion: string): {archive: string; releas
 }
 
 async function main() {
+    assert(version('v0.3.7-ux3407na-dev') === '0.3.7', 'Development tags use numeric package manifests');
+    assert(version('0.3.7-ux3407na-dev') === '0.3.7', 'Development package versions normalize consistently');
+    fails(() => version('v0.3.7-ux3407na-dev/unsafe'));
+    fails(() => parseRelease({tag_name: 'v0.3.7-ux3407na-dev', prerelease: true}, 'd-osc/DevOs', testPlatform));
     const swaylockRelease = {tag_name: 'v1.8.6', html_url: 'https://github.com/swaywm/swaylock/releases/tag/v1.8.6'};
     assert(parseSwaylockVersion('swaylock version 1.7.2\n') === '1.7.2', 'Parse installed locker version');
     assert(parseSwaylockRelease(swaylockRelease) === '1.8.6', 'Parse upstream stable locker release');

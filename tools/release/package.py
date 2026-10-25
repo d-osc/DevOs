@@ -28,7 +28,7 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[2]
 # One place for the notes directory; the workflows set the same variable.
 NOTES_DIR = os.environ.get('RELEASE_NOTES_DIR', 'docs/releases')
-VERSION = re.compile(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)')
+VERSION = re.compile(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-ux3407na-dev)?')
 
 # Mirrors buildRuntimeArchive in distro/oe/prepare.dev (tests/release-package.test.py keeps them in step).
 RUNTIME_DIRS = ('bin', 'lib', 'dist', 'config', 'data', 'extensions')
@@ -157,7 +157,7 @@ def build(version, output, root=ROOT, notes_dir=None):
     if not info_path.is_file():
         fail('dist/build-info.json is missing; run `npm run build` first')
     built = json.loads(info_path.read_text(encoding='utf-8')).get('version')
-    if 'v' + str(built) != version:
+    if str(built) != version[1:].removesuffix('-ux3407na-dev'):
         fail(f'dist/build-info.json says {built}, not {version[1:]}; rebuild')
     output.mkdir(parents=True, exist_ok=True)
     mtime = commit_time(root)

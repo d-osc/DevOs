@@ -1,5 +1,10 @@
 # Releases
 
+The manual workflows default to `v0.3.7-ux3407na-dev`, with notes in
+`docs/releases/v0.3.7-ux3407na-dev.md`. Tags ending in `-ux3407na-dev` publish as GitHub prereleases and do not replace
+the latest stable release. Their desktop/system manifests use the numeric base version (for example `0.3.7`), while
+source/runtime/image filenames retain the full tag. The package.json version must match the tag without its leading `v`.
+
 Each release has a notes file `docs/releases/<version>.md`, for example `v0.3.7.md`. Its text becomes the GitHub release
 description. The directory name is set in one place, `RELEASE_NOTES_DIR` in `.github/workflows/release-manual.yml`
 (`tools/release/package.py` reads the same variable and defaults to `docs/releases`).

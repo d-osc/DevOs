@@ -1,6 +1,6 @@
 {
   "name": "dev-os-de",
-  "version": "0.3.6",
+  "version": "0.3.7-ux3407na-dev",
   "private": true,
   "type": "module",
   "description": "A native Wayland desktop shell using GJS, GTK and labwc",

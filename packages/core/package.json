@@ -1,6 +1,6 @@
 {
   "name": "@dev-os/core",
-  "version": "0.3.6",
+  "version": "0.3.7-ux3407na-dev",
   "type": "module",
   "description": "React GTK renderer and desktop extension API for GJS",
   "main": "./dist/index.js",

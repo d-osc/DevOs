@@ -33,8 +33,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag such as v0.3.7 (vMAJOR.MINOR.PATCH, must equal package.json, must not exist yet)
+        description: Release tag matching package.json (stable or UX3407NA development version, must not exist yet)
         required: true
+        default: v0.3.7-ux3407na-dev
         type: string
       build_image:
         description: Also build the Live USB image on the self-hosted runner and publish it in parts (hours; needs the runner)
@@ -236,7 +237,8 @@ jobs:
           if __import__('os').environ['BUILD_IMAGE'] == 'true':
               required.update({'IMAGE-INFO.txt', 'devos-live-%s-arm64-ux3407na.img.zst.part-00'%version[1:]})
           import re
-          patch=re.compile(r'dev-os-patch-\d+\.\d+\.\d+-to-%s-linux-(x64|arm64)\.tar\.gz'%re.escape(version[1:]))
+          build_version=version[1:].removesuffix('-ux3407na-dev')
+          patch=re.compile(r'dev-os-patch-\d+\.\d+\.\d+-to-%s-linux-(x64|arm64)\.tar\.gz'%re.escape(build_version))
           image=re.compile(r'devos-live-%s-arm64-ux3407na\.img\.zst\.part-\d\d|IMAGE-INFO\.txt|dev-os-system-linux-arm64\.(tar\.gz|json)'%re.escape(version[1:]))
           extra=[x.name for x in assets if x.name not in required]
           # Everything beyond the four required archives must be a patch to this very version, an image part or the system update.
@@ -274,4 +276,5 @@ jobs:
         run: |
           flags=()
           if [ "$GITHUB_EVENT_NAME" = push ]; then flags=(--verify-tag); fi
-          gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA" --title "DevOs $RELEASE_VERSION" --notes-file "$RELEASE_NOTES_DIR/$RELEASE_VERSION.md" "${flags[@]}"
+          if [[ "$RELEASE_VERSION" == *-ux3407na-dev ]]; then flags+=(--prerelease --latest=false); fi
+          gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA" --title "ux3407na-dev" --notes-file "$RELEASE_NOTES_DIR/$RELEASE_VERSION.md" "${flags[@]}"

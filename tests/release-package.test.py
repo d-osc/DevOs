@@ -63,6 +63,12 @@ class CheckTests(Tree):
     def test_accepts_matching_version_and_notes(self):
         self.assertEqual(package.check('v1.2.3', self.root), self.root / 'docs/releases/v1.2.3.md')
 
+    def test_accepts_development_tag_with_matching_package_and_notes(self):
+        write(self.root, 'package.json', json.dumps({'version': '1.2.3-ux3407na-dev'}))
+        write(self.root, 'docs/releases/v1.2.3-ux3407na-dev.md', '# Development release\n')
+        self.assertEqual(package.check('v1.2.3-ux3407na-dev', self.root),
+                         self.root / 'docs/releases/v1.2.3-ux3407na-dev.md')
+
     def test_rejects_malformed_versions(self):
         for version in ('1.2.3', 'v1.2', 'v1.2.3.4', 'v1.2.3-rc1', 'v01.2.3', 'v1.2.x', '', 'latest'):
             with self.subTest(version=version):
@@ -164,6 +170,15 @@ class BuildTests(Tree):
             self.assertIn('devos-1.2.3/assets/font/fa-pro.woff2', names)
             self.assertIn('devos-1.2.3/data/icons/fa/NOTICE.md', names)
 
+    def test_development_archives_keep_the_tag_and_accept_numeric_build_info(self):
+        tag = 'v1.2.3-ux3407na-dev'
+        write(self.root, 'package.json', json.dumps({'version': tag[1:]}))
+        write(self.root, f'docs/releases/{tag}.md', '# Development release\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            assets = package.build(tag, self.root / 'out', self.root)
+        self.assertEqual([asset.name for asset in assets],
+                         ['devos-1.2.3-ux3407na-dev-runtime.tar.gz', 'devos-1.2.3-ux3407na-dev-source.tar.gz'])
+
     def test_build_is_reproducible(self):
         first, _ = self.build('one')
         second, _ = self.build('two')
@@ -227,7 +242,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('Invalid artifact checksum', publish)
         self.assertNotIn('icons/fa', publish)
         self.assertIn('gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA"', publish)
-        self.assertIn('--title "DevOs $RELEASE_VERSION"', publish)
+        self.assertIn('--title "ux3407na-dev"', publish)
 
     def test_release_builds_both_architectures_and_reuses_ci(self):
         self.assertIn('ubuntu-24.04-arm', RELEASE)

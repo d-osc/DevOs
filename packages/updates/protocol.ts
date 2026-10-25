@@ -5,9 +5,10 @@ export interface Release {
 }
 export const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
 export function version(value: unknown): string {
-    if (typeof value !== 'string' || !/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value))
+    if (typeof value !== 'string' || !/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-ux3407na-dev)?$/.test(value))
         throw new Error('Release version must be stable semver, for example v0.3.0');
-    const result = value.replace(/^v/, '');
+    // Development tags use numeric package manifests; GitHub prerelease status keeps them off the stable channel.
+    const result = value.replace(/^v/, '').replace(/-ux3407na-dev$/, '');
     if (!result.split('.').every(part => Number.isSafeInteger(Number(part)))) throw new Error('Invalid release version');
     return result;
 }
