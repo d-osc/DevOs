@@ -411,18 +411,40 @@ static void note(const char *format, ...) { /* a line in /run/devos-splash.log: 
     fflush(event_log);
 }
 
+/* The daemon is started from the initramfs and its root directory stays that initramfs after switch_root, where
+ * /dev, /run and /proc were moved away: every path (/dev/fb0, the control file ...) would fail from then on. So it keeps a
+ * descriptor of the /proc mount (which moves along) and, as soon as PID 1 has a different root, chroots into it. */
+static int enter_real_root(int procfd) {
+    if (procfd < 0) return 0;
+    int fd = openat(procfd, "1/root", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    struct stat ours, theirs;
+    int different = !stat("/", &ours) && !fstat(fd, &theirs) && (ours.st_dev != theirs.st_dev || ours.st_ino != theirs.st_ino);
+    int ok = different && fchdir(fd) == 0 && chroot(".") == 0 && chdir("/") == 0;
+    close(fd);
+    return different ? (ok ? 1 : -1) : 0;
+}
+static void create_control(const char *path) { /* an empty control file anybody may write to */
+    if (!path) return;
+    mode_t old = umask(0);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    umask(old);
+    if (fd >= 0) close(fd);
+}
+static void write_pid_file(const char *path) {
+    if (!path) return;
+    FILE *f = fopen(path, "w");
+    if (f) { fprintf(f, "%d\n", (int)getpid()); fclose(f); }
+}
+
 static int run_daemon(const Options *o) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
     sigaction(SIGUSR1, &sa, NULL); sigaction(SIGTERM, &sa, NULL); sigaction(SIGINT, &sa, NULL); sigaction(SIGHUP, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
-    if (o->control) { /* an empty control file anybody may write to */
-        mode_t old = umask(0);
-        int fd = open(o->control, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-        umask(old);
-        if (fd >= 0) close(fd);
-    }
+    create_control(o->control);
+    int procfd = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC), in_real_root = 0;
     Display display = {.fd = -1};
     Scene scene;
     memset(&scene, 0, sizeof scene);
@@ -434,17 +456,31 @@ static int run_daemon(const Options *o) {
     int graphics = 0, full = 1, last_dx = 0, last_dy = 0, reveal = 0;
     while (!reveal) {
         double now = now_seconds(), t = now - start;
+        if (!in_real_root && now >= next_check) {
+            int moved = enter_real_root(procfd);
+            if (moved) { /* the control and pid files must exist in the root clients see */
+                note("switch_root seen: %s the real root", moved > 0 ? "entered" : "could not enter");
+                in_real_root = moved > 0;
+                if (o->control && access(o->control, F_OK)) create_control(o->control);
+                if (o->pid && access(o->pid, F_OK)) write_pid_file(o->pid);
+                if (display.fd >= 0) { display_close(&display); scene_free(&scene); }
+                next_check = now;
+            }
+        }
         control_poll(o->control);
         if (signal_quit == 2 || (o->timeout > 0 && t > o->timeout)) break;
         if (signal_quit == 1 && fade_out_at < 0) fade_out_at = t;
         if (now >= next_check) {
-            next_check = now + 1;
-            if (display.fd >= 0 && display_changed(&display, o->fb)) { note("framebuffer changed (was %s %ux%u)", (char *)display.fix.id, display.var.xres, display.var.yres); display_close(&display); scene_free(&scene); }
+            next_check = now + .5;
+            if (display.fd >= 0 && display_changed(&display, o->fb)) { /* simpledrm is replaced by msm: fb0 vanishes, a new one appears later */
+                note("framebuffer gone or changed (was %s %ux%u)", (char *)display.fix.id, display.var.xres, display.var.yres);
+                display_close(&display); scene_free(&scene);
+            }
             if (display.fd < 0 && display_open(&display, o->fb) == 0) {
                 if (scene_init(&scene, display.var.xres, display.var.yres, o->message)) display_close(&display);
                 else { note("framebuffer %s %ux%u %ubpp line %u", (char *)display.fix.id, display.var.xres, display.var.yres, display.var.bits_per_pixel, display.fix.line_length); full = 1; if (!graphics) graphics = tty_hide(o->tty) == 0; }
             }
-            if (display.fd >= 0) full = 1; /* once a second repaint everything: fbcon may have cleared the screen meanwhile */
+            if (display.fd >= 0) full = 1; /* twice a second repaint everything: fbcon may have cleared the screen meanwhile */
             if (display.fd >= 0 && o->status && read_status(o->status, message, sizeof message)) { scene_set_message(&scene, message); full = 1; }
             input_count = open_inputs(inputs, input_count, input_names);
             if (display.fd < 0 && !graphics && t > 40) break; /* no framebuffer ever appeared: leave the text console alone */

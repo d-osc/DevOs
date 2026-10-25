@@ -1,6 +1,11 @@
 import {Gio, GLib} from '@dev-os/core';
 export type PowerAction = 'sleep' | 'restart' | 'shutdown';
 const methods = {sleep: 'Suspend', restart: 'Reboot', shutdown: 'PowerOff'} as const;
+/** Every power request and its outcome goes to the journal (tag devos-power) and stderr, so a black screen after a click can be explained from the log. */
+export function logPower(message: string): void {
+    console.log(`devos-power: ${message}`);
+    try {Gio.Subprocess.new(['logger', '-t', 'devos-power', message], Gio.SubprocessFlags.NONE);} catch { /* logger is optional */ }
+}
 // logind enforces session policy and inhibitors without shell commands.
 function call(method: string, parameters: GLib.Variant | null): Promise<GLib.Variant> {
     return new Promise((resolve, reject) => {
@@ -23,6 +28,16 @@ export async function powerCapabilities(direct = false): Promise<Record<PowerAct
     return result;
 }
 export async function requestPower(action: PowerAction, direct = false): Promise<void> {
+    logPower(`${action} requested${direct ? ' (login screen)' : ''}`);
+    try {await perform(action, direct);} catch (error) {
+        if (error instanceof GLib.Error) Gio.DBusError.strip_remote_error(error); // Rewrites the message in place.
+        const text = error instanceof Error || error instanceof GLib.Error ? error.message : String(error);
+        logPower(`${action} failed: ${text}`);
+        throw new Error(text);
+    }
+    logPower(`${action} accepted by logind`);
+}
+async function perform(action: PowerAction, direct: boolean): Promise<void> {
     if (action === 'sleep' && !direct) {
         const process = Gio.Subprocess.new(['dev-os-shell', 'lock'], Gio.SubprocessFlags.STDERR_PIPE);
         await new Promise<void>((resolve, reject) => process.communicate_utf8_async(null, null, (source, result) => {
@@ -34,5 +49,5 @@ export async function requestPower(action: PowerAction, direct = false): Promise
         }));
         return;
     }
-    await call(methods[action], new GLib.Variant('(b)', [true]));
+    await call(methods[action], new GLib.Variant('(b)', [!direct])); // The login screen has no visible authentication dialog: fail with a message instead.
 }

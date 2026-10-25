@@ -1,0 +1,18 @@
+#!/bin/sh
+# Records suspend/resume and shutdown/reboot on the Live USB log partition (DEVOS-LOGS/<boot>/power.txt), because the
+# journal is in RAM and the screen is black while it happens. A no-op where no Live log partition is mounted.
+# Usage: systemd-sleep hook (pre|post suspend) or `devos-power-log shutdown` from devos-power-log.service.
+esp=/run/live/esp
+[ -d "$esp" ] || exit 0
+destination=$esp/DEVOS-LOGS/$(cat /proc/sys/kernel/random/boot_id)
+mkdir -p "$destination" 2>/dev/null || exit 0
+{
+    echo "=== $(date -u '+%Y-%m-%d %H:%M:%S') UTC: ${1:-?} ${2:-} (uptime $(cut -d' ' -f1 /proc/uptime)s) ==="
+    journalctl -b --no-pager -n 40 -t devos-power -u systemd-logind -u greetd 2>&1
+    case "${1:-}" in
+        shutdown) systemctl list-jobs --no-pager 2>&1 | head -30; systemd-inhibit --list --no-pager 2>&1 | head -30 ;;
+        post) journalctl -b -k --no-pager -n 60 2>&1 ;;
+    esac
+} >>"$destination/power.txt" 2>&1
+sync
+exit 0

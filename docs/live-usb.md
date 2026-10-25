@@ -406,6 +406,15 @@ suspends at once, since there is no desktop to lock. They call logind
 `-multiple-sessions` variants needed while a Live root session is still open.
 A button is disabled when logind reports the action unavailable.
 
+Every power request and its outcome is logged with the journal tag `devos-power` (and the
+greeter log). The greeter calls logind non-interactively, so a refusal is shown on the
+login screen instead of waiting on an invisible authentication dialog. Because the Live
+journal is in RAM and the screen is black while suspending or shutting down,
+`devos-power-log` (a systemd-sleep hook and `devos-power-log.service`) appends the
+suspend/resume and shutdown/restart context (logind and greetd journal, kernel tail after
+resume, pending jobs and inhibitors at shutdown) to `DEVOS-LOGS/<boot id>/power.txt` on the log
+partition. Read it after the next real test.
+
 Verified in WSL: `tests/os-login.test.tsx` (buttons, confirmation, disabled
 state, Live hint) and `tests/greeter-power-polkit.test.py`. Not verified on the
 UX3407NA or in a booted image: that the polkit rule loads, that logind accepts the

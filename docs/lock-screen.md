@@ -59,28 +59,3 @@ on the laptop; simulated lid tests verify sequencing without suspending the host
 The Dev OS swaylock patch draws a 24-hour clock and the weekday, date, month and year above the user card. It uses the device's local time and refreshes when the minute changes, including while the shell is stopped. Refreshing never replaces the secure lock surface. The shell enables it with `DEV_OS_LOCK_CLOCK=1`; other swaylock users retain the upstream appearance.
 
 The image applies the patch through the swaylock recipe. WSL setup builds the same PAM-enabled locker with `tools/setup/bootstrap-lock-clock.sh` and installs it in `/usr/local/bin`. A plain upstream swaylock has no clock support; rerun the setup script on existing WSL installations.
-
-## Power buttons
-
-The unlocked lock screen draws **Sleep**, **Restart** and **Shutdown** at the bottom
-right, matching the login screen's buttons (patch `0003-devos-lock-power.patch`, drawn by
-swaylock itself because no GTK runs behind the session lock). Click or tap with the
-pointer; the black clock cover only wakes the screen on the first click.
-
-- Sleep runs `systemctl suspend` at once. The session is already locked, so it
-  resumes to the lock screen, and the panel's `SleepGuard` still locks before any
-  suspend started elsewhere.
-- Restart and Shutdown arm on the first click (the button reads "Confirm" in red) and
-  run `systemctl reboot` / `poweroff` on the second; clicking anywhere else disarms.
-- Actions go through logind with `--no-ask-password`, as the signed-in user. The
-  lock screen cannot show an authentication prompt, so when other users are signed in
-  and logind wants administrator authentication (`*-multiple-sessions`) the command
-  fails and nothing happens. Unlike the greeter, no polkit rule widens this on purpose.
-
-Verified: the patch applies on swaylock 1.8.5 with patches 0001/0002 and compiles
-without warnings on Ubuntu/WSL; `tests/lock-power.test.py` checks the wiring. Not verified:
-rendering and clicks under a real ext-session-lock compositor (labwc), touchscreen
-input (only pointer events are handled), HiDPI scaling on the UX3407NA, the
-multiple-sessions failure, and suspend/resume back to the lock screen. The patch was
-not rebuilt through bitbake, and `tools/setup/bootstrap-lock-clock.sh` applies it to a
-different upstream commit than the image does, so that path is untested too.

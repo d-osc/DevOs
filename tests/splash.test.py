@@ -60,7 +60,7 @@ class Toolchain:
 
     def build(self, directory):
         binary = directory / 'devos-splash'
-        self.run(f'gcc -O2 -Wall -Wextra -Werror -o {self.path(binary)} {self.path(SOURCE)} -lm')
+        self.run(f'gcc -static -O2 -Wall -Wextra -Werror -o {self.path(binary)} {self.path(SOURCE)} -lm')
         return binary
 
     def dump(self, binary, directory, *options):
@@ -84,7 +84,7 @@ def lit_fraction(pixels, threshold=40):
 class SplashStaticTests(unittest.TestCase):
     def test_recipe_ships_source_binary_and_units(self):
         recipe = (RECIPE / 'devos-splash_0.1.bb').read_text()
-        for name in ('devos-splash.c', 'devos-splash-quit.service', 'devos-splash-text.service', 'devos-splash-shutdown.service'):
+        for name in ('devos-splash.c', 'devos-splash-quit.service', 'devos-splash-text.service'):
             self.assertTrue((RECIPE / 'files' / name).is_file(), name)
             self.assertIn(f'file://{name}', recipe)
         self.assertIn('${CC} ${CFLAGS} ${LDFLAGS}', recipe)
@@ -103,11 +103,10 @@ class SplashStaticTests(unittest.TestCase):
         text_unit = (RECIPE / 'files/devos-splash-text.service').read_text()
         self.assertIn('WantedBy=rescue.target emergency.target', text_unit)
         self.assertIn('--quit --text', text_unit)
-        shutdown = (RECIPE / 'files/devos-splash-shutdown.service').read_text()
-        for target in ('poweroff.target', 'reboot.target', 'halt.target'): self.assertIn(target, shutdown)
-        self.assertIn('Before=shutdown.target', shutdown)
-        self.assertIn('--timeout', shutdown)  # never hangs the shutdown
-        self.assertIn('TimeoutStartSec=', shutdown)
+        # Nothing runs at shutdown: a splash there could hold the display black or delay the unmounts and the reboot.
+        self.assertFalse((RECIPE / 'files/devos-splash-shutdown.service').exists())
+        recipe = (RECIPE / 'devos-splash_0.1.bb').read_text()
+        for target in ('poweroff.target', 'reboot.target', 'halt.target', 'shutdown.target'): self.assertNotIn(target, recipe)
 
     def test_session_scripts_fade_the_splash_before_the_compositor(self):
         for relative in ('distro/oe/meta-devos/recipes-devos/session/files/devos-greeter',
@@ -325,6 +324,34 @@ sleep 3
 echo LIFECYCLE-OK'''
         out = self.tools.run(script).stdout
         self.assertIn('LIFECYCLE-OK', out)
+
+
+    def test_daemon_follows_switch_root_into_the_real_root(self):
+        # The daemon starts in the initramfs, whose /dev, /run and /proc are moved away by switch_root. It must chroot into
+        # PID 1's root (reached through its /proc descriptor) or every path, including the control file, goes dead.
+        # Simulated with user + pid + mount namespaces: the daemon runs chrooted in a small tree, PID 1 sits in the real root.
+        if self.tools.run('command -v unshare >/dev/null && unshare -Urmpf --mount-proc true', check=False).returncode:
+            self.skipTest('unprivileged user/pid namespaces are unavailable')
+        binary = self.tools.path(self.binary)
+        script = f'''set -e
+inner=$(mktemp)
+cat >"$inner" <<'INNER'
+set -e
+real=$(mktemp -d); old=$(mktemp -d)
+cp {binary} "$old/ds"; mkdir "$old/proc" "$old/tmp"; mount -t proc proc "$old/proc"
+chroot "$old" /ds --daemon --fb /nonexistent --tty /dev/null --pid /tmp/t.pid --control /tmp/t.ctl --status /tmp/t.status --timeout 60
+for i in $(seq 1 20); do [ -s "$old/tmp/t.pid" ] && break; sleep 0.2; done
+[ -s "$old/tmp/t.pid" ]
+for i in $(seq 1 30); do [ -e /tmp/t.ctl ] && break; sleep 0.2; done
+[ -e /tmp/t.ctl ] && [ -s /tmp/t.pid ]       # the daemon created its files in the real root
+{binary} --quit --pid /tmp/t.pid --control /tmp/t.ctl --fb /nonexistent
+for i in $(seq 1 30); do [ -e /tmp/t.pid ] || break; sleep 0.2; done
+[ ! -e /tmp/t.pid ]                          # and obeyed a quit request made from the real root
+echo HANDOFF-OK
+INNER
+unshare -Urmpf --mount-proc bash "$inner"
+rm -f "$inner" /tmp/t.pid /tmp/t.ctl'''
+        self.assertIn('HANDOFF-OK', self.tools.run(script).stdout)
 
 
 if __name__ == '__main__': unittest.main()

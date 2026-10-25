@@ -7,7 +7,7 @@ mkdir -p "$destination"
 for iteration in $(seq 1 60); do
     journalctl -b -k --no-pager -n 5000 >"$destination/kernel-systemd.txt.new" 2>&1
     mv "$destination/kernel-systemd.txt.new" "$destination/kernel-systemd.txt"
-    journalctl -b -u greetd -u seatd -u systemd-logind --no-pager -n 2000 >"$destination/gui-services.txt.new" 2>&1
+    journalctl -b -u greetd -u seatd -u systemd-logind -t devos-power --no-pager -n 2000 >"$destination/gui-services.txt.new" 2>&1
     mv "$destination/gui-services.txt.new" "$destination/gui-services.txt"
     systemctl status greetd seatd systemd-logind --no-pager -l >"$destination/status.txt.new" 2>&1
     mv "$destination/status.txt.new" "$destination/status.txt"

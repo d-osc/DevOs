@@ -24,5 +24,17 @@ class GreeterPowerTests(unittest.TestCase):
         init = (ROOT / 'distro/usb/init').read_text()
         self.assertIn('root-session-enabled', init)
 
+    def test_power_actions_are_logged_and_errors_are_shown(self):
+        power = (ROOT / 'extensions/org.devos.panel/power.ts').read_text()
+        for token in ("'devos-power'", 'strip_remote_error', '[!direct]', 'accepted by logind'):
+            self.assertIn(token, power)
+        recipe = (SESSION / 'devos-session.bb').read_text()
+        for token in ('file://devos-power-log.service', 'system-sleep/devos-power-log', 'devos-power-log.service"'):
+            self.assertIn(token, recipe)
+        self.assertIn('-t devos-power', (ROOT / 'distro/usb/collector').read_text())
+        hook = (SESSION / 'files/devos-power-log').read_text()
+        self.assertIn('DEVOS-LOGS', hook)
+        self.assertIn('[ -d "$esp" ] || exit 0', hook)
+
 if __name__ == '__main__':
     unittest.main()

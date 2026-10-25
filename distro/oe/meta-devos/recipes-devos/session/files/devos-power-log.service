@@ -1,0 +1,13 @@
+[Unit]
+Description=Record shutdown and restart on the Live log partition
+# Stopped (so ExecStop runs) when the system goes down; a no-op outside the Live USB.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=-/usr/libexec/devos-power-log shutdown
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
