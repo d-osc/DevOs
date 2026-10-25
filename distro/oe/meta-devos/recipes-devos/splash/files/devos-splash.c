@@ -12,7 +12,9 @@
  * Drawing is OLED friendly: a black background, a thin accent arc and small dot-matrix text, 30 frames/s at most,
  * only the arc rectangle is rewritten per frame, and the whole mark drifts a few pixels over minutes.
  * The daemon runs as root; the greeter user asks it to quit through the world-writable control file.
- * Signals: USR1 fade out and leave a blank, quiet console; TERM/INT/HUP restore the text console immediately.
+ * The text console stays in text mode but is hidden (black on black, no cursor); KD_GRAPHICS would keep fbcon from
+ * programming the panel after msm replaces simpledrm.
+ * Signals: USR1 fade out and leave a blank console; TERM/INT/HUP show the console in normal colours immediately.
  * Escape hatches: any key press (after one second) or the --timeout watchdog restore the text console, which keeps
  * everything that was printed meanwhile. Nothing here ever holds the DRM master, so labwc can start safely.
  */
@@ -280,18 +282,21 @@ static void display_present(Display *d, const Scene *s, int ox, int oy, int x0, 
 }
 
 /* ---- virtual terminal, status file, key presses ---- */
-static int tty_mode(const char *path, int mode) {
-    int fd = open(path, O_RDWR | O_NOCTTY | O_CLOEXEC);
+/* The console stays in text mode (KD_GRAPHICS would stop fbcon from programming the panel when msm replaces simpledrm,
+ * which leaves the screen black). It is hidden instead: black on black with no cursor. */
+static int tty_hide(const char *path) {
+    int fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
     if (fd < 0) return -1;
-    int rc = ioctl(fd, KDSETMODE, mode);
+    static const char hidden[] = "\033[30;40m\033[?25l\033[2J\033[H";
+    ssize_t written = write(fd, hidden, sizeof hidden - 1);
     close(fd);
-    return rc;
+    return written > 0 ? 0 : -1;
 }
-static void tty_clear(const char *path) {
+static void tty_show(const char *path, int clear) { /* normal colours again, optionally on a blank screen */
     int fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
     if (fd < 0) return;
-    static const char blank[] = "\033[?25l\033[2J\033[H";
-    ssize_t ignored = write(fd, blank, sizeof blank - 1);
+    const char *text = clear ? "\033[0m\033[2J\033[H" : "\033[0m";
+    ssize_t ignored = write(fd, text, strlen(text));
     (void)ignored;
     close(fd);
 }
@@ -437,8 +442,9 @@ static int run_daemon(const Options *o) {
             if (display.fd >= 0 && display_changed(&display, o->fb)) { note("framebuffer changed (was %s %ux%u)", (char *)display.fix.id, display.var.xres, display.var.yres); display_close(&display); scene_free(&scene); }
             if (display.fd < 0 && display_open(&display, o->fb) == 0) {
                 if (scene_init(&scene, display.var.xres, display.var.yres, o->message)) display_close(&display);
-                else { note("framebuffer %s %ux%u %ubpp line %u", (char *)display.fix.id, display.var.xres, display.var.yres, display.var.bits_per_pixel, display.fix.line_length); full = 1; if (!graphics) graphics = tty_mode(o->tty, KD_GRAPHICS) == 0; }
+                else { note("framebuffer %s %ux%u %ubpp line %u", (char *)display.fix.id, display.var.xres, display.var.yres, display.var.bits_per_pixel, display.fix.line_length); full = 1; if (!graphics) graphics = tty_hide(o->tty) == 0; }
             }
+            if (display.fd >= 0) full = 1; /* once a second repaint everything: fbcon may have cleared the screen meanwhile */
             if (display.fd >= 0 && o->status && read_status(o->status, message, sizeof message)) { scene_set_message(&scene, message); full = 1; }
             input_count = open_inputs(inputs, input_count, input_names);
             if (display.fd < 0 && !graphics && t > 40) break; /* no framebuffer ever appeared: leave the text console alone */
@@ -474,11 +480,8 @@ static int run_daemon(const Options *o) {
     note("leaving: quit=%d reveal=%d t=%.1f graphics=%d display=%d", (int)signal_quit, reveal, t_end(start), graphics, display.fd >= 0);
     int quiet = fade_out_at >= 0 && signal_quit != 2 && !reveal;
     if (display.fd >= 0 && quiet) memset(display.map, 0, display.length);
-    if (graphics) {
-        if (quiet) tty_clear(o->tty); /* a blank console, so nothing flashes when text mode returns */
-        tty_mode(o->tty, KD_TEXT);
-    }
-    if (reveal) tty_clear(o->tty), tty_write(o->tty, "Dev OS: boot animation stopped (Esc).\n");
+    if (graphics) tty_show(o->tty, quiet || reveal); /* a quiet exit leaves a blank console, a text exit keeps what is there */
+    if (reveal) tty_write(o->tty, "Dev OS: boot animation stopped (Esc).\n");
     if (reveal && access("/run/systemd/system", F_OK) == 0) kill(1, SIGRTMIN + 20); /* systemd as PID 1: show boot status again */
     for (int i = 0; i < input_count; i++) close(inputs[i]);
     display_close(&display);

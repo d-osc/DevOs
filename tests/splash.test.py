@@ -183,7 +183,8 @@ class SplashStaticTests(unittest.TestCase):
     def test_source_has_no_raw_dependencies_and_keeps_drm_master_free(self):
         source = SOURCE.read_text()
         self.assertNotRegex(source, r'drmSetMaster|drmModeSetCrtc|libdrm|xf86drm')  # the framebuffer only: labwc stays the DRM master
-        for needed in ('SIGUSR1', 'KD_GRAPHICS', 'KD_TEXT', 'EV_KEY', '--timeout', '#define FPS 30'):
+        self.assertNotIn('KD_GRAPHICS', source.replace('KD_GRAPHICS would', ''))  # graphics mode left the panel black on the real laptop
+        for needed in ('SIGUSR1', '30;40m', 'EV_KEY', '--timeout', '#define FPS 30'):
             self.assertIn(needed, source)
         self.assertLessEqual(len(source.splitlines()), 600)  # a small tool
 
