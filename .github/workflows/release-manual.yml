@@ -7,8 +7,7 @@ name: Build and publish DevOs release
 #   devos-<version>-source.tar.gz, SHA256SUMS
 # It does not build the Live USB image: that is a long OpenEmbedded build and ~6 GB, over the 2 GiB GitHub release
 # asset limit. Build it locally with tools/live/release-live-usb.ps1.
-# The Font Awesome Pro fonts (assets/) and the outlines derived from them (data/icons/fa/) are licensed and are never
-# published; the publish job refuses any archive that contains them.
+# The archives include the Font Awesome files (assets/, data/icons/fa/) like every other tracked file.
 on:
   workflow_dispatch:
     inputs:
@@ -118,9 +117,6 @@ jobs:
           if len(assets)!=4:raise SystemExit('Expected 4 release assets, found %d'%len(assets))
           for asset in assets:
               if asset.stat().st_size>=2**31:raise SystemExit(asset.name+' exceeds the 2 GiB release asset limit')
-              for entry in subprocess.run(['tar','-tzf',str(asset)],check=True,capture_output=True,text=True).stdout.splitlines():
-                  if entry.split('/',1)[-1].startswith(('assets/','data/icons/fa/')):
-                      raise SystemExit(asset.name+' contains licensed Font Awesome Pro files: '+entry)
           (destination/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in assets))
       - name: Publish release after every architecture passes
         env:

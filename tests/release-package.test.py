@@ -43,8 +43,9 @@ class Tree(unittest.TestCase):
         for name in package.RUNTIME_EXTRAS:
             write(self.root, name)
         # Everything below must never reach a runtime archive.
-        for name in ('assets/font/fa-pro.woff2', 'data/icons/fa/classic-solid.json', 'data/icons/fa/NOTICE.md',
-                     'lib/__pycache__/helper.pyc', 'lib/helper.pyc', 'bin/run.ps1', 'dist/config-test.js',
+        for name in ('assets/font/fa-pro.woff2', 'data/icons/fa/classic-solid.json', 'data/icons/fa/NOTICE.md'):
+            write(self.root, name, 'font')
+        for name in ('lib/__pycache__/helper.pyc', 'lib/helper.pyc', 'bin/run.ps1', 'dist/config-test.js',
                      'dist/types/index.d.ts', 'config/.env', 'config/server.pem', 'extensions/id_rsa',
                      'node_modules/react/index.js', 'build/leftover.o', 'tests/a.test.py'):
             write(self.root, name, 'secret')
@@ -89,19 +90,21 @@ class FileListTests(Tree):
                      'extensions/org.devos.x/extension.json', 'profiles/asus/ux3407na/profile.conf', *package.RUNTIME_EXTRAS):
             self.assertIn(name, files)
 
-    def test_runtime_excludes_licensed_fonts_secrets_and_build_noise(self):
+    def test_runtime_includes_font_awesome_but_not_secrets_and_build_noise(self):
         files = package.runtime_files(self.root)
-        self.assertEqual([name for name in files if name.startswith(('assets/', 'data/icons/fa/'))], [])
+        for name in ('assets/font/fa-pro.woff2', 'data/icons/fa/classic-solid.json', 'data/icons/fa/NOTICE.md'):
+            self.assertIn(name, files)
         for name in ('lib/__pycache__/helper.pyc', 'lib/helper.pyc', 'bin/run.ps1', 'dist/config-test.js', 'dist/types/index.d.ts',
                      'config/.env', 'config/server.pem', 'extensions/id_rsa', 'node_modules/react/index.js', 'build/leftover.o',
                      'tests/a.test.py'):
             self.assertNotIn(name, files)
 
-    def test_source_archive_list_excludes_licensed_fonts_and_secrets(self):
+    def test_source_archive_list_includes_font_awesome_and_excludes_secrets(self):
         files = package.source_files(self.root)
         self.assertIn('package.json', files)
         self.assertIn('tests/a.test.py', files)
-        self.assertEqual([name for name in files if name.startswith(('assets/', 'data/icons/fa/'))], [])
+        for name in ('assets/font/fa-pro.woff2', 'data/icons/fa/NOTICE.md'):
+            self.assertIn(name, files)
         for name in ('config/.env', 'config/server.pem', 'extensions/id_rsa'):
             self.assertNotIn(name, files)
 
@@ -119,13 +122,14 @@ class FileListTests(Tree):
         find = re.search(r'find ((?:\w+ )+)-type f', body).group(1).split()
         self.assertEqual(tuple(find), package.RUNTIME_DIRS)
 
-    def test_repository_sources_never_include_the_licensed_fonts(self):
+    def test_repository_sources_include_the_font_awesome_files(self):
         try:
             files = package.source_files(ROOT)
         except subprocess.CalledProcessError:
             self.skipTest('git cannot read this checkout (a Windows worktree seen from WSL)')
         self.assertIn('package.json', files)
-        self.assertEqual([name for name in files if name.startswith(('assets/', 'data/icons/fa/'))], [])
+        self.assertIn('data/icons/fa/NOTICE.md', files)
+        self.assertTrue([name for name in files if name.startswith('assets/')])
 
 
 class BuildTests(Tree):
@@ -145,7 +149,9 @@ class BuildTests(Tree):
             self.assertTrue(all(name.startswith('devos-runtime/') for name in names))
             self.assertIn('devos-runtime/release.json', names)
             self.assertIn('devos-runtime/profiles/asus/ux3407na/profile.conf', names)
-            self.assertFalse([name for name in names if '/assets/' in name or '/data/icons/fa/' in name])
+            for name in ('assets/font/fa-pro.woff2', 'data/icons/fa/classic-solid.json', 'data/icons/fa/NOTICE.md'):
+                self.assertIn('devos-runtime/' + name, names)
+            self.assertFalse([name for name in names if '.env' in name or name.endswith('.pem') or '/node_modules/' in name])
             self.assertEqual(archive.getmember('devos-runtime/bin/dev-os-shell').mode, 0o755)
             self.assertEqual(archive.getmember('devos-runtime/lib/helper.py').mode, 0o644)
             self.assertEqual({member.uid for member in archive.getmembers()}, {0})
@@ -154,7 +160,8 @@ class BuildTests(Tree):
         with tarfile.open(assets[1]) as archive:
             names = archive.getnames()
             self.assertTrue(all(name.startswith('devos-1.2.3/') for name in names))
-            self.assertFalse([name for name in names if '/assets/' in name or '/data/icons/fa/' in name])
+            self.assertIn('devos-1.2.3/assets/font/fa-pro.woff2', names)
+            self.assertIn('devos-1.2.3/data/icons/fa/NOTICE.md', names)
 
     def test_build_is_reproducible(self):
         first, _ = self.build('one')
@@ -214,10 +221,10 @@ class WorkflowTests(unittest.TestCase):
             for use in re.findall(r'uses: (\S+)', workflow):
                 self.assertTrue(use.startswith('./') or re.search(r'@v\d+$', use), use)
 
-    def test_publish_checks_sums_and_refuses_the_licensed_fonts(self):
+    def test_publish_checks_sums_and_does_not_filter_font_awesome(self):
         publish = self.job('publish')
         self.assertIn('Invalid artifact checksum', publish)
-        self.assertIn("'assets/','data/icons/fa/'", publish)
+        self.assertNotIn('icons/fa', publish)
         self.assertIn('gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA"', publish)
         self.assertIn('--title "DevOs $RELEASE_VERSION"', publish)
 
@@ -240,8 +247,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(set(data['jobs']), {'validate', 'checks', 'build', 'publish'})
         self.assertEqual(data[True]['workflow_dispatch']['inputs']['version']['required'], True)
 
-    def test_update_package_leaves_out_the_licensed_outlines(self):
-        self.assertIn("!source.includes('/data/icons/fa/')", (ROOT / 'tools/build/release.ts').read_text(encoding='utf-8'))
+    def test_nothing_excludes_font_awesome(self):
+        for path in ('tools/build/release.ts', 'tools/release/package.py', '.github/workflows/release.yml', '.github/workflows/ci.yml'):
+            self.assertNotRegex((ROOT / path).read_text(encoding='utf-8'), r"!\s*source\.(includes|endsWith)\('/data/icons|EXCLUDED_PREFIXES", path)
 
     def test_notes_for_the_checked_in_version_exist_and_readme_explains_the_process(self):
         version = package.package_version(ROOT)
@@ -249,7 +257,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(notes.is_file(), notes)
         self.assertIn(f'# DevOs v{version}', notes.read_text(encoding='utf-8'))
         readme = (ROOT / package.NOTES_DIR / 'README.md').read_text(encoding='utf-8')
-        for text in ('RELEASE_NOTES_DIR', 'Font Awesome Pro', 'workflow', 'package.json'):
+        for text in ('RELEASE_NOTES_DIR', 'Font Awesome', 'workflow', 'package.json'):
             self.assertIn(text, readme)
 
 

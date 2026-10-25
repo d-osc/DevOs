@@ -35,12 +35,11 @@ python tools/release/package.py check --version v0.3.7
 The Live USB image is not published: it needs a long OpenEmbedded build, is about 6 GB, and GitHub release assets are
 limited to 2 GiB each. Build it locally with `tools/live/release-live-usb.ps1`.
 
-## Font Awesome Pro
+## Font Awesome
 
-`assets/` (webfonts) and `data/icons/fa/` (outlines derived from them) are covered by the Font Awesome Pro commercial
-licence, which forbids redistribution. No release archive may contain them: `tools/release/package.py` and
-`tools/build/release.ts` skip them, and the publish job refuses any archive that has them. Files already committed to
-the public repository stay in its history; removing them from the repository is a separate decision.
+`assets/` (webfonts) and `data/icons/fa/` (outlines derived from them, with `NOTICE.md` describing the licence and
+provenance) are shipped in the source and runtime archives and in the update packages, like every other file. Only
+tests, build outputs, `node_modules`, caches and secrets stay out of the runtime archive.
 
 ## Tag-triggered workflow
 

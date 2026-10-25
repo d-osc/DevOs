@@ -9,8 +9,8 @@
                                   buildRuntimeArchive, plus profiles/), under the top directory devos-runtime/
   devos-<version>-source.tar.gz   tracked sources, under devos-<version>/
 
-The Font Awesome Pro webfonts (assets/) and the outlines derived from them (data/icons/fa/) are commercially
-licensed and must not be redistributed, so both archives leave them out (EXCLUDED_PREFIXES). A full Live USB image
+The Font Awesome webfonts (assets/) and the outlines derived from them (data/icons/fa/, with its NOTICE.md) are
+shipped like every other file. Tests, build outputs, node_modules, caches and secrets are not. A full Live USB image
 is not built here: it needs a long OpenEmbedded build and exceeds the 2 GiB GitHub release asset limit.
 """
 import argparse
@@ -41,8 +41,8 @@ RUNTIME_EXTRAS = (
     'native/devos-swap', 'native/devos-keyboard', 'native/devos-connectivity')
 # Hardware profiles (the UX3407NA profile lives in profiles/asus/ux3407na); the image build reads these.
 RUNTIME_PROFILES = ('profiles',)
-# Never redistributed: Font Awesome Pro webfonts and the outlines extracted from them (data/icons/fa/NOTICE.md).
-EXCLUDED_PREFIXES = ('assets/', 'data/icons/fa/')
+# Shipped in the runtime archive besides RUNTIME_DIRS (not in distro/oe/prepare.dev's list): the Font Awesome webfonts.
+RUNTIME_ASSETS = ('assets',)
 SECRET_NAMES = re.compile(r'(^|/)(\.env(\..*)?|id_(rsa|ed25519|ecdsa)|[^/]*\.(pem|key|p12|pfx|keystore))$')
 
 
@@ -74,7 +74,7 @@ def check(version, root=ROOT, notes_dir=None):
 
 
 def excluded(relative):
-    return any(relative.startswith(prefix) for prefix in EXCLUDED_PREFIXES) or bool(SECRET_NAMES.search(relative))
+    return bool(SECRET_NAMES.search(relative))
 
 
 def runtime_skipped(relative):
@@ -97,7 +97,7 @@ def walk(root, directory):
 
 def runtime_files(root=ROOT):
     files = set()
-    for directory in (*RUNTIME_DIRS, *RUNTIME_PROFILES):
+    for directory in (*RUNTIME_DIRS, *RUNTIME_ASSETS, *RUNTIME_PROFILES):
         files.update(walk(root, directory))
     files = {name for name in files if not runtime_skipped(name)}
     for extra in RUNTIME_EXTRAS:
@@ -163,7 +163,7 @@ def build(version, output, root=ROOT, notes_dir=None):
     mtime = commit_time(root)
     commit = os.environ.get('GITHUB_SHA') or subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
     manifest = json.dumps({'format': 1, 'version': version, 'commit': commit, 'profile': 'asus/ux3407na',
-                           'excluded': list(EXCLUDED_PREFIXES)}, indent=2).encode() + b'\n'
+                           'includes_font_awesome': True}, indent=2).encode() + b'\n'
     runtime = output / f'devos-{version[1:]}-runtime.tar.gz'
     source = output / f'devos-{version[1:]}-source.tar.gz'
     write_archive(runtime, 'devos-runtime', root, runtime_files(root), {'release.json': manifest}, mtime)
