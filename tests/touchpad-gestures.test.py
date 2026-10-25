@@ -3,6 +3,7 @@
 against fake /proc, fake evdev event streams and fake wpctl / backlight / shell tools."""
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'bin' / 'dev-os-touchpad-gestures'
 DRIVER = ROOT / 'tests/fixtures/touchpad-driver.dev'
-D = os.environ.get('DEVLANG_BIN') or str(Path.home() / '.local/bin/d')
+D = os.environ.get('DEVLANG_BIN') or shutil.which('d') or str(Path.home() / '.local/bin/d')
 
 PROC = '''I: Bus=0003 Vendor=0b05 Product=1a30 Version=0100
 N: Name="ASUE1234:00 04F3:3294 Touchpad"

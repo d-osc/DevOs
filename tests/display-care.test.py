@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import socket
 import struct
@@ -16,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'bin/dev-os-display-care'
 DRIVER = ROOT / 'tests/fixtures/display-care-driver.dev'
-D = os.environ.get('DEVLANG_BIN') or str(Path.home() / '.local/bin/d')
+D = os.environ.get('DEVLANG_BIN') or shutil.which('d') or str(Path.home() / '.local/bin/d')
 DEFAULTS = {'splendid': 'normal', 'temperature': 0, 'eyeCare': 3, 'gamut': 'native', 'dimming': 100, 'pixelRefresh': True, 'autoHidePanel': False,
             'panelTransparency': True, 'targetMode': False, 'edgeBrightness': 0}
 

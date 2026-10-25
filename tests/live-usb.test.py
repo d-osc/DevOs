@@ -415,7 +415,7 @@ class LiveUsbTests(unittest.TestCase):
 
     def test_camx_sensor_module_decoder_reports_identity_but_no_invented_pins(self):
         root=Path(__file__).resolve().parents[1]
-        d=os.environ.get('DEVLANG_BIN') or str(Path.home()/'.local/bin/d')
+        d=os.environ.get('DEVLANG_BIN') or shutil.which('d') or str(Path.home()/'.local/bin/d')
         tool=str(root/'tools/live/decode-camx-sensormodule.dev')
         blob=b'QTI Chromatix Header'+bytes(12)+b'sensorDriverData\0'+bytes(8)+b'luxvision_ov02c10\0'+struct.pack('<I',19200000)
         with tempfile.TemporaryDirectory() as tmp:

@@ -170,14 +170,20 @@ esac
 
         // ---- The updater: check, download, helper, restart --------------------------------------------------------------
         reset();
-        const metaPath = `${base}/out-0.4.0/dev-os-system-linux-arm64.json`;
-        const assets = [{name, path: bundle}, {name: 'dev-os-system-linux-arm64.json', path: metaPath}];
+        // Unlike the ARM64 helper fixtures above, Updates discovers the real host via uname.
+        // Its release assets and the helper's simulated machine must agree with that host.
+        await build('0.4.0', {platform: target, output: `${base}/updater-bundle`});
+        environment.DEVOS_SYS_MACHINE = target === 'linux-x64' ? 'x86_64' : 'aarch64';
+        const systemName = `dev-os-system-${target}.tar.gz`;
+        const metaName = `dev-os-system-${target}.json`;
+        const assets = [{name: systemName, path: `${base}/updater-bundle/${systemName}`},
+                        {name: metaName, path: `${base}/updater-bundle/${metaName}`}];
         const urls = new Map<string, string>(), list = assets.map(asset => {
             const url = `https://github.com/${REPO}/releases/download/v0.4.0/${asset.name}`; urls.set(url, asset.path);
             return {name: asset.name, state: 'uploaded', size: Number(run(['stat', '-c', '%s', asset.path])), digest: `sha256:${sha(asset.path)}`, browser_download_url: url};
         });
-        const body = {tag_name: 'v0.4.0', draft: false, prerelease: false, body: 'notes', assets: [...list, ...['dev-os-linux-arm64.tar.gz'].map(n => ({name: n, state: 'uploaded', size: 10, digest: `sha256:${'a'.repeat(64)}`, browser_download_url: `https://github.com/${REPO}/releases/download/v0.4.0/${n}`}))]};
-        assert(releaseExtras(body, REPO, 'linux-arm64', null).system?.name === name, 'The release lists the system bundle');
+        const body = {tag_name: 'v0.4.0', draft: false, prerelease: false, body: 'notes', assets: [...list, ...[`dev-os-${target}.tar.gz`].map(n => ({name: n, state: 'uploaded', size: 10, digest: `sha256:${'a'.repeat(64)}`, browser_download_url: `https://github.com/${REPO}/releases/download/v0.4.0/${n}`}))]};
+        assert(releaseExtras(body, REPO, target, null).system?.name === systemName, 'The release lists the system bundle');
         const transport: UpdateTransport = {
             async get(url) { return {status: 200, body: url.includes('/swaywm/') ? {tag_name: 'v1.8.6', html_url: 'https://github.com/swaywm/swaylock/releases/tag/v1.8.6'} : body}; },
             async download(item, path) { const source = urls.get(item.url); if (!source) throw new Error('unexpected ' + item.url); Gio.File.new_for_path(source).copy(Gio.File.new_for_path(path), Gio.FileCopyFlags.NONE, null, null); },
@@ -211,4 +217,4 @@ loop.run();
 if (failed) { printerr(failed instanceof Error ? `${failed.message}
 ${failed.stack}` : String(failed)); System.exit(1); }
 print('System update tests passed');
-void target; void write;
+void write;

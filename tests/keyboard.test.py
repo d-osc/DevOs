@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import socket
 import struct
@@ -156,7 +157,7 @@ class FrontEndTests(Fixture):
 
 DRIVER = ROOT / 'tests/fixtures/keyboard-driver.dev'
 DEFAULTS = {'autoBrighten': False, 'autoDim': False, 'sleep': 'nothing', 'sleepBoth': 60, 'sleepBattery': 60}
-D = os.environ.get('DEVLANG_BIN') or str(Path.home() / '.local/bin/d')
+D = os.environ.get('DEVLANG_BIN') or shutil.which('d') or str(Path.home() / '.local/bin/d')
 
 
 class AmbientLightTests(Fixture):
