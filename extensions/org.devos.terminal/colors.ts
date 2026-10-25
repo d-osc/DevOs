@@ -3,7 +3,7 @@ import {paletteFor, activeFamily, activeTheme, type ThemeFamily, type ThemeName}
 // ANSI order: black, red, green, yellow, blue, magenta, cyan, white; followed by their bright variants.
 // The sixteen colors, foreground and cursor are those of the theme's own terminal (VS Code 2026 or GitHub, Dark or Light).
 function flatten(overlay: string, base: string) {
-    const [, red, green, blue, alpha] = /rgba((d+), (d+), (d+), ([d.]+))/.exec(overlay) ?? [];
+    const [, red, green, blue, alpha] = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/.exec(overlay) ?? [];
     if (alpha === undefined) return base;
     const channel = (offset: number, value: string) => Math.round(Number(value) * Number(alpha) + parseInt(base.slice(offset, offset + 2), 16) * (1 - Number(alpha))).toString(16).padStart(2, '0');
     return `#${channel(1, red)}${channel(3, green)}${channel(5, blue)}`;

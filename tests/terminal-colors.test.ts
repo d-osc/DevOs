@@ -1,4 +1,4 @@
-import {Gtk, GLib} from '@dev-os/core';
+import {Gtk, Gdk, GLib} from '@dev-os/core';
 import {Vte} from '@dev-os/core/vte';
 import {applyTerminalOptions, terminalScheme} from '../extensions/org.devos.terminal/options.js';
 
@@ -11,6 +11,7 @@ async function run() {
     const family = GLib.getenv('DEV_OS_TEST_FAMILY') === 'github' ? 'github' : 'vscode';
     for (const name of ['dark', 'light'] as const) {
         const scheme = terminalScheme(name, family);
+        if (scheme.selection === scheme.background) throw new Error(`${family}/${name}: selection is invisible against the terminal background`);
         const window = new Gtk.OffscreenWindow();
         window.set_default_size(960, 470);
         const terminal = new Vte.Terminal({hexpand: true, vexpand: true});
@@ -34,6 +35,12 @@ async function run() {
         ];
         terminal.feed(lines.join('\r\n'));
         await wait();
+        terminal.select_all();
+        if (!terminal.get_has_selection()) throw new Error(`${name}: VTE text selection failed`);
+        terminal.copy_clipboard_format(Vte.Format.TEXT);
+        const copied = Gtk.Clipboard.get(Gdk.Atom.intern('CLIPBOARD', false)).wait_for_text();
+        if (!copied?.includes('Working tree clean')) throw new Error(`${name}: selected terminal text did not reach the clipboard`);
+        await wait();
         const background = terminal.get_color_background_for_draw();
         if (Math.abs(background.red - parseInt(scheme.background.slice(1, 3), 16) / 255) > .01)
             throw new Error(`${name}: VTE background mismatch`);
@@ -41,7 +48,7 @@ async function run() {
         if (!image || image.width < 900 || image.height < 400) throw new Error(`${name}: missing rendered screenshot`);
         image.savev(`${output}/terminal-${family}-${name}.png`, 'png', [], []);
         window.destroy();
-        print(`PASS: ${name} real VTE render and screenshot`);
+        print(`PASS: ${name} real VTE render, visible selection, clipboard and screenshot`);
     }
 }
 const loop = new GLib.MainLoop(null, false); let failure: unknown;
