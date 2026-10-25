@@ -1,4 +1,5 @@
 import {React, Gtk, Gio, Box, Label, Button, Entry, Switch, ComboBoxText, DrawingArea, ScrolledWindow, useState, useEffect, useRef, wallpaperColors, type SettingsHost, type SettingsValues, type WindowControls} from '@dev-os/core';
+import {designStyles} from './design.js';
 import {WallpaperCanvas, type BackgroundConfig} from './view.js';
 import {wallpaperConfig, loadPicture} from './wallpaper.js';
 import {BackgroundContextSettings} from './context-settings.js';
@@ -89,6 +90,7 @@ export function BackgroundSettings({preferences, getConfig, applied, parent, win
                             {id: 'design', text: 'DevOs design'}, {id: 'solid', text: 'Solid color'}, {id: 'picture', text: 'Picture'},
                         ]} onChanged={widget => edit({mode: widget.get_active_id() ?? 'design'})} />
                     </Box>
+                    {config.mode === 'design' && <Box spacing={12}><Label xalign={0} expand>Design</Label><ComboBoxText id="background-style" activeId={config.style} sensitive={!busy} items={[...designStyles]} onChanged={widget => edit({style: widget.get_active_id() ?? 'dunes'})} /></Box>}
                     {config.mode === 'picture' && <Box orientation="vertical" spacing={10}>
                         <Label className="settings-description" xalign={0}>Picture file</Label>
                         <Box spacing={8}><Entry id="background-image-path" expand text={String(values.imagePath)} sensitive={!busy} placeholder="Choose a local image…" onChanged={widget => edit({imagePath: widget.get_text()})} />

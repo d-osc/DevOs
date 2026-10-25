@@ -6,6 +6,15 @@ Apply saves the settings and updates every monitor. Reset discards the draft.
 The base color follows the Dark or Light theme until you turn off
 “Use theme background color” or choose a color preset.
 
+The default DevOs design is drawn procedurally (`extensions/org.devos.background/design.ts`), so it needs no image
+files and fills any resolution or aspect ratio. It layers soft mesh-gradient glows built from the active theme's
+accent (shifted a little around the color wheel), two translucent dunes, a vignette and a faint grain tile that
+dithers away gradient banding, plus a small low-contrast “DEV OS” mark in the bottom-right corner. It follows
+the Dark / Light theme (including Auto): the Dark variant keeps most pixels near the theme's dark base for OLED
+panels and has no large bright areas, while Light uses pastel glows. Solid color and Picture modes are unchanged.
+Settings → Background → Design picks one of twenty-four looks: Dunes (the default), Aurora (sweeping light ribbons), Contours (topographic rings) Facets (a low-poly mesh), Waves (hairline sine waves), Bokeh (defocused light discs), Orbits (tilted elliptical rings), Horizon (a faint perspective floor) Mosaic (rounded tiles), and five animated designs: Flow (drifting color glows), Ripples (rings spreading from a point), Fireflies (twinkling motes rising slowly), Tide (slow rolling waves) and Planets (bodies moving along orbits), plus five space scenes: Starfield (twinkling parallax stars over a faint Milky Way band), Nebula (slowly drifting gas clouds), Galaxy (a rotating spiral), Meteors (shooting stars crossing a starfield every few seconds) and Eclipse (a glowing planet with an orbiting moon), and five hacker scenes in phosphor green tinted by the theme accent: Matrix (falling glyph columns), Terminal (scrolling fake shell and hex-dump panels with a blinking prompt), Circuit (PCB traces with data pulses), Radar (a sweeping scope with fading blips) and Network (drifting nodes passing packets). They are drawn natively with Cairo rather than in a web view, which keeps them light on CPU and memory; on the Light theme they become a pastel “dawn sky” with faint accent-colored stars. Animated designs are drawn at a third of the screen size, scaled up and redrawn 20 times a second; pick any static design to stop the animation. All motion is slow and low-contrast, which also spreads pixel wear on OLED. The choice is stored as `style` and unknown values fall back to Dunes. To preview them, run `DEVOS_WALLPAPER_PREVIEW=<dir> gjs -m dist/wallpaper-design-test.js` after building
+(`wallpaper-design-test`), which writes `wallpaper-<style>-dark.png` and `-light.png`.
+
 Right-click the desktop → Desktop widgets, or open Settings → Background →
 Desktop widgets. Add or remove Clock, Date and Note, choose top-left or top-right
 initial placement, then click Apply. Drag any widget’s header with the left mouse

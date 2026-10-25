@@ -2,13 +2,14 @@ import {Gio, GLib} from '@dev-os/core';
 import GdkPixbuf from 'gi://GdkPixbuf?version=2.0';
 import type {SettingsValues} from '@dev-os/core';
 import type {BackgroundConfig} from './view.js';
+import {designStyle} from './design.js';
 
 export type BackgroundMode = 'design' | 'solid' | 'picture';
 export type PictureFit = 'cover' | 'contain' | 'stretch';
 export interface WallpaperConfig extends BackgroundConfig {mode: BackgroundMode; imagePath: string; fit: PictureFit;}
 export function wallpaperConfig(config: BackgroundConfig, values: SettingsValues): WallpaperConfig {
     const mode = values.mode === 'solid' || values.mode === 'picture' ? values.mode : 'design';
-    return {...config, mode, fit: values.fit === 'contain' || values.fit === 'stretch' ? values.fit : 'cover',
+    return {...config, mode, style: designStyle(values.style), fit: values.fit === 'contain' || values.fit === 'stretch' ? values.fit : 'cover',
         imagePath: typeof values.imagePath === 'string' ? values.imagePath : '',
         background: values.useDesktopColor === false && typeof values.color === 'string' && /^#[\da-f]{6}$/i.test(values.color) ? values.color : config.background};
 }
