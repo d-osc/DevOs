@@ -13,7 +13,12 @@ if (-not $taskCandidate.imageReady) { throw 'The candidate has no integrated boa
 $taskExpected = (Get-Content -LiteralPath (Join-Path $taskDirectory 'SHA256SUMS') -Raw).Split()[0]
 if ($taskExpected -notmatch '^[a-f0-9]{64}$') { throw 'Invalid expected image checksum.' }
 $taskLength = (Get-Item -LiteralPath $taskImage).Length
-if ((Get-FileHash -LiteralPath $taskImage -Algorithm SHA256).Hash -ne $taskExpected) { throw 'Image checksum mismatch.' }
+# Get-FileHash may be unavailable in the noninteractive Windows PowerShell 5.1 host.
+$taskImageHasher = [Security.Cryptography.SHA256]::Create()
+$taskImageStream = [IO.File]::OpenRead($taskImage)
+try { $taskImageHash = [BitConverter]::ToString($taskImageHasher.ComputeHash($taskImageStream)).Replace('-', '').ToLowerInvariant() }
+finally { $taskImageStream.Dispose(); $taskImageHasher.Dispose() }
+if ($taskImageHash -ne $taskExpected) { throw 'Image checksum mismatch.' }
 function Assert-UsbTarget([switch]$IdentityOptional) {
     $taskDisk = Get-Disk -Number 1
     $taskReasons = @()

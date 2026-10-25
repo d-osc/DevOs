@@ -47,4 +47,4 @@ do_install() {
     install -d -m0750 ${D}${sysconfdir}/sudoers.d
     install -m0440 ${UNPACKDIR}/10-devos-wheel.sudoers ${D}${sysconfdir}/sudoers.d/10-devos-wheel
 }
-FILES:${PN} += "${systemd_user_unitdir} ${nonarch_libdir}/systemd/system-sleep ${libexecdir}/devos-power-log"
+FILES:${PN} += "${systemd_user_unitdir} ${systemd_system_unitdir}/devos-system-commit.service ${nonarch_libdir}/systemd/system-sleep ${libexecdir}/devos-power-log"
