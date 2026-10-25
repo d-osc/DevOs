@@ -52,7 +52,17 @@ async function run() {
         }
         const view = views()[0]!;
         if (webKitSoftwareRendering && view.get_settings().get_hardware_acceleration_policy() !== WebKit2.HardwareAccelerationPolicy.NEVER)
-            throw new Error('WSL Browser must use software rendering');
+            throw new Error('Software-rendered sessions must not use WebKit GPU emulation');
+        // Loading progress can fire rapidly. It must not schedule React renders for the tab strip.
+        const header = (browser as unknown as {header: {update(...args: unknown[]): void}}).header;
+        const updateHeader = header.update;
+        let tabRenders = 0;
+        header.update = (...args) => {tabRenders++; updateHeader(...args);};
+        try {
+            for (let i = 0; i < 100; i++) view.notify('estimated-load-progress');
+            if (tabRenders !== 0) throw new Error(`Progress-only changes rendered tabs ${tabRenders} times`);
+        } finally {header.update = updateHeader;}
+        print('PASS: Loading progress does not re-render the tab strip');
         const startSearch = all().find(widget => widget instanceof Gtk.Entry && widget.get_style_context().has_class('browser-start-search')) as Gtk.Entry;
         if (!startSearch) throw new Error('Start page search missing');
         startSearch.set_text('example.com'); startSearch.emit('activate');

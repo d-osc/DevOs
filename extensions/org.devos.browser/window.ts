@@ -19,6 +19,7 @@ export class BrowserWindow {
     private active = 0;
     private nextId = 1;
     private header: ReturnType<typeof mountTabbedHeader>;
+    private tabSignature = '';
     constructor(context: UIContext, closed: () => void) {
         this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Browser', default_width: 1120, default_height: 760});
         this.window.name = 'browser'; this.window.add(this.body);
@@ -97,17 +98,28 @@ export class BrowserWindow {
         return host;
     }
     private get current() {return this.tabs.find(tab => tab.id === this.active)?.view;}
+    private updateTabs() {
+        const tabs = this.tabs.map(tab => ({id: tab.id, label: tab.home ? 'New tab' : tab.view.get_title() || 'Loading…', iconName: 'dev-os-browser-symbolic', widthChars: 9}));
+        const signature = JSON.stringify([this.active, tabs]);
+        if (signature === this.tabSignature) return;
+        this.tabSignature = signature;
+        this.header.update({tabs, active: this.active, select: id => this.select(id), close: id => this.close(id), add: () => this.add()});
+    }
+    private updateProgress() {
+        const view = this.current;
+        const home = this.tabs.find(tab => tab.id === this.active)?.home;
+        this.progress.fraction = view?.estimated_load_progress || 0;
+        this.progress.set_visible(!!view?.is_loading && !home);
+    }
     private update(forceAddress = false) {
         const view = this.current;
         const home = this.tabs.find(tab => tab.id === this.active)?.home;
-        this.header.update({tabs: this.tabs.map(tab => ({id: tab.id, label: tab.home ? 'New tab' : tab.view.get_title() || 'Loading…', iconName: 'dev-os-browser-symbolic', widthChars: 9})), active: this.active,
-            select: id => this.select(id), close: id => this.close(id), add: () => this.add()});
+        this.updateTabs();
         this.back.sensitive = view?.can_go_back() ?? false; this.forward.sensitive = view?.can_go_forward() ?? false;
         if (forceAddress || !this.address.has_focus) this.address.set_text(home ? '' : view?.get_uri() || '');
         this.address.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY, home ? 'edit-find-symbolic' : view?.get_uri()?.startsWith('https://') ? 'channel-secure-symbolic' : 'dev-os-browser-symbolic');
         (this.reload.get_child() as Gtk.Image).set_from_icon_name(view?.is_loading ? 'process-stop-symbolic' : 'view-refresh-symbolic', Gtk.IconSize.MENU);
-        this.progress.fraction = view?.estimated_load_progress || 0;
-        this.progress.set_visible(!!view?.is_loading && !home);
+        this.updateProgress();
         this.window.set_title(`Browser · ${home ? 'New tab' : view?.get_title() || 'Loading…'}`);
     }
     private select(id: number) {this.active = id; this.stack.set_visible_child_name(String(id)); this.status.hide(); this.update(true);}
@@ -122,8 +134,9 @@ export class BrowserWindow {
         const tab = {id, view, page, home: !uri, inspector}; this.tabs.push(tab);
         page.add_named(this.startPage(uri => {view.load_uri(uri); view.grab_focus();}), 'home'); page.add_named(view, 'web');
         this.stack.add_named(page, String(id)); page.show_all(); page.set_visible_child_name(uri ? 'web' : 'home');
-        for (const property of ['title', 'uri', 'is-loading', 'estimated-load-progress']) view.connect(`notify::${property}`, () => this.update());
-        view.connect('load-changed', (_view, event) => {if (event === WebKit.LoadEvent.STARTED) {tab.home = false; page.set_visible_child_name('web');} if (id === this.active) this.status.hide(); this.update();});
+        view.connect('notify::estimated-load-progress', () => {if (id === this.active) this.updateProgress();});
+        for (const property of ['title', 'uri', 'is-loading']) view.connect(`notify::${property}`, () => {if (id === this.active) this.update(); else if (property === 'title') this.updateTabs();});
+        view.connect('load-changed', (_view, event) => {if (event === WebKit.LoadEvent.STARTED) {tab.home = false; page.set_visible_child_name('web');} if (id === this.active) {this.status.hide(); this.update();} else this.updateTabs();});
         view.connect('load-failed', (_view, _event, _uri, error) => {if (id === this.active) {this.status.set_text(error.message); this.status.show();} return false;});
         view.connect('web-process-terminated', () => {if (id === this.active) {this.status.set_text('Web process stopped. Reload to try again.'); this.status.show();}});
         view.connect('decide-policy', (_view, decision, type) => {

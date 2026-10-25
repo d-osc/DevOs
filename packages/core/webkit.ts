@@ -7,11 +7,12 @@ function isWSL(): boolean {
     catch {return false;}
 }
 
-export const webKitSoftwareRendering = isWSL();
+export const webKitSoftwareRendering = isWSL() || GLib.getenv('WLR_RENDERER') === 'pixman'
+    || ['1', 'true'].includes((GLib.getenv('LIBGL_ALWAYS_SOFTWARE') || '').toLowerCase());
 if (webKitSoftwareRendering) {
     // Configure before creating any WebView or starting WebKit child processes.
-    // WSLg does not guarantee access to Linux DRM devices. Keep web rendering
-    // on the CPU instead of repeatedly trying unsupported EGL/DMABUF paths.
+    // WSLg and the Live image's pixman session use software rendering. Avoid
+    // running WebKit's GPU compositor through a software GL driver on those sessions.
     for (const name of ['LIBGL_ALWAYS_SOFTWARE', 'WEBKIT_DISABLE_COMPOSITING_MODE', 'WEBKIT_DISABLE_DMABUF_RENDERER', 'WEBKIT_SKIA_ENABLE_CPU_RENDERING'])
         GLib.setenv(name, '1', true);
 }
