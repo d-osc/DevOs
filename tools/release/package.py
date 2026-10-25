@@ -38,7 +38,7 @@ RUNTIME_EXTRAS = (
     'native/devos-account-admin', 'native/devos-pam-auth', 'native/devos-account-askpass',
     'native/devos-account-askpass.dev', 'native/devos_app_store.dev', 'native/devos-app-store-admin',
     'native/devos-radio-admin', 'native/radio-system.dev', 'native/devos-battery-care', 'native/devos-fan-profile',
-    'native/devos-swap', 'native/devos-keyboard', 'native/devos-connectivity')
+    'native/devos-swap', 'native/devos-system-update', 'native/devos-keyboard', 'native/devos-connectivity')
 # Hardware profiles (the UX3407NA profile lives in profiles/asus/ux3407na); the image build reads these.
 RUNTIME_PROFILES = ('profiles',)
 # Shipped in the runtime archive besides RUNTIME_DIRS (not in distro/oe/prepare.dev's list): the Font Awesome webfonts.

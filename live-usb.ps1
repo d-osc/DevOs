@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = (& wsl -d $BuildDistribution --exec wslpath -a $PSScriptRoot).Trim()
+$taskWslPyPath = '/home/ondev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'  # DevLang `d` and the sbin tools (debugfs, sgdisk)
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve project path.' }
 if ($Mode -eq 'kernel') {
     $taskKernelRoot = (& wsl -d $BuildDistribution --exec wslpath -a $KernelProject).Trim()
@@ -29,7 +30,7 @@ if ($Mode -eq 'export') {
     $taskName = 'devos-live-arm64-ux3407na.img'
     $taskTarget = Join-Path $taskDirectory $taskName
     if (Test-Path -LiteralPath $taskTarget) { throw "Refusing to overwrite $taskTarget" }
-    & wsl -d $BuildDistribution --exec python3 "$taskRoot/distro/usb/prepare.py" check --output $OutputDirectory
+    & wsl -d $BuildDistribution --exec env "PATH=$taskWslPyPath" d "$taskRoot/distro/usb/prepare.dev" '--' check --output $OutputDirectory
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $taskSourceDirectory = "\\wsl.localhost\$BuildDistribution" + $OutputDirectory.Replace('/', '\')
     $taskExpected = (Get-Content -LiteralPath (Join-Path $taskSourceDirectory 'SHA256SUMS') -Raw).Split()[0]
@@ -42,7 +43,12 @@ if ($Mode -eq 'export') {
             try { $taskSource.CopyTo($taskDestination, 4MB); $taskDestination.Flush($true) }
             finally { $taskDestination.Dispose() }
         } finally { $taskSource.Dispose() }
-        $taskActual = (Get-FileHash -LiteralPath $taskPartial -Algorithm SHA256).Hash.ToLowerInvariant()
+        # Use .NET directly: Get-FileHash is a module function on Windows
+        # PowerShell 5.1 and may be unavailable in the noninteractive exporter.
+        $taskHasher = [Security.Cryptography.SHA256]::Create()
+        $taskHashStream = [IO.File]::OpenRead($taskPartial)
+        try { $taskActual = ([BitConverter]::ToString($taskHasher.ComputeHash($taskHashStream))).Replace('-', '').ToLowerInvariant() }
+        finally { $taskHashStream.Dispose(); $taskHasher.Dispose() }
         if ($taskActual -ne $taskExpected) { throw 'Exported image checksum mismatch. Nothing was published for flashing.' }
         Move-Item -LiteralPath $taskPartial -Destination $taskTarget
     } finally {
@@ -68,7 +74,7 @@ if ($Mode -eq 'prepare') {
         if (-not $FirmwareDirectory) { throw 'Collect a fresh UX3407NA firmware bundle with distro/usb/stage-x2-firmware.ps1 into a new directory, then pass -FirmwareDirectory. The old DSP-only bundle cannot initialize Wi-Fi.' }
     }
     # Validate before any BusyBox build or rootfs/image staging.
-    & wsl -d $BuildDistribution --exec python3 "$taskRoot/distro/usb/prepare.py" firmware-check --firmware $FirmwareDirectory
+    & wsl -d $BuildDistribution --exec env "PATH=$taskWslPyPath" d "$taskRoot/distro/usb/prepare.dev" '--' firmware-check --firmware $FirmwareDirectory
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 if ($Mode -in @('prepare','diagnose')) {
@@ -79,5 +85,5 @@ $taskUsbArgs = @($Mode, '--output', $OutputDirectory)
 if ($KernelBundle) { $taskUsbArgs += @('--kernel-bundle', $KernelBundle) }
 if ($FirmwareDirectory) { $taskUsbArgs += @('--firmware', $FirmwareDirectory) }
 if ($Mode -eq 'export') { $taskUsbArgs += @('--export-directory', "$taskRoot/build/live-usb") }
-& wsl -d $BuildDistribution --exec python3 "$taskRoot/distro/usb/prepare.py" @taskUsbArgs
+& wsl -d $BuildDistribution --exec env "PATH=$taskWslPyPath" d "$taskRoot/distro/usb/prepare.dev" '--' @taskUsbArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

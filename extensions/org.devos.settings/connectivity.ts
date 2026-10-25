@@ -1,5 +1,4 @@
-import {Gio, GLib} from '@dev-os/core';
-import {ROOT} from '@dev-os/config';
+import {HelperClient} from './helper-client.js';
 export type TaskFirstProfile = 'off' | 'productivity' | 'streaming' | 'games';
 /** Result of `dev-os-connectivity get`. */
 export interface ConnectivityState {
@@ -18,22 +17,6 @@ export const taskFirstProfiles: {id: TaskFirstProfile; title: string; descriptio
     {id: 'streaming', title: 'Multimedia streaming', description: 'Prioritize audio / video streaming apps and websites'},
     {id: 'games', title: 'Games', description: 'Prioritize game-related tasks, such as gameplay and game live streaming'},
 ];
-export class Connectivity implements ConnectivityControls {
-    private processes = new Set<Gio.Subprocess>(); private disposed = false;
-    request(action: ConnectivityAction, ...args: string[]): Promise<ConnectivityState> {
-        return new Promise((resolve, reject) => {
-            if (this.disposed) {reject(new Error('Connectivity settings closed.')); return;}
-            try {
-                const local = `${ROOT}/bin/dev-os-connectivity`, helper = GLib.file_test(local, GLib.FileTest.IS_REGULAR) ? local : GLib.find_program_in_path('dev-os-connectivity');
-                if (!helper) throw new Error('Connectivity settings are not installed.');
-                const child = Gio.Subprocess.new(['sh', helper, action, ...args], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE); this.processes.add(child);
-                let timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 120, () => {timer = 0; child.force_exit(); return GLib.SOURCE_REMOVE;});
-                child.communicate_utf8_async(null, null, (_source, result) => {
-                    if (timer) GLib.source_remove(timer); this.processes.delete(child);
-                    try {const [, out, err] = child.communicate_utf8_finish(result); const response = JSON.parse(out || '{}'); if (!child.get_successful() || response.ok !== true) throw new Error(response.error || err || 'Connectivity settings failed.'); resolve(response as ConnectivityState);} catch (reason) {reject(reason);}
-                });
-            } catch (reason) {reject(reason);}
-        });
-    }
-    destroy() {this.disposed = true; for (const child of this.processes) child.force_exit(); this.processes.clear();}
+export class Connectivity extends HelperClient<ConnectivityState, ConnectivityAction> implements ConnectivityControls {
+    constructor() {super('dev-os-connectivity', 120, {closed: 'Connectivity settings closed.', missing: 'Connectivity settings are not installed.', failed: 'Connectivity settings failed.'});}
 }

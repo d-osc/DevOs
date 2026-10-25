@@ -99,7 +99,7 @@ class MicrophoneTests(unittest.TestCase):
         self.graph.write_text(json.dumps(objects))
 
     def run_helper(self, *args, expect=0, env=None):
-        done = subprocess.run([sys.executable, str(HELPER), *args], capture_output=True, text=True, env={**self.env, **(env or {})}, timeout=60)
+        done = subprocess.run(['sh', str(HELPER), *args], capture_output=True, text=True, env={**self.env, **(env or {})}, timeout=60)
         self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
         return json.loads(done.stdout) if done.stdout.strip().startswith('{') else done.stdout
 

@@ -1,5 +1,5 @@
 import {
-    Gtk, Gdk, Gio, GLib, Pango,
+    Gtk, Gdk, GLib, Pango,
     React, Box, Label, Button, Image, Spinner,
     createRoot, useLayoutEffect, useRef, useState, type Root,
     type UIExtension, type UIContext
@@ -82,7 +82,7 @@ export class EditorWindow implements TabDragHost {
         void assets.catch(() => {});
         this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Dev OS Editor', default_width: 1040, default_height: 620});
         this.window.name = 'editor'; this.window.add(this.stack); this.stack.show();
-        this.header = mountTabbedHeader(this.window, {title: 'Editor', iconName: 'dev-os-editor', windowIconName: 'dev-os-editor', iconId: 'editor-window-icon'});
+        this.header = mountTabbedHeader(this.window, {title: 'Editor', iconName: 'dev-os-editor-symbolic', windowIconName: 'dev-os-editor', iconId: 'editor-window-icon'});
         this.window.connect('delete-event', () => { void this.requestClose(); return true; });
         this.window.connect('key-press-event', (_window, event) => {
             // WebKit dispatches typing asynchronously. Let Monaco handle its own

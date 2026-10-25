@@ -1,5 +1,4 @@
-import {Gio, GLib} from '@dev-os/core';
-import {ROOT} from '@dev-os/config';
+import {HelperClient} from './helper-client.js';
 export type SwapType = 'zram' | 'file' | 'off';
 export type SwapAlgorithm = 'zstd' | 'lz4';
 /** Result of `dev-os-swap get`: the saved setting, what is running, and the limits the helper enforces. */
@@ -41,23 +40,8 @@ export function draftOf(state: SwapState): SwapDraft {return {type: state.type, 
 export function draftArguments(draft: SwapDraft): string[] {
     return [`type=${draft.type}`, ...(draft.type === 'off' ? [] : [draft.percent === null ? `mib=${draft.mib}` : `percent=${draft.percent}`, `algorithm=${draft.algorithm}`]), `swappiness=${draft.swappiness}`];
 }
-export class Swap implements SwapControls {
-    private processes = new Set<Gio.Subprocess>(); private disposed = false;
-    request(action: SwapAction, ...args: string[]): Promise<SwapState> {
-        return new Promise((resolve, reject) => {
-            if (this.disposed) {reject(new Error('Swap settings closed.')); return;}
-            try {
-                const local = `${ROOT}/bin/dev-os-swap`, helper = GLib.file_test(local, GLib.FileTest.IS_REGULAR) ? local : GLib.find_program_in_path('dev-os-swap');
-                if (!helper) throw new Error('Swap settings are not installed.');
-                const child = Gio.Subprocess.new(['sh', helper, action, ...args], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE); this.processes.add(child);
-                // Replacing a large compressed swap can take a while, so only a hung helper is stopped.
-                let timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 300, () => {timer = 0; child.force_exit(); return GLib.SOURCE_REMOVE;});
-                child.communicate_utf8_async(null, null, (_source, result) => {
-                    if (timer) GLib.source_remove(timer); this.processes.delete(child);
-                    try {const [, out, err] = child.communicate_utf8_finish(result); const response = JSON.parse(out || '{}'); if (!child.get_successful() || response.ok !== true) throw new Error(response.error || err || 'Swap settings failed.'); resolve(response as SwapState);} catch (reason) {reject(reason);}
-                });
-            } catch (reason) {reject(reason);}
-        });
-    }
-    destroy() {this.disposed = true; for (const child of this.processes) child.force_exit(); this.processes.clear();}
+export class Swap extends HelperClient<SwapState, SwapAction> implements SwapControls {
+    constructor() {
+        // Replacing a large compressed swap can take a while, so only a hung helper is stopped.
+        super('dev-os-swap', 300, {closed: 'Swap settings closed.', missing: 'Swap settings are not installed.', failed: 'Swap settings failed.'});}
 }

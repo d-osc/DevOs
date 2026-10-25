@@ -1,0 +1,207 @@
+# PipeWire plumbing shared by dev-os-microphone and dev-os-speaker: the node graph from pw-dump, the plugin checks,
+# the default-device calls and the user-service starters. Test hooks: DEVOS_MIC_PW_DUMP, DEVOS_MIC_WPCTL,
+# DEVOS_MIC_SYSTEMCTL, DEVOS_MIC_SYSTEMD_RUN, DEVOS_MIC_PIPEWIRE, DEVOS_MIC_LIBDIRS, DEVOS_MIC_WAIT (seconds).
+use "std/json"
+use "std/strings"
+use "../lib/hw.dev" as hw
+
+fn prefix(): str { return "devos-mic-" }
+fn cleanName(): str { return "devos-mic-clean" }
+fn fxName(): str { return "devos-spk-fx" }
+
+struct Node { id: i64, name: str, title: str, mode: str }
+struct Graph {
+    ok: bool, sources: Vec<Node>, speakers: Vec<Node>, sinkNames: Vec<str>, sinkIds: Vec<i64>,
+    hasClean: bool, clean: Node, hasFx: bool, fx: Node, recorders: i64, defaultSource: str, defaultSink: str
+}
+
+fn noNode(): Node { return Node(0 - 1, "", "", "") }
+fn noGraph(): Graph {
+    return Graph(false, Vec<Node>(), Vec<Node>(), Vec<str>(), Vec<i64>(), false, noNode(), false, noNode(), 0, "", "")
+}
+
+fn configDir(): str { return hw.configHome() + "/devos" }
+fn waitSeconds(): f64 { return hw.toFloat(hw.envOr("DEVOS_MIC_WAIT", "12"), 12.0) }
+
+fn run(argv: Vec<str>, timeoutMs: i64): hw.Run { return hw.run(argv, timeoutMs) }
+
+fn titleOf(props: json.Value, name: str): str {
+    let description = hw.jstr(props, "node.description", "")
+    if strings.charLength(description) > 0 { return description }
+    let nick = hw.jstr(props, "node.nick", "")
+    if strings.charLength(nick) > 0 { return nick }
+    return name
+}
+
+fn sortNodes(nodes: Vec<Node>): Vec<Node> {
+    let out = Vec<Node>()
+    for i in 0..(nodes.len() as i64) { out.push(nodes[i]) }
+    for i in 0..(out.len() as i64) {
+        for j in (i + 1)..(out.len() as i64) {
+            if out[j].id < out[i].id { let swap = out[i]; out[i] = out[j]; out[j] = swap }
+        }
+    }
+    return out
+}
+
+fn sinkId(graph: Graph, name: str): i64 {
+    for i in 0..(graph.sinkNames.len() as i64) { if strings.equal(graph.sinkNames[i], name) { return graph.sinkIds[i] } }
+    return 0 - 1
+}
+
+# The PipeWire graph, or a Graph with ok=false when pw-dump cannot be queried.
+fn snapshot(): Graph {
+    let dumped = run(hw.tool("DEVOS_MIC_PW_DUMP", "pw-dump"), 15000)
+    if dumped.code != 0 || !json.valid(dumped.out) { return noGraph() }
+    let objects = json.parse(dumped.out)
+    if !strings.equal(json.kind(objects), "array") { return noGraph() }
+    let graph = noGraph()
+    graph.ok = true
+    let defaultSource = ""
+    let defaultSink = ""
+    for index in 0..(json.len(objects) as i64) {
+        let item = json.at(objects, index)
+        let kind = hw.jstr(item, "type", "")
+        let info = hw.jget(item, "info")
+        let props = hw.jget(info, "props")
+        let id = hw.jint(item, "id", 0)
+        if strings.endsWith(kind, "Interface:Node") {
+            let name = hw.jstr(props, "node.name", "")
+            let klass = hw.jstr(props, "media.class", "")
+            if strings.equal(name, cleanName()) {
+                graph.hasClean = true
+                graph.clean = Node(id, name, "", hw.jstr(props, "devos.mic.mode", ""))
+            }
+            if strings.equal(klass, "Audio/Source") && strings.charLength(name) > 0 && !strings.startsWith(name, prefix()) {
+                graph.sources.push(Node(id, name, titleOf(props, name), ""))
+            }
+            if strings.equal(klass, "Audio/Sink") && strings.charLength(name) > 0 {
+                graph.sinkNames.push(name)
+                graph.sinkIds.push(id)
+                if strings.equal(name, fxName()) {
+                    graph.hasFx = true
+                    graph.fx = Node(id, name, "", "")
+                } else if !strings.startsWith(name, "devos-") {
+                    graph.speakers.push(Node(id, name, titleOf(props, name), ""))
+                }
+            }
+            # Applications capturing audio (calls, recorders); our own filters and level meters do not count.
+            if strings.equal(klass, "Stream/Input/Audio") && !strings.startsWith(name, "devos-") {
+                let monitor = json.stringify(hw.jget(props, "stream.monitor"))
+                if !strings.equal(strings.toLowerCase(strings.replaceAll(monitor, "\"", "")), "true") { graph.recorders = graph.recorders + 1 }
+            }
+        } else if strings.endsWith(kind, "Interface:Metadata") {
+            let entries = hw.jget(item, "metadata")
+            if strings.equal(json.kind(entries), "array") {
+                for e in 0..(json.len(entries) as i64) {
+                    let entry = json.at(entries, e)
+                    let key = hw.jstr(entry, "key", "")
+                    if (strings.equal(key, "default.audio.source") || strings.equal(key, "default.audio.sink")) && hw.jint(entry, "subject", 0 - 1) == 0 {
+                        let value = hw.jget(entry, "value")
+                        if strings.equal(json.kind(value), "string") {
+                            let text = json.string(value)
+                            if json.valid(text) { value = json.parse(text) } else { value = json.object() }
+                        }
+                        let valueName = hw.jstr(value, "name", "")
+                        if strings.charLength(valueName) > 0 {
+                            if strings.equal(key, "default.audio.source") { defaultSource = valueName } else { defaultSink = valueName }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    graph.sources = sortNodes(graph.sources)
+    graph.speakers = sortNodes(graph.speakers)
+    graph.defaultSource = defaultSource
+    graph.defaultSink = defaultSink
+    return graph
+}
+
+fn libdirs(): Vec<str> {
+    let configured = hw.env("DEVOS_MIC_LIBDIRS")
+    let out = Vec<str>()
+    if strings.charLength(configured) > 0 {
+        let parts = strings.split(configured, ":")
+        for i in 0..(parts.len() as i64) { if strings.charLength(parts[i]) > 0 { out.push(parts[i]) } }
+        return out
+    }
+    out.push("/usr/lib")
+    out.push("/usr/lib64")
+    let names = hw.listDirRaw("/usr/lib")
+    for i in 0..(names.len() as i64) {
+        if strings.endsWith(names[i], "-linux-gnu") { out.push("/usr/lib/" + names[i]) }
+    }
+    return out
+}
+
+fn found(a: str, b: str, c: str): bool {
+    let bases = libdirs()
+    for i in 0..(bases.len() as i64) {
+        let path = bases[i] + "/" + a + "/" + b
+        if strings.charLength(c) > 0 { path = path + "/" + c }
+        if hw.isFile(path) { return true }
+    }
+    return false
+}
+
+fn pipewireProgram(): str { return hw.tool("DEVOS_MIC_PIPEWIRE", "pipewire")[0] }
+fn pipewireCommand(): Vec<str> { return hw.tool("DEVOS_MIC_PIPEWIRE", "pipewire") }
+
+fn missingText(missing: Vec<str>, lead: str): str {
+    return lead + strings.join(missing, " and ") + ", which " + (missing.len() == 1 ? "is" : "are") + " not installed in this system."
+}
+
+struct Availability { ok: bool, reason: str }
+
+# The PipeWire module, the WebRTC SPA plugin and the pipewire binary must all exist.
+fn noisePlugins(): Availability {
+    let missing = Vec<str>()
+    if !found("pipewire-0.3", "libpipewire-module-echo-cancel.so", "") { missing.push("the PipeWire echo-cancel module (pipewire-modules-echo-cancel)") }
+    if !found("spa-0.2", "aec", "libspa-aec-webrtc.so") { missing.push("the WebRTC audio-processing plugin (pipewire-spa-plugins-aec-webrtc)") }
+    if strings.equal(hw.which(pipewireProgram()), "") { missing.push("the pipewire program") }
+    if missing.len() > 0 { return Availability(false, missingText(missing, "Noise canceling needs ")) }
+    return Availability(true, "")
+}
+
+fn filtersAvailable(): Availability {
+    let missing = Vec<str>()
+    if !found("pipewire-0.3", "libpipewire-module-filter-chain.so", "") { missing.push("the PipeWire filter-chain module (pipewire-modules-filter-chain)") }
+    if !found("spa-0.2", "filter-graph", "libspa-filter-graph-plugin-builtin.so") || !found("spa-0.2", "filter-graph", "libspa-filter-graph.so") {
+        missing.push("the built-in filter graph plugin (pipewire-spa-plugins-filter-graph, pipewire-spa-plugins-filter-graph-plugin-builtin)")
+    }
+    if strings.equal(hw.which(pipewireProgram()), "") { missing.push("the pipewire program") }
+    if missing.len() > 0 { return Availability(false, missingText(missing, "Sound effects need ")) }
+    return Availability(true, "")
+}
+
+fn setDefault(id: i64) {
+    let done = run(hw.concat(hw.tool("DEVOS_MIC_WPCTL", "wpctl"), Vec<str>("set-default", "${id}")), 15000)
+    if done.code != 0 { hw.failure("WirePlumber could not select the device: " + hw.clean(strings.charLength(done.out) > 0 ? done.out : "wpctl failed")) }
+}
+
+fn systemctl(args: Vec<str>): hw.Run {
+    return hw.runWith(hw.concat(hw.tool("DEVOS_MIC_SYSTEMCTL", "systemctl"), Vec<str>("--user")), args, 30000)
+}
+
+# Starts `<launcher> serve` as a transient user unit (images without the packaged unit, e.g. the Live USB).
+fn startTransient(transient: str, launcher: str): hw.Run {
+    let argv = hw.tool("DEVOS_MIC_SYSTEMD_RUN", "systemd-run")
+    let extra = Vec<str>("--user", "--collect", "--quiet", "--unit=" + transient, "--setenv=DEVOS_MIC_WAIT=45", launcher, "serve")
+    return hw.runWith(argv, extra, 30000)
+}
+
+fn lower(text: str): str { return strings.toLowerCase(text) }
+fn unitMissing(out: str): bool { return strings.contains(lower(out), "not found") || strings.contains(lower(out), "not-found") }
+
+# Polls the graph until `pred` holds or the deadline passes; returns the last graph (ok=false when pw-dump failed).
+fn waitFor(pred: fn(Graph): bool, seconds: f64): Graph {
+    let deadline = hw.nowSeconds() + seconds
+    while true {
+        let graph = snapshot()
+        if graph.ok && pred(graph) { return graph }
+        if hw.nowSeconds() >= deadline { return graph }
+        hw.sleepSeconds(0.3)
+    }
+    return noGraph()
+}

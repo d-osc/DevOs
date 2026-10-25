@@ -13,7 +13,7 @@ containing `UX3407NA`.
 | `firmware.list` | firmware expected under `/lib/firmware` (checked by `dev-os-drivers`) |
 | `quirks.list` | named quirks consumed by tools and docs |
 | `files/` | files copied into the Live root (`etc/systemd/logind.conf.d` lid policy) |
-| `kernel/ux3407na-audio.dtsi` | audio DT patch used by `distro/usb/prepare-board-fixes.py` |
+| `kernel/ux3407na-audio.dtsi` | audio DT patch used by `distro/usb/prepare-board-fixes.dev` |
 
 The kernel config lives in the sibling DevOsLinuxKernel repo
 (`config/profiles/snapdragon-x2.config`, `scripts/build-snapdragon-x2.sh`).
@@ -38,10 +38,10 @@ The user reported that manually selecting Sleep on this laptop resulted in a
 black screen that did not wake. This is consistent with missing EC Modern
 Standby notifications; the precise hang still requires native suspend logs.
 
-`distro/usb/prepare-suspend-fixes.py` builds the upstream v4 ASUS EC driver
+`distro/usb/prepare-suspend-fixes.dev` builds the upstream v4 ASUS EC driver
 against the matching kernel build and adds the upstream UX3407NA EC/wakeup
 nodes to a private DTB. See `native/kernel/asus-glymur-ec/README.md` for sources.
-Use the resulting bundle with `prepare.py --kernel-bundle`, rather than the
+Use the resulting bundle with `prepare.dev --kernel-bundle`, rather than the
 original bundle. The board's sleep drop-in selects s2idle only. A suspend
 service precondition refuses sleep if the EC is unbound or s2idle is absent.
 Pre-suspend and post-resume logs are saved on the mounted Live ESP under
@@ -54,5 +54,5 @@ Camera: MIPI (CAMSS/OV02C10), not USB. The device tree lacks the camera graph, s
 
 Bluetooth: WCN7850-class controller on a serdev UART (`hci0` registers). Earlier
 images failed to load `qca/ornbtfw11.tlv`/`ornnv11.bin` because the controller probes
-from the initramfs; `prepare.py` now stages the `qca/` entries of `firmware.list` there.
+from the initramfs; `prepare.dev` now stages the `qca/` entries of `firmware.list` there.
 See `docs/live-usb.md` ("UX3407NA Bluetooth cannot scan or pair") and `devos-bluetooth-report`.

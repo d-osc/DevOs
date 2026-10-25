@@ -17,7 +17,7 @@ async function verify() {
     const listeners = new Set<() => void>(); let activated = 0, closed = 0, dismissed = 0;
     let desktops: DesktopWorkspace[] = [], moved = 0;
     let state: DesktopWindow[] = [
-        {id: 1, title: 'Dev OS Terminal · build', appId: 'terminal', active: true, minimized: false},
+        {id: 1, title: 'Terminal · build', appId: 'terminal', active: true, minimized: false},
         {id: 2, title: 'Dev OS Files · Projects', appId: 'files', active: false, minimized: false},
         {id: 3, title: 'Dev OS Settings', appId: 'settings', active: false, minimized: true},
         {id: 4, title: 'Dev OS Editor · main.ts', appId: 'editor', active: false, minimized: false},
@@ -48,7 +48,7 @@ async function verify() {
         find<Gtk.Button>('task-view-dismiss').emit('clicked'); assert(dismissed === 2, 'Dismiss button works');
         desktops = [1, 2, 3, 4].map(id => ({id, name: String(id), active: id === 1}));
         state = [{id: 10, title: 'Dev OS Files · Desktop One', appId: 'files', active: false, minimized: false, desktop: 1},
-            {id: 11, title: 'Dev OS Terminal · Desktop Two', appId: 'terminal', active: false, minimized: true, desktop: 2}];
+            {id: 11, title: 'Terminal · Desktop Two', appId: 'terminal', active: false, minimized: true, desktop: 2}];
         listeners.forEach(listener => listener()); await wait();
         assert(find('task-view-activate-10') && !find('task-view-activate-11') && find('task-view-desktop-4'), 'Task View separates real desktop memberships and lists desktop buttons');
         if (screenshot) {await wait(); window.get_pixbuf()!.savev(screenshot.replace('.png', '-desktops.png'), 'png', [], []);}

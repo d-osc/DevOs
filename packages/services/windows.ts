@@ -242,8 +242,35 @@ export class Windows implements WindowControls {
     }
 }
 
+const builtinApps = [
+    {group: 'terminal', title: 'Terminal', icon: 'dev-os-terminal-symbolic', id: 'dev-os-terminal'},
+    {group: 'files', title: 'Files', icon: 'dev-os-files-symbolic', id: 'dev-os-files'},
+    {group: 'settings', title: 'Settings', icon: 'dev-os-settings-symbolic', id: 'dev-os-settings'},
+    {group: 'dev-os-editor', title: 'Editor', icon: 'dev-os-editor-symbolic', id: 'dev-os-editor'},
+    {group: 'dev-os-browser', title: 'Browser', icon: 'dev-os-browser-symbolic', id: 'dev-os-browser'},
+    {group: 'dev-os-camera', title: 'Camera', icon: 'dev-os-camera-symbolic', id: 'dev-os-camera'},
+    {group: 'dev-os-microphone', title: 'Microphone', icon: 'dev-os-microphone-symbolic', id: 'dev-os-microphone'},
+    {group: 'dev-os-task-manager', title: 'Task Manager', icon: 'dev-os-task-manager-symbolic', id: 'dev-os-task-manager'},
+    {group: 'dev-os-disk-manager', title: 'Disk Manager', icon: 'dev-os-disk-manager-symbolic', id: 'dev-os-disk-manager'},
+    {group: 'dev-os-app-store', title: 'App Store', icon: 'dev-os-app-store-symbolic', id: 'dev-os-app-store'},
+    {group: 'dev-os-installer', title: 'Install Dev OS', icon: 'dev-os-installer-symbolic', id: 'dev-os-installer'},
+    {group: 'dev-os-browser-inspector', title: 'Developer Tools', icon: 'dev-os-editor-symbolic', id: 'dev-os-browser-inspector'},
+] as const;
+
+export function builtinWindowApp(group: string) {return builtinApps.find(app => app.group === group);}
+
 export function windowGroup(window: DesktopWindow) {
-    if (/^Dev OS Terminal(?:$| ·)/.test(window.title) || /^(foot|org\.gnome\.Terminal|org\.wezfurlong\.wezterm)$/i.test(window.appId)) return 'terminal';
+    // Built-in app windows share the shell's Wayland application ID. Identify
+    // their app-specific title prefix before looking up external desktop files.
+    if (/^(?:gjs|org\.devos\.Shell(?:\..*)?)$/i.test(window.appId)) {
+        const title = window.title.replace(/^Dev OS /, '');
+        const app = builtinApps.find(app => title === app.title || title.startsWith(`${app.title} ·`));
+        if (app) return app.group;
+    }
+    const ownId = window.appId.replace(/\.desktop$/i, '').toLowerCase();
+    const builtin = builtinApps.find(app => ownId === app.id);
+    if (builtin) return builtin.group;
+    if (/^(?:Dev OS )?Terminal(?:$| ·)/.test(window.title) || /^(foot|org\.gnome\.Terminal|org\.wezfurlong\.wezterm)$/i.test(window.appId)) return 'terminal';
     if (/^Dev OS Files(?:$| ·)/.test(window.title) || /^(thunar|org\.gnome\.Nautilus)$/i.test(window.appId)) return 'files';
     if (/^Dev OS Settings(?:$| ·)/.test(window.title)) return 'settings';
     if (/^Dev OS Editor(?:$| ·)/.test(window.title)) return 'dev-os-editor';

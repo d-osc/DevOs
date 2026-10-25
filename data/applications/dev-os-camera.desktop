@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Dev OS Camera
-Comment=Capture with Dev OS Camera
+Name=Camera
+Comment=Capture with Camera
 Exec=dev-os-shell camera
-Icon=camera-photo
+Icon=dev-os-camera
 Terminal=false
 Categories=AudioVideo;
 

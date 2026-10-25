@@ -1,0 +1,564 @@
+# Display care for Dev OS Settings (the MyASUS "OLED Care", "OLED Flicker-Free Dimming", "Splendid" and "Target Mode" cards).
+# Entry point: lib/display-care-cli.dev, started by bin/dev-os-display-care.
+#
+# Usage: dev-os-display-care get | set <key> <value> | reset | apply | serve
+# JSON on stdout, exit 1 on failure. Everything runs as the user; no root and no polkit action is needed.
+#
+# What is real on this stack (labwc / wlroots, no vendor driver) and what is not:
+#   gamma ramps   `serve` is a Wayland client of wlr-gamma-control-unstable-v1. One ramp per output carries the Splendid mode
+#                 (Normal, Vivid, Manual temperature, Eye Care) and the Flicker-Free Dimming level. A ramp is three 1-D lookup
+#                 tables, so it can change colour temperature, contrast and overall level, but it can NOT change saturation or turn
+#                 the picture black and white. Vivid is therefore a contrast boost and E-Reading (grayscale) is reported as
+#                 unavailable. Dimming scales pixel values (no PWM, so no flicker) and is separate from the kernel backlight.
+#   pixel refresh `serve` also listens to ext-idle-notify-v1 and creates $XDG_RUNTIME_DIR/devos-pixel-refresh after 30 minutes
+#                 without input (removed on activity). The shell (org.devos.displaycare) draws the screen saver; idle inhibitors
+#                 such as a fullscreen video are honoured by the compositor.
+#   colour gamut  needs ICC/colour-transform support in the compositor. wlroots/labwc here has none, so only "Native" exists.
+#   shell effects panel auto-hide, panel transparency, Pixel Shift, Target Mode and Adaptive Edge Brightness are drawn by the
+#                 shell itself; this helper only validates and stores their settings.
+# `serve` is started by the shell (org.devos.displaycare) and by `set`/`apply`; a lock keeps it to one copy per session.
+# State: $XDG_CONFIG_HOME/devos/display-care.json. `serve` re-reads it when the file changes and holds no gamma control while
+# every value is at its default, so other gamma tools keep working.
+# Test hooks: DEVOS_DISPLAY_SPAWN, DEVOS_DISPLAY_BACKLIGHT, DEVOS_DISPLAY_SYS, DEVOS_DISPLAY_IDLE_MS, DEVOS_DISPLAY_ONCE.
+use "std/args"
+use "std/json"
+use "std/math"
+use "std/strings"
+use "std/result"
+use "std/fs"
+use "../lib/hw.dev" as hw
+use "../lib/wayland.dev" as wl
+
+extern fn memfd_create(name: str, flags: u32): i32
+extern fn pwrite(fd: i32, data: *u8, size: usize, offset: i64): isize
+extern fn close(fd: i32): i32
+extern fn open(path: str, flags: i32, mode: u32): i32
+extern fn flock(fd: i32, operation: i32): i32
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+
+fn recommendedBrightness(): i64 { return 70 }
+fn idleMs(): i64 { return hw.toInt(hw.env("DEVOS_DISPLAY_IDLE_MS"), 30 * 60 * 1000) }
+fn isSplendid(name: str): bool { return strings.equal(name, "normal") || strings.equal(name, "vivid") || strings.equal(name, "manual") || strings.equal(name, "eyecare") }
+
+fn reasonEreading(): str { return "E-Reading turns the picture black and white. A gamma ramp is three 1-D tables and cannot remove colour, and the compositor has no colour matrix, so it is not offered." }
+fn reasonGamut(): str { return "Changing the colour gamut needs ICC / colour-transform support in the compositor. labwc and wlroots here only drive the panel natively, so only Native exists." }
+
+fn defaults(): json.Value {
+    let v = json.object()
+    v = json.set(v, "splendid", "normal")
+    v = json.set(v, "temperature", 0)
+    v = json.set(v, "eyeCare", 3)
+    v = json.set(v, "gamut", "native")
+    v = json.set(v, "dimming", 100)
+    v = json.set(v, "pixelRefresh", true)
+    v = json.set(v, "autoHidePanel", false)
+    v = json.set(v, "panelTransparency", true)
+    v = json.set(v, "targetMode", false)
+    v = json.set(v, "edgeBrightness", 0)
+    return v
+}
+fn settingKeys(): Vec<str> {
+    return Vec<str>("splendid", "temperature", "eyeCare", "gamut", "dimming", "pixelRefresh", "autoHidePanel", "panelTransparency", "targetMode", "edgeBrightness")
+}
+# The settings Reset button restores exactly these (plus the backlight).
+fn resetKeys(): Vec<str> { return Vec<str>("splendid", "temperature", "eyeCare", "gamut", "dimming") }
+
+fn configDir(): str { return hw.configHome() + "/devos" }
+fn statePath(): str { return configDir() + "/display-care.json" }
+fn runtimeDir(): str { return hw.envOr("XDG_RUNTIME_DIR", "/tmp") }
+fn flagPath(): str { return runtimeDir() + "/devos-pixel-refresh" }
+
+# ---- validation ----------------------------------------------------------------------------------------------------------
+fn integer(value: str, low: i64, high: i64, name: str): i64 {
+    let message = name + " must be a whole number from ${low} to ${high}."
+    if !hw.isInt(value) { hw.failure(message) }
+    let number = hw.toInt(value, 0)
+    if number < low || number > high { hw.failure(message) }
+    return number
+}
+fn boolean(value: str, name: str): bool {
+    let text = strings.toLowerCase(strings.trim(value))
+    if strings.equal(text, "1") || strings.equal(text, "true") || strings.equal(text, "on") || strings.equal(text, "yes") { return true }
+    if strings.equal(text, "0") || strings.equal(text, "false") || strings.equal(text, "off") || strings.equal(text, "no") { return false }
+    hw.failure(name + " must be on or off.")
+    return false
+}
+
+# The checked value of one setting as JSON; raises with the message the Settings page shows.
+fn validate(key: str, value: str): json.Value {
+    if strings.equal(key, "splendid") {
+        let text = strings.toLowerCase(strings.trim(value))
+        if strings.equal(text, "ereading") { hw.failure(reasonEreading()) }
+        if !isSplendid(text) { hw.failure("Splendid mode must be normal, vivid, manual or eyecare.") }
+        return json.value(text)
+    }
+    if strings.equal(key, "temperature") { return json.value(integer(value, 0 - 50, 50, "Colour temperature")) }
+    if strings.equal(key, "eyeCare") { return json.value(integer(value, 1, 5, "Eye Care level")) }
+    if strings.equal(key, "gamut") {
+        if !strings.equal(strings.toLowerCase(strings.trim(value)), "native") { hw.failure(reasonGamut()) }
+        return json.value("native")
+    }
+    if strings.equal(key, "dimming") { return json.value(integer(value, 0, 100, "Dimming level")) }
+    if strings.equal(key, "edgeBrightness") { return json.value(integer(value, 0, 4, "Adaptive Edge Brightness")) }
+    if strings.equal(key, "pixelRefresh") || strings.equal(key, "autoHidePanel") || strings.equal(key, "panelTransparency") || strings.equal(key, "targetMode") {
+        return json.value(boolean(value, key))
+    }
+    hw.failure("Unknown display setting \"" + key + "\".")
+    return json.null_value()
+}
+
+fn isBoolKey(key: str): bool {
+    return strings.equal(key, "pixelRefresh") || strings.equal(key, "autoHidePanel") || strings.equal(key, "panelTransparency") || strings.equal(key, "targetMode")
+}
+
+# Saved values; anything missing or invalid falls back to its default, so a damaged file never blocks the desktop.
+fn loadSettings(): json.Value {
+    let values = defaults()
+    let saved = hw.loadJson(statePath())
+    if !hw.isObject(saved) { return values }
+    let keys = settingKeys()
+    for i in 0..(keys.len() as i64) {
+        let key = keys[i]
+        if !json.has(saved, key) { continue }
+        let item = json.get(saved, key)
+        let kind = json.kind(item)
+        let text = ""
+        if strings.equal(kind, "string") { text = json.string(item) }
+        else if strings.equal(kind, "number") { text = json.stringify(item) }
+        else if strings.equal(kind, "bool") {
+            if !isBoolKey(key) { continue }
+            text = json.bool(item) ? "true" : "false"
+        } else { continue }
+        let checked = result.attempt(fn(): json.Value { return validate(key, text) })
+        if result.isOk(checked) { values = json.set(values, key, result.unwrap(checked)) }
+    }
+    return values
+}
+fn saveSettings(values: json.Value) {
+    if !hw.writeAtomic(statePath(), json.pretty(values) + "\n") { hw.failure("The display settings could not be saved.") }
+}
+
+# ---- colour maths --------------------------------------------------------------------------------------------------------
+struct Rgb { r: f64, g: f64, b: f64 }
+fn clamp255(x: f64): f64 { return math.max(0.0, math.min(255.0, x)) }
+
+# Black-body colour (Tanner Helland's approximation), each channel 0..1.
+fn kelvinRgb(kelvin: f64): Rgb {
+    let t = kelvin / 100.0
+    let red = 255.0
+    if t > 66.0 { red = clamp255(329.698727446 * math.pow(t - 60.0, 0.0 - 0.1332047592)) }
+    let green = t <= 66.0 ? clamp255(99.4708025861 * math.log(t) - 161.1195681661) : clamp255(288.1221695283 * math.pow(t - 60.0, 0.0 - 0.0755148492))
+    let blue = 255.0
+    if t < 66.0 { blue = t <= 19.0 ? 0.0 : clamp255(138.5177312231 * math.log(t - 10.0) - 305.0447927307) }
+    return Rgb(red / 255.0, green / 255.0, blue / 255.0)
+}
+
+# -50 (warm) .. +50 (cool) around 6500 K; gains never exceed 1 so the picture only gets dimmer, never clipped.
+fn temperatureGains(offset: i64): Rgb {
+    let target = kelvinRgb(6500.0 + (offset as f64) * 60.0)
+    let reference = kelvinRgb(6500.0)
+    let gr = target.r / reference.r
+    let gg = target.g / reference.g
+    let gb = target.b / reference.b
+    let top = math.max(gr, math.max(gg, gb))
+    return Rgb(gr / top, gg / top, gb / top)
+}
+
+struct Profile { gains: Rgb, vivid: f64, scale: f64 }
+fn profile(values: json.Value): Profile {
+    let gains = Rgb(1.0, 1.0, 1.0)
+    let vivid = 0.0
+    let mode = hw.jstr(values, "splendid", "normal")
+    if strings.equal(mode, "manual") { gains = temperatureGains(hw.jint(values, "temperature", 0)) }
+    else if strings.equal(mode, "eyecare") {
+        let level = hw.jint(values, "eyeCare", 3) as f64
+        gains = Rgb(1.0, 1.0 - 0.012 * level, 1.0 - 0.06 * level)
+    } else if strings.equal(mode, "vivid") { vivid = 0.35 }
+    let scale = 0.25 + 0.75 * (hw.jint(values, "dimming", 100) as f64) / 100.0
+    return Profile(gains, vivid, scale)
+}
+fn near(a: f64, b: f64): bool { return math.abs(a - b) < 0.000000001 }
+fn isIdentity(values: json.Value): bool {
+    let p = profile(values)
+    return p.vivid == 0.0 && p.scale == 1.0 && near(p.gains.r, 1.0) && near(p.gains.g, 1.0) && near(p.gains.b, 1.0)
+}
+
+# One 16-bit table of `size` entries.
+fn table(size: i64, gain: f64, p: Profile): Vec<i64> {
+    let out = Vec<i64>()
+    for index in 0..size {
+        let x = size > 1 ? (index as f64) / ((size - 1) as f64) : 1.0
+        if p.vivid != 0.0 { x = x * (1.0 - p.vivid) + p.vivid * (x * x * (3.0 - 2.0 * x)) }
+        let entry = math.round(x * gain * p.scale * 65535.0) as i64
+        out.push(entry < 0 ? 0 : (entry > 65535 ? 65535 : entry))
+    }
+    return out
+}
+# Red, green and blue tables concatenated.
+fn ramp(size: i64, values: json.Value): Vec<i64> {
+    let p = profile(values)
+    let out = table(size, p.gains.r, p)
+    let green = table(size, p.gains.g, p)
+    let blue = table(size, p.gains.b, p)
+    for i in 0..size { out.push(green[i]) }
+    for i in 0..size { out.push(blue[i]) }
+    return out
+}
+
+# ---- Wayland client ------------------------------------------------------------------------------------------------------
+fn displayPath(): str {
+    let name = hw.envOr("WAYLAND_DISPLAY", "wayland-0")
+    return strings.startsWith(name, "/") ? name : runtimeDir() + "/" + name
+}
+
+fn openCompositor(): wl.Session {
+    let path = displayPath()
+    let opened = result.attempt(fn(): wl.Session { return wl.open(path) })
+    if result.isErr(opened) { hw.failure(hw.errorText(result.message(opened))) }
+    return result.unwrap(opened)
+}
+
+struct Capability { available: bool, reason: str }
+struct Probe { gamma: Capability, idle: Capability }
+
+# What this session's compositor offers, without changing anything.
+fn probe(): Probe {
+    let opened = result.attempt(fn(): wl.Session { return openCompositor() })
+    if result.isErr(opened) {
+        let text = hw.errorText(result.message(opened))
+        return Probe(Capability(false, text), Capability(false, text))
+    }
+    let s = result.unwrap(opened)
+    let gamma = Capability(false, "")
+    let idle = Capability(false, "")
+    if wl.find(s, "zwlr_gamma_control_manager_v1") >= 0 && wl.find(s, "wl_output") >= 0 { gamma.available = true }
+    else { gamma.reason = "The compositor does not offer wlr-gamma-control, so colour and dimming changes cannot be applied." }
+    if wl.find(s, "ext_idle_notifier_v1") >= 0 && wl.find(s, "wl_seat") >= 0 { idle.available = true }
+    else { idle.reason = "The compositor does not report idle time, so Pixel refresh cannot start by itself." }
+    wl.disconnect(s)
+    return Probe(gamma, idle)
+}
+
+# Applies the saved settings to every output and reports idle time until it is stopped. Outputs are parallel vectors.
+struct Service {
+    s: wl.Session, values: json.Value, loaded: bool, stateText: str,
+    manager: i64, notifier: i64, seat: i64, idleObject: i64,
+    names: Vec<i64>, handles: Vec<i64>, controls: Vec<i64>, sizes: Vec<i64>, failed: Vec<bool>
+}
+
+fn clearFlag() { if hw.exists(flagPath()) { fs.unlinkSync(flagPath()) } }
+
+fn outputIndex(v: Service, name: i64): i64 {
+    for i in 0..(v.names.len() as i64) { if v.names[i] == name { return i } }
+    return 0 - 1
+}
+
+# Binds outputs that appeared since the last call.
+fn newOutputs(v: Service): Service {
+    if v.manager == 0 { return v }
+    let count = wl.count(v.s, "wl_output")
+    for k in 0..count {
+        let name = wl.nameOf(v.s, "wl_output", k)
+        if outputIndex(v, name) >= 0 { continue }
+        v.s = wl.bind(v.s, name, "wl_output", 1)
+        v.names.push(name)
+        v.handles.push(v.s.last)
+        v.controls.push(0)
+        v.sizes.push(0)
+        v.failed.push(false)
+    }
+    return v
+}
+
+fn dropRemoved(v: Service): Service {
+    for r in 0..(v.s.removed.len() as i64) {
+        let at = outputIndex(v, v.s.removed[r])
+        if at < 0 { continue }
+        if v.controls[at] != 0 { wl.request(v.s, v.controls[at], 1, Vec<u8>()) }
+        let names = Vec<i64>()
+        let handles = Vec<i64>()
+        let controls = Vec<i64>()
+        let sizes = Vec<i64>()
+        let failed = Vec<bool>()
+        for i in 0..(v.names.len() as i64) {
+            if i == at { continue }
+            names.push(v.names[i]); handles.push(v.handles[i]); controls.push(v.controls[i]); sizes.push(v.sizes[i]); failed.push(v.failed[i])
+        }
+        v.names = names; v.handles = handles; v.controls = controls; v.sizes = sizes; v.failed = failed
+    }
+    v.s.removed = Vec<i64>()
+    return v
+}
+
+fn attach(v: Service, at: i64): Service {
+    v.failed[at] = false
+    v.s = wl.allocate(v.s)
+    v.controls[at] = v.s.last
+    let payload = wl.put32(Vec<u8>(), v.controls[at])
+    payload = wl.put32(payload, v.handles[at])
+    wl.request(v.s, v.manager, 0, payload)
+    return v
+}
+
+fn release(v: Service, at: i64): Service {
+    if v.controls[at] != 0 {
+        wl.request(v.s, v.controls[at], 1, Vec<u8>())
+        v.controls[at] = 0
+        v.sizes[at] = 0
+    }
+    return v
+}
+
+fn paint(v: Service, at: i64) {
+    if v.controls[at] == 0 || v.sizes[at] < 2 || !v.loaded { return }
+    let size = v.sizes[at]
+    let entries = ramp(size, v.values)
+    unsafe {
+        let fd = memfd_create("devos-gamma", 0)
+        if fd < 0 { return }
+        let buffer = malloc((entries.len() * 2) + 2)
+        for i in 0..(entries.len() as i64) {
+            buffer[i * 2] = (entries[i] & 255) as u8
+            buffer[i * 2 + 1] = ((entries[i] >> 8) & 255) as u8
+        }
+        pwrite(fd, buffer, entries.len() * 2, 0)
+        free(buffer as *void)
+        wl.requestFd(v.s, v.controls[at], 0, Vec<u8>(), fd)
+        close(fd)
+    }
+}
+
+fn applyGamma(v: Service): Service {
+    if v.manager == 0 { return v }
+    for i in 0..(v.names.len() as i64) {
+        if isIdentity(v.values) { v = release(v, i) }
+        else if v.controls[i] == 0 || v.failed[i] {
+            if v.controls[i] != 0 { v = release(v, i) }
+            v = attach(v, i)
+        } else { paint(v, i) }
+    }
+    return v
+}
+
+fn applyIdle(v: Service): Service {
+    if v.notifier == 0 { return v }
+    let want = hw.jbool(v.values, "pixelRefresh", true)
+    if want && v.idleObject == 0 {
+        v.s = wl.allocate(v.s)
+        v.idleObject = v.s.last
+        let payload = wl.put32(Vec<u8>(), v.idleObject)
+        payload = wl.put32(payload, idleMs())
+        payload = wl.put32(payload, v.seat)
+        wl.request(v.s, v.notifier, 1, payload)
+    } else if !want && v.idleObject != 0 {
+        wl.request(v.s, v.idleObject, 0, Vec<u8>())
+        v.idleObject = 0
+        clearFlag()
+    }
+    return v
+}
+
+fn reloadService(v: Service): Service {
+    let text = hw.readText(statePath())
+    if !v.loaded || !strings.equal(text, v.stateText) {
+        v.stateText = text
+        v.values = loadSettings()
+        v.loaded = true
+        v = applyGamma(v)
+        v = applyIdle(v)
+    }
+    return v
+}
+
+fn handleEvents(v: Service): Service {
+    let events = v.s.inbox
+    v.s.inbox = Vec<wl.Msg>()
+    for e in 0..(events.len() as i64) {
+        let msg = events[e]
+        if v.idleObject != 0 && msg.obj == v.idleObject {
+            if msg.op == 0 { hw.writeFileQuiet(flagPath(), "${hw.nowSeconds() as i64}") }
+            else if msg.op == 1 { clearFlag() }
+            continue
+        }
+        for i in 0..(v.controls.len() as i64) {
+            if v.controls[i] == 0 || msg.obj != v.controls[i] { continue }
+            if msg.op == 0 {
+                v.sizes[i] = wl.get32(msg.data, 0)
+                paint(v, i)
+            } else if msg.op == 1 {
+                v.failed[i] = true
+                v.sizes[i] = 0
+                hw.stderr("DevOs display care: another client controls the gamma of ${v.names[i]}; leaving it alone.")
+            }
+        }
+    }
+    return v
+}
+
+fn allSettled(v: Service): bool {
+    for i in 0..(v.controls.len() as i64) {
+        if v.controls[i] != 0 && v.sizes[i] == 0 && !v.failed[i] { return false }
+    }
+    return true
+}
+
+fn runService(): i32 {
+    let s = openCompositor()
+    let v = Service(s, json.null_value(), false, "<unloaded>", 0, 0, 0, 0, Vec<i64>(), Vec<i64>(), Vec<i64>(), Vec<i64>(), Vec<bool>())
+    let gamma = wl.find(s, "zwlr_gamma_control_manager_v1")
+    if gamma >= 0 {
+        v.s = wl.bind(v.s, wl.nameOf(v.s, "zwlr_gamma_control_manager_v1", 0), "zwlr_gamma_control_manager_v1", 1)
+        v.manager = v.s.last
+    }
+    if wl.find(s, "ext_idle_notifier_v1") >= 0 && wl.find(s, "wl_seat") >= 0 {
+        v.s = wl.bind(v.s, wl.nameOf(v.s, "ext_idle_notifier_v1", 0), "ext_idle_notifier_v1", 1)
+        v.notifier = v.s.last
+        v.s = wl.bind(v.s, wl.nameOf(v.s, "wl_seat", 0), "wl_seat", 1)
+        v.seat = v.s.last
+    }
+    v = newOutputs(v)
+    if v.manager == 0 && v.notifier == 0 { hw.failure("The compositor offers neither gamma control nor idle notifications.") }
+    let once = strings.charLength(hw.env("DEVOS_DISPLAY_ONCE")) > 0
+    while true {
+        v = reloadService(v)
+        let before = v.names.len()
+        v = dropRemoved(v)
+        v = newOutputs(v)
+        if v.names.len() != before { v = applyGamma(v) }
+        v.s = wl.pump(v.s, 1000)
+        v = handleEvents(v)
+        if once && allSettled(v) {
+            v.s = wl.roundtrip(v.s, 3000)
+            break
+        }
+    }
+    return 0
+}
+
+fn serve(): i32 {
+    if !holdLock() { return 0 }
+    let served = result.attempt(fn(): i32 { return runService() })
+    clearFlag()
+    if result.isErr(served) {
+        let reason = hw.errorText(result.message(served))
+        hw.stderr("DevOs display care: " + reason)
+        return strings.contains(reason, "neither") ? 0 : 1
+    }
+    return result.unwrap(served)
+}
+
+# One `serve` per user session; false when another copy already runs.
+fn holdLock(): bool {
+    unsafe {
+        let fd = open(runtimeDir() + "/devos-display-care.lock", 0x241 | 0x80000, 420)
+        if fd < 0 { return true }
+        if flock(fd, 6) != 0 { close(fd); return false }
+    }
+    return true
+}
+
+# ---- commands ------------------------------------------------------------------------------------------------------------
+struct Battery { present: bool, onBattery: bool }
+fn batteryState(): Battery {
+    let root = hw.envOr("DEVOS_DISPLAY_SYS", "/sys")
+    let base = root + "/class/power_supply"
+    let present = false
+    let hasMains = false
+    let mains = false
+    let names = hw.listDir(base)
+    for i in 0..(names.len() as i64) {
+        let kind = hw.readTrim(base + "/" + names[i] + "/type")
+        if strings.equal(kind, "Battery") { present = true }
+        else if strings.equal(kind, "Mains") {
+            let online = strings.equal(hw.readTrim(base + "/" + names[i] + "/online"), "1")
+            hasMains = true
+            mains = online || mains
+        }
+    }
+    return Battery(present, present && hasMains && !mains)
+}
+
+fn report(extra: json.Value): json.Value {
+    let values = loadSettings()
+    let capability = probe()
+    let out = json.object()
+    out = json.set(out, "ok", true)
+    out = json.set(out, "settings", values)
+    out = json.set(out, "gamma", json.set(json.set(json.object(), "available", capability.gamma.available), "reason", capability.gamma.reason))
+    out = json.set(out, "idle", json.set(json.set(json.object(), "available", capability.idle.available), "reason", capability.idle.reason))
+    out = json.set(out, "ereading", json.set(json.set(json.object(), "available", false), "reason", reasonEreading()))
+    out = json.set(out, "gamut", json.set(json.set(json.set(json.object(), "available", false), "options", json.push(json.array(), "native")), "reason", reasonGamut()))
+    let battery = batteryState()
+    out = json.set(out, "battery", json.set(json.set(json.object(), "present", battery.present), "onBattery", battery.onBattery))
+    out = json.set(out, "recommendedBrightness", recommendedBrightness())
+    if hw.isObject(extra) {
+        let keys = json.keys(extra)
+        for i in 0..(keys.len() as i64) { out = json.set(out, keys[i], json.get(extra, keys[i])) }
+    }
+    return out
+}
+
+# Makes sure `serve` runs. It is a plain detached process, because only the desktop session knows the compositor socket
+# (the systemd user manager does not); a second copy sees the lock and exits at once, so this is always safe.
+fn startService() {
+    let command = hw.tool("DEVOS_DISPLAY_SPAWN", "")
+    if command.len() == 0 { command = Vec<str>(hw.selfPath("/usr/bin/dev-os-display-care")) }
+    hw.spawnDetached(hw.concat(command, Vec<str>("serve")))
+}
+
+fn resetBrightness(): json.Value {
+    let command = hw.tool("DEVOS_DISPLAY_BACKLIGHT", "dev-os-backlight")
+    let done = hw.runWith(command, Vec<str>("set", "${recommendedBrightness()}"), 15000)
+    let out = json.object()
+    if done.code != 0 {
+        let text = strings.trim(done.out)
+        let result = json.set(json.object(), "ok", false)
+        result = json.set(result, "reason", strings.charLength(text) > 0 ? text : "The backlight could not be set.")
+        return json.set(out, "brightness", result)
+    }
+    return json.set(out, "brightness", json.set(json.set(json.object(), "ok", true), "percent", recommendedBrightness()))
+}
+
+fn usage(): str { return "Usage: dev-os-display-care get | set <key> <value> | reset | apply | serve" }
+
+fn execute(command: str, rest: Vec<str>): json.Value {
+    if strings.equal(command, "get") { return report(json.null_value()) }
+    if strings.equal(command, "set") {
+        if rest.len() != 2 { hw.failure("Usage: dev-os-display-care set <key> <value>") }
+        let values = loadSettings()
+        values = json.set(values, rest[0], validate(rest[0], rest[1]))
+        saveSettings(values)
+        startService()
+        return report(json.null_value())
+    }
+    if strings.equal(command, "reset") {
+        let values = loadSettings()
+        let fresh = defaults()
+        let keys = resetKeys()
+        for i in 0..(keys.len() as i64) { values = json.set(values, keys[i], json.get(fresh, keys[i])) }
+        saveSettings(values)
+        startService()
+        return report(resetBrightness())
+    }
+    if strings.equal(command, "apply") {
+        startService()
+        return json.set(json.object(), "ok", true)
+    }
+    hw.failure(usage())
+    return json.null_value()
+}
+
+fn main(): i32 {
+    let command = args.len() > 0 ? args.get(0) : ""
+    let rest = Vec<str>()
+    for i in 1..(args.len() as i64) { rest.push(args.get(i)) }
+    if strings.equal(command, "serve") { return serve() }
+    let outcome = result.attempt(fn(): json.Value { return execute(command, rest) })
+    if result.isErr(outcome) {
+        print(json.stringify(hw.errorRaw(result.message(outcome))))
+        return 1
+    }
+    print(json.stringify(result.unwrap(outcome)))
+    return 0
+}

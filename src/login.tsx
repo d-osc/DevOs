@@ -29,6 +29,11 @@ if (!GLib.getenv('GREETD_SOCK') && !GLib.getenv('WSL_DISTRO_NAME') && !GLib.gete
     if (path) agent = Gio.Subprocess.new([path], Gio.SubprocessFlags.NONE);
 }
 window.show_all();
+// Boot animation: the sign-in screen is on screen, so the loading animation can end (fire-and-forget, absent outside the image).
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+    try { GLib.spawn_command_line_async('devos-splash --step ready'); } catch { /* no boot animation here */ }
+    return GLib.SOURCE_REMOVE;
+});
 loop.run();
 agent?.force_exit();
 root.unmount(); window.destroy();

@@ -1,5 +1,24 @@
 <?xml version="1.0"?>
 <openbox_menu>
+  <menu id="client-menu" label="Window">
+    <item label="Minimize"><action name="Iconify" /></item>
+    <item label="Maximize / Restore"><action name="ToggleMaximize" /></item>
+    <item label="Fullscreen"><action name="ToggleFullscreen" /></item>
+    <separator />
+    <menu id="devos-window-options" label="Window options">
+      <item label="Always on top"><action name="ToggleAlwaysOnTop" /></item>
+      <item label="Show / hide title bar"><action name="ToggleDecorations" /></item>
+      <item label="Roll up / Expand"><action name="ToggleShade" /></item>
+    </menu>
+    <menu id="workspaces" label="Workspace">
+      <item label="Move to previous"><action name="SendToDesktop" to="left" /></item>
+      <item label="Move to next"><action name="SendToDesktop" to="right" /></item>
+      <separator />
+      <item label="Show on all workspaces"><action name="ToggleOmnipresent" /></item>
+    </menu>
+    <separator />
+    <item label="Close"><action name="Close" /></item>
+  </menu>
   <menu id="devos-snap-layouts" label="Snap Layouts">
     <item label="Left half  ·  Super+←"><action name="SnapToEdge" direction="left" /></item>
     <item label="Right half  ·  Super+→"><action name="SnapToEdge" direction="right" /></item>

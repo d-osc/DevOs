@@ -53,9 +53,8 @@ export DEVOS_KERNEL_JOBS=12
    also be included in its execution order. Fresh mkinitramfs builds generate
    that order automatically when `90devos-session` is staged before the build.
 
-Optional Chrome is installed from Google's ARM64 Debian package. It is not
-part of the kernel build scripts. Save the final package manifest and source
-archives together with the image; apt packages can change after this snapshot.
+Save the final package manifest and source archives together with the image;
+apt packages can change after this snapshot.
 
 The build requires standard kernel build tools (gcc, make, flex, bison, bc,
 libelf-dev, libssl-dev), rsync, squashfs-tools, xorriso, systemd-ukify,

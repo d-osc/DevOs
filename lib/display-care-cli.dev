@@ -1,0 +1,3 @@
+# Entry point of bin/dev-os-display-care (the implementation is lib/display-care.dev so tests can drive its pieces).
+use "../lib/display-care.dev" as care
+return care.main()

@@ -1,7 +1,7 @@
 import {React, Gtk, Gdk, GLib, GtkLayerShell, Pango, Box, Label, Image, Button, ComboBoxText, ScrolledWindow, FlowBox, FlowBoxChild, createRoot, useState, useEffect, type UIContext} from '@dev-os/core';
 import {layerWindow} from '@dev-os/services/layers';
 import {desktopApps, findDesktopApp} from '@dev-os/services/apps';
-import {windowGroup, type WindowControls, type DesktopWindow, type DesktopWorkspace} from '@dev-os/services/windows';
+import {windowGroup, builtinWindowApp, type WindowControls, type DesktopWindow, type DesktopWorkspace} from '@dev-os/services/windows';
 import {OverlayMotion} from './overlay-motion.js';
 
 const desktopName = (desktop: DesktopWorkspace) => !desktop.name || /^(?:Workspace\s*)?\d+$/i.test(desktop.name) ? `Desktop ${desktop.id}` : desktop.name;
@@ -11,9 +11,9 @@ export function TaskViewContent({windows, desktops = [], dismiss, activate, clos
     const visible = current ? windows.filter(window => window.desktop === current.id || window.sticky || window.desktop === undefined) : windows;
     const desktopCount = Math.max(1, desktops.length);
     const info = (window: DesktopWindow) => {
-        const group = windowGroup(window), app = findDesktopApp(apps, group);
-        return {app, title: app?.get_display_name() || ({terminal: 'Terminal', files: 'Files', settings: 'Settings', 'dev-os-editor': 'Editor'} as Record<string, string>)[group] || group,
-            icon: group === 'terminal' ? 'utilities-terminal-symbolic' : group === 'files' ? 'folder-symbolic' : group === 'settings' ? 'preferences-system-symbolic' : group === 'dev-os-editor' ? 'dev-os-editor' : 'application-x-executable-symbolic'};
+        const group = windowGroup(window), builtin = builtinWindowApp(group), app = builtin ? undefined : findDesktopApp(apps, group);
+        return {app, title: builtin?.title || app?.get_display_name() || group,
+            icon: builtin?.icon || 'application-x-executable-symbolic'};
     };
     return <Box className="task-view-content" orientation="vertical" spacing={16} borderWidth={16} expand>
         <Box className="task-view-header" spacing={20}>

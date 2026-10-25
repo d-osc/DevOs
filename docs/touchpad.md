@@ -77,7 +77,7 @@ must be rebuilt to include these changes.
 ## Touchpad lock and Smart Gestures (MyASUS style)
 
 Settings → Bluetooth & Devices → Touchpad starts with two cards modelled on MyASUS. The helper is `bin/dev-os-touchpad-gestures`
-(Python 3, runs as the user, no polkit action). State lives in `$XDG_CONFIG_HOME/dev-os/touchpad-gestures.json`
+(DevLang, `lib/touchpad-gestures.dev`, runs as the user, no polkit action). State lives in `$XDG_CONFIG_HOME/dev-os/touchpad-gestures.json`
 (`locked`, `enabled`, `launch`); invalid or foreign values fall back to the defaults (unlocked, gestures off, Task Manager).
 
 **Touchpad lock.** Unlock/Lock switch, "When set to Lock, touchpad input is disabled." Locking saves the choice, then

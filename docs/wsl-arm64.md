@@ -42,16 +42,6 @@ npm ci
 
 ## ส่วนรองรับ ARM64
 
-### Google Chrome
-
-ติดตั้ง Chrome Linux รุ่นตรงกับ ARM64/x64 จาก Google (เป็นส่วนเสริม ไม่รวมใน base dependencies):
-
-```sh
-sudo sh tools/setup/bootstrap-chrome.sh
-```
-
-เปิด Dev OS Launcher แล้วค้นหา `Chrome` ตัว desktop entry ของ Dev OS ระบุ Wayland เพื่อให้หน้าต่างอยู่ภายใน Dev OS nested compositor เปิดหลายแท็บ ดาวน์โหลด และใช้โปรไฟล์ Linux แยกจาก Chrome บน Windows ได้ โดยไม่ต้องปิด browser sandbox
-
 - Private VTE ใช้ `aarch64-linux-gnu` บน ARM64 และ `x86_64-linux-gnu` บน x64 รวมการสลับไป runtime ที่ติดตั้งจาก release
 - Ubuntu 24.04 คง swaylock package pin เดิม ส่วน Ubuntu ใหม่ใช้แพ็กเกจและ PAM ของ distro โดยไม่ downgrade ไปแพ็กเกจ 24.04
 - Private labwc 0.7.1 ใช้ wlroots 0.17 จาก subproject แทน wlroots รุ่นใหม่ของ distro และแสดง compiler warnings โดยไม่ทำให้ compatibility build ล้มเหลว
@@ -64,6 +54,21 @@ Windows จัดการจอ input Wi-Fi และพลังงาน ส�
 บน ASUS UX3407NA / X2E88100 ที่ตรวจ 16 ตุลาคม 2026: Ubuntu 26.04.1 ARM64, WSL 3.0.3 และ kernel 6.18.54.1; `glxinfo -B` รายงาน llvmpipe / Accelerated: no และ PulseAudio เชื่อม WSLg ได้ โหมด pixman จึงเป็นฐานที่ใช้ได้โดยไม่อ้างว่ามี Adreno hardware acceleration
 
 Lock ใน Dev OS ล็อกเฉพาะ compositor ของ Dev OS ใน WSLg ใช้ Win+L เมื่อต้องการล็อก Windows ทั้งเครื่อง
+
+### Browser / WebKit แจ้ง libEGL หรือ DRM permission denied
+
+WebKit ของ Dev OS ใช้ software rendering อัตโนมัติบน WSL โดยปิด accelerated compositing
+และ DMA-BUF ก่อนเริ่ม WebKit child processes เพื่อลดปัญหา EGL บน GPU เสมือนของ WSLg.
+ถ้ายังมี `failed to open /dev/dri/card0` หรือ `renderD128: Permission denied`
+ให้ตรวจ `id` และสิทธิ์ของ `/dev/dri/*`; บน WSL ที่ไม่มี logind ให้สิทธิ์อุปกรณ์กับผู้ใช้
+ผ่านกลุ่มมาตรฐานของอุปกรณ์ (โดยทั่วไปคือ `video` และ `render`):
+
+```sh
+sudo usermod -aG render,video "$USER"
+```
+
+ปิด Dev OS session เดิม แล้วเปิดใหม่ด้วย `.\dev.ps1 run` เพื่อรับ build และกลุ่มผู้ใช้ใหม่.
+ไม่ต้องเปลี่ยนอุปกรณ์เป็น world-writable หรือปิด WebKit sandbox.
 
 ## ตรวจสอบ
 

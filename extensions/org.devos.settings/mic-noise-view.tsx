@@ -1,30 +1,16 @@
-import {React, Box, Label, Image, Button, ComboBoxText, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, ComboBoxText} from '@dev-os/core';
+import {RadioRow} from './radio-row.js';
+import {useHelper} from './use-helper.js';
 import {MicNoise, noiseModes, unsupportedMicNoise, type MicNoiseAction, type MicNoiseControls, type MicNoiseState, type NoiseMode} from './mic-noise.js';
 /** AI Noise-Canceling Microphone, laid out like the MyASUS card: device choice on the left, mode radios on the right. */
 export function MicNoiseSettings({controls}: {controls?: MicNoiseControls}) {
-    const [backend] = useState(() => controls ?? new MicNoise());
-    const [state, setState] = useState<MicNoiseState>(unsupportedMicNoise), [ready, setReady] = useState(false), [busy, setBusy] = useState(true), [error, setError] = useState(''), [nonce, setNonce] = useState(0);
-    const alive = useRef(true), working = useRef(false);
-    const request = async (action: MicNoiseAction, ...args: string[]) => {
-        if (working.current) return; working.current = true;
-        setBusy(true); setError('');
-        try {const next = await backend.request(action, ...args); if (alive.current) {setState(next); setReady(true);}}
-        catch (reason) {if (alive.current) {setError(reason instanceof Error ? reason.message : String(reason)); setNonce(value => value + 1); setReady(true);}}
-        finally {working.current = false; if (alive.current) setBusy(false);}
-    };
-    useEffect(() => {
-        alive.current = true; void request('get');
-        // Pick up a microphone that was plugged in or removed.
-        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {if (alive.current && !working.current) void request('get'); return GLib.SOURCE_CONTINUE;});
-        return () => {alive.current = false; GLib.source_remove(timer); backend.destroy();};
-    }, [backend]);
+    // Pick up a microphone that was plugged in or removed.
+    const {state, ready, busy, error, nonce, request} = useHelper<MicNoiseState, MicNoiseAction>(controls, () => new MicNoise(), unsupportedMicNoise, 10);
     const usable = ready && state.supported && !busy, noise = state.supported && state.noise.available;
     const selected: NoiseMode = noise ? state.mode : 'authentic';
     const radio = (id: NoiseMode) => {
         const offered = id === 'authentic' || noise;
-        return <Button key={`${id}-${nonce}`} id={`mic-mode-${id}`} className={`power-mode ${state.supported && selected === id ? 'power-mode-selected' : ''}`} sensitive={usable && offered} onClicked={() => {if (id !== selected) void request('mode', id);}}>
-            <Box spacing={14}><Image iconName={state.supported && selected === id ? 'radio-checked-symbolic' : 'radio-symbolic'} pixelSize={18} /><Box orientation="vertical" spacing={3} expand><Label className="settings-field-title" xalign={0}>{noiseModes[id].title}</Label><Label className="settings-description" xalign={0} wrap>{noiseModes[id].description}</Label></Box></Box>
-        </Button>;
+        return <RadioRow key={`${id}-${nonce}`} id={`mic-mode-${id}`} selected={state.supported && selected === id} sensitive={usable && offered} title={noiseModes[id].title} description={noiseModes[id].description} onClicked={() => {if (id !== selected) void request('mode', id);}} />;
     };
     return <Box id="mic-noise-card" className="settings-card system-card mic-noise" spacing={28}>
         <Box orientation="vertical" spacing={8} widthRequest={260}>

@@ -48,7 +48,7 @@ the hardware or session cannot back is shown disabled with the reason; nothing i
 
 | Piece | Role |
 | --- | --- |
-| `bin/dev-os-keyboard` | Python front end and daemon. `get` (JSON: hardware support with reasons, saved settings, AC state), `set fn\|auto-brighten\|auto-dim\|sleep\|sleep-both\|sleep-battery <value>` (values are validated; idle times must be one of the six allowed), `serve`. |
+| `bin/dev-os-keyboard` | DevLang front end and daemon (`lib/keyboard.dev`). `get` (JSON: hardware support with reasons, saved settings, AC state), `set fn\|auto-brighten\|auto-dim\|sleep\|sleep-both\|sleep-battery <value>` (values are validated; idle times must be one of the six allowed), `serve`. |
 | `native/devos-keyboard` → `/usr/libexec/devos-keyboard` | POSIX sh, root, Fn key mode only: `get`, `set fn locked\|normal`, `apply`. Polkit action `org.devos.keyboard.fn` (`data/polkit-1/actions/org.devos.keyboard.policy`, active local sessions). |
 | `devos-keyboard.service` | `apply` at boot: re-applies the saved Fn mode (`/var/lib/devos/keyboard.conf`, `fn=`). With no state file the firmware setting is left alone. |
 | `devos-keyboard-backlight.service` (user) | Runs `dev-os-keyboard serve` for the session; started by `devos-desktop` and enabled for `default.target`. Exits at once when there is no keyboard backlight LED. It notices a changed preference within a second. |
@@ -76,7 +76,7 @@ Backends:
 reports show no `asus-nb-wmi` `fn_lock` node and no IIO ambient light sensor, so on this board the Function key and Automatic
 backlight cards are expected to appear disabled with an explanation, while the sleep mode works. Remapping F1 to F12 in software
 is not offered: the Fn row comes from the embedded controller as media keycodes and there is no virtual keyboard to turn them
-into plain function keys. Check on the laptop: `python3 /usr/bin/dev-os-keyboard get`, `ls /sys/class/leds`,
+into plain function keys. Check on the laptop: `dev-os-keyboard get`, `ls /sys/class/leds`,
 `ls /sys/bus/iio/devices`, `ls /sys/devices/platform/asus-nb-wmi`.
 
 Validation: `python3 tests/keyboard.test.py` (27 tests: helper against a fake sysfs, preference validation, ambient light with

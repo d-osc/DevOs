@@ -1,26 +1,17 @@
-import {React, Box, Label, Image, Button, Switch, Scale, ComboBoxText, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, Scale, ComboBoxText, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {SwitchRow} from './switch-row.js';
+import {RadioRow} from './radio-row.js';
+import {useHelper} from './use-helper.js';
 import {Speaker, soundModes, unsupportedSpeaker, type CustomSlot, type SoundMode, type SpeakerAction, type SpeakerControls, type SpeakerState} from './speaker.js';
 const order: SoundMode[] = ['dynamic', 'game', 'movie', 'music', 'voice', 'custom1', 'custom2', 'custom3'];
 const bands = ['Bass', 'Mid', 'Treble'] as const;
 /** AI Noise-Canceling Speaker and Sound Modes, laid out like the MyASUS cards. */
 export function SpeakerSettings({controls}: {controls?: SpeakerControls}) {
-    const [backend] = useState(() => controls ?? new Speaker());
-    const [state, setState] = useState<SpeakerState>(unsupportedSpeaker), [ready, setReady] = useState(false), [busy, setBusy] = useState(true), [error, setError] = useState(''), [nonce, setNonce] = useState(0);
+    // Pick up outputs that were plugged in and the Voice mode switch while an app records.
+    const {state, ready, busy, error, nonce, request} = useHelper<SpeakerState, SpeakerAction>(controls, () => new Speaker(), unsupportedSpeaker, 10);
     const [levels, setLevels] = useState<[number, number, number] | null>(null);
-    const alive = useRef(true), working = useRef(false), pending = useRef(0);
-    const request = async (action: SpeakerAction, ...args: string[]) => {
-        if (working.current) return; working.current = true;
-        setBusy(true); setError('');
-        try {const next = await backend.request(action, ...args); if (alive.current) {setState(next); setReady(true);}}
-        catch (reason) {if (alive.current) {setError(reason instanceof Error ? reason.message : String(reason)); setNonce(value => value + 1); setReady(true);}}
-        finally {working.current = false; if (alive.current) setBusy(false);}
-    };
-    useEffect(() => {
-        alive.current = true; void request('get');
-        // Pick up outputs that were plugged in and the Voice mode switch while an app records.
-        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {if (alive.current && !working.current) void request('get'); return GLib.SOURCE_CONTINUE;});
-        return () => {alive.current = false; GLib.source_remove(timer); if (pending.current) GLib.source_remove(pending.current); backend.destroy();};
-    }, [backend]);
+    const pending = useRef(0);
+    useEffect(() => () => {if (pending.current) GLib.source_remove(pending.current);}, []);
     const usable = ready && state.supported && !busy, effects = state.supported && state.filters.available;
     const selected: SoundMode = effects ? state.mode : 'dynamic', custom = selected.startsWith('custom') ? selected as CustomSlot : null;
     const shown = custom ? levels ?? state.custom[custom] : [0, 0, 0];
@@ -43,7 +34,7 @@ export function SpeakerSettings({controls}: {controls?: SpeakerControls}) {
             </Box>
             <Box orientation="vertical" spacing={10} expand>
                 <Label className="settings-description" xalign={0} wrap>Switch on to enable AI Noise-Canceling Speaker.</Label>
-                <Box spacing={12}><Switch key={`voice-${nonce}`} id="speaker-voice-switch" active={voice} sensitive={usable && effects} onActiveChanged={w => {if (w.active !== voice) void request('voice', w.active ? 'on' : 'off');}} /><Label id="speaker-voice-state" className="settings-description">{voice ? 'On' : 'Off'}</Label></Box>
+                <SwitchRow key={`voice-${nonce}`} id="speaker-voice-switch" stateId="speaker-voice-state" active={voice} sensitive={usable && effects} label={voice ? 'On' : 'Off'} onToggled={on => void request('voice', on ? 'on' : 'off')} />
                 <Label id="speaker-voice-note" className="settings-description" xalign={0} wrap>This keeps the voice range (300 Hz to 3.4 kHz) with a filter and cuts everything outside it. It is not an AI model, so noise inside the voice range stays.</Label>
             </Box>
         </Box>
@@ -54,7 +45,7 @@ export function SpeakerSettings({controls}: {controls?: SpeakerControls}) {
             </Box>
             <Box orientation="vertical" spacing={10} expand>
                 <Label className="settings-description" xalign={0} wrap>Switch on to enable Volume Booster.</Label>
-                <Box spacing={12}><Switch key={`boost-${nonce}`} id="speaker-boost-switch" active={boost} sensitive={usable && effects} onActiveChanged={w => {if (w.active !== boost) void request('boost', w.active ? 'on' : 'off');}} /><Label id="speaker-boost-state" className="settings-description">{boost ? 'On' : 'Off'}</Label></Box>
+                <SwitchRow key={`boost-${nonce}`} id="speaker-boost-switch" stateId="speaker-boost-state" active={boost} sensitive={usable && effects} label={boost ? 'On' : 'Off'} onToggled={on => void request('boost', on ? 'on' : 'off')} />
                 <Label id="speaker-boost-note" className="settings-description" xalign={0} wrap>Adds about 9.5 dB of gain and rounds off loud peaks instead of letting them clip. It is not a full limiter, so very loud music can still sound compressed.</Label>
             </Box>
         </Box>
@@ -65,13 +56,11 @@ export function SpeakerSettings({controls}: {controls?: SpeakerControls}) {
                 <Label id="speaker-modes-note" className="settings-description" xalign={0} wrap>These are equalizer curves. Dolby Atmos is not available on this system.</Label>
             </Box>
             <Box orientation="vertical" spacing={9} expand>
-                {order.map(id => <Button key={`${id}-${nonce}`} id={`speaker-mode-${id}`} className={`power-mode ${state.supported && selected === id ? 'power-mode-selected' : ''}`} sensitive={usable && (id === 'dynamic' || effects)} onClicked={() => {if (id !== selected) {setLevels(null); void request('mode', id);}}}>
-                    <Box spacing={14}><Image iconName={state.supported && selected === id ? 'radio-checked-symbolic' : 'radio-symbolic'} pixelSize={18} /><Box orientation="vertical" spacing={3} expand><Label className="settings-field-title" xalign={0}>{soundModes[id].title}</Label><Label className="settings-description" xalign={0} wrap>{soundModes[id].description}</Label></Box></Box>
-                </Button>)}
+                {order.map(id => <RadioRow key={`${id}-${nonce}`} id={`speaker-mode-${id}`} selected={state.supported && selected === id} sensitive={usable && (id === 'dynamic' || effects)} title={soundModes[id].title} description={soundModes[id].description} onClicked={() => {if (id !== selected) {setLevels(null); void request('mode', id);}}} />)}
                 {custom && effects && bands.map((band, index) => <Box key={`${custom}-${band}`} spacing={12}><Label className="settings-description" widthChars={8} xalign={0}>{band}</Label><Scale id={`speaker-custom-${band.toLowerCase()}`} expand lower={-10} upper={10} value={shown[index]} drawValue={false} sensitive={usable} onValueChanged={w => {const value = Math.round(w.get_value()); if (value !== Math.round(shown[index])) change(index, value);}} /><Label id={`speaker-custom-${band.toLowerCase()}-value`} className="settings-description" widthChars={6}>{`${Math.round(shown[index])} dB`}</Label></Box>)}
                 <Label className="settings-field-title" xalign={0}>Voice Mode Smart Switch</Label>
                 <Label className="settings-description" xalign={0} wrap>When enabled, Voice mode is used while an app is recording audio, for example during a call.</Label>
-                <Box spacing={12}><Switch key={`smart-${nonce}`} id="speaker-smart-switch" active={state.smart} sensitive={usable && effects} onActiveChanged={w => {if (w.active !== state.smart) void request('smart', w.active ? 'on' : 'off');}} /><Label id="speaker-smart-state" className="settings-description">{state.smart ? 'Enable' : 'Disable'}</Label></Box>
+                <SwitchRow key={`smart-${nonce}`} id="speaker-smart-switch" stateId="speaker-smart-state" active={state.smart} sensitive={usable && effects} label={state.smart ? 'Enable' : 'Disable'} onToggled={on => void request('smart', on ? 'on' : 'off')} />
                 {effects && state.smart && state.effective !== selected && <Label id="speaker-smart-active" className="settings-description" xalign={0} wrap>An app is recording, so Voice mode is in use for now.</Label>}
             </Box>
         </Box>

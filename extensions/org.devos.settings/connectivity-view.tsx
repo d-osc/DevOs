@@ -1,4 +1,6 @@
-import {React, Box, Label, Image, Button, Switch, ScrolledWindow, Gtk, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, Button, ScrolledWindow, Gtk, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {SwitchRow} from './switch-row.js';
+import {RadioRow} from './radio-row.js';
 import {Connectivity, taskFirstProfiles, unsupportedConnectivity, type ConnectivityAction, type ConnectivityControls, type ConnectivityState, type TaskFirstProfile} from './connectivity.js';
 /** Connectivity, laid out like the MyASUS page: TaskFirst (radios) and WiFi SmartConnect (switch), one card each. */
 export function ConnectivitySettings({back, controls}: {back(): void; controls?: ConnectivityControls}) {
@@ -35,9 +37,7 @@ export function ConnectivitySettings({back, controls}: {back(): void; controls?:
                     {ready && state.taskfirstSupported && state.taskfirst !== 'off' && !state.taskfirstActive && <Label id="taskfirst-waiting" className="settings-description" xalign={0} wrap>Waiting for a network connection. It is applied as soon as one is up.</Label>}
                 </Box>
                 <Box orientation="vertical" spacing={9} expand>
-                    {taskFirstProfiles.map(item => <Button key={`${item.id}-${nonce}`} id={`taskfirst-${item.id}`} className={`power-mode ${state.taskfirst === item.id ? 'power-mode-selected' : ''}`} sensitive={tfUsable} onClicked={() => choose(item.id)}>
-                        <Box spacing={14}><Image iconName={state.taskfirst === item.id ? 'radio-checked-symbolic' : 'radio-symbolic'} pixelSize={18} /><Box orientation="vertical" spacing={3} expand><Label className="settings-field-title" xalign={0}>{item.title}</Label><Label className="settings-description" xalign={0} wrap>{item.description}</Label></Box></Box>
-                    </Button>)}
+                    {taskFirstProfiles.map(item => <RadioRow key={`${item.id}-${nonce}`} id={`taskfirst-${item.id}`} selected={state.taskfirst === item.id} sensitive={tfUsable} title={item.title} description={item.description} onClicked={() => choose(item.id)} />)}
                     {ready && !state.taskfirstSupported && <Label id="taskfirst-unsupported" className="settings-description" xalign={0} wrap>{`Not supported on this system. ${state.taskfirstReason || 'Traffic control is not available.'} Controls stay off rather than pretending to work.`}</Label>}
                 </Box>
             </Box>
@@ -49,7 +49,7 @@ export function ConnectivitySettings({back, controls}: {back(): void; controls?:
                 </Box>
                 <Box orientation="vertical" spacing={10} expand>
                     <Label className="settings-description" xalign={0}>Switch on to enable WiFi SmartConnect.</Label>
-                    <Box spacing={12}><Switch key={`sc-${nonce}`} id="smartconnect-switch" active={state.smartconnectSupported && state.smartconnect} sensitive={scUsable} onActiveChanged={w => {if (w.active !== (state.smartconnectSupported && state.smartconnect)) void request('smartconnect', w.active ? 'on' : 'off');}} /><Label id="smartconnect-state" className="settings-description">{state.smartconnectSupported && state.smartconnect ? 'On' : 'Off'}</Label></Box>
+                    <SwitchRow key={`sc-${nonce}`} id="smartconnect-switch" stateId="smartconnect-state" active={state.smartconnectSupported && state.smartconnect} sensitive={scUsable} label={state.smartconnectSupported && state.smartconnect ? 'On' : 'Off'} onToggled={on => void request('smartconnect', on ? 'on' : 'off')} />
                     {state.smartconnectSupported && state.smartconnect && state.smartconnectLast && <Label id="smartconnect-last" className="settings-description" xalign={0} wrap>{state.smartconnectLast}</Label>}
                     {ready && !state.smartconnectSupported && <Label id="smartconnect-unsupported" className="settings-description" xalign={0} wrap>{`Not supported on this system. ${state.smartconnectReason || 'No Wi-Fi adapter was found.'} The switch stays off rather than pretending to work.`}</Label>}
                 </Box>

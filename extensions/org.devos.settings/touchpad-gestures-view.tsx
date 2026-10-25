@@ -1,4 +1,6 @@
-import {React, Box, Label, Image, Switch, ComboBoxText, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, ComboBoxText} from '@dev-os/core';
+import {SwitchRow} from './switch-row.js';
+import {useHelper} from './use-helper.js';
 import {TouchpadGestures, unsupportedTouchpadGestures, type GestureTarget, type TouchpadGesturesAction, type TouchpadGesturesControls, type TouchpadGesturesState} from './touchpad-gestures.js';
 /** The touchpad with the Smart Gestures zones tinted: left and right strips, the top strip and the top-right corner. */
 function Diagram({active}: {active: boolean}) {
@@ -10,22 +12,8 @@ function Diagram({active}: {active: boolean}) {
 }
 /** Touchpad lock and Smart Gestures, laid out like the two MyASUS cards: description left, switch and gesture list right. */
 export function TouchpadGesturesSettings({controls}: {controls?: TouchpadGesturesControls}) {
-    const [backend] = useState(() => controls ?? new TouchpadGestures());
-    const [state, setState] = useState<TouchpadGesturesState>(unsupportedTouchpadGestures), [ready, setReady] = useState(false), [busy, setBusy] = useState(true), [error, setError] = useState(''), [nonce, setNonce] = useState(0);
-    const alive = useRef(true), working = useRef(false);
-    const request = async (action: TouchpadGesturesAction, ...args: string[]) => {
-        if (working.current) return; working.current = true;
-        setBusy(true); setError('');
-        try {const next = await backend.request(action, ...args); if (alive.current) {setState(next); setReady(true);}}
-        catch (reason) {if (alive.current) {setError(reason instanceof Error ? reason.message : String(reason)); setNonce(value => value + 1); setReady(true);}}
-        finally {working.current = false; if (alive.current) setBusy(false);}
-    };
-    useEffect(() => {
-        alive.current = true; void request('get');
-        // Pick up the Fn + F9 lock key and a touchpad that was connected or removed.
-        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {if (alive.current && !working.current) void request('get'); return GLib.SOURCE_CONTINUE;});
-        return () => {alive.current = false; GLib.source_remove(timer); backend.destroy();};
-    }, [backend]);
+    // Pick up the Fn + F9 lock key and a touchpad that was connected or removed.
+    const {state, ready, busy, error, nonce, request} = useHelper<TouchpadGesturesState, TouchpadGesturesAction>(controls, () => new TouchpadGestures(), unsupportedTouchpadGestures, 10);
     const usable = ready && state.supported && !busy;
     const lockUsable = usable || (ready && !busy && state.locked);   // an existing lock can always be released
     const gestures = state.supported && state.gesturesAvailable && state.enabled && !state.locked;
@@ -41,7 +29,7 @@ export function TouchpadGesturesSettings({controls}: {controls?: TouchpadGesture
             <Box spacing={20} expand><Image iconName="input-touchpad-symbolic" pixelSize={26} /><Box orientation="vertical" spacing={5} expand><Label className="section-heading" xalign={0}>Touchpad</Label><Label className="settings-description" xalign={0} wrap>When set to Lock, touchpad input is disabled.</Label></Box></Box>
             <Box orientation="vertical" spacing={8} expand>
                 <Label className="settings-description" xalign={0}>Lock/unlock the touchpad input function</Label>
-                <Box spacing={12}><Switch key={`lock-${nonce}`} id="touchpad-lock-switch" active={!state.locked} sensitive={lockUsable} onActiveChanged={w => {if (w.active === state.locked) void request('lock', w.active ? 'off' : 'on');}} /><Label id="touchpad-lock-state" className="settings-description">{state.locked ? 'Lock' : 'Unlock'}</Label></Box>
+                <SwitchRow key={`lock-${nonce}`} id="touchpad-lock-switch" stateId="touchpad-lock-state" active={!state.locked} sensitive={lockUsable} label={state.locked ? 'Lock' : 'Unlock'} onToggled={on => void request('lock', on ? 'off' : 'on')} />
                 {ready && !state.supported && <Label id="touchpad-lock-unsupported" className="settings-description" xalign={0} wrap>{`${state.reason || 'No touchpad was detected.'} The lock stays off rather than pretending to work.`}</Label>}
                 {state.supported && <Label id="touchpad-lock-hint" className="settings-description" xalign={0} wrap>The touchpad key (Fn + F9 on many laptops) also locks and unlocks it when your keyboard sends it.</Label>}
             </Box>
@@ -50,7 +38,7 @@ export function TouchpadGesturesSettings({controls}: {controls?: TouchpadGesture
             <Box spacing={20} expand><Image iconName="input-touchpad-symbolic" pixelSize={26} /><Box orientation="vertical" spacing={8} expand><Label className="section-heading" xalign={0}>Smart Gestures</Label><Label className="settings-description" xalign={0} wrap>Quickly access commonly used settings and apps</Label><Diagram active={gestures} /></Box></Box>
             <Box orientation="vertical" spacing={10} expand>
                 <Label className="settings-description" xalign={0}>Enable/disable advanced gestures</Label>
-                <Box spacing={12}><Switch key={`gestures-${nonce}`} id="touchpad-gestures-switch" active={state.enabled} sensitive={gestureUsable} onActiveChanged={w => {if (w.active !== state.enabled) void request('gestures', w.active ? 'on' : 'off');}} /><Label id="touchpad-gestures-state" className="settings-description">{state.enabled ? 'Enable' : 'Disable'}</Label></Box>
+                <SwitchRow key={`gestures-${nonce}`} id="touchpad-gestures-switch" stateId="touchpad-gestures-state" active={state.enabled} sensitive={gestureUsable} label={state.enabled ? 'Enable' : 'Disable'} onToggled={on => void request('gestures', on ? 'on' : 'off')} />
                 {list.map(item => <Box key={item.id} id={`touchpad-gesture-item-${item.id}`} orientation="vertical" spacing={2}><Label className="settings-field-title" xalign={0}>{item.title}</Label><Label className="settings-description" xalign={0} wrap>{item.ok || !state.supported ? item.description : `${item.description} · unavailable on this system`}</Label></Box>)}
                 <Box spacing={12}><Label className="settings-description">Corner swipe opens</Label><ComboBoxText id="touchpad-gesture-launch" sensitive={gestureUsable} activeId={state.launch} items={state.targets.map(item => ({id: item.id, text: item.title}))} onChanged={w => {const id = w.get_active_id() as GestureTarget | null; if (id && id !== state.launch) void request('launch', id);}} /></Box>
                 {ready && state.supported && !state.gesturesAvailable && <Label id="touchpad-gestures-unavailable" className="settings-description" xalign={0} wrap>{`${state.reason} Gestures stay off rather than pretending to work.`}</Label>}

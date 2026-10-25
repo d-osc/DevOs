@@ -12,10 +12,12 @@ export const THEME_POLL_MS = 60000;
 export default {id: 'org.devos.theme', activate(context) {
     let provider: Gtk.CssProvider | undefined, loaded = '', timer = 0, disposed = false, css = '';
     const screen = context.display.get_default_screen();
+    const gtkSettings = Gtk.Settings.get_for_screen(screen), previousDark = gtkSettings.gtk_application_prefer_dark_theme;
     const readStyle = () => { css = readText(`${ROOT}/extensions/org.devos.theme/style.css`); };
     const settings = () => themeOptions(context.preferences.get('org.devos.theme').state.values);
     /** Replaces the whole shell stylesheet; every open window restyles without a restart. */
     const render = (name: ThemeName, family: ThemeFamily) => {
+        gtkSettings.gtk_application_prefer_dark_theme = name === 'dark';
         const style = themeStyle(css, name, family);
         if (style !== loaded) {
             const next = new Gtk.CssProvider();
@@ -46,6 +48,7 @@ export default {id: 'org.devos.theme', activate(context) {
     return () => {
         disposed = true; if (timer) GLib.source_remove(timer);
         unsubscribe(); stopSleep();
+        gtkSettings.gtk_application_prefer_dark_theme = previousDark;
         if (provider) Gtk.StyleContext.remove_provider_for_screen(screen, provider);
     };
 }} satisfies UIExtension;

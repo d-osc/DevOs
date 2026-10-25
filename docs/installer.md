@@ -44,7 +44,7 @@ then `DONE` or `ERROR message`.
 
 ## How the installed system boots
 
-`distro/usb/prepare.py` builds two unified kernel images from the same kernel, initramfs and board
+`distro/usb/prepare.dev` builds two unified kernel images from the same kernel, initramfs and board
 device tree. `EFI/BOOT/BOOTAA64.EFI` is the Live system. `EFI/DEVOS/INSTALLED.EFI` has the command
 line `devos.root=LABEL=devos-root`; the initramfs `init` then mounts that root read-write and
 starts systemd directly, without the Live overlay, autologin or diagnostics. The hardware profile

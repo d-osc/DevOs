@@ -1,0 +1,97 @@
+# Shared rig of the microphone and speaker helper tests: a fake PipeWire graph file plus fake pw-dump / wpctl / systemctl / systemd-run /
+# pipewire tools (tests/fixtures/fakes/audio.dev) and the environment hooks that point the helper at them.
+use "std/json"
+use "std/strings"
+use "../lib/harness.dev" as harness
+use "../../lib/hw.dev" as hw
+
+fn node(id: i64, name: str, klass: str, description: str, extra: json.Value): json.Value {
+    let props = json.set(json.set(json.set(json.object(), "node.name", name), "media.class", klass), "node.description", description)
+    let keys = json.keys(extra)
+    for i in 0..(keys.len() as i64) { props = json.set(props, keys[i], json.get(extra, keys[i])) }
+    return json.set(json.set(json.set(json.object(), "id", id), "type", "PipeWire:Interface:Node"), "info", json.set(json.object(), "props", props))
+}
+fn plain(id: i64, name: str, klass: str, description: str): json.Value { return node(id, name, klass, description, json.object()) }
+
+fn entry(key: str, value: json.Value): json.Value {
+    return json.set(json.set(json.set(json.set(json.object(), "subject", 0), "key", key), "type", "Spa:String:JSON"), "value", value)
+}
+# The metadata object. The source default is stored as a JSON string and the sink default as an object, as PipeWire does both.
+fn metadata(defaultSource: str, defaultSink: str): json.Value {
+    let entries = json.array()
+    if strings.charLength(defaultSource) > 0 {
+        entries = json.push(entries, entry("default.audio.source", json.value(json.stringify(json.set(json.object(), "name", defaultSource)))))
+    }
+    entries = json.push(entries, entry("default.audio.sink", json.set(json.object(), "name", defaultSink)))
+    return json.set(json.set(json.set(json.set(json.object(), "id", 30), "type", "PipeWire:Interface:Metadata"), "info", json.set(json.object(), "props", json.object())), "metadata", entries)
+}
+
+fn writeGraph(base: str, items: json.Value) { harness.write(base + "/graph.json", json.stringify(items)) }
+fn readGraph(base: str): json.Value { return harness.readJson(base + "/graph.json") }
+
+fn plugins(base: str, present: bool, kind: str) {
+    let files = strings.equal(kind, "mic") ? Vec<str>("pipewire-0.3/libpipewire-module-echo-cancel.so", "spa-0.2/aec/libspa-aec-webrtc.so") : Vec<str>("pipewire-0.3/libpipewire-module-filter-chain.so", "spa-0.2/filter-graph/libspa-filter-graph.so", "spa-0.2/filter-graph/libspa-filter-graph-plugin-builtin.so")
+    for i in 0..(files.len() as i64) {
+        let file = base + "/lib/" + files[i]
+        if present { harness.write(file, "") } else { harness.remove(file) }
+    }
+}
+
+# Fake tools + environment. kind is "mic" or "spk".
+fn setup(base: str, kind: str, graph: json.Value): Vec<str> {
+    harness.write(base + "/log", "")
+    let program = harness.root() + "/tests/fixtures/fakes/audio.dev"
+    let names = Vec<str>("pw-dump", "wpctl", "systemctl", "systemd-run", "pipewire")
+    for i in 0..(names.len() as i64) {
+        let tool = names[i]
+        let id = (strings.equal(tool, "pw-dump") || strings.equal(tool, "wpctl")) ? tool : kind + "-" + tool
+        harness.fakeTool(base, tool, "exec '" + harness.d() + "' '" + program + "' -- " + id + " \"$@\"\n")
+    }
+    plugins(base, true, kind)
+    writeGraph(base, graph)
+    return Vec<str>("FAKE_GRAPH=" + base + "/graph.json", "FAKE_LOG=" + base + "/log", "XDG_CONFIG_HOME=" + base + "/config",
+        "DEVOS_MIC_PW_DUMP=" + base + "/pw-dump", "DEVOS_MIC_WPCTL=" + base + "/wpctl", "DEVOS_MIC_SYSTEMCTL=" + base + "/systemctl",
+        "DEVOS_MIC_PIPEWIRE=" + base + "/pipewire", "DEVOS_MIC_SYSTEMD_RUN=" + base + "/systemd-run", "DEVOS_MIC_LIBDIRS=" + base + "/lib",
+        "DEVOS_MIC_WAIT=1", "FAKE_PIPEWIRE_CONF=" + base + "/served.conf")
+}
+
+# Runs bin/dev-os-<name> with the rig environment plus `extra` entries.
+fn helper(env: Vec<str>, name: str, args: Vec<str>, extra: Vec<str>): harness.Proc {
+    return harness.sh(hw.concat(Vec<str>("sh", harness.root() + "/bin/dev-os-" + name), args), hw.concat(env, extra))
+}
+# Same, asserting the exit status and returning the parsed JSON line.
+fn run(env: Vec<str>, name: str, args: Vec<str>, extra: Vec<str>, expected: i64): json.Value {
+    let done = helper(env, name, args, extra)
+    harness.equalInt(done.code, expected, name + " " + strings.join(args, " ") + " -> " + done.out + done.err)
+    let text = strings.trim(done.out)
+    return strings.startsWith(text, "{") && json.valid(text) ? json.parse(text) : json.null_value()
+}
+
+fn defaultOf(base: str, key: str): str {
+    let items = readGraph(base)
+    for i in 0..(json.len(items) as i64) {
+        let item = json.at(items, i)
+        if !strings.endsWith(hw.jstr(item, "type", ""), "Metadata") { continue }
+        let entries = hw.jget(item, "metadata")
+        for e in 0..(json.len(entries) as i64) {
+            let candidate = json.at(entries, e)
+            if !strings.equal(hw.jstr(candidate, "key", ""), key) { continue }
+            let value = hw.jget(candidate, "value")
+            if strings.equal(json.kind(value), "string") { value = json.parse(json.string(value)) }
+            return hw.jstr(value, "name", "")
+        }
+    }
+    return ""
+}
+fn calls(base: str): Vec<str> {
+    let out = Vec<str>()
+    let lines = strings.split(hw.readText(base + "/log"), "\n")
+    for i in 0..(lines.len() as i64) { if strings.charLength(lines[i]) > 0 { out.push(lines[i]) } }
+    return out
+}
+fn hasCall(base: str, text: str): bool { return hw.contains(calls(base), text) }
+fn names(items: json.Value, key: str): Vec<str> {
+    let out = Vec<str>()
+    for i in 0..(json.len(items) as i64) { out.push(hw.jstr(json.at(items, i), key, "")) }
+    return out
+}

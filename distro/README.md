@@ -118,10 +118,8 @@ The `meta-devos` layer defines DevOs itself. Its companion layers are pinned to
 compatible Yocto 6.0 (`wrynose`) commits in `oe/sources.lock`. No Poky distro,
 Ubuntu package repository, casper, GDM or prebuilt WSL compositor is used.
 
-The desktop image also bundles the official Linux Chrome and VS Code applications
-through pinned binary recipes for ARM64/x64, with checksums and DevOs-built runtime
-libraries. Vendor package installation scripts and apt repositories are not used
-in the target. See [bundled apps](../docs/bundled-apps.md) for versions and validation.
+The desktop image carries no VS Code, Chrome, Rust, Node.js/nvm or QEMU; see
+[bundled apps](../docs/bundled-apps.md) for what is (and is not) in it.
 
 ```sh
 npm ci

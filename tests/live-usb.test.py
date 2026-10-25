@@ -1,8 +1,8 @@
+import hashlib
 import re
 import gzip
 import os
 import shutil
-import importlib.util
 import json
 from pathlib import Path
 import stat
@@ -13,27 +13,39 @@ import unittest
 import sys
 from unittest.mock import patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'distro/usb'))
-spec=importlib.util.spec_from_file_location('usb',Path(__file__).resolve().parents[1]/'distro/usb/prepare.py')
-usb=importlib.util.module_from_spec(spec);spec.loader.exec_module(usb)
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from usb_support import usb, fake_tool   # the DevLang staging library (distro/usb/*.dev), driven through tests/fixtures/usb-driver.dev
+
+# Stand-in for debugfs: `stat PATH` answers "Inode: 1" for the paths in $FAKE_PRESENT (or always when $FAKE_ALWAYS is set), `dump SRC "TARGET"` copies
+# $FAKE_DUMP_FILE to TARGET, `cat /etc/os-release` prints $FAKE_ETC, `cat /usr/lib/os-release` $FAKE_USRLIB, and anything else (-w -f script) succeeds quietly. Calls are appended to $FAKE_LOG.
+FAKE_DEBUGFS = r'''[ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
+case "$2" in
+    stat\ *)
+        [ -n "$FAKE_ALWAYS" ] && echo "Inode: 12"
+        for p in $FAKE_PRESENT; do [ "stat $p" = "$2" ] && echo "Inode: 1"; done ;;
+    dump\ *) t=${2##* \"}; t=${t%\"}; cp "$FAKE_DUMP_FILE" "$t" ;;
+    "cat /etc/os-release") printf '%s' "$FAKE_ETC" ;;
+    "cat /usr/lib/os-release") printf '%s' "$FAKE_USRLIB" ;;
+esac
+exit 0
+'''
 
 class LiveUsbTests(unittest.TestCase):
     def test_camera_modules_are_read_back_from_image_and_hashed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);bundle=root/'bundle';bundle.mkdir();output=root/'stage';output.mkdir()
+            root=Path(tmp);bundle=root/'bundle';bundle.mkdir();output=root/'stage';output.mkdir();tools=root/'tools';tools.mkdir()
+            fake_tool(tools,'debugfs',FAKE_DEBUGFS)
             name='modules/lib/modules/test/kernel/qcom-camss.ko'
-            data=b'patched camera module';expected=usb.hashlib.sha256(data).hexdigest()
+            data=b'patched camera module';expected=hashlib.sha256(data).hexdigest()
             (bundle/'camera-fixes.json').write_text(json.dumps({'patchedModules':{name:expected}}))
-            target=output/'staged-camera-qcom-camss.ko'
-            def readback(*args):
-                self.assertIn('/usr/lib/modules/test/kernel/qcom-camss.ko',args[2])
-                target.write_bytes(data);return ''
-            with patch.object(usb,'run',side_effect=readback):
-                self.assertEqual(usb.stage_camera_modules(root/'rootfs.ext4',bundle,output),['camera-fixes.json',target.name])
-            target.unlink()
-            with patch.object(usb,'run',side_effect=lambda *args: target.write_bytes(b'stock module')):
-                with self.assertRaisesRegex(ValueError,'read-back checksum mismatch'):
-                    usb.stage_camera_modules(root/'rootfs.ext4',bundle,output)
+            image=root/'module.ko';image.write_bytes(data);log=root/'log'
+            env={'FAKE_DUMP_FILE':str(image),'FAKE_LOG':str(log)}
+            self.assertEqual(usb.stage_camera_modules(root/'rootfs.ext4',bundle,output,tools=tools,env=env),['camera-fixes.json','staged-camera-qcom-camss.ko'])
+            self.assertIn('/usr/lib/modules/test/kernel/qcom-camss.ko',log.read_text())
+            (output/'staged-camera-qcom-camss.ko').unlink()
+            image.write_bytes(b'stock module')
+            with self.assertRaisesRegex(ValueError,'read-back checksum mismatch'):
+                usb.stage_camera_modules(root/'rootfs.ext4',bundle,output,tools=tools,env=env)
 
     def test_missing_stage_gives_recovery_instead_of_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,10 +67,10 @@ class LiveUsbTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((directory/'shadow').stat().st_mode),0o600)
 
     def test_missing_shell_bracket_applet_blocks_initramfs_packaging(self):
-        applets=usb.REQUIRED_APPLETS-{'['}
-        with patch.object(usb,'run',return_value='\n'.join(applets)):
+        with tempfile.TemporaryDirectory() as tmp:
+            busybox=fake_tool(tmp,'busybox','printf "%s\\n" '+' '.join(sorted(usb.REQUIRED_APPLETS-{'['}))+'\n')
             with self.assertRaisesRegex(ValueError,'Missing live boot tools'):
-                usb.install_boot_tools(Path('/unused'),Path('/unused/busybox'))
+                usb.install_boot_tools(Path(tmp)/'tree',busybox)
 
     def test_refresh_boot_tools_preserves_original_hardlinked_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -67,12 +79,11 @@ class LiveUsbTests(unittest.TestCase):
             (tree/'bin/busybox').hardlink_to(original)
             old_init=root/'old-init';old_init.write_bytes(b'old-init')
             (tree/'init').hardlink_to(old_init)
-            replacement=root/'new-busybox';replacement.write_bytes(b'new-busybox')
-            with patch.object(usb,'run',return_value='\n'.join(usb.REQUIRED_APPLETS)):
-                usb.install_boot_tools(tree,replacement)
+            replacement=fake_tool(root,'new-busybox','printf "%s\\n" '+' '.join(sorted(usb.REQUIRED_APPLETS))+'\n')
+            usb.install_boot_tools(tree,replacement)
             self.assertEqual(original.read_bytes(),b'old-busybox')
             self.assertEqual(old_init.read_bytes(),b'old-init')
-            self.assertEqual((tree/'bin/busybox').read_bytes(),b'new-busybox')
+            self.assertEqual((tree/'bin/busybox').read_bytes(),replacement.read_bytes())
             self.assertTrue((tree/'diagnostics/collector.service').is_file())
             self.assertTrue((tree/'diagnostics/audio-report').is_file())
             self.assertTrue((tree/'diagnostics/camera-report').is_file())
@@ -301,7 +312,7 @@ class LiveUsbTests(unittest.TestCase):
         self.assertIn('/usr/bin/devos-hotspot-report',init)
         collector=(usb.HERE/'collector').read_text()
         self.assertIn('devos-hotspot-report',collector);self.assertIn('DEVOS-LOGS/HOTSPOT-TRY',collector)
-        self.assertIn("('hotspot-report','hotspot-report')",(usb.HERE/'prepare.py').read_text())
+        self.assertIn('"hotspot-report"',(usb.HERE/'usbimage.dev').read_text())
         with tempfile.TemporaryDirectory() as tmp:
             tmp=Path(tmp);root=tmp/'root';dmesg=tmp/'dmesg';dmesg.write_text(self.CAPTURED_WIFI_DMESG)
             drv=root/'sys/bus/pci/drivers/ath12k_wifi7_pci';drv.mkdir(parents=True)
@@ -366,18 +377,15 @@ class LiveUsbTests(unittest.TestCase):
         # hci0 is set up while the initramfs is still running, so the profile's qca/ firmware must be in it.
         self.assertEqual(usb.profile_early_firmware(),['qca/ornbtfw11.tlv','qca/ornnv11.bin'])
         with tempfile.TemporaryDirectory() as tmp:
-            tree=Path(tmp)
-            def fake_run(*args):
-                if args[1:3]==('-R','stat /usr/lib/firmware/qca/ornbtfw11.tlv') or str(args[2]).startswith('stat') and 'ornnv11' in str(args[2]): return 'Inode: 1'
-                if str(args[2]).startswith('dump '):
-                    Path(str(args[2]).split('"')[1]).write_bytes(b'fw');return ''
-                return ''
-            with patch.object(usb,'run',side_effect=fake_run):
-                self.assertEqual(usb.stage_bluetooth_firmware(Path('rootfs.ext4'),tree),['qca/ornbtfw11.tlv','qca/ornnv11.bin'])
+            tree=Path(tmp)/'tree';tools=Path(tmp)/'tools';tools.mkdir()
+            fake_tool(tools,'debugfs',FAKE_DEBUGFS)
+            blob=Path(tmp)/'blob';blob.write_bytes(b'fw')
+            present='/usr/lib/firmware/qca/ornbtfw11.tlv /usr/lib/firmware/qca/ornnv11.bin'
+            staged=usb.stage_bluetooth_firmware(Path('rootfs.ext4'),tree,tools=tools,env={'FAKE_PRESENT':present,'FAKE_DUMP_FILE':str(blob)})
+            self.assertEqual(staged,['qca/ornbtfw11.tlv','qca/ornnv11.bin'])
             self.assertEqual((tree/'lib/firmware/qca/ornbtfw11.tlv').read_bytes(),b'fw')
-            with patch.object(usb,'run',return_value=''):
-                with self.assertRaisesRegex(ValueError,'Bluetooth firmware qca/ornbtfw11.tlv is not in the rootfs'):
-                    usb.stage_bluetooth_firmware(Path('rootfs.ext4'),tree)
+            with self.assertRaisesRegex(ValueError,'Bluetooth firmware qca/ornbtfw11.tlv is not in the rootfs'):
+                usb.stage_bluetooth_firmware(Path('rootfs.ext4'),tree,tools=tools,env={'FAKE_PRESENT':'','FAKE_DUMP_FILE':str(blob)})
 
     def test_camera_candidate_is_opt_in_and_labels_every_value_with_its_source(self):
         root=Path(__file__).resolve().parents[1]
@@ -389,34 +397,41 @@ class LiveUsbTests(unittest.TestCase):
             if re.search(r'(reset-gpios|data-lanes|avdd-supply|dovdd-supply|dvdd-supply|vdda-[a-z0-9]+-supply)\s*=',line):
                 self.assertRegex(line,r'\[(COMM|A16|ACPI|SOC)\]',line)
         # Not part of any default build: only the explicit flag appends it.
-        flow=(root/'distro/usb/prepare-board-fixes.py').read_text()
+        flow=(root/'distro/usb/boardtools.dev').read_text()
         self.assertIn('--enable-camera-candidate',flow)
-        self.assertEqual(flow.count('append_camera_candidate(source)'),1)
-        self.assertIn('if args.enable_camera_candidate:append_camera_candidate',flow)
-        for name in ('prepare.py','board_audio.py'):
+        self.assertEqual(flow.count('st.appendCameraCandidate(board)'),1)
+        self.assertIn('if camera { st.appendCameraCandidate(board) }',flow)
+        for name in ('usbimage.dev','usbstage.dev','hostio.dev'):
             body=(root/'distro/usb'/name).read_text()
-            self.assertNotIn('append_camera_candidate(',body.replace('def append_camera_candidate(',''))
-        sys.path.insert(0,str(usb.HERE))
-        import board_audio
+            self.assertNotIn('appendCameraCandidate(',body.replace('fn appendCameraCandidate(',''))
         with tempfile.TemporaryDirectory() as tmp:
             tree=Path(tmp);(tree/'arch/arm64/boot/dts/qcom').mkdir(parents=True);(tree/'drivers/mfd').mkdir(parents=True)
             (tree/'arch/arm64/boot/dts/qcom/glymur.dtsi').write_text('/* stock */')
             (tree/'drivers/mfd/qcom-pm8008.c').write_text('/* stock */')
-            with self.assertRaisesRegex(ValueError,'prepare-source'): board_audio.check_camera_source(tree)
+            with self.assertRaisesRegex(ValueError,'prepare-source'): usb.check_camera_source(tree)
             (tree/'arch/arm64/boot/dts/qcom/glymur.dtsi').write_text('compatible = "qcom,glymur-camss";')
             (tree/'drivers/mfd/qcom-pm8008.c').write_text('"qcom,pm8010-i2c"')
-            board_audio.check_camera_source(tree)
+            usb.check_camera_source(tree)
 
     def test_camx_sensor_module_decoder_reports_identity_but_no_invented_pins(self):
         root=Path(__file__).resolve().parents[1]
-        spec=importlib.util.spec_from_file_location('camxdec',root/'tools/live/decode-camx-sensormodule.py')
-        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        d=os.environ.get('DEVLANG_BIN') or str(Path.home()/'.local/bin/d')
+        tool=str(root/'tools/live/decode-camx-sensormodule.dev')
         blob=b'QTI Chromatix Header'+bytes(12)+b'sensorDriverData\0'+bytes(8)+b'luxvision_ov02c10\0'+struct.pack('<I',19200000)
-        info=module.decode(blob)
-        self.assertEqual(info['clock_19_2_mhz_offsets'],[len(blob)-4])
-        self.assertIn('sensorDriverData',[n for n,_ in info['fields']])
-        self.assertIn('luxvision_ov02c10',[t for t,_ in info['module_strings']])
-        with self.assertRaises(ValueError): module.decode(b'not a module')
+        with tempfile.TemporaryDirectory() as tmp:
+            good=Path(tmp)/'module.bin'; good.write_bytes(blob)
+            done=subprocess.run([d,tool,'--',str(good)],capture_output=True,text=True,timeout=60)
+            self.assertEqual(done.returncode,0,done.stdout+done.stderr)
+            self.assertIn('size: %d bytes'%len(blob),done.stdout)
+            self.assertIn('  0x%x: sensorDriverData'%blob.index(b'sensorDriverData'),done.stdout)
+            self.assertIn('  0x%x: luxvision_ov02c10'%blob.index(b'luxvision_ov02c10'),done.stdout)
+            self.assertIn('offsets: 0x%x'%(len(blob)-4),done.stdout)
+            self.assertIn('NOT in this file: physical GPIO numbers',done.stdout)
+            self.assertNotIn('gpio ',done.stdout.lower().replace('gpio numbers',''))
+            bad=Path(tmp)/'bad.bin'; bad.write_bytes(b'not a module')
+            refused=subprocess.run([d,tool,'--',str(bad)],capture_output=True,text=True,timeout=60)
+            self.assertNotEqual(refused.returncode,0)
+            self.assertIn('Not a CamX sensor module file',refused.stdout+refused.stderr)
 
     def test_hardware_profile_selects_boot_modules_and_kernel_arguments(self):
         # The X2 command line and USB bring-up order moved into asus/ux3407na unchanged.
@@ -430,7 +445,7 @@ class LiveUsbTests(unittest.TestCase):
         self.assertIn('/live/devos-hwprofile boot /run/devos-hw',init)
         self.assertIn('$early_modules',init)
         subprocess.run(['sh','-n',str(usb.HERE/'init')],check=True)
-        with self.assertRaises(subprocess.CalledProcessError): usb.profile_kernel_args('asus/not-a-model')
+        with self.assertRaises(ValueError): usb.profile_kernel_args('asus/not-a-model')
 
     def test_efi_sections_require_arm64(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -495,26 +510,20 @@ class LiveUsbTests(unittest.TestCase):
                 usb.firmware_bundle(output)
 
     def test_staged_calibration_readback_must_match_source_bytes(self):
-        # Exercise read-back validation with mocked debugfs only; no OS build,
-        # filesystem creation, mounted device, or physical USB writes.
+        # Exercise read-back validation with a fake debugfs only; no OS build, filesystem creation, mounted device, or physical USB writes.
         for matching in (True,False):
             with self.subTest(matching=matching),tempfile.TemporaryDirectory() as tmp:
-                output=Path(tmp);source=output/'firmware'
+                output=Path(tmp)/'out';output.mkdir();source=Path(tmp)/'firmware';tools=Path(tmp)/'tools';tools.mkdir()
+                fake_tool(tools,'debugfs',FAKE_DEBUGFS)
                 self.calibration_bundle(source)
-                rootfs=output/'private-rootfs';rootfs.write_bytes(b'placeholder')
-                def readback(*args):
-                    if str(args[2]).startswith('dump '):
-                        data=(source/usb.WIFI_BOARD).read_bytes() if matching else b'old-board-data'
-                        (output/'staged-wifi-board.bin').write_bytes(data)
-                        return ''
-                    return 'Inode: 12'
-                result=subprocess.CompletedProcess([],0,stdout='',stderr='')
-                with patch.object(usb,'run',side_effect=readback),patch.object(usb.subprocess,'run',return_value=result):
-                    if matching:
-                        usb.install_modules(rootfs,source,output,target='/usr/lib/firmware')
-                    else:
-                        with self.assertRaisesRegex(ValueError,'not staged correctly'):
-                            usb.install_modules(rootfs,source,output,target='/usr/lib/firmware')
+                rootfs=Path(tmp)/'private-rootfs';rootfs.write_bytes(b'placeholder')
+                served=Path(tmp)/'served';served.write_bytes((source/usb.WIFI_BOARD).read_bytes() if matching else b'old-board-data')
+                env={'FAKE_ALWAYS':'1','FAKE_DUMP_FILE':str(served)}
+                if matching:
+                    usb.install_modules(rootfs,source,output,target='/usr/lib/firmware',tools=tools,env=env)
+                else:
+                    with self.assertRaisesRegex(ValueError,'not staged correctly'):
+                        usb.install_modules(rootfs,source,output,target='/usr/lib/firmware',tools=tools,env=env)
 
     def test_old_bootable_staging_cannot_reexport_missing_wifi(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -549,13 +558,38 @@ class LiveUsbTests(unittest.TestCase):
             self.assertTrue(stat.S_ISCHR(entries['dev/console'][0][1]))
             self.assertEqual(entries['dev/console'][0][9:11],[5,1])
 
+    @unittest.skipUnless(shutil.which('mke2fs') and shutil.which('resize2fs') and shutil.which('dumpe2fs'), 'e2fsprogs required')
+    def test_rootfs_is_shrunk_to_its_content_plus_the_margin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp=Path(tmp);tree=tmp/'tree';tree.mkdir();(tree/'data').write_bytes(os.urandom(24*1024*1024))
+            image=tmp/'rootfs.ext4'
+            subprocess.run(['mke2fs','-q','-t','ext4','-d',str(tree),str(image),'400M'],check=True,capture_output=True)
+            before=image.stat().st_size
+            with self.assertRaisesRegex(ValueError,'still has'):
+                usb.check_shrunk(image)
+            usb.shrink_rootfs(image)
+            margin=usb.shrink_margin()
+            after=image.stat().st_size
+            self.assertLess(after,before//2,'the unused space is given back')
+            self.assertGreater(after,24*1024*1024+margin//2)
+            self.assertEqual(subprocess.run(['e2fsck','-fn',str(image)],capture_output=True).returncode,0)
+            usb.check_shrunk(image)
+            info=subprocess.run(['dumpe2fs','-h',str(image)],capture_output=True,text=True).stdout
+            geometry={line.split(':')[0]:int(line.split(':')[1]) for line in info.splitlines() if line.split(':')[0] in ('Block size','Block count','Free blocks')}
+            self.assertEqual(after,geometry['Block count']*geometry['Block size'],'the file is exactly as long as the file system')
+            self.assertLessEqual(geometry['Free blocks']*geometry['Block size'],margin+32*1024*1024)
+            self.assertEqual(subprocess.run(['dd','if='+str(image),'bs=1','skip=1080','count=2'],capture_output=True).stdout,b'\x53\xef','ext4 magic is intact')
+            self.assertEqual([f for f in re.findall(r'Filesystem features:\s+(.*)',info)[0].split() if f in ('encrypt','casefold','verity')],[],'no new features')
+
     def test_foreign_rootfs_rejected(self):
-        with patch.object(usb,'run',return_value='ID=ubuntu\n'):
-            with self.assertRaisesRegex(ValueError,'not independent DevOs'): usb.identity(Path('/tmp/rootfs'))
+        with tempfile.TemporaryDirectory() as tmp:
+            tools=Path(tmp);fake_tool(tools,'debugfs',FAKE_DEBUGFS)
+            with self.assertRaisesRegex(ValueError,'not independent DevOs'): usb.identity(Path('/tmp/rootfs'),tools=tools,env={'FAKE_ETC':'ID=ubuntu\n'})
 
     def test_os_release_symlink_fallback(self):
-        with patch.object(usb,'run',side_effect=['','ID=devos\n']):
-            self.assertEqual(usb.identity(Path('/tmp/rootfs')),'ID=devos\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            tools=Path(tmp);fake_tool(tools,'debugfs',FAKE_DEBUGFS)
+            self.assertEqual(usb.identity(Path('/tmp/rootfs'),tools=tools,env={'FAKE_ETC':'','FAKE_USRLIB':'ID=devos\n'}),'ID=devos\n')
 
     def test_pending_hardware_blocks_usb_image_creation(self):
         with tempfile.TemporaryDirectory() as tmp:

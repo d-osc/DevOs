@@ -6,7 +6,7 @@
   "description": "A native Wayland desktop shell using GJS, GTK and labwc",
   "scripts": {
     "dev": "npm run build && sh bin/dev-os-session --nested",
-    "check": "npm run build && gjs -m dist/config-test.js && gjs -m dist/extensions-test.js && gjs -m dist/updates-test.js && gjs -m dist/update-package-test.js && gjs -m dist/store-test.js && gjs -m dist/lock-test.js && gjs -m dist/sleep-test.js && gjs -m dist/wifi-test.js",
+    "check": "npm run build && gjs -m dist/config-test.js && gjs -m dist/extensions-test.js && gjs -m dist/updates-test.js && gjs -m dist/update-package-test.js && gjs -m dist/updates-patch-test.js && gjs -m dist/updates-ui-test.js && gjs -m dist/system-update-test.js && gjs -m dist/store-test.js && gjs -m dist/lock-test.js && gjs -m dist/sleep-test.js && gjs -m dist/wifi-test.js",
     "doctor": "sh bin/dev-os-shell doctor",
     "smoke": "npm run build && d tools/test/smoke.dev --",
     "build": "node tools/build/build.ts",

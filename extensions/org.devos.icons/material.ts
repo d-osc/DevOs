@@ -1,5 +1,5 @@
 import {
-    readJson, GLib
+    readJson
 } from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 

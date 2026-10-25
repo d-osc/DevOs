@@ -9,7 +9,7 @@ export default {id: 'org.devos.appstore', activate(context) {
         context.invoke('launcher.hide'); if (window) {window.present(); return;}
         const controls = new AppStore();
         window = new Gtk.ApplicationWindow({application: context.application, title: 'App Store', default_width: 1100, default_height: 760}); window.name = 'app-store';
-        const root = createRoot(window), header = mountWindowHeader(window, {title: 'App Store', iconName: 'system-software-install-symbolic'});
+        const root = createRoot(window), header = mountWindowHeader(window, {title: 'App Store', iconName: 'dev-os-app-store-symbolic', windowIconName: 'dev-os-app-store'});
         root.render(<AppStoreView controls={controls}/>);
         window.connect('delete-event', () => controls.busy);
         window.connect('destroy', () => {root.unmount(); header.destroy(); window = undefined;}); window.show_all(); window.present();

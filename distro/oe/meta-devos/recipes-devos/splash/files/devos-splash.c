@@ -6,6 +6,7 @@
  * across switch_root until the session asks it to quit, so there is never a text console on screen in between.
  *
  *   devos-splash --daemon [--pid FILE] [--status FILE] [--control FILE] [--message TEXT] [--timeout SECONDS]
+ *   devos-splash --step NAME              session milestone: system, session, compositor, window, shell, ready (fire-and-forget)
  *   devos-splash --quit [--text]          fade out and hand the screen over (--text: restore the text console now)
  *   devos-splash --dump DIR [--frames N] [--size WxH] [--message TEXT] [--fade] [--full]   headless PPM frames
  *
@@ -41,7 +42,9 @@
 #define FPS 30
 #define LOOP_SECONDS 4.8f            /* the arc animation repeats exactly after this long */
 #define FADE_IN 0.8f
-#define FADE_OUT 0.45f
+#define FADE_OUT 0.30f
+#define SESSION_TIMEOUT 180.0  /* default seconds from start until the session must have begun (slow USB boots), else show text */
+#define READY_TIMEOUT 45.0     /* default seconds from the session start until the shell/greeter says ready, else show text */
 #define MAX_INPUTS 12
 #define TAU 6.28318530717958647692f
 
@@ -105,6 +108,21 @@ static void dot(uint8_t *mask, int w, int h, float cx, float cy, float r) {
             if (v > mask[y * w + x]) mask[y * w + x] = v;
         }
 }
+/* The Dev OS mark (data/icons/devos/devos-mark.svg): a rounded rectangle and a small circle in a 100 x 100 box. Only the light
+ * shapes are drawn, without the dark square behind them, and into the dim status mask so nothing on the OLED is bright. */
+static void mark(uint8_t *mask, int w, int h, float cx, float cy, float k) {
+    float ox = cx - 54 * k, oy = cy - 52 * k; /* the shapes span x 22..86, y 32..72; centre that box on (cx, cy) */
+    for (int y = (int)(oy + 30 * k); y <= (int)(oy + 74 * k); y++)
+        for (int x = (int)(ox + 20 * k); x <= (int)(ox + 88 * k); x++) {
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            float px = (x + .5f - ox) / k, py = (y + .5f - oy) / k; /* mark space */
+            float qx = fabsf(px - 42) - 20 + 2, qy = fabsf(py - 48) - 16 + 2; /* rect 22,32 40x32 radius 2 */
+            float rect = hypotf(fmaxf(qx, 0), fmaxf(qy, 0)) + fminf(fmaxf(qx, qy), 0) - 2;
+            float disc = hypotf(px - 81, py - 67) - 5;
+            uint8_t v = (uint8_t)(clampf(.5f - fminf(rect, disc) * k, 0, 1) * 255);
+            if (v > mask[y * w + x]) mask[y * w + x] = v;
+        }
+}
 static float text_width(const char *s, float pitch) { return (float)strlen(s) * 6 * pitch - pitch; }
 static void text(uint8_t *mask, int w, int h, const char *s, float x, float y, float pitch, float radius) {
     for (; *s; s++, x += 6 * pitch) {
@@ -126,6 +144,7 @@ static void scene_build_base(Scene *s) {
     float total = text_width("DEV OS", pitch), x = w / 2.f - total / 2, y = 268 * u - 3.5f * pitch;
     text(s->word, w, h, "DEV", x, y, pitch, r);
     text(s->accent, w, h, "OS", x + 4 * 6 * pitch, y, pitch, r);
+    mark(s->status, w, h, s->cx, s->cy, .62f * u); /* inside the loading ring */
     float sp = fmaxf(2.4f, 3.0f * u);
     text(s->status, w, h, s->message, w / 2.f - text_width(s->message, sp) / 2, 338 * u - 3.5f * sp, sp, sp * .44f);
     for (int py = 0; py < h; py++)
@@ -335,9 +354,10 @@ static int open_inputs(int *fds, int count, char names[][32]) {
 
 /* ---- options and modes ---- */
 typedef struct {
-    const char *fb, *tty, *pid, *status, *control, *dump, *message;
-    int daemon, quit, text, frames, width, height, fade, full;
-    double timeout;
+    const char *fb, *tty, *pid, *status, *control, *steps, *step, *dump, *message;
+    int steps_set, daemon, quit, text, frames, width, height, fade, full;
+    double timeout, session_timeout, ready_timeout;
+    const char *log;
 } Options;
 
 static int dump_frames(const Options *o) {
@@ -376,6 +396,43 @@ static int dump_frames(const Options *o) {
     printf("%d %d %d\n", s.width, s.height, o->frames);
     scene_free(&s);
     return 0;
+}
+
+/* Milestones are empty files in a world-writable sticky directory: fire-and-forget for any user, no sockets to hang on. */
+enum { STEP_SYSTEM, STEP_SESSION, STEP_COMPOSITOR, STEP_WINDOW, STEP_SHELL, STEP_READY, STEP_COUNT };
+static const char *const STEP_NAMES[STEP_COUNT] = {"system", "session", "compositor", "window", "shell", "ready"};
+static const char *const STEP_TEXT[STEP_COUNT] = {"Starting services", "Starting desktop", "Loading shell", NULL, "Almost ready", NULL};
+
+static int client_step(const Options *o) {
+    for (int i = 0; i < STEP_COUNT; i++) {
+        if (strcmp(o->step, STEP_NAMES[i])) continue;
+        char path[300];
+        const char *dir = o->steps_set ? o->steps : getenv("DEVOS_SPLASH_STEPS"), *runtime = getenv("XDG_RUNTIME_DIR");
+        if (!dir) dir = access(o->steps, F_OK) == 0 || !runtime ? o->steps : NULL;
+        char user_dir[200];
+        if (!dir) { snprintf(user_dir, sizeof user_dir, "%s/devos-splash.d", runtime); dir = user_dir; } /* the post-login session's own splash */
+        snprintf(path, sizeof path, "%s/%s", dir, o->step);
+        int fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NONBLOCK, 0666);
+        if (fd >= 0) close(fd);
+        return 0;  /* a missing splash is not an error */
+    }
+    return 2;
+}
+static void make_steps_dir(const char *path) {
+    if (!path) return;
+    mode_t old = umask(0);
+    if (mkdir(path, 01777) != 0 && errno != EEXIST) { /* best effort */ }
+    umask(old);
+}
+static unsigned scan_steps(const char *dir) {
+    unsigned mask = 0;
+    for (int i = 0; i < STEP_COUNT; i++) {
+        char path[300];
+        struct stat st;
+        snprintf(path, sizeof path, "%s/%s", dir, STEP_NAMES[i]);
+        if (stat(path, &st) == 0) mask |= 1u << i;
+    }
+    return mask;
 }
 
 static int client_quit(const Options *o) {
@@ -444,14 +501,19 @@ static int run_daemon(const Options *o) {
     sigaction(SIGUSR1, &sa, NULL); sigaction(SIGTERM, &sa, NULL); sigaction(SIGINT, &sa, NULL); sigaction(SIGHUP, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
     create_control(o->control);
+    make_steps_dir(o->steps);
     int procfd = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC), in_real_root = 0;
     Display display = {.fd = -1};
     Scene scene;
     memset(&scene, 0, sizeof scene);
     int inputs[MAX_INPUTS], input_count = 0;
     char input_names[MAX_INPUTS][32], message[96] = "";
-    event_log = fopen("/run/devos-splash.log", "a");
+    { mode_t old = umask(0); event_log = fopen(o->log, "a"); umask(old); } /* world-writable: the greeter/shell side may add lines */
     event_start = now_seconds();
+    unsigned steps_seen = 0;
+    const char *wanted = NULL; /* status text of the latest milestone */
+    int covered = 0;
+    double session_at = -1, next_steps = 0;
     double start = now_seconds(), next_frame = start, next_check = start, fade_out_at = -1;
     int graphics = 0, full = 1, last_dx = 0, last_dy = 0, reveal = 0;
     while (!reveal) {
@@ -462,12 +524,27 @@ static int run_daemon(const Options *o) {
                 note("switch_root seen: %s the real root", moved > 0 ? "entered" : "could not enter");
                 in_real_root = moved > 0;
                 if (o->control && access(o->control, F_OK)) create_control(o->control);
+                if (o->steps && access(o->steps, F_OK)) make_steps_dir(o->steps);
                 if (o->pid && access(o->pid, F_OK)) write_pid_file(o->pid);
                 if (display.fd >= 0) { display_close(&display); scene_free(&scene); }
                 next_check = now;
             }
         }
         control_poll(o->control);
+        if (now >= next_steps) { /* milestones from the session: system, session, compositor, window, shell, ready */
+            next_steps = now + .2;
+            unsigned reached = scan_steps(o->steps);
+            if (reached != steps_seen) {
+                for (int i = 0; i < STEP_COUNT; i++) if ((reached ^ steps_seen) >> i & 1) note("milestone %s", STEP_NAMES[i]);
+                if (!(steps_seen & (1u << STEP_SESSION)) && (reached & (1u << STEP_SESSION))) session_at = t;
+                steps_seen = reached;
+                for (int i = STEP_COUNT - 1; i >= 0; i--) if ((reached >> i & 1) && STEP_TEXT[i]) { wanted = STEP_TEXT[i]; break; }
+                if (reached & (1u << STEP_READY) && signal_quit == 0) signal_quit = 1;
+            }
+            covered = (reached & (1u << STEP_WINDOW)) != 0; /* a Wayland splash window now covers the screen: keep still underneath */
+        }
+        if (!(steps_seen & (1u << STEP_SESSION)) && t > o->session_timeout) { note("timeout: the session never started, showing text"); reveal = 1; break; }
+        if (session_at >= 0 && !(steps_seen & (1u << STEP_READY)) && t - session_at > o->ready_timeout) { note("timeout: not ready %.0f s after the session began, showing text", o->ready_timeout); reveal = 1; break; }
         if (signal_quit == 2 || (o->timeout > 0 && t > o->timeout)) break;
         if (signal_quit == 1 && fade_out_at < 0) fade_out_at = t;
         if (now >= next_check) {
@@ -480,12 +557,13 @@ static int run_daemon(const Options *o) {
                 if (scene_init(&scene, display.var.xres, display.var.yres, o->message)) display_close(&display);
                 else { note("framebuffer %s %ux%u %ubpp line %u", (char *)display.fix.id, display.var.xres, display.var.yres, display.var.bits_per_pixel, display.fix.line_length); full = 1; if (!graphics) graphics = tty_hide(o->tty) == 0; }
             }
+            if (display.fd >= 0 && wanted) scene_set_message(&scene, wanted);
             if (display.fd >= 0) full = 1; /* twice a second repaint everything: fbcon may have cleared the screen meanwhile */
-            if (display.fd >= 0 && o->status && read_status(o->status, message, sizeof message)) { scene_set_message(&scene, message); full = 1; }
+            if (display.fd >= 0 && !(steps_seen & ((1u << STEP_SYSTEM) | (1u << STEP_SESSION) | (1u << STEP_COMPOSITOR) | (1u << STEP_SHELL))) && o->status && read_status(o->status, message, sizeof message)) { scene_set_message(&scene, message); full = 1; }
             input_count = open_inputs(inputs, input_count, input_names);
             if (display.fd < 0 && !graphics && t > 40) break; /* no framebuffer ever appeared: leave the text console alone */
         }
-        if (display.fd >= 0) {
+        if (display.fd >= 0 && !covered) {
             float fade = ease((float)t / FADE_IN);
             if (fade_out_at >= 0) fade *= 1 - ease((float)(t - fade_out_at) / FADE_OUT);
             int dx = (int)lroundf(10 * scene.unit * sinf(TAU * (float)fmod(t, 97) / 97)), dy = (int)lroundf(8 * scene.unit * sinf(TAU * (float)fmod(t, 131) / 131));
@@ -517,20 +595,28 @@ static int run_daemon(const Options *o) {
     int quiet = fade_out_at >= 0 && signal_quit != 2 && !reveal;
     if (display.fd >= 0 && quiet) memset(display.map, 0, display.length);
     if (graphics) tty_show(o->tty, quiet || reveal); /* a quiet exit leaves a blank console, a text exit keeps what is there */
-    if (reveal) tty_write(o->tty, "Dev OS: boot animation stopped (Esc).\n");
+    if (reveal) tty_write(o->tty, "Dev OS: boot animation stopped.\n");
     if (reveal && access("/run/systemd/system", F_OK) == 0) kill(1, SIGRTMIN + 20); /* systemd as PID 1: show boot status again */
     for (int i = 0; i < input_count; i++) close(inputs[i]);
     display_close(&display);
     scene_free(&scene);
     if (o->pid) unlink(o->pid);
     if (o->control) unlink(o->control);
+    if (o->steps) { /* the milestone files belong to this boot only */
+        for (int i = 0; i < STEP_COUNT; i++) {
+            char path[300];
+            snprintf(path, sizeof path, "%s/%s", o->steps, STEP_NAMES[i]);
+            unlink(path);
+        }
+        rmdir(o->steps);
+    }
     return 0;
 }
 
 static void usage(void) { fputs("usage: devos-splash --daemon | --quit [--text] | --dump DIR [options]\n", stderr); }
 
 int main(int argc, char **argv) {
-    Options o = {.fb = "/dev/fb0", .tty = "/dev/tty0", .pid = "/run/devos-splash.pid", .status = "/run/devos-splash.status", .control = "/run/devos-splash.ctl",
+    Options o = {.fb = "/dev/fb0", .tty = "/dev/tty0", .pid = "/run/devos-splash.pid", .status = "/run/devos-splash.status", .control = "/run/devos-splash.ctl", .steps = "/run/devos-splash.d", .log = "/run/devos-splash.log", .session_timeout = SESSION_TIMEOUT, .ready_timeout = READY_TIMEOUT,
                  .message = "Starting Dev OS", .frames = 144, .width = 1280, .height = 720};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -544,6 +630,11 @@ int main(int argc, char **argv) {
         else if (v && !strcmp(a, "--pid")) { o.pid = v; i++; }
         else if (v && !strcmp(a, "--status")) { o.status = v; i++; }
         else if (v && !strcmp(a, "--control")) { o.control = v; i++; }
+        else if (v && !strcmp(a, "--steps")) { o.steps = v; o.steps_set = 1; i++; }
+        else if (v && !strcmp(a, "--step")) { o.step = v; i++; }
+        else if (v && !strcmp(a, "--log")) { o.log = v; i++; }
+        else if (v && !strcmp(a, "--session-timeout")) { o.session_timeout = atof(v); i++; }
+        else if (v && !strcmp(a, "--ready-timeout")) { o.ready_timeout = atof(v); i++; }
         else if (v && !strcmp(a, "--message")) { o.message = v; i++; }
         else if (v && !strcmp(a, "--timeout")) { o.timeout = atof(v); i++; }
         else if (v && !strcmp(a, "--dump")) { o.dump = v; i++; }
@@ -552,6 +643,7 @@ int main(int argc, char **argv) {
         else { usage(); return 2; }
     }
     if (o.dump) return dump_frames(&o);
+    if (o.step) return client_step(&o);
     if (o.quit) return client_quit(&o);
     if (!o.daemon) { usage(); return 2; }
     FILE *running = fopen(o.pid, "r");

@@ -1,4 +1,5 @@
-import {React, Box, Label, Image, Switch, CheckButton, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, CheckButton, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {SwitchRow} from './switch-row.js';
 import {BatteryCare, remainingText, unsupportedBatteryCare, type BatteryCareAction, type BatteryCareControls, type BatteryCareState} from './battery-care.js';
 /** Battery Care Mode and Instant Full-Charge Mode, laid out like the MyASUS card: description left, switches right. */
 export function BatteryCareSettings({controls}: {controls?: BatteryCareControls}) {
@@ -27,12 +28,12 @@ export function BatteryCareSettings({controls}: {controls?: BatteryCareControls}
             <Box orientation="vertical" spacing={8}>
                 <Label className="settings-field-title" xalign={0}>Battery Care Mode</Label>
                 <Label className="settings-description" xalign={0} wrap>{`Enable Battery Care Mode to limit battery charging to ${state.limit}% of full capacity, which will improve the battery's lifespan.`}</Label>
-                <Box spacing={12}><Switch key={`care-${nonce}`} id="battery-care-switch" active={state.care} sensitive={usable} onActiveChanged={w => {if (w.active !== state.care) void request('care', w.active);}} /><Label id="battery-care-state" className="settings-description">{state.care ? 'On' : 'Off'}</Label></Box>
+                <SwitchRow key={`care-${nonce}`} id="battery-care-switch" stateId="battery-care-state" active={state.care} sensitive={usable} label={state.care ? 'On' : 'Off'} onToggled={on => void request('care', on)} />
             </Box>
             <Box orientation="vertical" spacing={8}>
                 <Label className="settings-field-title" xalign={0}>Instant Full-Charge Mode</Label>
                 <Label className="settings-description" xalign={0} wrap>Instant Full-Charge Mode charges the battery to 100%. Battery Care Mode will be re-enabled after 24 hours.</Label>
-                <Box spacing={12}><Switch key={`full-${nonce}`} id="battery-full-switch" active={state.full} sensitive={usable && (state.care || state.full)} onActiveChanged={w => {if (w.active !== state.full) void request('full', w.active);}} /><Label id="battery-full-state" className="settings-description">{state.full ? 'On' : 'Off'}</Label></Box>
+                <SwitchRow key={`full-${nonce}`} id="battery-full-switch" stateId="battery-full-state" active={state.full} sensitive={usable && (state.care || state.full)} label={state.full ? 'On' : 'Off'} onToggled={on => void request('full', on)} />
                 {state.full && <Label id="battery-full-remaining" className="settings-description" xalign={0} wrap>{`Battery Care Mode returns in ${remainingText(state.remaining)}.`}</Label>}
                 {state.supported && !state.care && !state.full && <Label id="battery-full-hint" className="settings-description" xalign={0} wrap>Turn on Battery Care Mode to use Instant Full-Charge Mode.</Label>}
                 <CheckButton id="battery-quick-check" active={state.quick} sensitive={ready && state.supported && !busy} onToggled={w => {if (w.active !== state.quick) void request('quick', w.active);}}>Display this switch in the panel to quickly change the Instant Full-Charge setting.</CheckButton>

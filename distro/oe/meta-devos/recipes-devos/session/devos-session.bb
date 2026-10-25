@@ -1,9 +1,9 @@
 SUMMARY = "Local DevOs development session user and startup"
 LICENSE = "CLOSED"
 inherit useradd systemd
-SYSTEMD_SERVICE:${PN} = "devos-zram.service devos-memory.service devos-battery-care.service devos-battery-care.timer devos-fan-profile.service devos-keyboard.service devos-connectivity.service devos-smartconnect.service devos-power-log.service"
+SYSTEMD_SERVICE:${PN} = "devos-zram.service devos-memory.service devos-battery-care.service devos-battery-care.timer devos-system-commit.timer devos-fan-profile.service devos-keyboard.service devos-connectivity.service devos-smartconnect.service devos-power-log.service"
 SYSTEMD_AUTO_ENABLE = "enable"
-SRC_URI = "file://devos-desktop file://devos-greeter file://47-devos-time.rules file://48-devos-network.rules file://49-devos-admin.rules file://50-devos-greeter-power.rules file://devos-power-log file://devos-power-log.service file://10-devos-wheel.sudoers file://devos-profile.sh file://devos-zram.service file://devos-memory.service file://devos-battery-care.service file://devos-battery-care.timer file://70-devos-battery-care.rules file://devos-fan-profile.service file://71-devos-fan-profile.rules file://devos-connectivity.service file://devos-smartconnect.service file://90-devos-connectivity file://devos-microphone.service file://devos-speaker.service file://devos-keyboard-backlight.service file://devos-keyboard.service file://devos-touchpad-gestures.service file://72-devos-touchpad.rules file://90-devos-memory.conf file://devos-sleep.conf file://devos-logind.conf"
+SRC_URI = "file://devos-desktop file://devos-greeter file://47-devos-time.rules file://48-devos-network.rules file://49-devos-admin.rules file://50-devos-greeter-power.rules file://devos-power-log file://devos-power-log.service file://10-devos-wheel.sudoers file://devos-profile.sh file://devos-zram.service file://devos-memory.service file://devos-battery-care.service file://devos-battery-care.timer file://devos-system-commit.service file://devos-system-commit.timer file://70-devos-battery-care.rules file://devos-fan-profile.service file://71-devos-fan-profile.rules file://devos-connectivity.service file://devos-smartconnect.service file://90-devos-connectivity file://devos-microphone.service file://devos-speaker.service file://devos-keyboard-backlight.service file://devos-keyboard.service file://devos-touchpad-gestures.service file://72-devos-touchpad.rules file://90-devos-memory.conf file://devos-sleep.conf file://devos-logind.conf"
 S = "${UNPACKDIR}"
 USERADD_PACKAGES = "${PN}"
 GROUPADD_PARAM:${PN} = "--system devos; --system wheel; --system netdev; --system devos-greeter"
@@ -13,6 +13,7 @@ do_install() {
     install -d ${D}${systemd_system_unitdir}
     install -m0644 ${UNPACKDIR}/devos-zram.service ${UNPACKDIR}/devos-memory.service ${UNPACKDIR}/devos-battery-care.service ${UNPACKDIR}/devos-battery-care.timer ${UNPACKDIR}/devos-fan-profile.service ${UNPACKDIR}/devos-keyboard.service ${UNPACKDIR}/devos-connectivity.service ${UNPACKDIR}/devos-smartconnect.service ${D}${systemd_system_unitdir}/
     install -m0644 ${UNPACKDIR}/devos-power-log.service ${D}${systemd_system_unitdir}/
+    install -m0644 ${UNPACKDIR}/devos-system-commit.service ${UNPACKDIR}/devos-system-commit.timer ${D}${systemd_system_unitdir}/
     install -d ${D}${libexecdir} ${D}${nonarch_libdir}/systemd/system-sleep
     install -m0755 ${UNPACKDIR}/devos-power-log ${D}${libexecdir}/devos-power-log
     install -m0755 ${UNPACKDIR}/devos-power-log ${D}${nonarch_libdir}/systemd/system-sleep/devos-power-log

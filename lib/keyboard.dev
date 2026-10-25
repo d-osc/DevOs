@@ -1,0 +1,487 @@
+# Keyboard settings for Dev OS Settings (the MyASUS "Function key", "Automatic keyboard backlight" and
+# "Keyboard backlight sleep mode" cards). Entry point: lib/keyboard-cli.dev, started by bin/dev-os-keyboard.
+#
+# Usage: dev-os-keyboard get
+#        dev-os-keyboard set fn locked|normal | auto-brighten on|off | auto-dim on|off
+#                           | sleep nothing|both|battery | sleep-both SECONDS | sleep-battery SECONDS
+#        dev-os-keyboard serve        per-user daemon: ambient light + idle sleep for the keyboard backlight
+# JSON on stdout, exit 1 on failure. Preferences are per user; only the Fn key mode is system wide and goes through
+# pkexec to /usr/libexec/devos-keyboard (polkit org.devos.keyboard.fn).
+#
+# Backends (nothing is invented; a missing device turns the control off with a reason):
+#   backlight  LED class device /sys/class/leds/*kbd_backlight* (asus::kbd_backlight from the asus-glymur-ec driver). The
+#              brightness is written through logind SetBrightness (works for the active session without root), with a
+#              direct write as the fallback.
+#   sensor     IIO ambient light sensor /sys/bus/iio/devices/iio:device*/in_illuminance_{input,raw}. Auto-brighten turns the
+#              backlight on when the room turns dark, auto-dim turns it off when the room turns bright; both use two lux
+#              thresholds (hysteresis) and need several consecutive samples (debounce) and only act on a change.
+#   idle       Wayland ext-idle-notify-v1 (lib/wayland.dev speaks the wire protocol itself, no extra package). The backlight
+#              goes off after the chosen idle time and the previous level returns on the first key press or pointer movement;
+#              "battery only" applies when no mains supply is online.
+# Test hooks: DEVOS_KBD_SYS (path prefix for /sys), DEVOS_KBD_PREFS (preferences file), DEVOS_KBD_CORE (privileged helper),
+# DEVOS_KBD_DIRECT=1 (write the LED directly), DEVOS_KBD_TICK (seconds), DEVOS_KBD_DARK / DEVOS_KBD_BRIGHT (lux),
+# DEVOS_KBD_DEBOUNCE (samples), DEVOS_KBD_ROUNDS (daemon loop count).
+use "std/args"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/fs"
+use "../lib/hw.dev" as hw
+use "../lib/posix.dev" as posix
+use "../lib/wayland.dev" as wl
+
+fn sysfs(): str { return hw.env("DEVOS_KBD_SYS") + "/sys" }
+fn darkLux(): f64 { return hw.toFloat(hw.envOr("DEVOS_KBD_DARK", "15"), 15.0) }
+fn brightLux(): f64 { return hw.toFloat(hw.envOr("DEVOS_KBD_BRIGHT", "60"), 60.0) }
+fn debounce(): i64 { return hw.toInt(hw.envOr("DEVOS_KBD_DEBOUNCE", "3"), 3) }
+fn tick(): f64 { return hw.toFloat(hw.envOr("DEVOS_KBD_TICK", "1"), 1.0) }
+
+fn timeouts(): Vec<i64> { return Vec<i64>(10, 30, 60, 120, 300, 600) }
+fn validTimeout(value: i64): bool {
+    let list = timeouts()
+    for i in 0..(list.len() as i64) { if list[i] == value { return true } }
+    return false
+}
+fn isSleepMode(value: str): bool { return strings.equal(value, "nothing") || strings.equal(value, "both") || strings.equal(value, "battery") }
+
+struct Num { ok: bool, value: f64 }
+fn noNum(): Num { return Num(false, 0.0) }
+
+# First 256 characters of a small file, trimmed; "" when unreadable.
+fn readSmall(path: str): str {
+    let text = hw.readText(path)
+    if strings.charLength(text) > 256 { text = strings.substring(text, 0, 256) }
+    return strings.trim(text)
+}
+fn number(path: str): Num {
+    if !hw.isFile(path) { return noNum() }
+    let text = readSmall(path)
+    if !hw.isNumber(text) { return noNum() }
+    return Num(true, hw.toFloat(text, 0.0))
+}
+
+# ---- preferences ---------------------------------------------------------------------------------------------------------
+struct Prefs { autoBrighten: bool, autoDim: bool, sleep: str, sleepBoth: i64, sleepBattery: i64 }
+fn defaults(): Prefs { return Prefs(false, false, "nothing", 60, 60) }
+
+fn prefsPath(): str {
+    let custom = hw.env("DEVOS_KBD_PREFS")
+    if strings.charLength(custom) > 0 { return custom }
+    return hw.configHome() + "/dev-os/keyboard.json"
+}
+
+fn intField(raw: json.Value, key: str, fallback: i64): i64 {
+    let item = hw.jget(raw, key)
+    if !strings.equal(json.kind(item), "number") { return fallback }
+    let text = json.stringify(item)
+    if !hw.isInt(text) { return fallback }
+    let value = hw.toInt(text, 0 - 1)
+    return validTimeout(value) ? value : fallback
+}
+
+# A clean preferences value; anything out of range falls back to the default.
+fn validate(raw: json.Value): Prefs {
+    let value = defaults()
+    if !hw.isObject(raw) { return value }
+    value.autoBrighten = hw.jbool(raw, "autoBrighten", value.autoBrighten)
+    value.autoDim = hw.jbool(raw, "autoDim", value.autoDim)
+    let sleep = hw.jstr(raw, "sleep", "")
+    if isSleepMode(sleep) { value.sleep = sleep }
+    value.sleepBoth = intField(raw, "sleepBoth", value.sleepBoth)
+    value.sleepBattery = intField(raw, "sleepBattery", value.sleepBattery)
+    return value
+}
+fn prefsJson(p: Prefs): json.Value {
+    let out = json.object()
+    out = json.set(out, "autoBrighten", p.autoBrighten)
+    out = json.set(out, "autoDim", p.autoDim)
+    out = json.set(out, "sleep", p.sleep)
+    out = json.set(out, "sleepBoth", p.sleepBoth)
+    out = json.set(out, "sleepBattery", p.sleepBattery)
+    return out
+}
+fn loadPrefs(): Prefs { return validate(hw.loadJson(prefsPath())) }
+fn savePrefs(p: Prefs): bool { return hw.writeAtomic(prefsPath(), json.pretty(prefsJson(p)) + "\n") }
+
+# ---- hardware ------------------------------------------------------------------------------------------------------------
+struct Led { ok: bool, name: str, path: str, max: i64 }
+fn noLed(): Led { return Led(false, "", "", 0) }
+
+fn findLed(): Led {
+    let base = sysfs() + "/class/leds"
+    let names = hw.listDir(base)
+    for i in 0..(names.len() as i64) {
+        if !strings.contains(names[i], "kbd_backlight") { continue }
+        let path = base + "/" + names[i]
+        let maximum = number(path + "/max_brightness")
+        if maximum.ok && maximum.value > 0.0 && hw.exists(path + "/brightness") { return Led(true, names[i], path, maximum.value as i64) }
+    }
+    return noLed()
+}
+fn clampLevel(led: Led, level: i64): i64 { return level < 0 ? 0 : (level > led.max ? led.max : level) }
+# Current level, or -1 when unreadable.
+fn getLevel(led: Led): i64 {
+    let value = number(led.path + "/brightness")
+    return value.ok ? clampLevel(led, value.value as i64) : 0 - 1
+}
+fn levelOrZero(led: Led): i64 { let v = getLevel(led); return v < 0 ? 0 : v }
+
+fn setLevel(led: Led, level: i64): bool {
+    let target = clampLevel(led, level)
+    if strings.charLength(hw.env("DEVOS_KBD_DIRECT")) == 0 {
+        let done = hw.run(Vec<str>("busctl", "call", "org.freedesktop.login1", "/org/freedesktop/login1/session/auto", "org.freedesktop.login1.Session",
+            "SetBrightness", "ssu", "leds", led.name, "${target}"), 5000)
+        if done.code == 0 { return true }
+    }
+    return hw.writeFileQuiet(led.path + "/brightness", "${target}")
+}
+
+fn illuminanceDevices(): Vec<str> {
+    let base = sysfs() + "/bus/iio/devices"
+    let out = Vec<str>()
+    let names = hw.listDir(base)
+    for i in 0..(names.len() as i64) { if strings.startsWith(names[i], "iio:device") { out.push(base + "/" + names[i]) } }
+    return out
+}
+# Illuminance in lux from the first IIO ambient light sensor that reports one.
+fn readLux(): Num {
+    let devices = illuminanceDevices()
+    for i in 0..(devices.len() as i64) {
+        let direct = number(devices[i] + "/in_illuminance_input")
+        if direct.ok { return direct }
+        let raw = number(devices[i] + "/in_illuminance_raw")
+        if raw.ok {
+            let scale = number(devices[i] + "/in_illuminance_scale")
+            let offset = number(devices[i] + "/in_illuminance_offset")
+            return Num(true, (raw.value + (offset.ok ? offset.value : 0.0)) * (scale.ok ? scale.value : 1.0))
+        }
+    }
+    return noNum()
+}
+fn hasSensor(): bool {
+    let devices = illuminanceDevices()
+    for i in 0..(devices.len() as i64) {
+        if hw.exists(devices[i] + "/in_illuminance_input") || hw.exists(devices[i] + "/in_illuminance_raw") { return true }
+    }
+    return false
+}
+
+# 1 / 0 when a mains supply exists and is online / all offline; -1 when the machine reports none.
+fn onMains(): i64 {
+    let base = sysfs() + "/class/power_supply"
+    let names = hw.listDir(base)
+    let seen = false
+    for i in 0..(names.len() as i64) {
+        let supply = base + "/" + names[i]
+        if strings.equal(readSmall(supply + "/type"), "Battery") { continue }
+        if !hw.isFile(supply + "/online") { continue }
+        seen = true
+        if strings.equal(readSmall(supply + "/online"), "1") { return 1 }
+    }
+    return seen ? 0 : 0 - 1
+}
+
+# ---- Wayland ext-idle-notify-v1 ------------------------------------------------------------------------------------------
+struct Probe { ok: bool, reason: str }
+fn probeIdle(): Probe {
+    let path = wl.socketPath()
+    if strings.charLength(path) == 0 { return Probe(false, "No Wayland compositor is running in this session.") }
+    let opened = result.attempt(fn(): wl.Session { return wl.open(path) })
+    if result.isErr(opened) { return Probe(false, "The compositor could not be queried (" + hw.errorText(result.message(opened)) + ").") }
+    let session = result.unwrap(opened)
+    let ok = wl.find(session, "ext_idle_notifier_v1") >= 0 && wl.find(session, "wl_seat") >= 0
+    wl.disconnect(session)
+    if ok { return Probe(true, "") }
+    return Probe(false, "The compositor does not offer idle notifications (ext-idle-notify-v1).")
+}
+
+# ---- front end -----------------------------------------------------------------------------------------------------------
+fn corePath(): str {
+    let candidates = Vec<str>(hw.env("DEVOS_KBD_CORE"), "/usr/libexec/devos-keyboard", hw.parentDir(hw.selfPath("bin/dev-os-keyboard")) + "/../native/devos-keyboard")
+    for i in 0..(candidates.len() as i64) {
+        if strings.charLength(candidates[i]) > 0 && hw.isFile(candidates[i]) { return candidates[i] }
+    }
+    return ""
+}
+
+struct Core { ok: bool, value: json.Value, error: str }
+
+fn core(params: Vec<str>, privileged: bool): Core {
+    let path = corePath()
+    if strings.charLength(path) == 0 { return Core(false, json.null_value(), "Keyboard settings are not installed.") }
+    let command = Vec<str>("sh", path)
+    if privileged && posix.euid() != 0 && strings.charLength(hw.env("DEVOS_KBD_ALLOW_USER")) == 0 { command = Vec<str>("pkexec", path) }
+    let done = hw.runWith(command, params, 120000)
+    let denied = "The Fn key mode was not changed. Administrator access was denied or failed."
+    if done.code == 127 { return Core(false, json.null_value(), denied) }
+    let value = json.object()
+    if json.valid(done.out) { value = json.parse(done.out) }
+    if done.code != 0 || !hw.jbool(value, "ok", false) {
+        let message = hw.jstr(value, "error", "")
+        return Core(false, json.null_value(), strings.charLength(message) > 0 ? message : denied)
+    }
+    return Core(true, value, "")
+}
+
+fn snapshot(): json.Value {
+    let led = findLed()
+    let prefs = loadPrefs()
+    let fnState = core(Vec<str>("get"), false)
+    let fnJson = json.object()
+    if fnState.ok {
+        fnJson = json.set(json.set(json.set(fnJson, "supported", hw.jbool(fnState.value, "supported", false)), "reason", hw.jstr(fnState.value, "reason", "")), "mode", hw.jstr(fnState.value, "mode", ""))
+    } else {
+        fnJson = json.set(json.set(json.set(fnJson, "supported", false), "reason", "Keyboard settings are not installed."), "mode", "")
+    }
+    let idle = probeIdle()
+    let sensor = hasSensor()
+    let out = json.object()
+    out = json.set(out, "ok", true)
+    out = json.set(out, "settings", prefsJson(prefs))
+    let list = json.array()
+    for i in 0..(timeouts().len() as i64) { list = json.push(list, timeouts()[i]) }
+    out = json.set(out, "timeouts", list)
+    out = json.set(out, "fn", fnJson)
+    let backlight = json.object()
+    backlight = json.set(backlight, "supported", led.ok)
+    backlight = json.set(backlight, "name", led.ok ? led.name : "")
+    backlight = json.set(backlight, "max", led.ok ? led.max : 0)
+    backlight = json.set(backlight, "level", led.ok ? levelOrZero(led) : 0)
+    backlight = json.set(backlight, "reason", led.ok ? "" : "This keyboard has no backlight that the kernel can control.")
+    out = json.set(out, "backlight", backlight)
+    let lux = sensor ? readLux() : noNum()
+    let sensorJson = json.object()
+    sensorJson = json.set(sensorJson, "supported", led.ok && sensor)
+    sensorJson = json.set(sensorJson, "lux", lux.ok ? json.value(lux.value) : json.null_value())
+    sensorJson = json.set(sensorJson, "reason", sensor ? "" : "This laptop has no ambient light sensor that the kernel exposes.")
+    out = json.set(out, "sensor", sensorJson)
+    out = json.set(out, "idle", json.set(json.set(json.object(), "supported", led.ok && idle.ok), "reason", idle.reason))
+    let mains = onMains()
+    out = json.set(out, "mains", mains < 0 ? json.null_value() : json.value(mains == 1))
+    return out
+}
+
+fn commandSet(params: Vec<str>): json.Value {
+    if params.len() != 2 { hw.failure("Usage: dev-os-keyboard set <setting> <value>") }
+    let key = params[0]
+    let value = params[1]
+    if strings.equal(key, "fn") {
+        if !strings.equal(value, "locked") && !strings.equal(value, "normal") { hw.failure("Unknown Fn key mode.") }
+        let changed = core(Vec<str>("set", "fn", value), true)
+        if !changed.ok { hw.failure(changed.error) }
+        return snapshot()
+    }
+    let prefs = loadPrefs()
+    if strings.equal(key, "auto-brighten") || strings.equal(key, "auto-dim") {
+        if !strings.equal(value, "on") && !strings.equal(value, "off") { hw.failure("Use on or off.") }
+        if strings.equal(key, "auto-brighten") { prefs.autoBrighten = strings.equal(value, "on") } else { prefs.autoDim = strings.equal(value, "on") }
+    } else if strings.equal(key, "sleep") {
+        if !isSleepMode(value) { hw.failure("Unknown sleep mode.") }
+        prefs.sleep = value
+    } else if strings.equal(key, "sleep-both") || strings.equal(key, "sleep-battery") {
+        let seconds = hw.toInt(value, 0 - 1)
+        if !hw.isInt(value) || strings.startsWith(value, "-") || strings.startsWith(value, "+") || !validTimeout(seconds) {
+            let names = Vec<str>()
+            for i in 0..(timeouts().len() as i64) { names.push("${timeouts()[i]}") }
+            hw.failure("The idle time must be one of: " + strings.join(names, ", ") + " seconds.")
+        }
+        if strings.equal(key, "sleep-both") { prefs.sleepBoth = seconds } else { prefs.sleepBattery = seconds }
+    } else { hw.failure("Unsupported keyboard setting.") }
+    if !savePrefs(prefs) { hw.failure("The keyboard preferences could not be saved.") }
+    return snapshot()
+}
+
+# ---- daemon --------------------------------------------------------------------------------------------------------------
+# dark / candidate: -1 none, 0 bright, 1 dark. watching: -2 unset, -1 no notification, otherwise the idle seconds.
+struct Backlight {
+    led: Led, prefs: Prefs, prefsText: str, idleOff: bool, saved: i64, lastOn: i64,
+    dark: i64, run: i64, candidate: i64,
+    connected: bool, session: wl.Session, retryAt: f64, watching: i64, notification: i64, notifier: i64, notifierVersion: i64, seat: i64
+}
+
+fn newBacklight(led: Led): Backlight {
+    return Backlight(led, loadPrefs(), "<unloaded>", false, 0, led.max, 0 - 1, 0, 0 - 1,
+        false, wl.newSession(0 - 1), 0.0, 0 - 2, 0, 0, 1, 0)
+}
+
+fn reload(b: Backlight): Backlight {
+    let text = hw.readText(prefsPath())
+    if !strings.equal(text, b.prefsText) {
+        b.prefsText = text
+        b.prefs = loadPrefs()
+    }
+    return b
+}
+
+# Idle seconds the preferences ask for, -1 for none.
+fn timeoutOf(b: Backlight): i64 {
+    if strings.equal(b.prefs.sleep, "both") { return b.prefs.sleepBoth }
+    if strings.equal(b.prefs.sleep, "battery") && onMains() != 1 { return b.prefs.sleepBattery }
+    return 0 - 1
+}
+
+fn restore(b: Backlight): Backlight {
+    if b.idleOff {
+        b.idleOff = false
+        if b.saved > 0 { setLevel(b.led, b.saved) }
+        b.saved = 0
+    }
+    return b
+}
+
+fn wentIdle(b: Backlight): Backlight {
+    let level = levelOrZero(b.led)
+    b.idleOff = true
+    b.saved = level
+    if level > 0 { setLevel(b.led, 0) }
+    return b
+}
+
+fn sensorTick(b: Backlight): Backlight {
+    let lux = readLux()
+    if !lux.ok { return b }
+    let state = 0 - 1
+    if lux.value <= darkLux() { state = 1 }
+    else if lux.value >= brightLux() { state = 0 }
+    else { b.candidate = 0 - 1; b.run = 0; return b }  # between the thresholds: keep the current state (hysteresis)
+    if state == b.dark { b.candidate = 0 - 1; b.run = 0; return b }
+    if state != b.candidate { b.candidate = state; b.run = 0 }
+    b.run = b.run + 1
+    if b.run < debounce() { return b }
+    let previous = b.dark
+    b.dark = state
+    b.candidate = 0 - 1
+    b.run = 0
+    if previous < 0 || b.idleOff { return b }  # the first reading only sets the baseline; a sleeping backlight stays asleep
+    let level = levelOrZero(b.led)
+    if state == 1 && b.prefs.autoBrighten && level == 0 { setLevel(b.led, b.lastOn > 0 ? b.lastOn : 1) }
+    else if state == 0 && b.prefs.autoDim && level > 0 { setLevel(b.led, 0) }
+    return b
+}
+
+fn drop(b: Backlight): Backlight {
+    if b.connected { wl.disconnect(b.session) }
+    b.connected = false
+    b.watching = 0 - 2
+    b.notification = 0
+    b.notifier = 0
+    b.seat = 0
+    return restore(b)
+}
+
+# Replaces the idle notification; seconds < 0 removes it.
+fn watch(b: Backlight, seconds: i64): Backlight {
+    if b.notification != 0 {
+        wl.request(b.session, b.notification, 0, Vec<u8>())
+        b.notification = 0
+    }
+    if seconds < 0 { return b }
+    if b.notifier == 0 {
+        b.session = wl.bind(b.session, wl.nameOf(b.session, "wl_seat", 0), "wl_seat", 1)
+        b.seat = b.session.last
+        let advertised = wl.versionOf(b.session, "ext_idle_notifier_v1")
+        b.notifierVersion = advertised < 2 ? advertised : 2
+        b.session = wl.bind(b.session, wl.nameOf(b.session, "ext_idle_notifier_v1", 0), "ext_idle_notifier_v1", b.notifierVersion)
+        b.notifier = b.session.last
+    }
+    b.session = wl.allocate(b.session)
+    b.notification = b.session.last
+    # v2 get_input_idle_notification ignores idle inhibitors (video playback must not keep the backlight on).
+    let opcode = b.notifierVersion >= 2 ? 2 : 1
+    let payload = wl.put32(Vec<u8>(), b.notification)
+    payload = wl.put32(payload, seconds * 1000)
+    payload = wl.put32(payload, b.seat)
+    if !wl.request(b.session, b.notifier, opcode, payload) { hw.failure("The compositor closed the connection.") }
+    return b
+}
+
+fn connect(b: Backlight): Backlight {
+    let path = wl.socketPath()
+    if strings.charLength(path) == 0 { return b }
+    let opened = result.attempt(fn(): wl.Session { return wl.open(path) })
+    if result.isErr(opened) { return b }
+    let session = result.unwrap(opened)
+    if wl.find(session, "ext_idle_notifier_v1") >= 0 && wl.find(session, "wl_seat") >= 0 {
+        b.session = session
+        b.connected = true
+        b.watching = 0 - 2
+    } else { wl.disconnect(session) }
+    return b
+}
+
+fn tickOnce(b: Backlight): Backlight {
+    b = reload(b)
+    let level = getLevel(b.led)
+    if level > 0 && !b.idleOff { b.lastOn = level }
+    b = sensorTick(b)
+    let wanted = timeoutOf(b)
+    if wanted < 0 { b = restore(b) }
+    if !b.connected && wanted >= 0 && hw.nowSeconds() >= b.retryAt {
+        b.retryAt = hw.nowSeconds() + 5.0
+        b = connect(b)
+    }
+    if b.connected && wanted != b.watching {
+        let current = b
+        let watched = result.attempt(fn(): Backlight { return watch(current, wanted) })
+        if result.isErr(watched) { b = drop(b) } else { b = result.unwrap(watched); b.watching = wanted }
+    }
+    return b
+}
+
+fn pumpEvents(b: Backlight): Backlight {
+    let current = b
+    let pumped = result.attempt(fn(): wl.Session { return wl.pump(current.session, (tick() * 1000.0) as i64) })
+    if result.isErr(pumped) { return drop(b) }
+    b.session = result.unwrap(pumped)
+    let events = b.session.inbox
+    b.session.inbox = Vec<wl.Msg>()
+    for i in 0..(events.len() as i64) {
+        if events[i].obj != b.notification || b.notification == 0 { continue }
+        if events[i].op == 0 && timeoutOf(b) >= 0 { b = wentIdle(b) }
+        else if events[i].op == 1 { b = restore(b) }
+    }
+    return b
+}
+
+fn serve(rounds: i64): i32 {
+    let led = findLed()
+    if !led.ok {
+        hw.stderr("No keyboard backlight; nothing to do.")
+        return 0
+    }
+    let b = newBacklight(led)
+    let count = 0
+    while rounds < 0 || count < rounds {
+        count = count + 1
+        b = tickOnce(b)
+        if !b.connected { hw.sleepSeconds(tick()); continue }
+        b = pumpEvents(b)
+    }
+    return 0
+}
+
+fn execute(action: str, rest: Vec<str>): json.Value {
+    if strings.equal(action, "get") { return snapshot() }
+    if strings.equal(action, "set") { return commandSet(rest) }
+    hw.failure("Unsupported keyboard action.")
+    return json.null_value()
+}
+
+fn main(): i32 {
+    let action = args.len() > 0 ? args.get(0) : ""
+    let rest = Vec<str>()
+    for i in 1..(args.len() as i64) { rest.push(args.get(i)) }
+    if strings.equal(action, "serve") {
+        let rounds = hw.toInt(hw.env("DEVOS_KBD_ROUNDS"), 0 - 1)
+        let served = result.attempt(fn(): i32 { return serve(rounds) })
+        if result.isErr(served) { hw.stderr(result.message(served)); return 1 }
+        return result.unwrap(served)
+    }
+    let outcome = result.attempt(fn(): json.Value { return execute(action, rest) })
+    if result.isErr(outcome) {
+        print(json.stringify(hw.errorRaw(result.message(outcome))))
+        return 1
+    }
+    print(json.stringify(result.unwrap(outcome)))
+    return 0
+}

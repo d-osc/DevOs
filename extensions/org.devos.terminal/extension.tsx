@@ -37,7 +37,7 @@ export class TerminalWindow implements TabDragHost {
         private lifecycle: {empty?: boolean; opened?(terminal: TerminalWindow): void} = {}) {
         // Keep a rejected import handled until a tab displays the dependency error.
         void this.vte.catch(() => {});
-        this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Dev OS Terminal', default_width: 880, default_height: 560});
+        this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Terminal', default_width: 880, default_height: 560});
         this.window.name = 'terminal'; this.window.add(this.stack); this.stack.show();
         const refresh = () => {
             const values = context.preferences.get('org.devos.terminal').state.values;
@@ -48,7 +48,7 @@ export class TerminalWindow implements TabDragHost {
         };
         const unsubscribePreferences = context.preferences.subscribe(refresh), unsubscribeTheme = onThemeChange(refresh);
         this.preferencesCleanup = () => { unsubscribePreferences(); unsubscribeTheme(); };
-        this.header = mountTabbedHeader(this.window, {title: 'Terminal', iconName: 'utilities-terminal-symbolic', windowIconName: 'utilities-terminal', iconId: 'terminal-window-icon'});
+        this.header = mountTabbedHeader(this.window, {title: 'Terminal', iconName: 'dev-os-terminal-symbolic', windowIconName: 'dev-os-terminal', iconId: 'terminal-window-icon'});
         this.window.connect('delete-event', () => { this.destroy(); return true; });
         this.window.connect('key-press-event', (_window, event) => {
             const native = event as unknown as Gdk.Event, key = native.get_keyval()[1], modifiers = native.get_state()[1];
@@ -98,7 +98,7 @@ export class TerminalWindow implements TabDragHost {
             terminal.connect('notify::window-title', () => {
                 if (tab.disposed) return;
                 tab.title = terminal.get_window_title() || 'Terminal';
-                if (tab.owner.active === tab.id) tab.owner.window.set_title(`Dev OS Terminal · ${tab.title}`);
+                if (tab.owner.active === tab.id) tab.owner.window.set_title(`Terminal · ${tab.title}`);
                 tab.owner.renderTabs();
             });
             const configuredShell = Vte.get_user_shell() || '/bin/sh';
@@ -119,7 +119,7 @@ export class TerminalWindow implements TabDragHost {
                 null, -1, tab.cancel, (_terminal, _pid, error) => {
                     if (tab.disposed) return;
                     if (error) tab.root.render(<Box borderWidth={16}><Label wrap>{`Could not start shell: ${error.message}`}</Label></Box>);
-                    else print(`Dev OS Terminal ready: ${tab.directory}`);
+                    else print(`Terminal ready: ${tab.directory}`);
                 });
         } catch (error) {
             if (!tab.disposed) tab.root.render(<Box borderWidth={16}><Label wrap>{`Terminal requires gir1.2-vte-2.91. ${String(error)}`}</Label></Box>);
@@ -129,7 +129,7 @@ export class TerminalWindow implements TabDragHost {
         const tab = this.tabs.find(tab => tab.id === id); if (!tab) return;
         this.current?.completion?.dismiss();
         this.active = id; this.stack.set_visible_child(tab.page);
-        this.window.set_title(tab.title === 'Terminal' ? 'Dev OS Terminal' : `Dev OS Terminal · ${tab.title}`);
+        this.window.set_title(tab.title === 'Terminal' ? 'Terminal' : `Terminal · ${tab.title}`);
         this.renderTabs(); tab.terminal?.grab_focus();
     }
     cycleTab(direction: number) {

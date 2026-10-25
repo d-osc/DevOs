@@ -3,8 +3,8 @@ import {launcherOptions, type LauncherOptions} from './options.js';
 
 const id = 'org.devos.launcher';
 const samples = [
-    {name: 'Terminal', description: 'Native desktop terminal', icon: 'utilities-terminal-symbolic'},
-    {name: 'Files', description: 'Browse your workspace', icon: 'folder-symbolic'},
+    {name: 'Terminal', description: 'Native desktop terminal', icon: 'dev-os-terminal-symbolic'},
+    {name: 'Files', description: 'Browse your workspace', icon: 'dev-os-files-symbolic'},
     {name: 'Editor', description: 'Write something great', icon: 'dev-os-editor'},
 ];
 const toggles = [
@@ -47,7 +47,7 @@ export function LauncherSettings({preferences, applied}: {preferences: SettingsH
                                 <Image iconName="go-next-symbolic" pixelSize={10} valign="center" />
                             </Box>)}
                         </Box>
-                        <Box className="launcher-preview-footer" spacing={8}><Image iconName="preferences-system-symbolic" pixelSize={13} /><Label className="settings-description" expand xalign={0}>Settings</Label><Image iconName="system-lock-screen-symbolic" pixelSize={13} /><Image iconName="system-log-out-symbolic" pixelSize={13} /></Box>
+                        <Box className="launcher-preview-footer" spacing={8}><Image iconName="dev-os-settings-symbolic" pixelSize={13} /><Label className="settings-description" expand xalign={0}>Settings</Label><Image iconName="system-lock-screen-symbolic" pixelSize={13} /><Image iconName="system-log-out-symbolic" pixelSize={13} /></Box>
                     </Box>
                     <Label className="settings-description" xalign={0}>Example apps · Your installed applications appear in the real menu.</Label>
                 </Box>

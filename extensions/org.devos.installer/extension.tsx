@@ -42,7 +42,7 @@ export function InstallerWizard({controls, onBusyChanged}: {controls: InstallerC
     const current = page === 'welcome' ? 0 : page === 'disk' ? 1 : page === 'account' ? 2 : page === 'confirm' ? 3 : 4;
     return <Box className="installer-shell" spacing={0} expand fill>
         <Box className="installer-sidebar" orientation="vertical" spacing={22} widthRequest={208}>
-            <Image iconName="system-software-install-symbolic" pixelSize={38} halign={Gtk.Align.START} />
+            <Image iconName="dev-os" pixelSize={40} halign={Gtk.Align.START} />
             <Box orientation="vertical" spacing={6}><Label className="installer-wordmark" xalign={0}>DEV OS</Label><Label className="installer-sidebar-title" xalign={0}>A fresh start.</Label></Box>
             <Box orientation="vertical" spacing={18} expand fill>
                 {stages.map((stage, index) => <Box key={stage} className={`installer-stage${index === current ? ' current' : index < current ? ' complete' : ''}`} spacing={12}>
@@ -124,7 +124,7 @@ export default {id: 'org.devos.installer', activate(context) {
         context.invoke('launcher.hide');
         if (window) { window.present(); return; }
         window = new Gtk.ApplicationWindow({application: context.application, title: 'Install Dev OS', default_width: 1000, default_height: 700}); window.name = 'installer';
-        const controls = new Installer(), root = createRoot(window), header = mountWindowHeader(window, {title: 'Install Dev OS', iconName: 'system-software-install-symbolic'});
+        const controls = new Installer(), root = createRoot(window), header = mountWindowHeader(window, {title: 'Install Dev OS', iconName: 'dev-os-installer-symbolic', windowIconName: 'dev-os-installer'});
         root.render(<InstallerWizard controls={controls} onBusyChanged={value => { busy = value; }} />);
         // Closing mid-install would leave a half-written disk, so the window stays until the run ends.
         window.connect('delete-event', () => busy);

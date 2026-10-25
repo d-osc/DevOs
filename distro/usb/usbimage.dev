@@ -1,0 +1,752 @@
+# Live USB staging, part 2: firmware, module and initramfs staging, UEFI image build and verification (see usbstage.dev).
+use "std/args"
+use "std/fs"
+use "std/json"
+use "std/regex"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../usb/hostio.dev" as io
+use "../usb/usbstage.dev" as st
+
+fn require(condition: bool, message: str) { if !condition { result.raise(message) } }
+fn fail(message: str) { result.raise(message) }
+fn run(argv: Vec<str>): str { return io.run(argv) }
+fn digest(path: str): str { return io.digest(path) }
+fn jstr(v: json.Value, key: str): str { return hw.jstr(v, key, "") }
+
+fn wifiCalibration(record: json.Value): str {
+    let files = json.get(record, "files")
+    require(json.has(files, st.wifiBoard()), "Missing UX3407NA Wi-Fi calibration board.bin. Collect a fresh bundle with distro/usb/stage-x2-firmware.ps1; the old DSP-only bundle cannot initialize QCC2072.")
+    let wireless = hw.jget(record, "wireless")
+    let hash = hw.isObject(wireless) ? hw.jstr(wireless, "sourceInfSHA256", "") : ""
+    let valid = hw.isObject(wireless) && strings.equal(jstr(wireless, "pci"), "17cb:1112") && strings.equal(jstr(wireless, "subsystem"), "105b:e14f") && strings.equal(jstr(wireless, "boardData"), st.wifiBoard()) && regex.compile("^[0-9a-f]{64}$", "").test(hash)
+    require(valid, "Wi-Fi calibration must have the verified UX3407NA PCI/subsystem and OEM INF provenance")
+    return json.string(json.get(files, st.wifiBoard()))
+}
+
+fn endsWithAny(name: str, suffixes: Vec<str>): bool {
+    for i in 0..(suffixes.len() as i64) { if strings.endsWith(name, suffixes[i]) { return true } }
+    return false
+}
+
+fn firmwareBundle(base: str): json.Value {
+    let path = io.resolve(base)
+    let record = io.readJson(path + "/manifest.json")
+    require(strings.equal(jstr(record, "board"), "asus-ux3407na"), "Wrong firmware board")
+    let files = json.get(record, "files")
+    let listed = json.keys(files)
+    let actual = Vec<str>()
+    let symlinks = false
+    let found = io.entries(path)
+    for i in 0..(found.len() as i64) {
+        if strings.equal(found[i].kind, "l") { symlinks = true }
+        if strings.equal(found[i].kind, "f") && !strings.equal(st.baseName(found[i].path), "manifest.json") { actual.push(found[i].path) }
+    }
+    let same = actual.len() == listed.len()
+    for i in 0..(actual.len() as i64) { if !hw.contains(listed, actual[i]) { same = false } }
+    require(same && !symlinks, "Unlisted or symlinked firmware files are not allowed")
+    let resolved = io.resolveAll(path, listed)
+    let hashes = io.digestAll(path, listed)
+    for i in 0..(listed.len() as i64) {
+        let name = listed[i]
+        let file = resolved[i]
+        let boardElf = strings.equal(name, st.wifiBoard()) && fs.is_file(file) && io.size(file) > 0 && st.hasElfMagic(file)
+        let allowed = st.isRelativeTo(file, path) && fs.is_file(file) && io.size(file) > 0 && (endsWithAny(name, Vec<str>(".mbn", ".elf", ".jsn")) || boardElf)
+        require(allowed && strings.equal(hashes[i], json.string(json.get(files, name))), "Invalid board firmware file: " + name)
+    }
+    wifiCalibration(record)
+    let board = st.regular(path + "/" + st.wifiBoard())
+    require(io.size(board) >= 64 && st.hasElfMagic(board), "Expected the OEM QCC2072 board calibration ELF, not a generic board database")
+    return record
+}
+
+fn debugfsQuote(value: str): str {
+    require(!strings.contains(value, "\n") && !strings.contains(value, "\r") && !strings.contains(value, "\"") && !strings.contains(value, "\\"), "Unsafe debugfs path")
+    return "\"" + value + "\""
+}
+
+# Offline writes to our private copied ext4 file only; no mount or /dev path. `target` "" installs kernel modules, otherwise firmware.
+fn installModules(rootfs: str, modules: str, output: str, target: str) {
+    require(fs.is_file(rootfs) && !io.isLink(rootfs), "Expected private regular rootfs copy")
+    let firmware = strings.charLength(target) > 0
+    if !firmware {
+        run(Vec<str>("truncate", "-s", "+1073741824", rootfs))
+        let checked = io.runCode(Vec<str>("e2fsck", "-fy", rootfs))
+        require(checked.code == 0 || checked.code == 1, "Rootfs filesystem check failed")
+        run(Vec<str>("resize2fs", rootfs))
+    }
+    let modulesName = st.baseName(modules)
+    let base = firmware ? target : "/usr/lib/modules/" + modulesName
+    let commands = Vec<str>("mkdir " + debugfsQuote(base))
+    let found = io.entries(modules)
+    for i in 0..(found.len() as i64) {
+        if strings.equal(found[i].kind, "l") { continue }   # build/source links are not runtime inputs
+        let destination = base + "/" + found[i].path
+        if strings.equal(found[i].kind, "d") { commands.push("mkdir " + debugfsQuote(destination)) }
+        else if strings.equal(found[i].kind, "f") { commands.push("write " + debugfsQuote(modules + "/" + found[i].path) + " " + debugfsQuote(destination)) }
+    }
+    let kind = firmware ? "firmware" : "modules"
+    let script = output + "/install-" + kind + ".debugfs"
+    io.writeText(script, strings.join(commands, "\n") + "\n")
+    let log = io.runCode(Vec<str>("sh", "-c", "debugfs -w -f " + io.quote(script) + " " + io.quote(rootfs) + " 2>&1"))
+    io.writeText(output + "/install-" + kind + ".log", log.out)
+    let lower = strings.toLowerCase(log.out)
+    let bad = log.code != 0 || strings.contains(lower, "not found") || strings.contains(lower, "could not") || strings.contains(lower, "no space") || strings.contains(lower, "short read") || strings.contains(lower, "usage:")
+    require(!bad, "Could not stage matching modules; see install-modules.log")
+    let proof = firmware ? base + "/qcom/glymur/ASUSTeK/UX3407NA/qcadsp8480.mbn" : base + "/modules.dep"
+    require(strings.contains(run(Vec<str>("debugfs", "-R", "stat " + proof, rootfs)), "Inode:"), "Matching modules were not written into rootfs")
+    if firmware {
+        # Check the bytes in the private ext4 image, not just the source bundle. debugfs write does not replace an existing file,
+        # so existence alone could leave an older/mismatched board calibration undetected.
+        let staged = output + "/staged-wifi-board.bin"
+        run(Vec<str>("debugfs", "-R", "dump " + debugfsQuote(base + "/" + st.wifiBoard()) + " " + debugfsQuote(staged), rootfs))
+        require(fs.is_file(staged) && strings.equal(digest(staged), digest(modules + "/" + st.wifiBoard())), "QCC2072 board calibration was not staged correctly into the private rootfs")
+    }
+}
+
+# ---- root file system size -----------------------------------------------------------------------------------------------
+# The Live system mounts the rootfs read-only (ext4, noload) under a RAM overlay, so free space inside it is never used.
+# `prepare` grows the OE image to make room for the modules and firmware and shrinks it again once they are written.
+fn shrinkMargin(): i64 { return 64 * 1048576 }
+fn noShrink(): bool { return strings.charLength(hw.env("DEVOS_USB_NO_SHRINK")) > 0 || hasFlag("--no-shrink") }
+fn hasFlag(flag: str): bool {
+    for i in 0..(args.len() as i64) { if strings.equal(args.get(i), flag) { return true } }
+    return false
+}
+
+struct Geometry { blockSize: i64, blocks: i64, freeBlocks: i64 }
+fn geometry(path: str): Geometry {
+    let text = run(Vec<str>("dumpe2fs", "-h", path))
+    let lines = strings.split(text, "\n")
+    let size = 0
+    let blocks = 0
+    let free = 0
+    for i in 0..(lines.len() as i64) {
+        let at = strings.indexOf(lines[i], ":")
+        if at < 0 { continue }
+        let key = strings.substring(lines[i], 0, at)
+        let value = hw.toInt(strings.trim(strings.substring(lines[i], at + 1, strings.charLength(lines[i]))), 0)
+        if strings.equal(key, "Block size") { size = value }
+        else if strings.equal(key, "Block count") { blocks = value }
+        else if strings.equal(key, "Free blocks") { free = value }
+    }
+    require(size > 0 && blocks > 0, "Cannot read the file system geometry of " + path)
+    return Geometry(size, blocks, free)
+}
+
+# e2fsck, then resize2fs to the estimated minimum plus the margin, then the file is cut to the new size. No new ext4 features are added.
+fn shrinkRootfs(path: str) {
+    let checked = io.runCode(Vec<str>("e2fsck", "-fy", path))
+    require(checked.code == 0 || checked.code == 1, "Rootfs filesystem check failed before shrinking")
+    let before = geometry(path)
+    # `resize2fs -P` / `-M` report the full size for these OE images (the estimate is far too conservative), so the target is computed from
+    # the blocks in use: used + the margin + 1% for the metadata that stays. `-f` skips only that estimate check; resize2fs still refuses
+    # when the data does not fit, and the file system is checked again below.
+    let used = before.blocks - before.freeBlocks
+    let target = used + used / 100 + shrinkMargin() / before.blockSize
+    if target < before.blocks {
+        run(Vec<str>("resize2fs", "-f", path, "${target}"))
+        run(Vec<str>("truncate", "-s", "${target * before.blockSize}", path))
+    }
+    # Dropping block groups also drops their metadata, so some free space is left over: trim the excess (a few passes converge).
+    for pass in 0..4 {
+        let now = geometry(path)
+        let excess = now.freeBlocks - shrinkMargin() / now.blockSize
+        if excess * now.blockSize <= 16 * 1048576 { break }
+        let smaller = now.blocks - excess
+        run(Vec<str>("resize2fs", "-f", path, "${smaller}"))
+        run(Vec<str>("truncate", "-s", "${smaller * now.blockSize}", path))
+    }
+    let after = io.runCode(Vec<str>("e2fsck", "-fn", path))
+    require(after.code == 0, "The shrunk root file system is not clean: " + strings.trim(after.out))
+}
+
+# The staged root file system carries at most the margin (plus a tolerance for rounding) of free space and is clean.
+fn checkShrunk(path: str, margin: i64) {
+    let g = geometry(path)
+    let free = g.freeBlocks * g.blockSize
+    let tolerance = 32 * 1048576
+    require(free <= margin + tolerance, "The root file system still has ${free / 1048576} MiB free; prepare shrinks it to about ${margin / 1048576} MiB")
+    require(io.size(path) == g.blocks * g.blockSize, "rootfs.ext4 is not the size of its file system")
+    require(io.runCode(Vec<str>("e2fsck", "-fn", path)).code == 0, "rootfs.ext4 is not a clean ext4 file system")
+}
+
+# ---- initramfs -----------------------------------------------------------------------------------------------------------
+fn newcHeader(inode: i64, mode: i64, size: i64, major: i64, minor: i64, nameLength: i64): Vec<u8> {
+    let fields = Vec<i64>(inode, mode, 0, 0, 1, 0, size, 0, 0, major, minor, nameLength, 0)
+    let text = "070701"
+    for i in 0..(fields.len() as i64) { text = text + io.hex(fields[i], 8) }
+    return io.bytesOf(text)
+}
+fn padTo4(count: i64): Vec<u8> {
+    let out = Vec<u8>()
+    for i in 0..((4 - (count % 4)) % 4) { out.push(0) }
+    return out
+}
+
+# Writes `newc` without root privileges, preserving modules and symlinks; gzip afterwards (no timestamp, no name).
+fn cpio(tree: str, output: str) {
+    let raw = output + ".cpio.tmp"
+    let fd = io.createFile(raw)
+    let inode = 0
+    let found = io.entries(tree)
+    for i in 0..(found.len() as i64) {
+        let item = found[i]
+        let typeBits = strings.equal(item.kind, "d") ? 16384 : (strings.equal(item.kind, "l") ? 40960 : 32768)
+        require(strings.equal(item.kind, "d") || strings.equal(item.kind, "l") || strings.equal(item.kind, "f"), "Unexpected initramfs file type: " + item.path)
+        let name = io.bytesOf(item.path)
+        name.push(0)
+        inode = inode + 1
+        let data = strings.equal(item.kind, "l") ? io.bytesOf(item.target) : Vec<u8>()
+        let size = strings.equal(item.kind, "d") ? 0 : (strings.equal(item.kind, "l") ? data.len() as i64 : item.size)
+        let header = newcHeader(inode, typeBits | item.mode, size, 0, 0, name.len() as i64)
+        io.writeBytes(fd, header)
+        io.writeBytes(fd, name)
+        io.writeBytes(fd, padTo4((header.len() as i64) + (name.len() as i64)))
+        if strings.equal(item.kind, "l") { io.writeBytes(fd, data) }
+        else if strings.equal(item.kind, "f") { io.appendFile(fd, tree + "/" + item.path, 0) }
+        io.writeBytes(fd, padTo4(size))
+    }
+    let nodes = Vec<str>("dev/console", "dev/null", "TRAILER!!!")
+    for n in 0..3 {
+        let name = io.bytesOf(nodes[n])
+        name.push(0)
+        inode = inode + 1
+        let mode = n == 0 ? 8192 + 384 : (n == 1 ? 8192 + 438 : 0)
+        let major = n == 0 ? 5 : (n == 1 ? 1 : 0)
+        let minor = n == 0 ? 1 : (n == 1 ? 3 : 0)
+        let header = newcHeader(inode, mode, 0, major, minor, name.len() as i64)
+        io.writeBytes(fd, header)
+        io.writeBytes(fd, name)
+        io.writeBytes(fd, padTo4((header.len() as i64) + (name.len() as i64)))
+    }
+    io.closeFd(fd)
+    run(Vec<str>("sh", "-c", "gzip -n -6 -c " + io.quote(raw) + " > " + io.quote(output) + " && rm -f " + io.quote(raw)))
+}
+
+fn removeIfPresent(path: str) { io.runCode(Vec<str>("rm", "-rf", "--", path)) }
+
+fn installBootTools(tree: str, busybox: str) {
+    let applets = hw.words(run(Vec<str>(busybox, "--list")))
+    let required = st.requiredApplets()
+    let missing = Vec<str>()
+    for i in 0..(required.len() as i64) { if !hw.contains(applets, required[i]) { missing.push(required[i]) } }
+    require(missing.len() == 0, "Missing live boot tools: " + strings.join(missing, ", "))
+    let destination = tree + "/bin/busybox"
+    removeIfPresent(destination)   # copied trees may use hardlinks
+    io.mkdirs(tree + "/bin")
+    io.copyFile(busybox, destination)
+    run(Vec<str>("chmod", "755", destination))
+    let all = Vec<str>()
+    for i in 0..(required.len() as i64) { all.push(required[i]) }
+    let optional = st.optionalApplets()
+    for i in 0..(optional.len() as i64) { if hw.contains(applets, optional[i]) { all.push(optional[i]) } }
+    for i in 0..(all.len() as i64) {
+        removeIfPresent(tree + "/bin/" + all[i])
+        run(Vec<str>("ln", "-s", "busybox", tree + "/bin/" + all[i]))
+    }
+    io.mkdirs(tree + "/sbin")
+    removeIfPresent(tree + "/sbin/modprobe")
+    run(Vec<str>("ln", "-s", "../bin/busybox", tree + "/sbin/modprobe"))
+    removeIfPresent(tree + "/init")
+    io.copyFile(st.here() + "/init", tree + "/init")
+    run(Vec<str>("chmod", "755", tree + "/init"))
+    io.mkdirs(tree + "/diagnostics")
+    let diagnostics = Vec<str>("collector", "collector.service", "audio-report", "camera-report", "battery-report", "hotspot-report", "bluetooth-report", "bluetooth-recover", "bluetooth-recover.service")
+    for i in 0..(diagnostics.len() as i64) {
+        removeIfPresent(tree + "/diagnostics/" + diagnostics[i])
+        io.copyFile(st.here() + "/" + diagnostics[i], tree + "/diagnostics/" + diagnostics[i])
+    }
+    io.mkdirs(tree + "/live")
+    let live = Vec<str>("greetd-root.toml", "root-session", "root-password.hash", "pipewire-root.conf")
+    for i in 0..(live.len() as i64) {
+        removeIfPresent(tree + "/live/" + live[i])
+        io.copyFile(st.here() + "/" + live[i], tree + "/live/" + live[i])
+    }
+    # Hardware identification and the profile tree that the init selects from.
+    removeIfPresent(tree + "/live/devos-hwprofile")
+    io.copyFile(st.profiles() + "/devos-hwprofile", tree + "/live/devos-hwprofile")
+    run(Vec<str>("chmod", "755", tree + "/live/devos-hwprofile"))
+    removeIfPresent(tree + "/live/profiles")
+    run(Vec<str>("cp", "-a", st.profiles(), tree + "/live/profiles"))
+    run(Vec<str>("sh", "-c", "find " + io.quote(tree + "/live/profiles") + " \\( -name kernel -o -name devos-hwprofile -o -name __pycache__ \\) -prune -exec rm -rf {} +"))
+}
+
+# Compiles the static ARM64 boot splash (a single C file) for the initramfs.
+fn buildSplash(destination: str) {
+    # Test hook: use a prebuilt file instead of compiling (the compiler may be missing on the host running the tests).
+    let prebuilt = hw.env("DEVOS_SPLASH_PREBUILT")
+    if strings.charLength(prebuilt) > 0 {
+        io.copyFile(prebuilt, destination)
+        return
+    }
+    let machine = strings.trim(run(Vec<str>("uname", "-m")))
+    let compiler = hw.env("CC")
+    if strings.charLength(compiler) == 0 { compiler = strings.equal(machine, "aarch64") || strings.equal(machine, "arm64") ? "gcc" : "aarch64-linux-gnu-gcc" }
+    run(Vec<str>(compiler, "-static", "-O2", "-Wall", "-o", destination, st.regular(st.splashSource()), "-lm"))
+    require(st.isArm64Elf(st.regular(destination)), "The boot splash must be an ARM64 binary")
+    require(st.isStaticElf(destination), "The boot splash must be statically linked")
+    run(Vec<str>("chmod", "755", destination))
+}
+
+fn installSplash(tree: str) {
+    let destination = tree + "/bin/devos-splash"
+    removeIfPresent(destination)   # copied trees may use hardlinks
+    io.mkdirs(tree + "/bin")
+    buildSplash(destination)
+}
+
+# Kernel arguments of a model profile merged over its form factor and the generic layer.
+fn profileKernelArgs(profile: str): str {
+    let temp = io.tempDir("devos-profile-", "")
+    run(Vec<str>("sh", st.profiles() + "/devos-hwprofile", "compose", profile, temp + "/merged"))
+    let text = strings.join(hw.words(hw.readText(temp + "/merged/kernel.args")), " ")
+    io.removeTree(temp)
+    return text
+}
+
+# ---- staging helpers -----------------------------------------------------------------------------------------------------
+fn dumpFromRootfs(rootfs: str, source: str, target: str) {
+    run(Vec<str>("debugfs", "-R", "dump " + source + " \"" + target + "\"", rootfs))
+}
+fn presentInRootfs(rootfs: str, path: str): bool {
+    return strings.contains(run(Vec<str>("debugfs", "-R", "stat " + path, rootfs)), "Inode:")
+}
+
+# cfg80211 can initialize before switch_root, so rootfs-only firmware is late.
+fn stageRegulatoryDatabase(rootfs: str, tree: str): bool {
+    if !presentInRootfs(rootfs, "/usr/lib/firmware/regulatory.db") { return false }
+    let destination = tree + "/lib/firmware"
+    io.mkdirs(destination)
+    let names = Vec<str>("regulatory.db", "regulatory.db.p7s")
+    for i in 0..(names.len() as i64) {
+        let target = destination + "/" + names[i]
+        dumpFromRootfs(rootfs, "/usr/lib/firmware/" + names[i], target)
+        require(fs.is_file(target) && io.size(target) > 0, "Empty regulatory firmware: " + names[i])
+    }
+    return true
+}
+
+# Profile firmware.list entries the kernel requests before switch_root (Bluetooth).
+fn profileEarlyFirmware(profile: str, prefix: str): Vec<str> {
+    let listing = st.profiles() + "/" + profile + "/firmware.list"
+    let out = Vec<str>()
+    if !fs.is_file(listing) { return out }
+    let lines = strings.split(hw.readText(listing), "\n")
+    for i in 0..(lines.len() as i64) {
+        let line = strings.trim(lines[i])
+        if strings.charLength(line) == 0 || strings.startsWith(line, "#") { continue }
+        let parts = strings.split(line, "/")
+        if strings.startsWith(line, prefix) && !hw.contains(parts, "..") { out.push(line) }
+    }
+    return out
+}
+
+# The QCA controller probes from the initramfs (hci_uart/btqca load while the USB root is still being discovered) and btqca
+# requests its patch/NVM exactly once. The files exist only in the rootfs, so stage them here as well.
+fn stageBluetoothFirmware(rootfs: str, tree: str, names: Vec<str>): Vec<str> {
+    let staged = Vec<str>()
+    for i in 0..(names.len() as i64) {
+        let source = "/usr/lib/firmware/" + names[i]
+        require(presentInRootfs(rootfs, source), "Bluetooth firmware " + names[i] + " is not in the rootfs; rebuild the image with devos-x2-wireless-firmware")
+        let target = tree + "/lib/firmware/" + names[i]
+        io.mkdirs(hw.parentDir(target))
+        dumpFromRootfs(rootfs, source, target)
+        require(fs.is_file(target) && io.size(target) > 0, "Empty Bluetooth firmware: " + names[i])
+        staged.push(names[i])
+    }
+    return staged
+}
+
+# Reads patched modules back from the image, not just the input bundle.
+fn stageCameraModules(rootfs: str, bundle: str, output: str): Vec<str> {
+    let staged = Vec<str>()
+    let proof = bundle + "/camera-fixes.json"
+    if !fs.is_file(proof) { return staged }
+    io.copyFile(proof, output + "/camera-fixes.json")
+    staged.push("camera-fixes.json")
+    let modules = json.get(io.readJson(proof), "patchedModules")
+    let names = json.keys(modules)
+    for i in 0..(names.len() as i64) {
+        let name = names[i]
+        let parts = strings.split(name, "/")
+        require(strings.startsWith(name, "modules/lib/modules/") && !hw.contains(parts, ".."), "Unsafe camera module path")
+        let source = "/usr/" + strings.substring(name, 8, strings.charLength(name))
+        let target = output + "/staged-camera-" + st.baseName(name)
+        dumpFromRootfs(rootfs, source, target)
+        require(strings.equal(digest(st.regular(target)), json.string(json.get(modules, name))), "Camera module read-back checksum mismatch: " + name)
+        staged.push("staged-camera-" + st.baseName(name))
+    }
+    return staged
+}
+
+# ---- verification --------------------------------------------------------------------------------------------------------
+struct Sections { names: Vec<str>, offsets: Vec<i64>, sizes: Vec<i64> }
+
+fn peSections(path: str): Sections {
+    let header = io.readAt(path, 0, 64)
+    require(header.len() >= 64 && header[0] == 77 && header[1] == 90, "Invalid EFI DOS header")
+    let pe = io.u32le(header, 60)
+    let nt = io.readAt(path, pe, 24)
+    require(nt.len() == 24 && nt[0] == 80 && nt[1] == 69 && nt[2] == 0 && nt[3] == 0 && io.u16le(nt, 4) == 43620, "EFI executable is not ARM64")
+    let count = io.u16le(nt, 6)
+    let optional = io.u16le(nt, 20)
+    let out = Sections(Vec<str>(), Vec<i64>(), Vec<i64>())
+    let table = io.readAt(path, pe + 24 + optional, count * 40)
+    for i in 0..count {
+        let base = i * 40
+        let raw = Vec<u8>()
+        for k in 0..8 { if table[base + k] != 0 { raw.push(table[base + k]) } else { break } }
+        out.names.push(encodingDecode(raw))
+        out.sizes.push(io.u32le(table, base + 8))
+        out.offsets.push(io.u32le(table, base + 20))
+    }
+    return out
+}
+fn encodingDecode(bytes: Vec<u8>): str {
+    let table = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    let out = ""
+    for i in 0..(bytes.len() as i64) {
+        let code = bytes[i] as i64
+        if code >= 32 && code <= 126 { out = out + strings.charAt(table, code - 32) }
+    }
+    return out
+}
+fn sectionIndex(s: Sections, name: str): i64 {
+    for i in 0..(s.names.len() as i64) { if strings.equal(s.names[i], name) { return i } }
+    fail("Missing EFI section: " + name)
+    return 0
+}
+
+fn imageName(): str { return "devos-live-arm64-ux3407na.img" }
+
+fn verifyImage(output: str, record: json.Value) {
+    let image = st.regular(output + "/" + imageName())
+    let expected = hw.words(hw.readText(output + "/SHA256SUMS"))[0]
+    require(strings.equal(digest(image), expected), "USB image checksum mismatch")
+    require(strings.contains(run(Vec<str>("sgdisk", "--verify", image)), "No problems found"), "Invalid USB GPT")
+    let header = io.readAt(image, 512, 92)
+    let entries = io.u64le(header, 72) * 512
+    let entry = io.readAt(image, entries, 128)
+    let typeHex = ""
+    for i in 0..16 { typeHex = typeHex + io.hex(entry[i] as i64, 2) }
+    require(strings.equal(typeHex, "28732ac11ff8d211ba4b00a0c93ec93b"), "Missing EFI partition")
+    let offset = io.u64le(entry, 32) * 512
+    if hw.jbool(record, "bootDiagnostics", false) {
+        let volume = io.u32le(io.readAt(image, offset + 67, 4), 0)
+        require(volume == st_hexInt(jstr(record, "espVolumeId")), "Diagnostic ESP UUID mismatch")
+    }
+    let root = io.readAt(image, entries + 128, 128)
+    let rootOffset = io.u64le(root, 32) * 512
+    let rootSize = io.size(output + "/rootfs.ext4")
+    require(strings.equal(io.digestRange(image, rootOffset, rootSize), json.string(json.get(json.get(record, "files"), "rootfs.ext4"))), "USB root partition mismatch")
+    let temp = io.tempDir("efi-check-", output)
+    let efi = temp + "/BOOTAA64.EFI"
+    run(Vec<str>("mcopy", "-i", image + "@@" + "${offset}", "::/EFI/BOOT/BOOTAA64.EFI", efi))
+    let sections = peSections(efi)
+    let checks = Vec<str>(".linux", ".initrd", ".dtb", ".osrel")
+    let files = Vec<str>("Image", "initramfs.cpio.gz", "board.dtb", "os-release")
+    for i in 0..4 {
+        let at = sectionIndex(sections, checks[i])
+        let got = io.digestRange(efi, sections.offsets[at], sections.sizes[at])
+        require(strings.equal(got, json.string(json.get(json.get(record, "files"), files[i]))), "EFI section mismatch: " + checks[i])
+    }
+    let c = sectionIndex(sections, ".cmdline")
+    let raw = io.readAt(efi, sections.offsets[c], sections.sizes[c])
+    let cmdline = encodingDecode(raw)
+    require(strings.contains(cmdline, "devos.live.uuid=" + jstr(record, "filesystemUuid")), "EFI live UUID mismatch")
+    if hw.jbool(record, "bootDiagnostics", false) {
+        let id = jstr(record, "espVolumeId")
+        let uuid = strings.substring(id, 0, 4) + "-" + strings.substring(id, 4, strings.charLength(id))
+        require(strings.contains(cmdline, "devos.live.esp_uuid=" + uuid), "EFI diagnostic ESP UUID mismatch")
+    }
+    if hw.jbool(record, "kernelInitcallDebug", false) { require(hw.contains(hw.words(cmdline), "initcall_debug"), "EFI kernel initcall diagnostics missing") }
+    io.removeTree(temp)
+    print("PASS: USB GPT, root partition, ARM64 EFI, kernel, DTB, initramfs and boot UUID")
+}
+
+fn st_hexInt(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) {
+        let digit = strings.indexOf("0123456789abcdef", strings.toLowerCase(strings.charAt(text, i)))
+        require(digit >= 0, "Invalid volume id")
+        value = value * 16 + digit
+    }
+    return value
+}
+
+fn check(output: str): json.Value {
+    require(fs.is_file(output + "/manifest.json"), "Staging is missing or incomplete: " + output + "/manifest.json. Run prepare successfully first. For a -diagnostic directory, run diagnose on the prepared base directory first; renaming a variable does not create staging.")
+    let record = io.readJson(output + "/manifest.json")
+    let files = json.get(record, "files")
+    let names = json.keys(files)
+    for i in 0..(names.len() as i64) {
+        require(strings.equal(st.baseName(names[i]), names[i]), "Unsafe manifest filename")
+        st.regular(output + "/" + names[i])
+    }
+    let hashes = io.digestAll(output, names)
+    for i in 0..(names.len() as i64) { require(strings.equal(hashes[i], json.string(json.get(files, names[i]))), "Checksum mismatch: " + names[i]) }
+    if hw.jbool(record, "rootfsShrunk", false) { checkShrunk(output + "/rootfs.ext4", hw.jint(record, "rootfsMarginBytes", shrinkMargin())) }
+    if hw.jbool(record, "imageReady", false) && strings.equal(jstr(record, "board"), "asus-ux3407na") {
+        require(json.has(files, "board-audio-provenance.json"), "Old UX3407NA staging lacks the matching microphone/audio routing correction. Prepare a fresh corrected board bundle and staging directory.")
+        st.validateProof(output, record, "board-audio-provenance.json")
+        require(json.has(files, "firmware-provenance.json") && json.has(files, "staged-wifi-board.bin"), "Old UX3407NA staging lacks verified Wi-Fi calibration. Run prepare again with a complete OEM firmware bundle into a new directory.")
+        let expected = wifiCalibration(io.readJson(output + "/firmware-provenance.json"))
+        require(strings.equal(json.string(json.get(files, "staged-wifi-board.bin")), expected), "Staged Wi-Fi calibration does not match OEM provenance")
+    }
+    if fs.existsSync(output + "/" + imageName()) { verifyImage(output, record) }
+    print("PASS: staged files and checksums\n" + jstr(record, "reason"))
+    return record
+}
+
+
+# ---- commands ------------------------------------------------------------------------------------------------------------
+struct Options {
+    mode: str, output: str, images: str, kernel: str, rootfs: str, kernelBundle: str, firmware: str, exportDirectory: str, busybox: str
+}
+
+fn option(flag: str, fallback: str): str {
+    for i in 0..(args.len() as i64) {
+        if strings.equal(args.get(i), flag) {
+            require(i + 1 < (args.len() as i64), "Missing value for " + flag)
+            return args.get(i + 1)
+        }
+    }
+    return fallback
+}
+
+fn parseOptions(): Options {
+    let mode = args.len() > 0 ? args.get(0) : ""
+    let modes = Vec<str>("prepare", "check", "build", "export", "diagnose", "firmware-check")
+    require(hw.contains(modes, mode), "usage: prepare.dev " + strings.join(modes, "|") + " [--output DIR] [--images DIR] [--kernel FILE] [--rootfs FILE] [--kernel-bundle DIR] [--firmware DIR] [--export-directory DIR] [--busybox FILE]")
+    return Options(mode, option("--output", "/var/tmp/devos-usb/staged"), option("--images", st.defaultImages()), option("--kernel", ""), option("--rootfs", ""),
+        option("--kernel-bundle", ""), option("--firmware", ""), option("--export-directory", ""), option("--busybox", "/var/tmp/devos-usb/busybox-build/busybox"))
+}
+
+fn say(text: str) { print(text) }
+
+fn diagnose(o: Options) {
+    let base = io.resolve(o.output)
+    let record = check(base)
+    let destination = base + "-diagnostic"
+    require(!io.exists(destination), "Refusing to overwrite " + destination)
+    io.mkdirs(destination)
+    let files = json.keys(json.get(record, "files"))
+    for i in 0..(files.len() as i64) { run(Vec<str>("ln", "--", base + "/" + files[i], destination + "/" + files[i])) }
+    run(Vec<str>("cp", "-al", "--", base + "/initramfs", destination + "/initramfs"))
+    installBootTools(destination + "/initramfs", st.regular(o.busybox))
+    installSplash(destination + "/initramfs")
+    # Replace the linked old initrd without changing the original candidate.
+    run(Vec<str>("rm", "-f", "--", destination + "/initramfs.cpio.gz"))
+    cpio(destination + "/initramfs", destination + "/initramfs.cpio.gz")
+    let fileRecord = json.set(json.get(record, "files"), "initramfs.cpio.gz", digest(destination + "/initramfs.cpio.gz"))
+    record = json.set(record, "files", fileRecord)
+    record = json.set(record, "bootDiagnostics", true)
+    record = json.set(record, "kernelInitcallDebug", false)
+    record = json.set(record, "liveDefaultUser", "root")
+    let uuid = jstr(record, "filesystemUuid")
+    record = json.set(record, "espVolumeId", strings.toUpperCase(strings.substring(strings.replaceAll(uuid, "-", ""), 0, 8)))
+    record = json.set(record, "reason", "Diagnostic candidate: bounded USB discovery, visible boot checkpoints and USB-local boot/GUI logs; hardware failure cause not yet established.")
+    io.writeJson(destination + "/manifest.json", record)
+    say("Diagnostic staging bundle: " + destination)
+}
+
+fn prepare(o: Options) {
+    let firmwareRecord = strings.charLength(o.firmware) > 0 ? firmwareBundle(o.firmware) : json.null_value()
+    let hasFirmware = strings.charLength(o.firmware) > 0
+    let hasBundle = strings.charLength(o.kernelBundle) > 0
+    require(!hasBundle || hasFirmware, "The UX3407NA kernel bundle requires --firmware with verified OEM Wi-Fi calibration")
+    let rootfs = o.rootfs
+    if strings.charLength(rootfs) == 0 {
+        rootfs = io.mtimeNewest(o.images, "devos-image*.ext4")
+        require(strings.charLength(rootfs) > 0, "Build DevOs desktop first: .\\distro.ps1 desktop-build")
+    }
+    let bundle = hasBundle ? st.kernelBundle(o.kernelBundle) : st.emptyBundle()
+    rootfs = st.regular(rootfs)
+    let kernelPath = hasBundle ? io.resolve(o.kernelBundle) + "/Image" : (strings.charLength(o.kernel) > 0 ? o.kernel : o.images + "/Image")
+    let kernel = st.regular(kernelPath)
+    let busybox = st.regular(o.busybox)
+    let release = st.kernelRelease(kernel)
+    let osRelease = st.identity(rootfs)
+    require(st.isStaticElf(busybox), "BusyBox must be statically linked")
+    require(st.isArm64Elf(busybox), "BusyBox must be ARM64")
+    let applets = hw.words(run(Vec<str>(busybox, "--list")))
+    let required = st.requiredApplets()
+    let missing = Vec<str>()
+    for i in 0..(required.len() as i64) { if !hw.contains(applets, required[i]) { missing.push(required[i]) } }
+    require(missing.len() == 0, "Missing BusyBox applets: " + strings.join(missing, ", "))
+    let output = io.resolve(o.output)
+    require(!io.exists(output), "Choose a new output directory: " + output)
+    io.mkdirs(output)
+    say("Staging checked DevOs kernel and rootfs...")
+    io.copyFile(kernel, output + "/Image")
+    io.copyFile(rootfs, output + "/rootfs.ext4")
+    let filesystemUuid = io.newUuid()
+    run(Vec<str>("tune2fs", "-U", filesystemUuid, output + "/rootfs.ext4"))
+    let cameraFiles = Vec<str>()
+    let kernelDir = hasBundle ? io.resolve(o.kernelBundle) : ""
+    if hasBundle {
+        say("Installing the matching X2 modules into the private DevOs rootfs copy...")
+        installModules(output + "/rootfs.ext4", bundle.modules, output, "")
+        io.copyFile(kernelDir + "/board.dtb", output + "/board.dtb")
+        io.copyFile(kernelDir + "/manifest.json", output + "/kernel-provenance.json")
+        io.copyFile(kernelDir + "/kernel.config", output + "/kernel.config")
+        io.copyFile(kernelDir + "/board-fixes.json", output + "/board-audio-provenance.json")
+        cameraFiles = stageCameraModules(output + "/rootfs.ext4", kernelDir, output)
+    }
+    if hasFirmware {
+        installModules(output + "/rootfs.ext4", io.resolve(o.firmware), output, "/usr/lib/firmware")
+        io.copyFile(io.resolve(o.firmware) + "/manifest.json", output + "/firmware-provenance.json")
+    }
+    io.writeText(output + "/os-release", osRelease)
+    let tree = output + "/initramfs"
+    let dirs = Vec<str>("bin", "sbin", "dev", "proc", "sys", "run", "lib/modules")
+    for i in 0..(dirs.len() as i64) { io.mkdirs(tree + "/" + dirs[i]) }
+    installBootTools(tree, busybox)
+    installSplash(tree)
+    # Extract modules from the exact image, not from the WSL/build-host kernel.
+    if hasBundle {
+        run(Vec<str>("sh", "-c", "cp -a " + io.quote(bundle.modules) + " " + io.quote(tree + "/lib/modules/" + release) + " && find " + io.quote(tree + "/lib/modules/" + release) + " -type l -delete"))
+    } else {
+        let bases = Vec<str>("/usr/lib/modules", "/lib/modules")
+        let found = false
+        for i in 0..(bases.len() as i64) {
+            if found { break }
+            io.runCode(Vec<str>("debugfs", "-R", "rdump " + bases[i] + "/" + release + " " + tree + "/lib/modules", rootfs))
+            if fs.is_file(tree + "/lib/modules/" + release + "/modules.dep") { found = true }
+        }
+        require(found, "No modules matching " + release + " in the rootfs")
+    }
+    say("Packing static live initramfs with matching kernel modules...")
+    if hasFirmware { run(Vec<str>("cp", "-a", "--", io.resolve(o.firmware), tree + "/lib/firmware")) }
+    let regulatory = stageRegulatoryDatabase(output + "/rootfs.ext4", tree)
+    let bluetooth = hasBundle ? stageBluetoothFirmware(output + "/rootfs.ext4", tree, profileEarlyFirmware(st.boardProfile(), "qca/")) : Vec<str>()
+    cpio(tree, output + "/initramfs.cpio.gz")
+    # Every write into the root file system is finished: give back the space that was only needed to write the modules and firmware.
+    let shrunk = !noShrink()
+    if shrunk {
+        say("Shrinking the root file system to its content plus a " + "${shrinkMargin() / mib()}" + " MiB margin...")
+        shrinkRootfs(output + "/rootfs.ext4")
+    }
+    let manifest = json.object()
+    manifest = json.set(manifest, "schemaVersion", 1)
+    manifest = json.set(manifest, "board", "asus-ux3407na")
+    manifest = json.set(manifest, "architecture", "aarch64")
+    manifest = json.set(manifest, "liveDefaultUser", "root")
+    manifest = json.set(manifest, "release", release)
+    manifest = json.set(manifest, "filesystemUuid", filesystemUuid)
+    manifest = json.set(manifest, "hardwareReady", false)
+    manifest = json.set(manifest, "imageReady", hasBundle)
+    manifest = json.set(manifest, "rootfsShrunk", shrunk)
+    manifest = json.set(manifest, "rootfsMarginBytes", shrinkMargin())
+    let reason = hasBundle ? "X2 kernel/DTB/modules integrated. Experimental USB candidate; physical UX3407NA boot and device testing pending." : "Snapdragon X2 board kernel/Device Tree integration is pending; this is a staging bundle, not a bootable USB image."
+    manifest = json.set(manifest, "reason", reason)
+    let files = json.object()
+    let base = Vec<str>("Image", "rootfs.ext4", "initramfs.cpio.gz", "os-release")
+    if hasBundle {
+        base.push("board.dtb"); base.push("kernel-provenance.json"); base.push("kernel.config"); base.push("board-audio-provenance.json")
+        for i in 0..(cameraFiles.len() as i64) { base.push(cameraFiles[i]) }
+    }
+    if hasFirmware { base.push("firmware-provenance.json"); base.push("staged-wifi-board.bin") }
+    for i in 0..(base.len() as i64) { files = json.set(files, base[i], digest(output + "/" + base[i])) }
+    manifest = json.set(manifest, "files", files)
+    manifest = json.set(manifest, "regulatoryDatabaseInInitramfs", regulatory)
+    let names = json.array()
+    for i in 0..(bluetooth.len() as i64) { names = json.push(names, bluetooth[i]) }
+    manifest = json.set(manifest, "bluetoothFirmwareInInitramfs", names)
+    let limits = json.push(json.push(json.push(json.array(), "Physical-machine boot not yet tested"), hasFirmware ? "OEM DSP firmware staged" : "OEM DSP firmware not staged"), "Wi-Fi/BT calibration, audio and suspend not validated")
+    manifest = json.set(manifest, "limitations", limits)
+    io.writeJson(output + "/manifest.json", manifest)
+    say("Prepared: " + output + "\n" + reason + "\nNo USB drive was written.")
+}
+
+fn mib(): i64 { return 1048576 }
+
+fn build(output: str) {
+    let record = check(output)
+    require(hw.jbool(record, "imageReady", false) && json.has(json.get(record, "files"), "board.dtb"), "Cannot create a bootable UX3407NA USB image yet: integrate and validate the X2 kernel/DTB first. Staged files remain available.")
+    let image = output + "/" + imageName()
+    require(!io.exists(image), "Refusing to overwrite " + image)
+    let tools = Vec<str>("ukify", "sgdisk", "mkfs.vfat", "mmd", "mcopy")
+    for i in 0..(tools.len() as i64) { require(strings.charLength(hw.which(tools[i])) > 0, "Missing build tool: " + tools[i]) }
+    let stub = st.regular("/usr/lib/systemd/boot/efi/linuxaa64.efi.stub")
+    # All writes are to newly created regular files, never /dev devices.
+    let temp = io.tempDir("usb-pack-", output)
+    let efi = temp + "/BOOTAA64.EFI"
+    let esp = temp + "/esp.fat"
+    let release = jstr(record, "release")
+    let cmdline = "console=tty0 rdinit=/init " + profileKernelArgs(st.boardProfile()) + " devos.live.uuid=" + jstr(record, "filesystemUuid") + " devos.renderer=pixman " + st.splashArgs()
+    let diagnostics = hw.jbool(record, "bootDiagnostics", false)
+    if diagnostics {
+        let id = jstr(record, "espVolumeId")
+        cmdline = cmdline + " devos.live.esp_uuid=" + strings.substring(id, 0, 4) + "-" + strings.substring(id, 4, strings.charLength(id)) + " panic=0 systemd.log_target=journal"
+    }
+    if hw.jbool(record, "kernelInitcallDebug", false) { cmdline = cmdline + " initcall_debug log_buf_len=4M" }
+    ukify(stub, output, release, cmdline, efi)
+    # The same kernel, initramfs and DTB with a cmdline that boots an installed system from its own root (LABEL=devos-root, no Live overlay).
+    # `dev-os-install` copies this to the internal disk's ESP.
+    let installed = temp + "/INSTALLED.EFI"
+    ukify(stub, output, release, "console=tty0 rdinit=/init " + profileKernelArgs(st.boardProfile()) + " devos.root=LABEL=devos-root devos.renderer=pixman " + st.splashArgs(), installed)
+    let espSize = ((io.size(efi) + io.size(installed) + 64 * mib() + mib() - 1) / mib()) * mib()
+    if espSize < 256 * mib() { espSize = 256 * mib() }
+    let fat = diagnostics ? Vec<str>("-i", jstr(record, "espVolumeId")) : Vec<str>()
+    run(hw.concat(Vec<str>("mkfs.vfat", "-C", "-F", "32", "-n", "DEVOS_EFI"), hw.concat(fat, Vec<str>(esp, "${espSize / 1024}"))))
+    run(Vec<str>("mmd", "-i", esp, "::/EFI", "::/EFI/BOOT", "::/EFI/DEVOS"))
+    run(Vec<str>("mcopy", "-i", esp, efi, "::/EFI/BOOT/BOOTAA64.EFI"))
+    run(Vec<str>("mcopy", "-i", esp, installed, "::/EFI/DEVOS/INSTALLED.EFI"))
+    let rootOffset = mib() + espSize
+    let total = rootOffset + ((io.size(output + "/rootfs.ext4") + mib() - 1) / mib()) * mib() + mib()
+    let partial = temp + "/disk.img"
+    run(Vec<str>("truncate", "-s", "${total}", partial))
+    run(Vec<str>("sgdisk", "--clear", "--new=1:2048:+${espSize / 512}", "--typecode=1:ef00", "--change-name=1:DevOs EFI",
+        "--new=2:${rootOffset / 512}:${(total - mib()) / 512 - 1}", "--typecode=2:8300", "--change-name=2:DevOs Live", partial))
+    run(Vec<str>("dd", "if=" + esp, "of=" + partial, "bs=1M", "seek=1", "conv=notrunc"))
+    run(Vec<str>("dd", "if=" + output + "/rootfs.ext4", "of=" + partial, "bs=8M", "oflag=seek_bytes", "seek=${rootOffset}", "conv=notrunc,fsync"))
+    run(Vec<str>("sgdisk", "--verify", partial))
+    run(Vec<str>("mv", "--", partial, image))
+    io.removeTree(temp)
+    io.writeText(output + "/SHA256SUMS", digest(image) + "  " + imageName() + "\n")
+    say("USB disk image: " + image + "\nUnsigned ARM64 UEFI boot. No physical USB drive was written.")
+}
+
+fn ukify(stub: str, output: str, release: str, cmdline: str, target: str) {
+    run(Vec<str>("ukify", "build", "--efi-arch=aa64", "--stub=" + stub, "--linux=" + output + "/Image", "--initrd=" + output + "/initramfs.cpio.gz",
+        "--devicetree=" + output + "/board.dtb", "--os-release=@" + output + "/os-release", "--uname=" + release, "--cmdline=" + cmdline, "--output=" + target))
+}
+
+fn exportImage(output: str, destination: str) {
+    check(output)
+    let source = st.regular(output + "/" + imageName())
+    io.mkdirs(destination)
+    let target = destination + "/" + imageName()
+    require(!io.exists(target), "Refusing to overwrite " + target)
+    run(Vec<str>("sh", "-c", "cp -- " + io.quote(source) + " " + io.quote(target) + " && sync -f " + io.quote(target)))
+    require(strings.equal(digest(target), digest(source)), "Exported image checksum mismatch")
+    io.writeText(destination + "/SHA256SUMS", digest(target) + "  " + imageName() + "\n")
+    io.copyFile(output + "/manifest.json", destination + "/candidate.json")
+    say("Exported and verified: " + target + "\nNo physical USB drive was written.")
+}
+
+fn execute(o: Options) {
+    if strings.equal(o.mode, "firmware-check") {
+        require(strings.charLength(o.firmware) > 0, "Specify --firmware")
+        firmwareBundle(o.firmware)
+        say("PASS: board firmware checksums and exact UX3407NA QCC2072 calibration; no image built or USB written")
+    } else if strings.equal(o.mode, "diagnose") { diagnose(o) }
+    else if strings.equal(o.mode, "export") {
+        require(strings.charLength(o.exportDirectory) > 0, "Specify --export-directory")
+        exportImage(io.resolve(o.output), o.exportDirectory)
+    } else if strings.equal(o.mode, "build") { build(io.resolve(o.output)) }
+    else if strings.equal(o.mode, "check") { check(io.resolve(o.output)) }
+    else { prepare(o) }
+}
+
+fn main(): i32 {
+    let outcome = result.run(fn() { execute(parseOptions()) })
+    if result.isErr(outcome) {
+        hw.stderr(hw.errorText(result.message(outcome)))
+        return 1
+    }
+    return 0
+}

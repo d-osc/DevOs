@@ -29,7 +29,7 @@ export class Files implements TabDragHost {
         this.window = new Gtk.ApplicationWindow({application: context.application, title: 'Dev OS Files', default_width: 960, default_height: 620});
         this.window.name = 'files';
         this.window.add(this.stack); this.stack.show();
-        this.header = mountTabbedHeader(this.window, {title: 'Files', iconName: 'folder-symbolic', windowIconName: 'system-file-manager', iconId: 'files-window-icon'});
+        this.header = mountTabbedHeader(this.window, {title: 'Files', iconName: 'dev-os-files-symbolic', windowIconName: 'dev-os-files', iconId: 'files-window-icon'});
         this.window.connect('delete-event', () => { this.destroy(); return true; });
         this.window.connect('key-press-event', (_window, event) => {
             const native = event as unknown as Gdk.Event, key = native.get_keyval()[1], modifiers = native.get_state()[1];

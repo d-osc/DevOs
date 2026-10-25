@@ -1,4 +1,4 @@
-import {familyPalettes, palettes, type Palette, type ThemeFamily, type ThemeName} from './theme-palette.js';
+import {familyPalettes, type Palette, type ThemeFamily, type ThemeName} from './theme-palette.js';
 export {familyPalettes, palettes, paletteSources, syntaxRules, type Palette, type PaletteToken, type ThemeFamily, type ThemeName, type TokenRule} from './theme-palette.js';
 
 export type ThemeMode = 'auto' | 'dark' | 'light';

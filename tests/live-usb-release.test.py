@@ -80,7 +80,7 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn('errors=0 forbidden=0', result.stdout, result.stdout + result.stderr)
 
     def test_camera_flag_exists_in_board_fixes(self):
-        fixes = (ROOT / 'distro/usb/prepare-board-fixes.py').read_text(encoding='utf-8')
+        fixes = (ROOT / 'distro/usb/boardtools.dev').read_text(encoding='utf-8')
         self.assertIn('--enable-camera-candidate', fixes)
         self.assertIn('--enable-camera-candidate', SCRIPT.read_text(encoding='utf-8'))
 

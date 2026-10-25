@@ -1,4 +1,8 @@
-import {React, Gtk, Box, Label, Button, Image, ScrolledWindow} from '@dev-os/core';
+import {React, Gtk, Gio, Box, Label, Button, Image, ScrolledWindow} from '@dev-os/core';
+import {ROOT} from '@dev-os/config';
+
+/** The Dev OS mark by file, so the greeter shows it even when the icon theme path was never extended. */
+export const brandIcon = new Gio.FileIcon({file: Gio.File.new_for_path(`${ROOT}/data/icons/devos/devos-mark-transparent.svg`)});
 
 export function LoginView({busy, configured, code, error, perform, openBrowser, newUser, onNewUser, notice, profiles, continueLabel, canContinue = true}: {
     busy: boolean; configured: boolean; code: string; error: string;
@@ -7,7 +11,7 @@ export function LoginView({busy, configured, code, error, perform, openBrowser, 
     profiles?: React.ReactNode; continueLabel?: string; canContinue?: boolean;
 }) {
     return <Box className="login-screen" orientation="vertical" expand fill>
-        <Box className="login-topbar" spacing={10}><Label className="login-brand">D</Label><Label className="login-wordmark">DevOs</Label><Label className="login-top-note" xalign={1} expand>Your space to create</Label></Box>
+        <Box className="login-topbar" spacing={10}><Image className="login-brand" gicon={brandIcon} pixelSize={34} /><Label className="login-wordmark">DevOs</Label><Label className="login-top-note" xalign={1} expand>Your space to create</Label></Box>
         <ScrolledWindow expand fill hscrollbarPolicy={Gtk.PolicyType.NEVER} vscrollbarPolicy={Gtk.PolicyType.AUTOMATIC}>
             <Box orientation="vertical" expand fill halign="center" valign="center" marginTop={24} marginBottom={24}>
                 <Box className="login-card" orientation="vertical" spacing={profiles || newUser ? 14 : 20} widthRequest={400}>

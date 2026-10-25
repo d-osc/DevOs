@@ -181,7 +181,7 @@ $bundle = "/var/tmp/devos-kernel-x2/bundle-audio-ec-$stamp"
 
 Invoke-DevOsStep { .\distro.ps1 desktop-build }
 Invoke-DevOsStep {
-    wsl -d Ubuntu --exec python3 /mnt/c/Users/ondev/Projects/DevOs/distro/usb/prepare-board-fixes.py --source /var/tmp/devos-live-build/linux-qcom-x1e-7.3.0 --bundle /var/tmp/devos-kernel-x2/bundle-suspend-20261023 --output $bundle --dtc /var/tmp/devos-kernel-x2/build-latest-20261023/scripts/dtc/dtc
+    wsl -d Ubuntu --exec d /mnt/c/Users/ondev/Projects/DevOs/distro/usb/prepare-board-fixes.dev -- --source /var/tmp/devos-live-build/linux-qcom-x1e-7.3.0 --bundle /var/tmp/devos-kernel-x2/bundle-suspend-20261023 --output $bundle --dtc /var/tmp/devos-kernel-x2/build-latest-20261023/scripts/dtc/dtc
 }
 Invoke-DevOsStep { .\live-usb.ps1 prepare -OutputDirectory $baseStage -KernelBundle $bundle }
 Invoke-DevOsStep { .\live-usb.ps1 diagnose -OutputDirectory $baseStage }
@@ -225,6 +225,15 @@ The staging bundle contains `Image`, `rootfs.ext4`, `initramfs.cpio.gz`,
 a fresh UUID. The initramfs mounts only that UUID, read-only with journal replay
 disabled, and uses an overlay in RAM. Session changes are discarded on reboot.
 It loads modules from the image, never the WSL kernel. No physical disk is written.
+
+`prepare` grows the copied ext4 by 1 GiB to make room for the kernel modules and firmware and, once every write
+is done, shrinks it again to its content plus a 64 MiB margin (`e2fsck`, then `resize2fs -f` to a size computed from the
+blocks in use, because `resize2fs -M`/`-P` report the full size for the OE images; the file is cut to the new length and
+checked with `e2fsck -fn`). No ext4 feature is added, so the read-only `noload` mount is unchanged. `manifest.json` records
+`rootfsShrunk` and `rootfsMarginBytes`, and `check` fails when a shrunk rootfs carries more than the margin (plus 32 MiB)
+of free space or is not clean. Nothing writes to `rootfs.ext4` after `prepare`; the `-diagnostic` staging hard-links
+the already shrunk file. For debugging, `DEVOS_USB_NO_SHRINK=1` (or `--no-shrink`) keeps the grown file system.
+The image went from about 3.2 GiB to about 2.0 GiB.
 
 New Live bundles automatically start the desktop as `root`, without a password
 prompt, using greetd's initial session. The Live initramfs installs this profile
@@ -426,11 +435,8 @@ known, which the hint now addresses).
 
 ### Applications and wireless diagnostics
 
-Live root sessions launch Chrome and VS Code with `--no-sandbox` and separate
-profiles under `/root/.config/devos-live/`. This disables Chromium's process
-sandbox in that root Live session. Regular users keep the normal sandbox.
-The launchers select `--disable-gpu` when the compositor uses Pixman, and save
-startup output in `/root/.local/state/devos/logs/{chrome,vscode}.log`.
+The Live image carries no web browser, VS Code, Rust, Node.js or QEMU (an estimated
+1.9 GB less than before, to be measured by the next build; see `docs/bundled-apps.md`).
 Root sessions start the PipeWire sockets and WirePlumber through their user
 manager, as normal desktop sessions do.
 
@@ -491,10 +497,10 @@ instead of re-exporting an old image.
 Firmware validation alone (no image build or USB write):
 
 ```powershell
-wsl -d Ubuntu --exec python3 /mnt/c/Users/ondev/Projects/DevOs/distro/usb/prepare.py firmware-check --firmware /mnt/c/Users/ondev/Projects/DevOs/build/live-usb/firmware-oem-wifi-verified
+wsl -d Ubuntu --exec d /mnt/c/Users/ondev/Projects/DevOs/distro/usb/prepare.dev -- firmware-check --firmware /mnt/c/Users/ondev/Projects/DevOs/build/live-usb/firmware-oem-wifi-verified
 ```
 
-`prepare-board-fixes.py` compiles the pinned board source plus
+`prepare-board-fixes.dev` compiles the pinned board source plus
 `ux3407na-audio.dtsi` into a new private kernel bundle. It keeps the verified
 kernel source and previous bundle unchanged, corrects the two-speaker wiring
 from the upstream v2 board description and explicitly selects
@@ -505,7 +511,7 @@ required; QEMU cannot validate the X2 codec, Wi-Fi calibration or panel.
 The image adds the board's AudioReach topology and pinned upstream UCM files,
 Qualcomm GPU firmware and coreutils (including `timeout`). Live sessions retain
 the existing Pixman/software rendering fallback; this revision does not enable
-GPU acceleration for Chrome or VS Code.
+GPU acceleration.
 The panel has a real sysfs backlight slider and the standard brightness/volume
 keys are bound. A missing kernel backlight remains unavailable instead of being
 simulated with a dark overlay.
@@ -538,14 +544,14 @@ This is a supported correction, not proof that all native resume paths work.
 Build a matching corrected kernel bundle without editing the pinned sources:
 
 ```sh
-python3 distro/usb/prepare-suspend-fixes.py \
+d distro/usb/prepare-suspend-fixes.dev -- \
   --source /var/tmp/devos-live-build/linux-qcom-x1e-7.3.0 \
   --build /var/tmp/devos-kernel-x2/build-latest-20261023 \
   --bundle /var/tmp/devos-kernel-x2/bundle \
   --output /var/tmp/devos-kernel-x2/bundle-suspend-20261023
 ```
 
-Pass that output to `prepare.py prepare --kernel-bundle` (or
+Pass that output to `prepare.dev prepare --kernel-bundle` (or
 `live-usb.ps1 -KernelBundle`). The hardware profile uses s2idle with no deep
 fallback, requires a bound EC before suspend, and saves pre/post sleep logs to
 the UUID-selected Live ESP. The installed-system UKI uses the same corrected
@@ -554,8 +560,8 @@ DTB and modules. Lid sleep remains disabled pending physical wake testing.
 
 The previous EC-only bundle lacks the matching ASUS microphone routing.
 Future preparation requires a fresh corrected board bundle. The updated
-`distro/usb/prepare-board-fixes.py` preserves EC fixes from its input bundle;
-`distro/usb/prepare-suspend-fixes.py` includes the audio override as well.
+`distro/usb/prepare-board-fixes.dev` preserves EC fixes from its input bundle;
+`distro/usb/prepare-suspend-fixes.dev` includes the audio override as well.
 Both produce audio provenance checked before image preparation. This source
 change does not update existing images or USB media.
 
@@ -578,7 +584,7 @@ Source fixes already in the tree (not in any built image; the image staged at
 (`profiles/asus/ux3407na/kernel/ux3407na-audio.dtsi`, `swr3` disabled), UCM
 router matching `${CardName}` (`recipes-multimedia/alsa/files/devos-glymur.conf`;
 the long name is rewritten from DMI on the real machine) and the pinned ASUS UCM
-files. Needs a new kernel bundle (`prepare-board-fixes.py`) and image build.
+files. Needs a new kernel bundle (`prepare-board-fixes.dev`) and image build.
 
 Not available: the later native boot `3367a468` logs, and any `aplay -l`,
 `wpctl status` or `alsaucm` output from the A14. No speaker signal has been
@@ -683,7 +689,7 @@ Evidence from three physical boots (`build/live-usb/hardware-logs/DEVOS-LOGS/c81
   Wi-Fi file hit the same ordering problem and is already staged into the initramfs.
 
 Fixes in the tree (need a new `prepare` + image build + USB write; none was done):
-- `prepare.py` stages the `qca/` entries of the board profile's `firmware.list`
+- `prepare.dev` stages the `qca/` entries of the board profile's `firmware.list`
   (`qca/ornbtfw11.tlv`, `qca/ornnv11.bin`, now listed) from the rootfs into the
   initramfs, and fails preparation if they are not in the rootfs. Recorded in the
   stage manifest as `bluetoothFirmwareInInitramfs`.
@@ -691,7 +697,7 @@ Fixes in the tree (need a new `prepare` + image build + USB write; none was done
   `bluetooth.service`) re-binds the serdev device once if dmesg shows a failed firmware
   request and the file now exists in the rootfs. This also covers a stage prepared
   without the initramfs files. It does nothing when the first setup succeeded.
-- The corrected board bundle (`prepare-board-fixes.py`, DT `firmware-name =
+- The corrected board bundle (`prepare-board-fixes.dev`, DT `firmware-name =
   "ornnv11.bin", "ornbtfw11.tlv"`) is still required: with the older DTB the driver asks
   for the nonexistent `qca/hmtbtfw11.tlv`, which no recovery can satisfy.
 
@@ -738,7 +744,7 @@ Established offline (details and sources: `native/kernel/ux3407na-camera/BOARD-E
   matches, so `early.modules` is not involved.
 - Still missing and **not guessed**: sensor CCI bus, reset/power GPIOs, PM8010 and CSIPHY supply rails, CSI
   lanes. `profiles/asus/ux3407na/kernel/ux3407na-camera.dtsi` is the guarded slot for them (it fails to
-  compile until filled) and is deliberately not applied by `prepare-board-fixes.py`.
+  compile until filled) and is deliberately not applied by `prepare-board-fixes.dev`.
 
 `devos-camera-report` now also prints `kernel-camss-glymur-match`, `kernel-pm8010-match` and `dt-camcc-node`,
 so the next boot shows which layer is missing. Even with the patched driver the camera stays absent until the
@@ -967,11 +973,11 @@ A community A14 camera description exists (see `native/kernel/ux3407na-camera/BO
 value tagged by provenance, into `profiles/asus/ux3407na/kernel/ux3407na-camera-candidate.dtsi` and is **off by default**.
 This laptop's DSDT confirms the PM8010 address/bus (0x08 on i2c5, 100 kHz), the three CSIPHYs and the CCI windows; the
 sensor reset GPIO, MCLK4, CCI1 bus 1, lanes, PM8010 reset GPIO and LDO mapping are community/A16 claims. The Windows
-sensor module cannot supply pins (`tools/live/decode-camx-sensormodule.py`). The earlier "MCLK3" inference was wrong.
+sensor module cannot supply pins (`tools/live/decode-camx-sensormodule.dev`). The earlier "MCLK3" inference was wrong.
 
 For the camera to appear: build a kernel + modules + DTB from a source prepared with
-`native/kernel/ux3407na-camera/prepare-source.py --output ...`, run
-`prepare-board-fixes.py --enable-camera-candidate`, rebuild the image. A new image with the stock kernel is not enough.
+`native/kernel/ux3407na-camera/prepare-source.dev --output ...`, run
+`prepare-board-fixes.dev --enable-camera-candidate`, rebuild the image. A new image with the stock kernel is not enough.
 `devos-camera-report` then prints the sensor node's values so the run shows which candidate wiring was booted.
 
 ### Bluetooth: controller scans, Settings page showed nothing (boot ed68b0bd, 2026-10-24 14:05)

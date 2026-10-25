@@ -266,8 +266,8 @@ export function SettingsView({services, initialPage = 'system', onPageChanged}: 
 }
 export function mountSettings(window: Gtk.ApplicationWindow, services: SettingsServices) {
     const root = createRoot(window);
-    const header = mountWindowHeader(window, {title: 'Settings', iconName: 'preferences-system-symbolic',
-        windowIconName: 'preferences-system', iconId: 'settings-window-icon'});
+    const header = mountWindowHeader(window, {title: 'Settings', iconName: 'dev-os-settings-symbolic',
+        windowIconName: 'dev-os-settings', iconId: 'settings-window-icon'});
     let generation = 0;
     let lastPage = 'system';
     const show = (page?: string) => {

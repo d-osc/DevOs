@@ -12,7 +12,7 @@ disable swap globally. Terminal child commands inherit this system scope unless
 launched separately. Without a systemd user manager the session still starts and
 prints that this policy could not be applied.
 
-Only external apps, including the bundled Chrome and VS Code, use these ranks:
+Only external (third-party) apps use these ranks:
 
 - Five most recently focused applications: `memory.low` soft protection, capped
   at 10% of RAM or 512 MiB per app group.

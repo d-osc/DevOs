@@ -39,6 +39,8 @@ do_install() {
     install -m0644 ${S}/data/polkit-1/actions/org.devos.fan.policy ${D}${datadir}/polkit-1/actions/
     install -m0755 ${S}/native/devos-swap ${D}${libexecdir}/devos-swap
     install -m0644 ${S}/data/polkit-1/actions/org.devos.swap.policy ${D}${datadir}/polkit-1/actions/
+    install -m0755 ${S}/native/devos-system-update ${D}${libexecdir}/devos-system-update
+    install -m0644 ${S}/data/polkit-1/actions/org.devos.system-update.policy ${D}${datadir}/polkit-1/actions/
     install -m0755 ${S}/native/devos-keyboard ${D}${libexecdir}/devos-keyboard
     install -m0644 ${S}/data/polkit-1/actions/org.devos.keyboard.policy ${D}${datadir}/polkit-1/actions/
     install -m0755 ${S}/native/devos-connectivity ${D}${libexecdir}/devos-connectivity

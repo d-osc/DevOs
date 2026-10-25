@@ -14,6 +14,11 @@ import {LockScreen} from '@dev-os/runtime/lock';
 import {SleepGuard} from '@dev-os/runtime/sleep';
 import {LidStandby} from '@dev-os/runtime/lid';
 
+/** Report a boot milestone to devos-splash without waiting for it or failing when it is not installed. */
+function splashStep(step: string): void {
+    try { GLib.spawn_command_line_async(`devos-splash --step ${step}`); } catch { /* no boot animation here */ }
+}
+
 interface ShellOptions {config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]; preferences?: ExtensionManager;}
 
 export const DesktopShell = GObject.registerClass(class ShellApplication extends Gtk.Application {
@@ -116,6 +121,9 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             message => { if (!this.quitting) this.showMessage(message); });
         this.lidStandby.start();
         print(`Dev OS shell ready on ${GLib.getenv('WAYLAND_DISPLAY')} (${this.display.get_n_monitors()} output(s)) [GJS]`);
+        // Boot animation milestones (fire-and-forget; absent outside the Dev OS image): the shell runs, then its first frames are on screen.
+        splashStep('shell');
+        GLib.idle_add(GLib.PRIORITY_LOW, () => { GLib.timeout_add(GLib.PRIORITY_LOW, 700, () => { splashStep('ready'); return GLib.SOURCE_REMOVE; }); return GLib.SOURCE_REMOVE; });
     }
 
     vfunc_activate() {}
@@ -142,7 +150,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         case 'window-next': this.windows?.gesture('next'); break;
         case 'window-previous': this.windows?.gesture('previous'); break;
         case 'window-restore': this.windows?.gesture('restore'); break;
-        case 'camera': case 'microphone': case 'app-store': case 'disk-manager': case 'installer': case 'task-manager': case 'launcher': case 'overlays-hide': case 'logout': case 'settings': case 'snap-layouts': case 'task-view': case 'task-view-show': case 'task-view-hide': this.invoke(command); break;
+        case 'browser': case 'camera': case 'microphone': case 'app-store': case 'disk-manager': case 'installer': case 'task-manager': case 'launcher': case 'overlays-hide': case 'logout': case 'settings': case 'snap-layouts': case 'task-view': case 'task-view-show': case 'task-view-hide': this.invoke(command); break;
         case 'wifi': this.invoke('settings.wifi'); break;
         case 'network': this.invoke('settings.network'); break;
         case 'language': this.invoke('settings.language'); break;

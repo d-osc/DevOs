@@ -1,7 +1,6 @@
 import {version} from './protocol.js';
 
 export const SWAYLOCK_RELEASES = 'https://github.com/swaywm/swaylock/releases';
-export const SWAYLOCK_PINNED_VERSION = '1.7.2';
 export interface DependencyUpdate {
     installed: string | null;
     latest: string | null;

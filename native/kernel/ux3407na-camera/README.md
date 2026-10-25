@@ -41,7 +41,7 @@ The stack was applied successfully with `--fuzz=0` to temporary copies.
 Check without building or modifying the original source:
 
 ```sh
-python3 native/kernel/ux3407na-camera/prepare-source.py \
+d native/kernel/ux3407na-camera/prepare-source.dev -- \
   --source /var/tmp/devos-live-build/linux-qcom-x1e-7.3.0
 ```
 
@@ -66,14 +66,14 @@ Board facts derived from this laptop's ACPI tables and the open wiring items: se
 
 ## Matching module bundle (2026-10-24)
 
-`prepare-bundle.py` compiles the three changed modules against the existing checked
+`prepare-bundle.dev` compiles the three changed modules against the existing checked
 kernel build, checks every imported symbol CRC against its Module.symvers, requires
 the base EC proof's symbol-table hash and the same kernel config, then composes the
 candidate DTB with EC/audio fixes. The main kernel Image is unchanged: these changes
 are all in loadable modules and DT. A DTB alone is rejected by USB staging.
 
 ```sh
-python3 native/kernel/ux3407na-camera/prepare-bundle.py \
+d native/kernel/ux3407na-camera/prepare-bundle.dev -- \
   --source /var/tmp/devos-camera-source-20261024 \
   --build /var/tmp/devos-kernel-x2/build-latest-20261023 \
   --bundle /var/tmp/devos-kernel-x2/bundle-audio-ec-20261024-110258 \

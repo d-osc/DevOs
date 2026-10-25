@@ -1,0 +1,3 @@
+# Entry point of bin/dev-os-keyboard (the implementation is lib/keyboard.dev so tests can drive its pieces).
+use "../lib/keyboard.dev" as kbd
+return kbd.main()

@@ -1,0 +1,303 @@
+# A minimal Wayland client over the wire protocol (libc sockets through DevLang FFI): registry discovery, binding, requests
+# with an optional file descriptor (SCM_RIGHTS), and a pump that returns the events the caller cares about.
+# Used by dev-os-keyboard (ext-idle-notify-v1) and dev-os-display-care (wlr-gamma-control, ext-idle-notify-v1).
+# A Session is a plain value: every function that changes it returns the new Session (DevLang collections are copy-on-write).
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "../lib/hw.dev" as hw
+
+extern fn socket(domain: i32, type: i32, protocol: i32): i32
+extern fn connect(fd: i32, address: *u8, length: u32): i32
+extern fn close(fd: i32): i32
+extern fn recv(fd: i32, data: *u8, size: usize, flags: i32): isize
+extern fn send(fd: i32, data: *u8, size: usize, flags: i32): isize
+extern fn sendmsg(fd: i32, message: *u8, flags: i32): isize
+extern fn poll(fds: *u8, count: usize, timeout: i32): i32
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+
+struct Msg { obj: i64, op: i64, data: Vec<u8> }
+struct Session {
+    fd: i32, pending: Vec<u8>, inbox: Vec<Msg>, next: i64, last: i64, registry: i64,
+    names: Vec<i64>, interfaces: Vec<str>, versions: Vec<i64>, removed: Vec<i64>
+}
+
+# ---- byte helpers --------------------------------------------------------------------------------------------------------
+fn put32(out: Vec<u8>, value: i64): Vec<u8> {
+    out.push((value & 255) as u8)
+    out.push(((value >> 8) & 255) as u8)
+    out.push(((value >> 16) & 255) as u8)
+    out.push(((value >> 24) & 255) as u8)
+    return out
+}
+fn get32(data: Vec<u8>, offset: i64): i64 {
+    if offset < 0 || offset + 4 > (data.len() as i64) { return 0 }
+    return (data[offset] as i64) | ((data[offset + 1] as i64) << 8) | ((data[offset + 2] as i64) << 16) | ((data[offset + 3] as i64) << 24)
+}
+# Wayland string: u32 length including the NUL, the bytes, the NUL and padding to 4 bytes.
+fn putString(out: Vec<u8>, text: str): Vec<u8> {
+    let bytes = encoding.encode(text, "utf8")
+    let length = (bytes.len() as i64) + 1
+    out = put32(out, length)
+    for i in 0..(bytes.len() as i64) { out.push(bytes[i]) }
+    out.push(0)
+    let pad = (4 - (length % 4)) % 4
+    for i in 0..pad { out.push(0) }
+    return out
+}
+fn getString(data: Vec<u8>, offset: i64): str {
+    let length = get32(data, offset)
+    let bytes = Vec<u8>()
+    for i in 0..(length - 1) {
+        if offset + 4 + i >= (data.len() as i64) { break }
+        bytes.push(data[offset + 4 + i])
+    }
+    return encoding.decode(bytes, "utf8")
+}
+fn padded(length: i64): i64 { return length + ((4 - (length % 4)) % 4) }
+
+# ---- sockets -------------------------------------------------------------------------------------------------------------
+# Connected AF_UNIX stream socket, or -1.
+fn connectUnix(path: str): i32 {
+    let bytes = encoding.encode(path, "utf8")
+    if bytes.len() == 0 || bytes.len() >= 108 { return 0 - 1 }
+    unsafe {
+        let address = malloc(110)
+        for i in 0..110 { address[i] = 0 }
+        # Linux sockaddr_un: native-endian AF_UNIX followed by sun_path[108].
+        let family = address as *u16
+        family[0] = 1
+        for i in 0..(bytes.len() as i64) { address[2 + i] = bytes[i] }
+        let fd = socket(1, 1 | 0x80000, 0)
+        if fd < 0 { free(address as *void); return 0 - 1 }
+        let connected = connect(fd, address, 110)
+        free(address as *void)
+        if connected != 0 { close(fd); return 0 - 1 }
+        return fd
+    }
+}
+fn closeFd(fd: i32) { unsafe { close(fd) } }
+
+fn sendAll(fd: i32, bytes: Vec<u8>): bool {
+    let ok = true
+    unsafe {
+        let buffer = malloc(bytes.len() + 1)
+        for i in 0..(bytes.len() as i64) { buffer[i] = bytes[i] }
+        let done = 0
+        while done < (bytes.len() as i64) {
+            # MSG_NOSIGNAL: a vanished compositor is an error return, not SIGPIPE.
+            let count = send(fd, buffer + done, bytes.len() - done as usize, 0x4000)
+            if count <= 0 { ok = false; break }
+            done = done + count as i64
+        }
+        free(buffer as *void)
+    }
+    return ok
+}
+
+# One request that carries a file descriptor (SCM_RIGHTS), e.g. the gamma table memfd.
+fn sendWithFd(fd: i32, bytes: Vec<u8>, passed: i32): bool {
+    let ok = false
+    unsafe {
+        let buffer = malloc(bytes.len() + 1)
+        for i in 0..(bytes.len() as i64) { buffer[i] = bytes[i] }
+        # struct iovec { void *base; size_t len; }
+        let iov = malloc(16)
+        let iovWords = iov as *u64
+        iovWords[0] = buffer as u64
+        iovWords[1] = bytes.len() as u64
+        # struct cmsghdr { size_t len; int level; int type; } followed by the int fd (CMSG_LEN(4) = 20, CMSG_SPACE(4) = 24)
+        let control = malloc(24)
+        for i in 0..24 { control[i] = 0 }
+        let controlWords = control as *u64
+        controlWords[0] = 20
+        let controlInts = control as *i32
+        controlInts[2] = 1      # SOL_SOCKET
+        controlInts[3] = 1      # SCM_RIGHTS
+        controlInts[4] = passed
+        # struct msghdr (LP64): name, namelen(+pad), iov, iovlen, control, controllen, flags(+pad)
+        let header = malloc(56)
+        for i in 0..56 { header[i] = 0 }
+        let words = header as *u64
+        words[2] = iov as u64
+        words[3] = 1
+        words[4] = control as u64
+        words[5] = 24
+        let count = sendmsg(fd, header, 0x4000)
+        ok = count == (bytes.len() as isize)
+        free(header as *void)
+        free(control as *void)
+        free(iov as *void)
+        free(buffer as *void)
+    }
+    return ok
+}
+
+# ---- session -------------------------------------------------------------------------------------------------------------
+fn header(obj: i64, opcode: i64, payloadLength: i64): Vec<u8> {
+    let out = Vec<u8>()
+    out = put32(out, obj)
+    out = put32(out, ((8 + payloadLength) << 16) | opcode)
+    return out
+}
+fn message(obj: i64, opcode: i64, payload: Vec<u8>): Vec<u8> {
+    let out = header(obj, opcode, payload.len() as i64)
+    for i in 0..(payload.len() as i64) { out.push(payload[i]) }
+    return out
+}
+
+fn request(s: Session, obj: i64, opcode: i64, payload: Vec<u8>): bool { return sendAll(s.fd, message(obj, opcode, payload)) }
+fn requestFd(s: Session, obj: i64, opcode: i64, payload: Vec<u8>, passed: i32): bool { return sendWithFd(s.fd, message(obj, opcode, payload), passed) }
+
+fn allocate(s: Session): Session {
+    s.last = s.next
+    s.next = s.next + 1
+    return s
+}
+
+fn newSession(fd: i32): Session {
+    return Session(fd, Vec<u8>(), Vec<Msg>(), 2, 0, 0, Vec<i64>(), Vec<str>(), Vec<i64>(), Vec<i64>())
+}
+
+# Reads what is pending (waiting up to timeoutMs for the first byte) and sorts it: wl_display and wl_registry events update the
+# session, everything else is appended to `inbox` for the caller. Raises when the compositor closes or reports an error.
+fn pump(s: Session, timeoutMs: i64): Session {
+    unsafe {
+        let descriptor = malloc(8)
+        let pfd = descriptor as *i32
+        pfd[0] = s.fd
+        let flags = (descriptor + 4) as *i16
+        flags[0] = 1
+        flags[1] = 0
+        let ready = poll(descriptor, 1, timeoutMs as i32)
+        free(descriptor as *void)
+        if ready <= 0 { return s }
+        let buffer = malloc(65536)
+        let count = recv(s.fd, buffer, 65536, 0)
+        if count <= 0 { free(buffer as *void); result.raise("The compositor closed the connection.") }
+        for i in 0..(count as i64) { s.pending.push(buffer[i]) }
+        free(buffer as *void)
+    }
+    let offset = 0
+    let total = s.pending.len() as i64
+    while total - offset >= 8 {
+        let obj = get32(s.pending, offset)
+        let word = get32(s.pending, offset + 4)
+        let size = word >> 16
+        if size < 8 || total - offset < size { break }
+        let data = Vec<u8>()
+        for i in (offset + 8)..(offset + size) { data.push(s.pending[i]) }
+        let opcode = word & 65535
+        offset = offset + size
+        if obj == 1 {
+            if opcode == 0 {
+                let code = get32(data, 4)
+                result.raise("Wayland protocol error ${code}: " + getString(data, 8))
+            }
+        } else if obj == s.registry {
+            if opcode == 0 {
+                s.names.push(get32(data, 0))
+                let length = get32(data, 4)
+                s.interfaces.push(getString(data, 4))
+                s.versions.push(get32(data, 8 + padded(length)))
+            } else if opcode == 1 {
+                let name = get32(data, 0)
+                for i in 0..(s.names.len() as i64) {
+                    if s.names[i] == name { s.names[i] = 0 - 1; s.interfaces[i] = "" }
+                }
+                s.removed.push(name)
+            }
+        } else {
+            s.inbox.push(Msg(obj, opcode, data))
+        }
+    }
+    let rest = Vec<u8>()
+    for i in offset..total { rest.push(s.pending[i]) }
+    s.pending = rest
+    return s
+}
+
+# Asks the compositor to answer and pumps until it did; events for other objects stay in the inbox.
+fn roundtrip(s: Session, timeoutMs: i64): Session {
+    s = allocate(s)
+    let callback = s.last
+    if !request(s, 1, 0, put32(Vec<u8>(), callback)) { result.raise("The compositor closed the connection.") }
+    let deadline = hw.nowSeconds() + (timeoutMs as f64) / 1000.0
+    while true {
+        let before = s.inbox.len() as i64
+        s = pump(s, 200)
+        let done = false
+        let kept = Vec<Msg>()
+        for i in 0..(s.inbox.len() as i64) {
+            if s.inbox[i].obj == callback { done = true } else { kept.push(s.inbox[i]) }
+        }
+        s.inbox = kept
+        if done { return s }
+        if hw.nowSeconds() >= deadline { result.raise("The compositor did not answer.") }
+    }
+    return s
+}
+
+# Connects, fetches the registry and waits for the initial list of globals.
+fn open(path: str): Session {
+    let fd = connectUnix(path)
+    if fd < 0 { result.raise("No Wayland compositor at " + path + ": " + (hw.exists(path) ? "Connection refused." : "No such file or directory.")) }
+    let s = newSession(fd)
+    s.registry = s.next
+    s.next = s.next + 1
+    if !request(s, 1, 1, put32(Vec<u8>(), s.registry)) { result.raise("The compositor closed the connection.") }
+    return roundtrip(s, 3000)
+}
+
+fn disconnect(s: Session) { closeFd(s.fd) }
+
+# Index into the globals of the first advertised `interface`, or -1.
+fn find(s: Session, interface: str): i64 {
+    for i in 0..(s.names.len() as i64) { if strings.equal(s.interfaces[i], interface) { return i } }
+    return 0 - 1
+}
+fn count(s: Session, interface: str): i64 {
+    let n = 0
+    for i in 0..(s.names.len() as i64) { if strings.equal(s.interfaces[i], interface) { n = n + 1 } }
+    return n
+}
+# Name (registry id) of the k-th advertised global of `interface`, or -1.
+fn nameOf(s: Session, interface: str, k: i64): i64 {
+    let seen = 0
+    for i in 0..(s.names.len() as i64) {
+        if strings.equal(s.interfaces[i], interface) {
+            if seen == k { return s.names[i] }
+            seen = seen + 1
+        }
+    }
+    return 0 - 1
+}
+fn versionOf(s: Session, interface: str): i64 {
+    let at = find(s, interface)
+    return at < 0 ? 0 : s.versions[at]
+}
+
+# wl_registry.bind of the global `name`; the new object id is in `s.last`.
+fn bind(s: Session, name: i64, interface: str, version: i64): Session {
+    s = allocate(s)
+    let payload = put32(Vec<u8>(), name)
+    payload = putString(payload, interface)
+    payload = put32(payload, version)
+    payload = put32(payload, s.last)
+    request(s, s.registry, 0, payload)
+    return s
+}
+
+# Wayland path from WAYLAND_DISPLAY / XDG_RUNTIME_DIR ("" when none).
+fn socketPath(): str {
+    let runtime = hw.env("XDG_RUNTIME_DIR")
+    let name = hw.env("WAYLAND_DISPLAY")
+    if strings.charLength(name) > 0 { return strings.startsWith(name, "/") ? name : runtime + "/" + name }
+    if strings.charLength(runtime) == 0 { return "" }
+    let names = hw.listDir(runtime)
+    for i in 0..(names.len() as i64) {
+        if strings.startsWith(names[i], "wayland-") && !strings.endsWith(names[i], ".lock") { return runtime + "/" + names[i] }
+    }
+    return ""
+}
