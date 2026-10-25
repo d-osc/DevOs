@@ -1,0 +1,6 @@
+#!/usr/bin/env d
+# Build matching camera modules and an explicit experimental A14 camera DTB.
+# Preserves the checked base kernel, EC module and audio fixes. Does not flash USB.
+# Usage: d prepare-bundle.dev -- --source DIR --build DIR --bundle DIR --output NEWDIR
+use "../../../distro/usb/boardtools.dev" as tools
+return tools.guarded(fn() { tools.cameraBundle() })

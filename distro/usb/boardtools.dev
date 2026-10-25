@@ -1,0 +1,283 @@
+# Board bundle tools for the UX3407NA Live USB: audio DTB (prepare-board-fixes), EC module + wakeup DTB (prepare-suspend-fixes) and the
+# experimental camera modules + DTB (native/kernel/ux3407na-camera/prepare-bundle). Library; the entry points are the small *.dev files.
+use "std/args"
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../usb/hostio.dev" as io
+use "../usb/usbstage.dev" as st
+
+fn require(condition: bool, message: str) { if !condition { result.raise(message) } }
+fn run(argv: Vec<str>): str { return io.run(argv) }
+fn digest(path: str): str { return io.digest(path) }
+fn jstr(v: json.Value, key: str): str { return hw.jstr(v, key, "") }
+
+fn option(flag: str, fallback: str): str {
+    for i in 0..(args.len() as i64) {
+        if strings.equal(args.get(i), flag) {
+            require(i + 1 < (args.len() as i64), "Missing value for " + flag)
+            return args.get(i + 1)
+        }
+    }
+    return fallback
+}
+fn needed(flag: str): str {
+    let value = option(flag, "")
+    require(strings.charLength(value) > 0, "the following arguments are required: " + flag)
+    return value
+}
+fn hasFlag(flag: str): bool {
+    for i in 0..(args.len() as i64) { if strings.equal(args.get(i), flag) { return true } }
+    return false
+}
+
+# Runs `body` and turns a raised error into a message on stderr and exit status 1.
+fn guarded(body: fn(): void): i32 {
+    let outcome = result.run(body)
+    if result.isErr(outcome) {
+        hw.stderr(hw.errorText(result.message(outcome)))
+        return 1
+    }
+    return 0
+}
+
+# Every file below `directory` except manifest.json: relative name -> SHA-256, symlinks skipped.
+fn fileDigests(directory: str): json.Value {
+    let out = json.object()
+    let found = io.entries(directory)
+    let names = Vec<str>()
+    for i in 0..(found.len() as i64) {
+        if strings.equal(found[i].kind, "f") && !strings.equal(st.baseName(found[i].path), "manifest.json") { names.push(found[i].path) }
+    }
+    let hashes = io.digestAll(directory, names)
+    for i in 0..(names.len() as i64) { out = json.set(out, names[i], hashes[i]) }
+    return out
+}
+
+# Preprocess + compile a board DTS the way the kernel build does.
+fn compileDts(sourceTree: str, includeDir: str, dts: str, expanded: str, dtc: str, dtb: str) {
+    run(Vec<str>("sh", "-c", "gcc -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I" + io.quote(sourceTree + "/include") + " -I" + io.quote(includeDir) + " " + io.quote(dts) + " > " + io.quote(expanded)))
+    run(Vec<str>(dtc, "-I", "dts", "-O", "dtb", "-o", dtb, expanded))
+}
+
+fn checkBundle(bundle: str, record: json.Value, message: str) {
+    let files = json.get(record, "files")
+    let names = json.keys(files)
+    let hashes = io.digestAll(bundle, names)
+    for i in 0..(names.len() as i64) { require(strings.equal(hashes[i], json.string(json.get(files, names[i]))), message + names[i]) }
+}
+
+fn dtsRelative(): str { return "arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a14-ux3407na.dts" }
+
+# ---- prepare-board-fixes: compile a private UX3407NA DTB with upstream audio nodes; no kernel source edits ------------------
+fn boardFixes() {
+    let source = needed("--source")
+    let bundle = needed("--bundle")
+    let output = needed("--output")
+    let dtc = needed("--dtc")
+    let camera = hasFlag("--enable-camera-candidate")
+    require(fs.is_file(dtc), "Missing built Device Tree compiler")
+    require(!io.exists(output), "Choose a new output bundle")
+    let original = source + "/" + dtsRelative()
+    require(strings.contains(hw.readText(original), "asus,zenbook-a14-ux3407na"), "Not the UX3407NA board source")
+    if camera { st.checkCameraSource(source) }
+    let record = io.readJson(bundle + "/manifest.json")
+    checkBundle(bundle, record, "Input kernel bundle checksum mismatch: ")
+    run(Vec<str>("cp", "-a", "--", bundle, output))
+    let target = output + "/board.dtb"
+    run(Vec<str>("rm", "-f", "--", target))
+    let temp = io.tempDir("devos-dtb-", "")
+    let board = temp + "/" + dtsRelative()
+    io.mkdirs(hw.parentDir(board))
+    io.writeText(board, hw.readText(original))
+    st.preserveEc(temp, record)
+    st.appendAudio(board)
+    if camera { st.appendCameraCandidate(board) }
+    compileDts(source, hw.parentDir(original), board, temp + "/board.pp.dts", dtc, target)
+    io.removeTree(temp)
+    st.writeProof(output, original, camera)
+    let files = json.get(record, "files")
+    files = json.set(files, "board.dtb", digest(target))
+    files = json.set(files, "board-fixes.json", digest(output + "/board-fixes.json"))
+    record = json.set(json.set(record, "files", files), "hardwareTested", false)
+    run(Vec<str>("rm", "-f", "--", output + "/manifest.json"))
+    io.writeJson(output + "/manifest.json", record)
+    print("Prepared private board DTB with two-speaker routing and explicit QCC2072 Bluetooth firmware: " + output)
+}
+
+# ---- prepare-suspend-fixes: add the upstream ASUS EC module and board nodes to a matching private X2 bundle --------------------
+fn suspendPatches(): json.Value {
+    let out = json.object()
+    out = json.set(out, "0001-asus-glymur-ec.patch", "19c769edb764d3b6d9358eef9b39baed9b4e839d1b20a65e9e7923a5bfc7e5e4")
+    out = json.set(out, "0002-ux3407na-ec.patch", "e8110cf1d5fa3aad9c17f914da0c951142da463cffdc7718dbeb03fc6982fc83")
+    return out
+}
+
+fn suspendFixes() {
+    let source = needed("--source")
+    let build = needed("--build")
+    let bundle = needed("--bundle")
+    let output = needed("--output")
+    let patches = st.repoRoot() + "/native/kernel/asus-glymur-ec"
+    let expected = suspendPatches()
+    let names = json.keys(expected)
+    for i in 0..(names.len() as i64) {
+        require(strings.equal(digest(patches + "/" + names[i]), json.string(json.get(expected, names[i]))), "Upstream patch checksum mismatch: " + names[i])
+    }
+    let record = io.readJson(bundle + "/manifest.json")
+    checkBundle(bundle, record, "Input bundle checksum mismatch: ")
+    # Out-of-tree module builds must use precisely the Image, config and symbol versions that produced this bundle, never the build host's kernel headers.
+    let pairs = Vec<str>("arch/arm64/boot/Image", "Image", ".config", "kernel.config")
+    for i in 0..2 {
+        require(strings.equal(digest(build + "/" + pairs[i * 2]), digest(bundle + "/" + pairs[i * 2 + 1])), "Kernel build differs from input bundle: " + pairs[i * 2])
+    }
+    let release = jstr(record, "release")
+    require(strings.equal(strings.trim(hw.readText(build + "/include/config/kernel.release")), release), "Kernel release mismatch")
+    let config = strings.split(hw.readText(build + "/.config"), "\n")
+    let settings = Vec<str>("PM", "I2C", "HWMON", "INPUT", "LEDS_CLASS")
+    for i in 0..(settings.len() as i64) { require(hw.contains(config, "CONFIG_" + settings[i] + "=y"), "Required built-in kernel dependency missing: " + settings[i]) }
+    require(!io.exists(output), "Choose a new output bundle")
+    let temp = io.tempDir("devos-asus-ec-", "")
+    let module = temp + "/module"
+    io.mkdirs(module)
+    let lines = strings.split(hw.readText(patches + "/0001-asus-glymur-ec.patch"), "\n")
+    let start = 0 - 1
+    for i in 0..(lines.len() as i64) { if start < 0 && strings.equal(lines[i], "@@ -0,0 +1,616 @@") { start = i + 1 } }
+    require(start >= 0, "Unexpected upstream module patch format")
+    let additions = Vec<str>()
+    for i in start..(start + 616) {
+        require(i < (lines.len() as i64) && strings.startsWith(lines[i], "+"), "Unexpected upstream module patch format")
+        additions.push(strings.substring(lines[i], 1, strings.charLength(lines[i])))
+    }
+    io.writeText(module + "/asus-glymur-ec.c", strings.join(additions, "\n") + "\n")
+    io.writeText(module + "/Makefile", "obj-m += asus-glymur-ec.o\n")
+    run(Vec<str>("make", "-C", source, "O=" + build, "ARCH=arm64", "M=" + module, "-j2", "modules"))
+    let vermagic = strings.trim(run(Vec<str>("modinfo", "-F", "vermagic", module + "/asus-glymur-ec.ko")))
+    let aliases = run(Vec<str>("modinfo", "-F", "alias", module + "/asus-glymur-ec.ko"))
+    require(strings.equal(hw.words(vermagic)[0], release) && strings.contains(aliases, "asus,zenbook-a14-ux3407na-ec"), "Module version or device alias mismatch")
+    let relative = dtsRelative()
+    let board = temp + "/" + relative
+    io.mkdirs(hw.parentDir(board))
+    io.copyFile(source + "/" + relative, board)
+    run(Vec<str>("sh", "-c", "cd " + io.quote(temp) + " && patch --batch --fuzz=0 -p1 -i " + io.quote(patches + "/0002-ux3407na-ec.patch")))
+    # Sleep and audio corrections must share one DTB. Rebuilding from the pinned source previously brought back the incompatible four-speaker map.
+    st.appendAudio(board)
+    let dtb = temp + "/board.dtb"
+    compileDts(source, hw.parentDir(source + "/" + relative), board, temp + "/board.pp.dts", build + "/scripts/dtc/dtc", dtb)
+    run(Vec<str>("cp", "-a", "--", bundle, output))
+    io.copyFile(dtb, output + "/board.dtb")
+    let extra = output + "/modules/lib/modules/" + release + "/extra"
+    io.mkdirs(extra)
+    io.copyFile(module + "/asus-glymur-ec.ko", extra + "/asus-glymur-ec.ko")
+    run(Vec<str>("depmod", "-b", output + "/modules", release))
+    io.removeTree(temp)
+    let proof = json.object()
+    proof = json.set(proof, "patches", expected)
+    proof = json.set(proof, "upstream", "https://lists.openwall.net/linux-kernel/2026/10/15/948")
+    proof = json.set(proof, "hardwareTested", false)
+    proof = json.set(proof, "moduleVermagic", vermagic)
+    proof = json.set(proof, "moduleSymversSha256", digest(build + "/Module.symvers"))
+    io.writeJson(output + "/suspend-fixes.json", proof)
+    st.writeProof(output, source + "/" + relative, false)
+    record = json.set(json.set(record, "files", fileDigests(output)), "hardwareTested", false)
+    io.writeJson(output + "/manifest.json", record)
+    print("Prepared matching ASUS EC module and UX3407NA wakeup DTB: " + output)
+}
+
+# ---- native/kernel/ux3407na-camera/prepare-bundle: matching camera modules and an explicit experimental A14 camera DTB -------
+fn cameraBundle() {
+    let kit = st.repoRoot() + "/native/kernel/ux3407na-camera"
+    let source = needed("--source")
+    let build = needed("--build")
+    let bundle = needed("--bundle")
+    let output = needed("--output")
+    let series = io.readJson(kit + "/series.json")
+    require(json.stringify(io.readJson(source + "/devos-camera-provenance.json")) == json.stringify(series), "Use a private source from prepare-source.dev")
+    let patches = json.get(series, "patches")
+    for p in 0..(json.len(patches) as i64) {
+        let patch = json.at(patches, p)
+        require(strings.equal(digest(kit + "/" + jstr(patch, "file")), jstr(patch, "sha256")), "Camera patch checksum mismatch")
+    }
+    require(!io.exists(output), "Choose a new output bundle")
+    let record = io.readJson(bundle + "/manifest.json")
+    checkBundle(bundle, record, "Base bundle checksum mismatch: ")
+    require(strings.equal(digest(build + "/.config"), digest(bundle + "/kernel.config")), "Build configuration differs from the base kernel")
+    let ec = io.readJson(bundle + "/suspend-fixes.json")
+    require(strings.equal(jstr(ec, "moduleSymversSha256"), digest(build + "/Module.symvers")), "Build symbol ABI differs from the checked base kernel")
+    let kernelSource = io.resolve(build + "/source")
+    require(fs.is_dir(kernelSource), "Missing kernel source link in the build directory")
+    let dirs = Vec<str>("drivers/media/platform/qcom/camss", "drivers/mfd", "drivers/regulator")
+    let names = Vec<str>("qcom-camss", "qcom-pm8008", "qcom-pm8008-regulator")
+    let aliasesWanted = Vec<str>("qcom,glymur-camss", "qcom,pm8010-i2c", "")
+    let modinfo = hw.which("modinfo")
+    if strings.charLength(modinfo) == 0 { modinfo = "/usr/sbin/modinfo" }
+    let modprobe = hw.which("modprobe")
+    if strings.charLength(modprobe) == 0 { modprobe = "/usr/sbin/modprobe" }
+    # Module.symvers is tab separated: crc, symbol, module, export type. A Map keeps the per-module check fast.
+    let symbolCrc = Map<str, str>()
+    let symvers = strings.split(hw.readText(build + "/Module.symvers"), "\n")
+    for i in 0..(symvers.len() as i64) {
+        let columns = strings.split(symvers[i], "\t")
+        if columns.len() >= 2 { symbolCrc.set(columns[1], columns[0]) }
+    }
+    let release = strings.trim(run(Vec<str>("make", "-s", "-C", kernelSource, "O=" + build, "kernelrelease")))
+    for m in 0..3 {
+        run(Vec<str>("make", "-C", kernelSource, "O=" + build, "ARCH=arm64", "M=" + source + "/" + dirs[m], "-j2", "modules"))
+        let file = source + "/" + dirs[m] + "/" + names[m] + ".ko"
+        let magic = run(Vec<str>(modinfo, "-F", "vermagic", file))
+        require(strings.equal(hw.words(magic)[0], release), "Camera module version mismatch: " + names[m])
+        if strings.charLength(aliasesWanted[m]) > 0 {
+            require(strings.contains(run(Vec<str>(modinfo, "-F", "alias", file)), aliasesWanted[m]), "Camera module lacks hardware match: " + names[m])
+        }
+        let versions = run(Vec<str>(modprobe, "--show-modversions", file))
+        require(strings.charLength(strings.trim(versions)) > 0, "Expected versioned module symbols: " + names[m])
+        let rows = strings.split(versions, "\n")
+        for r in 0..(rows.len() as i64) {
+            let fields = hw.words(rows[r])
+            if fields.len() != 2 { continue }
+            require(symbolCrc.contains(fields[1]) && hexValue(fields[0]) == hexValue(symbolCrc.get(fields[1])), "Base kernel symbol ABI mismatch: " + names[m] + ": " + fields[1])
+        }
+    }
+    run(Vec<str>(devlang(), st.here() + "/prepare-board-fixes.dev", "--", "--source", source, "--bundle", bundle, "--output", output, "--dtc", build + "/scripts/dtc/dtc", "--enable-camera-candidate"))
+    let patched = json.object()
+    for m in 0..3 {
+        let found = io.runCode(Vec<str>("find", output + "/modules/lib/modules/" + release, "-name", names[m] + ".ko"))
+        let targets = Vec<str>()
+        let rows = strings.split(found.out, "\n")
+        for r in 0..(rows.len() as i64) { if strings.charLength(strings.trim(rows[r])) > 0 { targets.push(strings.trim(rows[r])) } }
+        require(targets.len() == 1, "Expected exactly one base module: " + names[m])
+        io.copyFile(source + "/" + dirs[m] + "/" + names[m] + ".ko", targets[0])
+        patched = json.set(patched, strings.substring(targets[0], strings.charLength(output) + 1, strings.charLength(targets[0])), digest(targets[0]))
+    }
+    let depmod = hw.which("depmod")
+    run(Vec<str>(strings.charLength(depmod) > 0 ? depmod : "/usr/sbin/depmod", "-b", output + "/modules", release))
+    let proof = json.object()
+    proof = json.set(proof, "patches", patches)
+    proof = json.set(proof, "moduleSymversSha256", digest(build + "/Module.symvers"))
+    proof = json.set(proof, "kernelRelease", release)
+    proof = json.set(proof, "hardwareTested", false)
+    proof = json.set(proof, "patchedModules", patched)
+    proof = json.set(proof, "cameraWiring", "community UX3407NA candidate; requires physical validation")
+    io.writeJson(output + "/camera-fixes.json", proof)
+    let manifest = io.readJson(output + "/manifest.json")
+    manifest = json.set(json.set(manifest, "files", fileDigests(output)), "hardwareTested", false)
+    io.writeJson(output + "/manifest.json", manifest)
+    print("PASS: matching camera modules + candidate DTB; EC/audio preserved: " + output)
+    print("Physical camera preview/capture remains unverified. No USB was written.")
+}
+
+fn devlang(): str {
+    let found = hw.which("d")
+    return strings.charLength(found) > 0 ? found : hw.home() + "/.local/bin/d"
+}
+
+fn hexValue(text: str): i64 {
+    let digits = "0123456789abcdef"
+    let value = 0
+    let t = strings.toLowerCase(text)
+    if strings.startsWith(t, "0x") { t = strings.substring(t, 2, strings.charLength(t)) }
+    for i in 0..strings.charLength(t) { value = value * 16 + strings.indexOf(digits, strings.charAt(t, i)) }
+    return value
+}

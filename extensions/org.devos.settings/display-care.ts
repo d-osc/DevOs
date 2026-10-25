@@ -1,5 +1,4 @@
-import {Gio, GLib} from '@dev-os/core';
-import {ROOT} from '@dev-os/config';
+import {HelperClient} from './helper-client.js';
 import {defaultCare, type CareSettings} from '../org.devos.displaycare/care.js';
 export type {CareSettings, Splendid} from '../org.devos.displaycare/care.js';
 export interface Capability {available: boolean; reason: string;}
@@ -28,22 +27,6 @@ export const splendidModes = {
     eyecare: {title: 'Eye Care', description: 'Eye Care mode reduces blue light emission by up to 30%, which helps in protecting your eyes.'},
     ereading: {title: 'E-Reading', description: 'Switches the display to black and white to minimize color impact, enhance readability, and reduce eye strain during prolonged reading sessions.'},
 } as const;
-export class DisplayCare implements DisplayCareControls {
-    private processes = new Set<Gio.Subprocess>(); private disposed = false;
-    request(action: DisplayCareAction, ...args: string[]): Promise<DisplayCareState> {
-        return new Promise((resolve, reject) => {
-            if (this.disposed) {reject(new Error('Display settings closed.')); return;}
-            try {
-                const local = `${ROOT}/bin/dev-os-display-care`, helper = GLib.file_test(local, GLib.FileTest.IS_REGULAR) ? local : GLib.find_program_in_path('dev-os-display-care');
-                if (!helper) throw new Error('Display care is not installed.');
-                const child = Gio.Subprocess.new(['python3', helper, action, ...args], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE); this.processes.add(child);
-                let timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {timer = 0; child.force_exit(); return GLib.SOURCE_REMOVE;});
-                child.communicate_utf8_async(null, null, (_source, result) => {
-                    if (timer) GLib.source_remove(timer); this.processes.delete(child);
-                    try {const [, out, err] = child.communicate_utf8_finish(result); const response = JSON.parse(out || '{}'); if (!child.get_successful() || response.ok !== true) throw new Error(response.error || err || 'Display settings failed.'); resolve(response as DisplayCareState);} catch (reason) {reject(reason);}
-                });
-            } catch (reason) {reject(reason);}
-        });
-    }
-    destroy() {this.disposed = true; for (const child of this.processes) child.force_exit(); this.processes.clear();}
+export class DisplayCare extends HelperClient<DisplayCareState, DisplayCareAction> implements DisplayCareControls {
+    constructor() {super('dev-os-display-care', 60, {closed: 'Display settings closed.', missing: 'Display care is not installed.', failed: 'Display settings failed.'});}
 }

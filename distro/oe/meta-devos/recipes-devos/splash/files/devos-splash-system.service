@@ -1,0 +1,14 @@
+[Unit]
+Description=Dev OS boot animation milestone: services are starting
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+ConditionPathExists=/run/devos-splash.d
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/devos-splash --step system
+TimeoutStartSec=5
+
+[Install]
+WantedBy=basic.target

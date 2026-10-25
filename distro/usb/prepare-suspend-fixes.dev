@@ -1,0 +1,5 @@
+#!/usr/bin/env d
+# Add the upstream ASUS EC module and board nodes to a matching private X2 bundle.
+# Usage: d prepare-suspend-fixes.dev -- --source DIR --build DIR --bundle DIR --output NEWDIR
+use "../usb/boardtools.dev" as tools
+return tools.guarded(fn() { tools.suspendFixes() })

@@ -122,7 +122,7 @@ function LauncherView({window, services, handle}: ViewProps) {
         <Box className="launcher-body" orientation="vertical" spacing={12} borderWidth={20} expand fill>
             <Box spacing={12}>
                 <Box className="launcher-brand" widthRequest={36} heightRequest={36} valign="center">
-                    <Image iconName="view-app-grid-symbolic" pixelSize={20} expand />
+                    <Image iconName="dev-os-symbolic" pixelSize={20} expand />
                 </Box>
                 <Box orientation="vertical" spacing={1} expand>
                     <Label className="launcher-eyebrow" xalign={0}>DEV OS</Label>
@@ -143,7 +143,7 @@ function LauncherView({window, services, handle}: ViewProps) {
                             if (builtin === 'editor' && !services.openEditor) return null;
                             const app = apps.find(item => workspaceAppKey(item) === key);
                             const title = builtin === 'terminal' ? 'Terminal' : builtin === 'files' ? 'Files' : builtin === 'editor' ? 'Editor' : app?.get_display_name() ?? 'Unavailable app';
-                            const icon = builtin === 'terminal' ? 'utilities-terminal' : builtin === 'files' ? 'system-file-manager' : builtin === 'editor' ? 'dev-os-editor' : 'application-x-executable';
+                            const icon = builtin === 'terminal' ? 'dev-os-terminal' : builtin === 'files' ? 'dev-os-files' : builtin === 'editor' ? 'dev-os-editor' : 'application-x-executable';
                             return <Box key={key} className="launcher-workspace-item" spacing={4}>
                                 <Button id={builtin ? `launcher-${builtin}` : `launcher-workspace-${key}`} className="launcher-shortcut" sensitive={Boolean(builtin || app)} widthRequest={180} onClicked={() => {
                                     if (builtin === 'editor') {hide(); services.openEditor?.();}
@@ -209,7 +209,7 @@ function LauncherView({window, services, handle}: ViewProps) {
         </Box>
         <Box className="launcher-footer" spacing={8}>
             {services.showSettings && <Button id="launcher-settings" onClicked={() => { hide(); services.showSettings?.(); }}>
-                <Box spacing={7}><Image iconName="preferences-system-symbolic" pixelSize={16} /><Label>Settings</Label></Box>
+                <Box spacing={7}><Image iconName="dev-os-settings-symbolic" pixelSize={16} /><Label>Settings</Label></Box>
             </Button>}
             <Button id="launcher-lock" tooltip="Lock this session" onClicked={() => {
                 if (services.runCommand('lock')) hide(); else setMessage('Could not lock this session');

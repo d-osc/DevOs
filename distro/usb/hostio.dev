@@ -1,0 +1,265 @@
+# Host-side helpers for the Live USB staging tools (distro/usb/*.dev): long-running subprocesses, SHA-256 of large files,
+# positioned reads, and chunked file output through libc (files are GBs: never load them into a Vec<u8>).
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../lib/hw.dev" as hw
+
+extern fn open(path: str, flags: i32, mode: u32): i32
+extern fn close(fd: i32): i32
+extern fn pread(fd: i32, data: *u8, size: usize, offset: i64): isize
+extern fn read(fd: i32, data: *u8, size: usize): isize
+extern fn write(fd: i32, data: *u8, size: usize): isize
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+
+fn fail(message: str) { result.raise(message) }
+fn require(condition: bool, message: str) { if !condition { result.raise(message) } }
+
+fn quote(value: str): str { return "'" + strings.replaceAll(value, "'", "'\"'\"'") + "'" }
+
+# ---- subprocesses --------------------------------------------------------------------------------------------------------
+struct Done { code: i64, out: str }
+
+# Runs a command of any duration (mkfs, resize2fs, cp of a multi-GB image). The combined output goes to a file, so there is no
+# buffer cap, and a detached shell reports the exit status; the caller polls every 100 ms to 1 s.
+fn runLong(argv: Vec<str>): Done {
+    let stamp = strings.trim(hw.run(Vec<str>("mktemp", "-t", ".devos-run-XXXXXXXX"), 10000).out)
+    let done = runLongAt(argv, stamp)
+    hw.run(Vec<str>("rm", "-f", stamp), 10000)
+    return done
+}
+
+fn runLongAt(argv: Vec<str>, stamp: str): Done {
+    let quoted = Vec<str>()
+    for i in 0..(argv.len() as i64) { quoted.push(quote(argv[i])) }
+    let script = strings.join(quoted, " ") + " > " + quote(stamp + ".out") + " 2> " + quote(stamp + ".err") + "; echo $? > " + quote(stamp + ".code")
+    hw.run(Vec<str>("rm", "-f", stamp + ".out", stamp + ".err", stamp + ".code"), 10000)
+    let pid = hw.spawnDetached(Vec<str>("sh", "-c", script))
+    require(pid > 0, "Could not start " + argv[0])
+    let started = hw.nowSeconds()
+    while !fs.existsSync(stamp + ".code") {
+        hw.sleepSeconds(hw.nowSeconds() - started < 3.0 ? 0.05 : 0.5)
+    }
+    let code = hw.toInt(strings.trim(hw.readText(stamp + ".code")), 1)
+    let out = hw.readText(stamp + ".out")
+    # Standard output only; the error text is appended when the command failed.
+    if code != 0 { out = out + hw.readText(stamp + ".err") }
+    hw.run(Vec<str>("rm", "-f", stamp + ".out", stamp + ".err", stamp + ".code"), 10000)
+    return Done(code, out)
+}
+
+# Output of a command that must succeed ("" lines stay as they are); raises with the command's output otherwise.
+fn run(argv: Vec<str>): str {
+    let done = runLong(argv)
+    require(done.code == 0, argv[0] + " failed: " + strings.trim(done.out))
+    return done.out
+}
+
+fn runCode(argv: Vec<str>): Done { return runLong(argv) }
+
+# ---- files ---------------------------------------------------------------------------------------------------------------
+fn digest(path: str): str {
+    let done = runLong(Vec<str>("sha256sum", "--", path))
+    require(done.code == 0, "Cannot hash " + path)
+    return hw.words(done.out)[0]
+}
+
+# SHA-256 of many files below `directory` with one sha256sum run per batch (spawning one process per file takes minutes for a module tree).
+# The result is aligned with `names`.
+fn digestAll(directory: str, names: Vec<str>): Vec<str> {
+    let out = Vec<str>()
+    if names.len() == 0 { return out }
+    let temp = tempDir("devos-hash-", "")
+    writeText(temp + "/names", strings.join(names, "\n") + "\n")
+    let done = runLong(Vec<str>("sh", "-c", "cd " + quote(directory) + " && xargs -d '\n' -a " + quote(temp + "/names") + " sha256sum --"))
+    require(done.code == 0, "Cannot hash files in " + directory + ": " + strings.trim(done.out))
+    let lines = strings.split(done.out, "\n")
+    for i in 0..(lines.len() as i64) {
+        if strings.charLength(lines[i]) < 66 { continue }
+        out.push(strings.substring(lines[i], 0, 64))
+    }
+    removeTree(temp)
+    require(out.len() == names.len(), "Unexpected sha256sum output in " + directory)
+    return out
+}
+
+# Resolved absolute paths of many names relative to `directory`, aligned with `names`.
+fn resolveAll(directory: str, names: Vec<str>): Vec<str> {
+    let out = Vec<str>()
+    if names.len() == 0 { return out }
+    let temp = tempDir("devos-real-", "")
+    writeText(temp + "/names", strings.join(names, "\n") + "\n")
+    let done = runLong(Vec<str>("sh", "-c", "cd " + quote(directory) + " && xargs -d '\n' -a " + quote(temp + "/names") + " realpath -m --"))
+    require(done.code == 0, "Cannot resolve files in " + directory)
+    let lines = strings.split(done.out, "\n")
+    for i in 0..(lines.len() as i64) { if strings.charLength(lines[i]) > 0 { out.push(lines[i]) } }
+    removeTree(temp)
+    require(out.len() == names.len(), "Unexpected realpath output in " + directory)
+    return out
+}
+
+# SHA-256 of `length` bytes at `offset`.
+fn digestRange(path: str, offset: i64, length: i64): str {
+    let done = runLong(Vec<str>("sh", "-c", "dd if=" + quote(path) + " iflag=skip_bytes,count_bytes skip=${offset} count=${length} bs=8M 2>/dev/null | sha256sum"))
+    require(done.code == 0, "Cannot hash " + path)
+    return hw.words(done.out)[0]
+}
+
+fn size(path: str): i64 { return fs.size(path) }
+
+fn readAt(path: str, offset: i64, length: i64): Vec<u8> {
+    let bytes = Vec<u8>()
+    unsafe {
+        let fd = open(path, 0, 0)
+        if fd < 0 { fail("Cannot open " + path) }
+        let buffer = malloc(length as usize + 1)
+        let got = pread(fd, buffer, length as usize, offset)
+        close(fd)
+        if got < 0 { free(buffer as *void); fail("Cannot read " + path) }
+        for i in 0..(got as i64) { bytes.push(buffer[i]) }
+        free(buffer as *void)
+    }
+    return bytes
+}
+
+fn u16le(data: Vec<u8>, offset: i64): i64 { return (data[offset] as i64) | ((data[offset + 1] as i64) << 8) }
+fn u32le(data: Vec<u8>, offset: i64): i64 {
+    return (data[offset] as i64) | ((data[offset + 1] as i64) << 8) | ((data[offset + 2] as i64) << 16) | ((data[offset + 3] as i64) << 24)
+}
+fn u64le(data: Vec<u8>, offset: i64): i64 { return u32le(data, offset) | (u32le(data, offset + 4) << 32) }
+
+fn hex(value: i64, width: i64): str {
+    let digits = "0123456789abcdef"
+    let out = ""
+    let v = value
+    for i in 0..width {
+        out = strings.charAt(digits, v & 15) + out
+        v = v >> 4
+    }
+    return out
+}
+
+fn bytesEqual(a: Vec<u8>, b: Vec<u8>): bool {
+    if a.len() != b.len() { return false }
+    for i in 0..(a.len() as i64) { if a[i] != b[i] { return false } }
+    return true
+}
+fn bytesContain(data: Vec<u8>, needle: Vec<u8>): bool {
+    let n = needle.len() as i64
+    let total = data.len() as i64
+    if n == 0 { return true }
+    for i in 0..(total - n + 1) {
+        if data[i] != needle[0] { continue }
+        let same = true
+        for k in 1..n { if data[i + k] != needle[k] { same = false; break } }
+        if same { return true }
+    }
+    return false
+}
+fn bytesOf(text: str): Vec<u8> { return encoding.encode(text, "utf8") }
+
+# Appends `length` bytes of `source` (from `offset`) to the open file `outFd`, 1 MiB at a time.
+fn appendFile(outFd: i32, source: str, offset: i64) {
+    unsafe {
+        let fd = open(source, 0, 0)
+        if fd < 0 { fail("Cannot open " + source) }
+        let buffer = malloc(1048576)
+        while true {
+            let got = read(fd, buffer, 1048576)
+            if got < 0 { close(fd); free(buffer as *void); fail("Cannot read " + source) }
+            if got == 0 { break }
+            let done = 0
+            while done < got as i64 {
+                let wrote = writeFd(outFd, buffer + done, (got as i64 - done) as usize)
+                if wrote <= 0 { close(fd); free(buffer as *void); fail("Cannot write the output file") }
+                done = done + wrote as i64
+            }
+        }
+        free(buffer as *void)
+        close(fd)
+    }
+}
+
+fn writeFd(fd: i32, data: *u8, count: usize): isize {
+    let wrote: isize = 0
+    unsafe { wrote = write(fd, data, count) }
+    return wrote
+}
+
+fn writeBytes(fd: i32, data: Vec<u8>) {
+    unsafe {
+        let buffer = malloc(data.len() + 1)
+        for i in 0..(data.len() as i64) { buffer[i] = data[i] }
+        let done = 0
+        while done < data.len() as i64 {
+            let wrote = write(fd, buffer + done, data.len() - done as usize)
+            if wrote <= 0 { free(buffer as *void); fail("Cannot write the output file") }
+            done = done + wrote as i64
+        }
+        free(buffer as *void)
+    }
+}
+
+fn createFile(path: str): i32 {
+    let fd: i32 = 0 - 1
+    unsafe { fd = open(path, 0x241, 420) }   # O_WRONLY | O_CREAT | O_TRUNC, 0644
+    require(fd >= 0, "Cannot create " + path)
+    return fd
+}
+fn closeFd(fd: i32) { unsafe { close(fd) } }
+
+# Absolute path (symlinks resolved); the path need not exist.
+fn resolve(path: str): str {
+    let done = hw.run(Vec<str>("realpath", "-m", "--", path), 10000)
+    return strings.trim(done.out)
+}
+fn exists(path: str): bool { return fs.existsSync(path) || hw.run(Vec<str>("test", "-L", path), 5000).code == 0 }
+fn isLink(path: str): bool { return hw.run(Vec<str>("test", "-L", path), 5000).code == 0 }
+
+fn sorted(items: Vec<str>): Vec<str> { return hw.sorted(items) }
+
+# `find` helper: lines "relative path\ttype\tmode(octal)\tsize\tlink target" of everything below `root`.
+struct Entry { path: str, kind: str, mode: i64, size: i64, target: str }
+fn entries(root: str): Vec<Entry> {
+    let done = runLong(Vec<str>("sh", "-c", "cd " + quote(root) + " && find . -mindepth 1 -printf '%P\\t%y\\t%m\\t%s\\t%l\\n' | LC_ALL=C sort"))
+    require(done.code == 0, "Cannot list " + root)
+    let out = Vec<Entry>()
+    let lines = strings.split(done.out, "\n")
+    for i in 0..(lines.len() as i64) {
+        if strings.charLength(lines[i]) == 0 { continue }
+        let parts = strings.split(lines[i], "\t")
+        if parts.len() < 5 { continue }
+        out.push(Entry(parts[0], parts[1], parseOctal(parts[2]), hw.toInt(parts[3], 0), parts[4]))
+    }
+    return out
+}
+fn parseOctal(text: str): i64 {
+    let value = 0
+    for i in 0..strings.charLength(text) { value = value * 8 + hw.toInt(strings.charAt(text, i), 0) }
+    return value
+}
+
+fn mtimeNewest(directory: str, pattern: str): str {
+    let done = hw.run(Vec<str>("sh", "-c", "ls -t " + quote(directory) + "/" + pattern + " 2>/dev/null | head -1"), 20000)
+    return strings.trim(done.out)
+}
+
+fn newUuid(): str { return strings.trim(hw.readText("/proc/sys/kernel/random/uuid")) }
+
+fn tempDir(prefix: str, parent: str): str {
+    let argv = strings.charLength(parent) > 0 ? Vec<str>("mktemp", "-d", "-p", parent, prefix + "XXXXXXXX") : Vec<str>("mktemp", "-d", "-t", prefix + "XXXXXXXX")
+    return strings.trim(run(argv))
+}
+fn removeTree(path: str) { hw.run(Vec<str>("rm", "-rf", "--", path), 300000) }
+fn mkdirs(path: str) { run(Vec<str>("mkdir", "-p", "--", path)) }
+fn copyFile(from: str, to: str) { run(Vec<str>("cp", "--", from, to)) }
+fn writeText(path: str, text: str) { require(fs.writeFileSync(path, text), "Cannot write " + path) }
+fn readJson(path: str): json.Value {
+    let raw = hw.readText(path)
+    require(json.valid(raw), "Invalid JSON: " + path)
+    return json.parse(raw)
+}
+fn writeJson(path: str, value: json.Value) { writeText(path, json.pretty(value) + "\n") }

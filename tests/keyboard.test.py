@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -49,7 +50,7 @@ class Fixture(unittest.TestCase):
         for key, value in ({'type': kind} | attributes).items(): self.put(f'class/power_supply/{name}/{key}', value)
 
     def run_tool(self, *args, check=True):
-        done = subprocess.run(['python3', str(TOOL), *args], env=self.env, capture_output=True, text=True, timeout=30)
+        done = subprocess.run(['sh', str(TOOL), *args], env=self.env, capture_output=True, text=True, timeout=30)
         if check: self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         return json.loads(done.stdout), done.returncode
 
@@ -153,73 +154,78 @@ class FrontEndTests(Fixture):
         self.assertFalse(self.run_tool('get')[0]['mains'])
 
 
-def load_daemon(env):
-    for key in ('DEVOS_KBD_SYS', 'DEVOS_KBD_PREFS', 'XDG_RUNTIME_DIR', 'WAYLAND_DISPLAY'):
-        if key in env: os.environ[key] = env[key]
-        else: os.environ.pop(key, None)
-    os.environ.update({'DEVOS_KBD_DIRECT': '1', 'DEVOS_KBD_TICK': '0.05', 'DEVOS_KBD_DEBOUNCE': '3', 'DEVOS_KBD_DARK': '15', 'DEVOS_KBD_BRIGHT': '60'})
-    loader = importlib.machinery.SourceFileLoader('dev_os_keyboard', str(TOOL))
-    spec = importlib.util.spec_from_loader('dev_os_keyboard', loader); module = importlib.util.module_from_spec(spec); loader.exec_module(module)
-    return module
+DRIVER = ROOT / 'tests/fixtures/keyboard-driver.dev'
+DEFAULTS = {'autoBrighten': False, 'autoDim': False, 'sleep': 'nothing', 'sleepBoth': 60, 'sleepBattery': 60}
+D = os.environ.get('DEVLANG_BIN') or str(Path.home() / '.local/bin/d')
 
 
 class AmbientLightTests(Fixture):
+    """The ambient light state machine of lib/keyboard.dev, driven step by step by tests/fixtures/keyboard-driver.dev."""
+
     def setUp(self):
         super().setUp()
         self.level_file = self.led(0)
         self.lux_file = self.put('bus/iio/devices/iio:device0/in_illuminance_input', 300)
-        self.kbd = load_daemon(self.env)
-        self.daemon = self.kbd.Backlight(self.kbd.find_led())
-        self.saved_prefs(autoBrighten=True, autoDim=True)
+        self.steps = []
+        self.prefs_step(autoBrighten=True, autoDim=True)
 
-    def saved_prefs(self, **values):
-        self.kbd.save_prefs(self.kbd.validate({**self.kbd.DEFAULTS, **values})); self.daemon.reload()
+    def prefs_step(self, **values): self.steps.append({'op': 'prefs', 'values': {**DEFAULTS, **values}})
+    def write(self, path, text): self.steps.append({'op': 'write', 'path': str(path), 'text': text})
+    def tick(self, times=1): self.steps.append({'op': 'tick', 'times': times})
+    def snap(self): self.steps.append({'op': 'state'})
 
     def feed(self, lux, times=3):
-        self.lux_file.write_text(f'{lux}\n')
-        for _ in range(times): self.daemon.sensor_tick()
+        self.write(self.lux_file, f'{lux}\n'); self.tick(times)
 
-    def level(self): return int(self.level_file.read_text())
+    def run_steps(self):
+        env = {**self.env, 'DEVOS_KBD_TICK': '0.05', 'DEVOS_KBD_DEBOUNCE': '3', 'DEVOS_KBD_DARK': '15', 'DEVOS_KBD_BRIGHT': '60', 'DRIVER_SCRIPT': json.dumps(self.steps)}
+        done = subprocess.run([D, str(DRIVER), '--'], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        return json.loads(done.stdout)
 
     def test_first_reading_only_sets_the_baseline(self):
-        self.feed(2)
-        self.assertEqual(self.level(), 0); self.assertTrue(self.daemon.dark)
+        self.feed(2); self.snap()
+        self.assertEqual(self.run_steps(), [{'level': 0, 'dark': 1}])
 
     def test_dark_turns_on_with_the_last_used_level_and_bright_turns_off(self):
-        self.feed(300); self.assertFalse(self.daemon.dark)
-        self.daemon.last_on = 2
-        self.feed(3); self.assertEqual(self.level(), 2)
-        self.feed(300); self.assertEqual(self.level(), 0)
+        self.feed(300); self.snap()
+        self.steps.append({'op': 'lastOn', 'value': 2})
+        self.feed(3); self.snap()
+        self.feed(300); self.snap()
+        first, dark, bright = self.run_steps()
+        self.assertEqual(first['dark'], 0); self.assertEqual(dark['level'], 2); self.assertEqual(bright['level'], 0)
 
     def test_debounce_ignores_a_short_shadow(self):
         self.feed(300)
-        self.lux_file.write_text('1\n'); self.daemon.sensor_tick(); self.daemon.sensor_tick()
-        self.lux_file.write_text('300\n')
-        for _ in range(6): self.daemon.sensor_tick()
-        self.assertEqual(self.level(), 0); self.assertFalse(self.daemon.dark)
+        self.write(self.lux_file, '1\n'); self.tick(2)
+        self.write(self.lux_file, '300\n'); self.tick(6); self.snap()
+        self.assertEqual(self.run_steps(), [{'level': 0, 'dark': 0}])
 
     def test_hysteresis_band_changes_nothing(self):
-        self.feed(300); self.feed(2); self.assertEqual(self.level(), self.kbd.find_led()['max'])
-        self.level_file.write_text('1\n')
+        self.feed(300); self.feed(2); self.snap()
+        self.write(self.level_file, '1\n')
         self.feed(40, 10)  # between 15 and 60 lux: still dark, backlight untouched
-        self.assertEqual(self.level(), 1); self.assertTrue(self.daemon.dark)
+        self.snap()
+        lit, held = self.run_steps()
+        self.assertEqual(lit['level'], 3)  # the LED fixture's maximum
+        self.assertEqual(held, {'level': 1, 'dark': 1})
 
     def test_switches_work_independently(self):
-        self.saved_prefs(autoBrighten=False, autoDim=True); self.feed(300); self.feed(2)
-        self.assertEqual(self.level(), 0)
-        self.level_file.write_text('2\n'); self.feed(300); self.assertEqual(self.level(), 0)
-        self.saved_prefs(autoBrighten=True, autoDim=False); self.level_file.write_text('2\n'); self.feed(2); self.feed(300)
-        self.assertEqual(self.level(), 2)
+        self.prefs_step(autoBrighten=False, autoDim=True); self.feed(300); self.feed(2); self.snap()
+        self.write(self.level_file, '2\n'); self.feed(300); self.snap()
+        self.prefs_step(autoBrighten=True, autoDim=False); self.write(self.level_file, '2\n'); self.feed(2); self.feed(300); self.snap()
+        off, dimmed, kept = self.run_steps()
+        self.assertEqual(off['level'], 0); self.assertEqual(dimmed['level'], 0); self.assertEqual(kept['level'], 2)
 
     def test_manual_off_stays_off_until_the_light_changes(self):
-        self.feed(300); self.feed(2); self.level_file.write_text('0\n')
-        for _ in range(8): self.daemon.sensor_tick()
-        self.assertEqual(self.level(), 0)
+        self.feed(300); self.feed(2); self.write(self.level_file, '0\n'); self.tick(8); self.snap()
+        self.assertEqual(self.run_steps()[0]['level'], 0)
 
     def test_raw_scale_offset_conversion(self):
         self.lux_file.unlink(); self.put('bus/iio/devices/iio:device0/in_illuminance_raw', 100)
         self.put('bus/iio/devices/iio:device0/in_illuminance_scale', 0.25); self.put('bus/iio/devices/iio:device0/in_illuminance_offset', 20)
-        self.assertEqual(self.kbd.read_lux(), 30.0)
+        self.steps = [{'op': 'lux'}]
+        self.assertEqual(self.run_steps(), [{'lux': 30.0}])
 
 
 class FakeCompositor(threading.Thread):
@@ -289,34 +295,54 @@ class IdleSleepTests(Fixture):
         self.level_file = self.led(2)
         self.socket_path = self.runtime / 'wayland-test'
         self.env['WAYLAND_DISPLAY'] = str(self.socket_path)
+        self.env['DEVOS_KBD_TICK'] = '0.05'
         self.compositor = FakeCompositor(self.socket_path); self.addCleanup(self.compositor.close)
-        self.kbd = load_daemon(self.env)
-        self.daemon = self.kbd.Backlight(self.kbd.find_led())
-        self.thread = threading.Thread(target=self.daemon.serve, daemon=True)
+        self.daemon = None
         self.addCleanup(self.stop_daemon)
 
-    def stop_daemon(self):
-        self.daemon.stopped = True
-        if self.thread.is_alive(): self.thread.join(3)
+    def start_daemon(self):
+        self.daemon = subprocess.Popen(['sh', str(TOOL), 'serve'], env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
-    def level(self): return int(self.level_file.read_text())
+    def stop_daemon(self):
+        if self.daemon is not None and self.daemon.poll() is None:
+            # The launcher execs d, which runs the program in a child (devrun): stop the whole process group.
+            os.killpg(self.daemon.pid, signal.SIGTERM)
+            try: self.daemon.wait(5)
+            except subprocess.TimeoutExpired: os.killpg(self.daemon.pid, signal.SIGKILL)
+        self.daemon = None
+
+    def level(self):
+        # Regular-file sysfs fixtures can be empty between truncate and write.
+        # None keeps wait_for polling without mistaking an unfinished write for off.
+        text = self.level_file.read_text().strip()
+        return int(text) if text else None
+
+    def test_level_waits_for_a_complete_brightness_write(self):
+        self.level_file.write_text('')
+        self.assertIsNone(self.level())
+        self.assertFalse(wait_for(lambda: self.level() == 0, seconds=0.05))
+        self.level_file.write_text('0\n')
+        self.assertTrue(wait_for(lambda: self.level() == 0))
+        self.level_file.write_text('2\n')
+        self.assertTrue(wait_for(lambda: self.level() == 2))
 
     def prefs_set(self, **values):
-        self.kbd.save_prefs(self.kbd.validate({**self.kbd.DEFAULTS, **values}))
+        self.prefs.parent.mkdir(parents=True, exist_ok=True)
+        self.prefs.write_text(json.dumps({**DEFAULTS, **values}))
 
     def test_probe_reports_the_protocol(self):
-        self.assertEqual(self.kbd.probe_idle(), (True, ''))
-        self.compositor.close(); self.assertFalse(self.kbd.probe_idle()[0])
+        self.assertEqual(self.run_tool('get')[0]['idle'], {'supported': True, 'reason': ''})
+        self.compositor.close(); self.assertFalse(self.run_tool('get')[0]['idle']['supported'])
 
     def test_probe_without_the_idle_protocol(self):
         self.compositor.close()
         self.compositor = FakeCompositor(self.socket_path.with_name('wayland-bare'), advertise_idle=False); self.addCleanup(self.compositor.close)
-        os.environ['WAYLAND_DISPLAY'] = str(self.socket_path.with_name('wayland-bare'))
-        ok, reason = self.kbd.probe_idle()
-        self.assertFalse(ok); self.assertIn('ext-idle-notify', reason)
+        self.env['WAYLAND_DISPLAY'] = str(self.socket_path.with_name('wayland-bare'))
+        idle = self.run_tool('get')[0]['idle']
+        self.assertFalse(idle['supported']); self.assertIn('ext-idle-notify', idle['reason'])
 
     def test_backlight_sleeps_when_idle_and_returns_on_input(self):
-        self.prefs_set(sleep='both', sleepBoth=30); self.thread.start()
+        self.prefs_set(sleep='both', sleepBoth=30); self.start_daemon()
         self.assertTrue(wait_for(lambda: self.compositor.notifications()))
         kind = self.compositor.notifications()[0]
         self.assertEqual((kind[1], kind[2], kind[3]), (2, 30000, 'wl_seat'))  # v2 input idle notification, 30 s
@@ -324,18 +350,18 @@ class IdleSleepTests(Fixture):
         self.compositor.resumed(); self.assertTrue(wait_for(lambda: self.level() == 2))
 
     def test_already_off_backlight_stays_off_after_resume(self):
-        self.level_file.write_text('0\n'); self.prefs_set(sleep='both', sleepBoth=10); self.thread.start()
+        self.level_file.write_text('0\n'); self.prefs_set(sleep='both', sleepBoth=10); self.start_daemon()
         self.assertTrue(wait_for(lambda: self.compositor.notifications()))
         self.compositor.idled(); time.sleep(0.2); self.compositor.resumed(); time.sleep(0.3)
         self.assertEqual(self.level(), 0)
 
     def test_do_nothing_creates_no_notification(self):
-        self.thread.start(); time.sleep(0.4)
+        self.start_daemon(); time.sleep(0.4)
         self.assertEqual(self.compositor.notifications(), [])
 
     def test_battery_only_follows_the_mains_state(self):
         self.supply('BAT1', 'Battery'); self.supply('ADP1', 'Mains', online=1)
-        self.prefs_set(sleep='battery', sleepBattery=120); self.thread.start(); time.sleep(0.5)
+        self.prefs_set(sleep='battery', sleepBattery=120); self.start_daemon(); time.sleep(0.5)
         self.assertEqual(self.compositor.notifications(), [])  # on AC: nothing to wait for
         self.supply('ADP1', 'Mains', online=0)
         self.assertTrue(wait_for(lambda: self.compositor.notifications()))
@@ -345,19 +371,18 @@ class IdleSleepTests(Fixture):
         self.assertTrue(wait_for(lambda: self.level() == 2))
 
     def test_changing_the_time_replaces_the_notification(self):
-        self.prefs_set(sleep='both', sleepBoth=10); self.thread.start()
+        self.prefs_set(sleep='both', sleepBoth=10); self.start_daemon()
         self.assertTrue(wait_for(lambda: self.compositor.notifications()))
         time.sleep(0.05); self.prefs_set(sleep='both', sleepBoth=300)
-        os.utime(self.prefs, (time.time() + 5, time.time() + 5))
         self.assertTrue(wait_for(lambda: len(self.compositor.notifications()) == 2))
         self.assertEqual([r[2] for r in self.compositor.notifications()], [10000, 300000])
         self.assertIn(('destroy',), self.compositor.requests)
 
     def test_turning_sleep_off_while_idle_restores_the_backlight(self):
-        self.prefs_set(sleep='both', sleepBoth=10); self.thread.start()
+        self.prefs_set(sleep='both', sleepBoth=10); self.start_daemon()
         self.assertTrue(wait_for(lambda: self.compositor.notifications()))
         self.compositor.idled(); self.assertTrue(wait_for(lambda: self.level() == 0))
-        self.prefs_set(sleep='nothing'); os.utime(self.prefs, (time.time() + 5, time.time() + 5))
+        self.prefs_set(sleep='nothing')
         self.assertTrue(wait_for(lambda: self.level() == 2))
 
     def supply(self, name, kind, **attributes):

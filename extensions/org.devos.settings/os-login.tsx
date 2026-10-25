@@ -1,6 +1,7 @@
 import {React, Gtk, Gio, GLib, Box, Label, Button, Entry, Image, ComboBoxText, ScrolledWindow, useEffect, useState} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {powerCapabilities, requestPower, type PowerAction} from '../org.devos.panel/power.js';
+import {brandIcon} from './login-view.js';
 import {AccountAvatar} from './avatar.js';
 import {NewUserWizard} from './new-user.js';
 
@@ -77,7 +78,7 @@ export function OSLogin({onContinue, controls, createEnrollmentControls, power}:
         return () => {alive = false; if (timer) GLib.source_remove(timer);};
     }, [code, backend]);
     return <Box className="login-screen" orientation="vertical" expand fill>
-        <Box className="login-topbar" spacing={10}><Label className="login-brand">D</Label><Label className="login-wordmark">DevOs</Label></Box>
+        <Box className="login-topbar" spacing={10}><Image className="login-brand" gicon={brandIcon} pixelSize={34} /><Label className="login-wordmark">DevOs</Label></Box>
         <ScrolledWindow expand fill hscrollbarPolicy={Gtk.PolicyType.NEVER}><Box orientation="vertical" valign="center" halign="center" expand fill marginTop={24} marginBottom={24}>
             <Box className="login-card" widthRequest={440} orientation="vertical" spacing={18}>
                 <Label className="login-eyebrow">YOUR PERSONAL WORKSPACE</Label><Label className="login-title">Sign in to DevOs</Label>

@@ -5,6 +5,7 @@
     <name>DevOS</name>
     <cornerRadius>8</cornerRadius>
     <font place="ActiveWindow"><name>Sans</name><size>10</size></font>
+    <font place="MenuItem"><name>Sans</name><size>11</size><weight>normal</weight></font>
   </theme>
   <focus><followMouse>no</followMouse><raiseOnFocus>yes</raiseOnFocus></focus>
   <desktops number="4"><popupTime>700</popupTime></desktops>

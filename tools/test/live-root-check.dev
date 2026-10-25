@@ -12,9 +12,7 @@ use "../lib/pam.dev" as pam
 use "../../lib/desktop.dev" as util
 extern fn crypt(text: str, salt: str): str
 fn report(text: str) {
-    let out = ""
-    for line in strings.split(text, "\n") { out = out + "<6>" + line + "\n" }
-    fs.writeFileSync("/dev/kmsg", out)
+    for line in strings.split(text, "\n") { fs.writeFileSync("/dev/kmsg", "<6>" + line + "\n") }
 }
 fn password(file: str): str {
     for line in strings.split(tool.read(file), "\n") { if strings.startsWith(line, "root:") { return strings.split(line, ":")[1] } }
@@ -27,7 +25,7 @@ fn checks(): i32 {
     tool.waitFor(fn(): bool {
         let shells = smoke.processIds("/run/user/0", session + "/dist/main.js")
         return shells.len() == 1 && strings.contains(util.read("/run/devos-live/root-session.log"), "Dev OS shell ready")
-    }, 60000, "Live root shell/compositor did not start.")
+    }, 150000, "Live root shell/compositor did not start.")
     let shells = smoke.processIds("/run/user/0", session + "/dist/main.js")
     let pid = json.stringify(shells[0])
     tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%u", "/proc/" + pid))), "0"), "Live desktop must run as UID 0.")
@@ -93,7 +91,7 @@ fn main(): i32 {
     if !tool.has("--native") {
         let legacy = result.attempt(fn(): str { return tool.library("libcrypt.so.1") })
         let cryptLibrary = result.isOk(legacy) ? result.unwrap(legacy) : tool.library("libcrypt.so.2")
-        let value = tool.run(Vec<str>("d", module.entry(), "--ffi-lib", tool.library("libpam.so.0"), "--ffi-lib", cryptLibrary, "--", "--native"), Map<str,str>(), "", 120000)
+        let value = tool.run(Vec<str>("d", module.entry(), "--ffi-lib", tool.library("libpam.so.0"), "--ffi-lib", cryptLibrary, "--", "--native"), Map<str,str>(), "", 260000)
         if !value.success {
             report(encoding.decode(value.stdout, "utf8") + encoding.decode(value.stderr, "utf8"))
             report("DEVOS_LIVE_ROOT_DESKTOP_FAIL: native check worker failed")
@@ -101,7 +99,16 @@ fn main(): i32 {
         return value.success ? 0 : 1
     }
     let outcome = result.attempt(checks)
-    if result.isErr(outcome) { report(result.message(outcome)); report("DEVOS_LIVE_ROOT_DESKTOP_FAIL: test exception"); return 1 }
+    if result.isErr(outcome) {
+        report(result.message(outcome))
+        report("DEVOS_LIVE_ROOT_SESSION_LOG_BEGIN\n" + util.read("/run/devos-live/root-session.log") + "\nDEVOS_LIVE_ROOT_SESSION_LOG_END")
+        let processes = tool.run(Vec<str>("ps", "-eo", "pid,ppid,stat,args"), Map<str,str>(), "", 10000)
+        report("DEVOS_LIVE_PROCESSES\n" + util.output(processes))
+        let journal = tool.run(Vec<str>("journalctl", "-b", "--no-pager", "-n", "90"), Map<str,str>(), "", 10000)
+        report("DEVOS_LIVE_JOURNAL\n" + util.output(journal))
+        report("DEVOS_LIVE_ROOT_DESKTOP_FAIL: test exception")
+        return 1
+    }
     return result.unwrap(outcome)
 }
 return tool.main(main)

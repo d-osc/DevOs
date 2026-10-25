@@ -1,6 +1,6 @@
 import {React, Gtk, Gio, Box, Label, Button, Entry, Switch, ComboBoxText, DrawingArea, ScrolledWindow, useState, useEffect, useRef, wallpaperColors, type SettingsHost, type SettingsValues, type WindowControls} from '@dev-os/core';
 import {designStyles} from './design.js';
-import {WallpaperCanvas, type BackgroundConfig} from './view.js';
+import {WallpaperCanvas} from './view.js';
 import {wallpaperConfig, loadPicture} from './wallpaper.js';
 import {BackgroundContextSettings} from './context-settings.js';
 import {parseCustomMenu} from '../org.devos.files/custom-menu.js';

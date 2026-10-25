@@ -4,6 +4,6 @@ Name=Disk Manager
 Comment=Inspect disks and partitions
 Exec=dev-os-shell disk-manager
 TryExec=dev-os-shell
-Icon=drive-harddisk
+Icon=dev-os-disk-manager
 Categories=System;Filesystem;
 Terminal=false

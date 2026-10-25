@@ -1,4 +1,6 @@
-import {React, Box, Label, Image, Button, Switch, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, Button, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {SwitchRow} from './switch-row.js';
+import {RadioRow} from './radio-row.js';
 import {FanProfile, fanModes, sourceTitles, unsupportedFanProfile, type FanMode, type FanProfileAction, type FanProfileControls, type FanProfileState, type PowerSource} from './fan-profile.js';
 /** Fan Profile, laid out like the MyASUS card: description left, mode radios and Power Mode Synchronization right. */
 export function FanProfileSettings({controls}: {controls?: FanProfileControls}) {
@@ -37,15 +39,13 @@ export function FanProfileSettings({controls}: {controls?: FanProfileControls}) 
                 <Label id="fan-profile-source" className="settings-description" expand xalign={1}>{source === active ? `${sourceTitles[active]} (current power source)` : `Applies when ${sourceTitles[source].toLowerCase()}`}</Label>
             </Box>}
             <Box orientation="vertical" spacing={9}>
-                {(state.supported ? state.modes : (Object.keys(fanModes) as FanMode[])).map(id => <Button key={`${id}-${nonce}`} id={`fan-mode-${id}`} className={`power-mode ${state.supported && selected === id ? 'power-mode-selected' : ''}`} sensitive={usable} onClicked={() => {if (id !== selected || (source === active && state.current !== id)) void request('set', source, id);}}>
-                    <Box spacing={14}><Image iconName={state.supported && selected === id ? 'radio-checked-symbolic' : 'radio-symbolic'} pixelSize={18} /><Box orientation="vertical" spacing={3} expand><Label className="settings-field-title" xalign={0}>{fanModes[id].title}</Label><Label className="settings-description" xalign={0} wrap>{fanModes[id].description}</Label></Box></Box>
-                </Button>)}
+                {(state.supported ? state.modes : (Object.keys(fanModes) as FanMode[])).map(id => <RadioRow key={`${id}-${nonce}`} id={`fan-mode-${id}`} selected={state.supported && selected === id} sensitive={usable} title={fanModes[id].title} description={fanModes[id].description} onClicked={() => {if (id !== selected || (source === active && state.current !== id)) void request('set', source, id);}} />)}
             </Box>
             {state.emulated && <Label id="fan-profile-emulated" className="settings-description" xalign={0} wrap>This device has no fan control. These profiles adjust the CPU performance policy instead; the fan still follows the temperature automatically.</Label>}
             <Box orientation="vertical" spacing={8}>
                 <Label className="settings-field-title" xalign={0}>Power Mode Synchronization</Label>
                 <Label className="settings-description" xalign={0} wrap>Dynamically adjusts your power mode based on the Fan Profile setting for optimal performance.</Label>
-                <Box spacing={12}><Switch key={`sync-${nonce}`} id="fan-sync-switch" active={syncOn} sensitive={usable && state.syncAvailable} onActiveChanged={w => {if (w.active !== syncOn) void request('sync', w.active ? 'on' : 'off');}} /><Label id="fan-sync-state" className="settings-description">{syncOn ? 'Enable' : 'Disable'}</Label></Box>
+                <SwitchRow key={`sync-${nonce}`} id="fan-sync-switch" stateId="fan-sync-state" active={syncOn} sensitive={usable && state.syncAvailable} label={syncOn ? 'Enable' : 'Disable'} onToggled={on => void request('sync', on ? 'on' : 'off')} />
                 {state.supported && !state.syncAvailable && <Label id="fan-sync-unavailable" className="settings-description" xalign={0} wrap>Power modes are not available on this device, so there is nothing to synchronize.</Label>}
             </Box>
             {ready && !state.supported && <Label id="fan-profile-unsupported" className="settings-description" xalign={0} wrap>{`Not supported on this device. ${state.reason || 'The kernel does not provide a fan profile.'} Controls stay off rather than pretending to work.`}</Label>}

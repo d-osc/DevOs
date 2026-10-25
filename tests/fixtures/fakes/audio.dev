@@ -1,0 +1,125 @@
+# Fake PipeWire tools for the microphone and speaker helper tests: pw-dump, wpctl, systemctl, systemd-run and pipewire share one JSON
+# graph file ($FAKE_GRAPH), so selecting a default or starting the filter changes what the next pw-dump reports.
+# Usage: d audio.dev -- <mic-|spk->pw-dump|wpctl|systemctl|systemd-run|pipewire> ARGS...
+use "std/args"
+use "std/json"
+use "std/process"
+use "std/strings"
+use "std/fs"
+use "../../../lib/hw.dev" as hw
+
+fn log(text: str) {
+    let file = hw.env("FAKE_LOG")
+    if strings.charLength(file) > 0 { fs.appendFileSync(file, text + "\n") }
+}
+fn joined(from: i64): str {
+    let parts = Vec<str>()
+    for i in from..(args.len() as i64) { parts.push(args.get(i)) }
+    return strings.join(parts, " ")
+}
+fn graph(): json.Value { return json.parse(hw.readText(hw.env("FAKE_GRAPH"))) }
+fn save(value: json.Value) { fs.writeFileSync(hw.env("FAKE_GRAPH"), json.stringify(value)) }
+fn propsOf(node: json.Value): json.Value { return hw.jget(hw.jget(node, "info"), "props") }
+fn isMetadata(node: json.Value): bool { return strings.endsWith(hw.jstr(node, "type", ""), "Metadata") }
+
+# The graph without the nodes whose id is listed.
+fn without(items: json.Value, ids: Vec<i64>): json.Value {
+    let out = json.array()
+    for i in 0..(json.len(items) as i64) {
+        let item = json.at(items, i)
+        if !hw.containsInt(ids, hw.jint(item, "id", 0 - 1)) { out = json.push(out, item) }
+    }
+    return out
+}
+
+# Replaces one default-device entry in the metadata object.
+fn withDefault(items: json.Value, key: str, name: str): json.Value {
+    let out = json.array()
+    for i in 0..(json.len(items) as i64) {
+        let item = json.at(items, i)
+        if isMetadata(item) {
+            let entries = json.array()
+            let old = hw.jget(item, "metadata")
+            for e in 0..(json.len(old) as i64) {
+                if !strings.equal(hw.jstr(json.at(old, e), "key", ""), key) { entries = json.push(entries, json.at(old, e)) }
+            }
+            let entry = json.set(json.set(json.set(json.set(json.object(), "subject", 0), "key", key), "type", "Spa:String:JSON"), "value", json.set(json.object(), "name", name))
+            item = json.set(item, "metadata", json.push(entries, entry))
+        }
+        out = json.push(out, item)
+    }
+    return out
+}
+
+fn node(id: i64, name: str, klass: str, extra: json.Value): json.Value {
+    let props = json.set(json.set(json.object(), "node.name", name), "media.class", klass)
+    let keys = json.keys(extra)
+    for i in 0..(keys.len() as i64) { props = json.set(props, keys[i], json.get(extra, keys[i])) }
+    return json.set(json.set(json.set(json.object(), "id", id), "type", "PipeWire:Interface:Node"), "info", json.set(json.object(), "props", props))
+}
+
+fn wpctl() {
+    log("wpctl " + joined(1))
+    if !strings.equal(args.get(1), "set-default") { return }
+    let items = graph()
+    let id = hw.toInt(args.get(2), 0 - 1)
+    for i in 0..(json.len(items) as i64) {
+        let item = json.at(items, i)
+        if hw.jint(item, "id", 0 - 2) != id { continue }
+        let props = propsOf(item)
+        let key = strings.equal(hw.jstr(props, "media.class", ""), "Audio/Source") ? "default.audio.source" : "default.audio.sink"
+        save(withDefault(items, key, hw.jstr(props, "node.name", "")))
+        return
+    }
+}
+
+fn micSystemctl(): i32 {
+    log("systemctl " + joined(1))
+    if strings.charLength(hw.env("FAKE_SYSTEMCTL_FAIL")) > 0 { print("Failed to start devos-microphone.service: Access denied"); return 1 }
+    let action = args.get(2)
+    let unit = args.get(3)
+    if strings.charLength(hw.env("FAKE_UNIT_MISSING")) > 0 && strings.equal(unit, "devos-microphone.service") && (strings.equal(action, "start") || strings.equal(action, "restart")) {
+        print("Failed to " + action + " devos-microphone.service: Unit devos-microphone.service not found.")
+        return 5
+    }
+    let items = without(graph(), Vec<i64>(98, 99))
+    if strings.equal(action, "start") || strings.equal(action, "restart") {
+        let state = hw.loadJson(hw.configHome() + "/devos/microphone.json")
+        items = json.push(items, node(99, "devos-mic-clean", "Audio/Source", json.set(json.object(), "devos.mic.mode", hw.jstr(state, "mode", ""))))
+        items = json.push(items, node(98, "devos-mic-reference", "Audio/Sink", json.object()))
+        items = withDefault(items, "default.audio.sink", "devos-mic-reference")
+    }
+    save(items)
+    return 0
+}
+
+fn spkSystemctl(): i32 {
+    log("systemctl " + joined(1))
+    if strings.charLength(hw.env("FAKE_UNIT_MISSING")) > 0 { print("Failed to start devos-speaker.service: Unit devos-speaker.service not found."); return 5 }
+    return 0
+}
+
+fn pipewire(spk: bool) {
+    hw.run(Vec<str>("cp", args.get(2), hw.env("FAKE_PIPEWIRE_CONF")), 10000)
+    if spk {
+        # The filter process creates the virtual sink, as the real one would.
+        save(json.push(graph(), node(70, "devos-spk-fx", "Audio/Sink", json.object())))
+    }
+}
+
+fn main(): i32 {
+    let tool = args.get(0)
+    if strings.equal(tool, "pw-dump") { print(hw.readText(hw.env("FAKE_GRAPH"))); return 0 }
+    if strings.equal(tool, "wpctl") { wpctl(); return 0 }
+    if strings.equal(tool, "mic-systemctl") { return micSystemctl() }
+    if strings.equal(tool, "spk-systemctl") { return spkSystemctl() }
+    if strings.equal(tool, "mic-systemd-run") {
+        log("systemd-run " + joined(1))
+        return hw.run(Vec<str>(hw.env("DEVOS_MIC_SYSTEMCTL"), "--user", "start", "transient"), 20000).code == 0 ? 0 : 1
+    }
+    if strings.equal(tool, "spk-systemd-run") { log("systemd-run " + joined(1)); return 0 }
+    if strings.equal(tool, "mic-pipewire") { pipewire(false); return 0 }
+    if strings.equal(tool, "spk-pipewire") { pipewire(true); return 0 }
+    return 2
+}
+return main()

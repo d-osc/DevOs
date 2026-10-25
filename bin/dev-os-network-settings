@@ -14,8 +14,10 @@ fn systemLibrary(library: str): str {
         let direct = base + "/" + library
         if fs.is_file(direct) { return direct }
         for name in util.children(base) {
-            let candidate = base + "/" + name + "/" + library
-            if fs.is_file(candidate) { return candidate }
+            if fs.is_dir(base + "/" + name) {
+                let candidate = base + "/" + name + "/" + library
+                if fs.is_file(candidate) { return candidate }
+            }
         }
     }
     result.raise("A required network library is not installed.")

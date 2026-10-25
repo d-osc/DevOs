@@ -1,0 +1,596 @@
+# Touchpad lock and Smart Gestures for Dev OS Settings (the MyASUS "Touchpad" and "Smart Gestures" cards).
+# Entry point: lib/touchpad-gestures-cli.dev, started by bin/dev-os-touchpad-gestures.
+#
+# Usage: dev-os-touchpad-gestures get | lock on|off|toggle | gestures on|off | launch <target> | apply | serve
+# JSON on stdout, exit 1 on failure. Everything runs as the user; no root and no polkit action is needed.
+#
+# Lock: the choice is saved in $XDG_CONFIG_HOME/dev-os/touchpad-gestures.json and applied by regenerating the labwc
+# `<device category="touchpad">` block with `<sendEventsMode>no</sendEventsMode>` (lib/touchpad.dev reads the file, so the
+# lock also survives a new session). The helper re-runs `dev-os-touchpad save` with the saved touchpad settings to do it.
+# Fn+F9 style hotkeys (XF86TouchpadToggle/On/Off) are bound in config/labwc/rc.xml to `lock toggle|on|off`.
+#
+# Smart Gestures (off by default): `serve` observes the touchpad's evdev node read-only (it never grabs it, the compositor
+# keeps the pointer). A single finger that touches down inside an edge zone and moves mostly along that edge gives
+#   left edge   slide up/down       volume        wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+/5%-  (limit 100%)
+#   right edge  slide up/down       brightness    dev-os-backlight up|down (5% steps, real backlight)
+#   top edge    slide right/left    seek          MPRIS Player.Seek over busctl (5 s per step)
+#   top-right corner, swipe inward  launch target dev-os-shell <task-manager|launcher|task-view|settings|files|terminal>
+# Because the device is not grabbed, the cursor still moves while a finger slides along an edge; libinput offers no
+# per-zone event filtering. A 2nd finger, a start outside a zone or a mostly sideways path cancels the gesture.
+#
+# Test hooks: DEVOS_TP_PROC (bus device list), DEVOS_TP_DEV (dir with eventN nodes), DEVOS_TP_RANGE ("minx,maxx,miny,maxy"
+# for nodes that are not real evdev devices), DEVOS_TP_TOUCHPAD_HELPER, DEVOS_TP_SYSTEMCTL, DEVOS_TP_SYSTEMRUN, DEVOS_TP_SYS,
+# DEVOS_TP_PATH, DEVOS_TP_BUSCTL, DEVOS_TP_WPCTL, DEVOS_TP_BACKLIGHT, DEVOS_TP_SHELL, DEVOS_TP_NOTIFY, DEVOS_TP_ONESHOT.
+use "std/args"
+use "std/json"
+use "std/math"
+use "std/strings"
+use "std/result"
+use "std/fs"
+use "../lib/hw.dev" as hw
+
+extern fn open(path: str, flags: i32, mode: u32): i32
+extern fn close(fd: i32): i32
+extern fn read(fd: i32, data: *u8, size: usize): isize
+extern fn ioctl(fd: i32, request: u64, argument: *u8): i32
+extern fn poll(fds: *u8, count: usize, timeout: i32): i32
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+
+fn unitName(): str { return "devos-touchpad-gestures.service" }
+fn transientName(): str { return "devos-touchpad-gestures-session.service" }
+fn targetIds(): Vec<str> { return Vec<str>("task-manager", "launcher", "task-view", "settings", "files", "terminal", "none") }
+fn targetTitle(id: str): str {
+    if strings.equal(id, "task-manager") { return "Task Manager" }
+    if strings.equal(id, "launcher") { return "Application launcher" }
+    if strings.equal(id, "task-view") { return "Task View" }
+    if strings.equal(id, "settings") { return "Settings" }
+    if strings.equal(id, "files") { return "Files" }
+    if strings.equal(id, "terminal") { return "Terminal" }
+    return "Nothing"
+}
+fn isTarget(id: str): bool { return hw.contains(targetIds(), id) }
+
+# Zone geometry as fractions of the touchpad, and how far a finger has to move.
+fn edge(): f64 { return 0.08 }          # left / right / top strips
+fn corner(): f64 { return 0.15 }        # top-right square
+fn dead(): f64 { return 0.03 }          # movement along the edge before the gesture starts
+fn step(): f64 { return 0.05 }          # one volume / brightness / seek step per this much travel along the edge
+fn sideways(): f64 { return 1.5 }       # along-edge travel must be at least this much more than the travel across the edge
+fn cornerPull(): f64 { return 0.10 }    # inward travel (both axes) that completes the corner swipe
+fn cooldown(): f64 { return 1.5 }       # seconds between launches
+fn seekSeconds(): i64 { return 5 }
+
+# ---- saved state ---------------------------------------------------------------------------------------------------------
+struct State { locked: bool, enabled: bool, launch: str }
+fn defaults(): State { return State(false, false, "task-manager") }
+fn configDir(): str { return hw.configHome() + "/dev-os" }
+fn statePath(): str { return configDir() + "/touchpad-gestures.json" }
+
+fn load(): State {
+    let state = defaults()
+    let saved = hw.loadJson(statePath())
+    if !hw.isObject(saved) { return state }
+    state.locked = hw.jbool(saved, "locked", state.locked)
+    state.enabled = hw.jbool(saved, "enabled", state.enabled)
+    let launch = hw.jstr(saved, "launch", "")
+    if isTarget(launch) { state.launch = launch }
+    return state
+}
+fn save(state: State) {
+    let out = json.set(json.set(json.set(json.object(), "locked", state.locked), "enabled", state.enabled), "launch", state.launch)
+    hw.saveText(statePath(), json.stringify(out))
+}
+
+# ---- touchpad detection (kernel device list, no udev and no invented paths) ----------------------------------------------
+fn hexDigit(ch: str): i64 { return strings.indexOf("0123456789abcdef", strings.toLowerCase(ch)) }
+
+# Bit `n` of a /proc/bus/input/devices bitmap: space separated hex words, most significant word first.
+fn bitSet(text: str, n: i64): bool {
+    let list = hw.words(text)
+    let index = (list.len() as i64) - 1 - n / 64
+    if index < 0 || index >= (list.len() as i64) { return false }
+    let word = list[index]
+    let length = strings.charLength(word)
+    let at = length - 1 - ((n % 64) / 4)
+    if at < 0 { return false }
+    let digit = hexDigit(strings.charAt(word, at))
+    if digit < 0 { return false }
+    return ((digit >> (n % 4)) & 1) == 1
+}
+
+struct Pad { name: str, path: str }
+
+fn touchpads(): Vec<Pad> {
+    let found = Vec<Pad>()
+    let source = hw.envOr("DEVOS_TP_PROC", "/proc/bus/input/devices")
+    if !hw.isFile(source) { return found }
+    let blocks = strings.split(hw.readText(source), "\n\n")
+    let base = hw.envOr("DEVOS_TP_DEV", "/dev/input")
+    for b in 0..(blocks.len() as i64) {
+        let name = ""
+        let handlers = ""
+        let key = ""
+        let absolute = ""
+        let lines = strings.split(blocks[b], "\n")
+        for l in 0..(lines.len() as i64) {
+            let line = lines[l]
+            if strings.startsWith(line, "N: Name=") { name = strings.trim(strings.replaceAll(strings.substring(line, 8, strings.charLength(line)), "\"", "")) }
+            else if strings.startsWith(line, "H: Handlers=") { handlers = strings.substring(line, 12, strings.charLength(line)) }
+            else if strings.startsWith(line, "B: KEY=") { key = strings.substring(line, 7, strings.charLength(line)) }
+            else if strings.startsWith(line, "B: ABS=") { absolute = strings.substring(line, 7, strings.charLength(line)) }
+        }
+        let event = ""
+        let words = hw.words(handlers)
+        for w in 0..(words.len() as i64) {
+            let word = words[w]
+            if strings.startsWith(word, "event") && strings.charLength(word) > 5 && hw.isInt(strings.substring(word, 5, strings.charLength(word))) && !strings.startsWith(strings.substring(word, 5, 6), "-") && !strings.startsWith(strings.substring(word, 5, 6), "+") {
+                event = word
+                break
+            }
+        }
+        if strings.charLength(event) > 0 && bitSet(key, 325) && bitSet(absolute, 0) && bitSet(absolute, 1) {
+            found.push(Pad(strings.charLength(name) > 0 ? name : event, base + "/" + event))
+        }
+    }
+    return found
+}
+
+struct Extent { minX: i64, maxX: i64, minY: i64, maxY: i64 }
+
+# From EVIOCGABS; DEVOS_TP_RANGE stands in for nodes that are not evdev devices.
+fn absRange(fd: i32): Extent {
+    let override = hw.env("DEVOS_TP_RANGE")
+    if strings.charLength(override) > 0 {
+        let parts = strings.split(override, ",")
+        if parts.len() == 4 { return Extent(hw.toInt(parts[0], 0), hw.toInt(parts[1], 1), hw.toInt(parts[2], 0), hw.toInt(parts[3], 1)) }
+    }
+    let ranges = Vec<i64>()
+    unsafe {
+        let info = malloc(24)
+        for axis in 0..2 {
+            for i in 0..24 { info[i] = 0 }
+            ioctl(fd, (0x80184540 + axis) as u64, info)   # _IOR('E', 0x40 + axis, struct input_absinfo)
+            let words = info as *i32
+            ranges.push(words[1] as i64)
+            ranges.push(words[2] as i64)
+        }
+        free(info as *void)
+    }
+    return Extent(ranges[0], ranges[1], ranges[2], ranges[3])
+}
+
+# ---- gesture recognition -------------------------------------------------------------------------------------------------
+struct Emit { action: str, steps: i64 }
+
+# Turns touchpad events into actions (collected in `emitted`: 'volume'/'brightness'/'seek' with a signed step count, or
+# 'launch' with 1). The caller says on every event whether gestures are active (enabled and not locked) and what time it is.
+struct Engine {
+    minX: i64, minY: i64, width: i64, height: i64, slot: i64,
+    slots: Vec<i64>, xs: Vec<i64>, ys: Vec<i64>, hasX: Vec<bool>, hasY: Vec<bool>,
+    tracking: bool, zone: str, startX: f64, startY: f64, steps: i64, active: bool, origin: f64,
+    cancelled: bool, lastLaunch: f64, emitted: Vec<Emit>, now: f64
+}
+
+fn newEngine(extent: Extent): Engine {
+    let width = extent.maxX - extent.minX
+    let height = extent.maxY - extent.minY
+    return Engine(extent.minX, extent.minY, width < 1 ? 1 : width, height < 1 ? 1 : height, 0,
+        Vec<i64>(), Vec<i64>(), Vec<i64>(), Vec<bool>(), Vec<bool>(),
+        false, "", 0.0, 0.0, 0, false, 0.0, false, 0.0 - cooldown(), Vec<Emit>(), 0.0)
+}
+
+fn slotAt(e: Engine, slot: i64): i64 {
+    for i in 0..(e.slots.len() as i64) { if e.slots[i] == slot { return i } }
+    return 0 - 1
+}
+fn ensureSlot(e: Engine): Engine {
+    if slotAt(e, e.slot) < 0 {
+        e.slots.push(e.slot); e.xs.push(0); e.ys.push(0); e.hasX.push(false); e.hasY.push(false)
+    }
+    return e
+}
+fn removeSlot(e: Engine, slot: i64): Engine {
+    let at = slotAt(e, slot)
+    if at < 0 { return e }
+    let slots = Vec<i64>(); let xs = Vec<i64>(); let ys = Vec<i64>(); let hx = Vec<bool>(); let hy = Vec<bool>()
+    for i in 0..(e.slots.len() as i64) {
+        if i == at { continue }
+        slots.push(e.slots[i]); xs.push(e.xs[i]); ys.push(e.ys[i]); hx.push(e.hasX[i]); hy.push(e.hasY[i])
+    }
+    e.slots = slots; e.xs = xs; e.ys = ys; e.hasX = hx; e.hasY = hy
+    return e
+}
+
+fn zoneOf(fx: f64, fy: f64): str {
+    if fx >= 1.0 - corner() && fy <= corner() { return "corner" }
+    if fy <= edge() { return "top" }
+    if fx <= edge() { return "left" }
+    if fx >= 1.0 - edge() { return "right" }
+    return ""
+}
+
+fn emit(e: Engine, action: str, steps: i64): Engine {
+    e.emitted.push(Emit(action, steps))
+    return e
+}
+
+fn track(e: Engine, fx: f64, fy: f64): Engine {
+    let dx = fx - e.startX
+    let dy = fy - e.startY
+    if strings.equal(e.zone, "corner") {
+        if dx <= 0.0 - cornerPull() && dy >= cornerPull() {
+            e.tracking = false
+            e.cancelled = true
+            if e.now - e.lastLaunch >= cooldown() {
+                e.lastLaunch = e.now
+                e = emit(e, "launch", 1)
+            }
+        }
+        return e
+    }
+    let vertical = strings.equal(e.zone, "left") || strings.equal(e.zone, "right")
+    let along = vertical ? dy : dx
+    let across = vertical ? dx : dy
+    if !e.active {
+        if math.abs(along) < dead() && math.abs(across) < dead() { return e }
+        if math.abs(along) < sideways() * math.abs(across) || math.abs(along) < dead() {
+            e.tracking = false
+            e.cancelled = true   # moved off sideways: ordinary pointer use
+            return e
+        }
+        e.active = true
+        e.origin = along
+    }
+    let steps = math.trunc((along - e.origin) / step()) as i64
+    let change = steps - e.steps
+    if change != 0 {
+        e.steps = steps
+        # Up the left/right edges and to the right along the top mean "more".
+        let action = strings.equal(e.zone, "left") ? "volume" : (strings.equal(e.zone, "right") ? "brightness" : "seek")
+        e = emit(e, action, strings.equal(e.zone, "top") ? change : 0 - change)
+    }
+    return e
+}
+
+fn report(e: Engine, gate: bool): Engine {
+    let fingers = 0
+    for i in 0..(e.slots.len() as i64) { if e.hasX[i] && e.hasY[i] { fingers = fingers + 1 } }
+    if e.slots.len() == 0 { e.tracking = false; e.cancelled = false; return e }
+    if e.slots.len() > 1 { e.tracking = false; e.cancelled = true; return e }
+    if e.cancelled || fingers == 0 { return e }
+    let fx = ((e.xs[0] - e.minX) as f64) / (e.width as f64)
+    let fy = ((e.ys[0] - e.minY) as f64) / (e.height as f64)
+    if !e.tracking {
+        let zone = zoneOf(fx, fy)
+        if strings.equal(zone, "") || !gate { e.cancelled = true; return e }
+        e.tracking = true
+        e.zone = zone
+        e.startX = fx
+        e.startY = fy
+        e.steps = 0
+        e.active = false
+        return e
+    }
+    if !gate { e.tracking = false; e.cancelled = true; return e }
+    return track(e, fx, fy)
+}
+
+# One evdev event (type, code, value). EV_ABS = 3, EV_SYN = 0.
+fn feed(e: Engine, kind: i64, code: i64, value: i64, gate: bool): Engine {
+    if kind == 3 {
+        if code == 0x2f { e.slot = value }
+        else if code == 0x39 {
+            if value < 0 { e = removeSlot(e, e.slot) }
+            else {
+                e = removeSlot(e, e.slot)
+                e.slots.push(e.slot); e.xs.push(0); e.ys.push(0); e.hasX.push(false); e.hasY.push(false)
+            }
+        } else if code == 0x35 || code == 0x36 {
+            e = ensureSlot(e)
+            let at = slotAt(e, e.slot)
+            if code == 0x35 { e.xs[at] = value; e.hasX[at] = true } else { e.ys[at] = value; e.hasY[at] = true }
+        }
+    } else if kind == 0 && code == 0 { e = report(e, gate) }
+    return e
+}
+
+# ---- actions -------------------------------------------------------------------------------------------------------------
+fn seek(steps: i64) {
+    let busctl = hw.tool("DEVOS_TP_BUSCTL", "busctl")
+    let listing = hw.runWith(busctl, Vec<str>("--user", "--no-legend", "list", "--acquired"), 5000)
+    let names = Vec<str>()
+    if listing.code == 0 {
+        let lines = strings.split(listing.out, "\n")
+        for i in 0..(lines.len() as i64) {
+            if strings.startsWith(lines[i], "org.mpris.MediaPlayer2.") { names.push(hw.words(lines[i])[0]) }
+        }
+    }
+    let chosen = ""
+    for i in 0..(names.len() as i64) {
+        let answer = hw.runWith(busctl, Vec<str>("--user", "get-property", names[i], "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "PlaybackStatus"), 5000)
+        if answer.code == 0 && strings.contains(answer.out, "Playing") { chosen = names[i]; break }
+        if strings.equal(chosen, "") { chosen = names[i] }
+    }
+    if strings.charLength(chosen) > 0 {
+        hw.runWith(busctl, Vec<str>("--user", "call", chosen, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Seek", "x", "${steps * seekSeconds() * 1000000}"), 5000)
+    }
+}
+
+# At most four helper processes at a time.
+fn launchBounded(running: Vec<i64>, command: Vec<str>): Vec<i64> {
+    let alive = Vec<i64>()
+    for i in 0..(running.len() as i64) { if hw.alive(running[i]) { alive.push(running[i]) } }
+    if alive.len() >= 4 { return alive }
+    let pid = hw.spawnDetached(command)
+    if pid > 0 { alive.push(pid) }
+    return alive
+}
+
+fn perform(running: Vec<i64>, action: str, steps: i64): Vec<i64> {
+    let count = steps < 0 ? 0 - steps : steps
+    if strings.equal(action, "volume") {
+        for i in 0..count {
+            let extra = steps > 0 ? Vec<str>("set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+") : Vec<str>("set-volume", "@DEFAULT_AUDIO_SINK@", "5%-")
+            running = launchBounded(running, hw.concat(hw.tool("DEVOS_TP_WPCTL", "wpctl"), extra))
+        }
+    } else if strings.equal(action, "brightness") {
+        for i in 0..count { running = launchBounded(running, hw.concat(hw.tool("DEVOS_TP_BACKLIGHT", "dev-os-backlight"), Vec<str>("--", steps > 0 ? "up" : "down"))) }
+    } else if strings.equal(action, "seek") { seek(steps) }
+    else if strings.equal(action, "launch") {
+        let target = load().launch
+        if isTarget(target) && !strings.equal(target, "none") { running = launchBounded(running, hw.concat(hw.tool("DEVOS_TP_SHELL", "dev-os-shell"), Vec<str>(target))) }
+    }
+    return running
+}
+
+# ---- commands ------------------------------------------------------------------------------------------------------------
+fn whichTool(name: str): bool {
+    let searchPath = hw.env("DEVOS_TP_PATH")
+    return strings.charLength(hw.whichIn(name, strings.charLength(searchPath) > 0 ? searchPath : hw.envOr("PATH", "/usr/bin:/bin"))) > 0
+}
+
+fn snapshot(): json.Value {
+    let state = load()
+    let pads = touchpads()
+    let backlight = hw.envOr("DEVOS_TP_SYS", "/sys") + "/class/backlight"
+    let readable = false
+    let names = json.array()
+    for i in 0..(pads.len() as i64) {
+        if hw.isReadable(pads[i].path) { readable = true }
+        names = json.push(names, pads[i].name)
+    }
+    let backends = json.object()
+    backends = json.set(backends, "volume", whichTool("wpctl"))
+    backends = json.set(backends, "brightness", whichTool("dev-os-backlight") && hw.isDir(backlight) && hw.listDir(backlight).len() > 0)
+    backends = json.set(backends, "seek", whichTool("busctl"))
+    backends = json.set(backends, "launch", whichTool("dev-os-shell"))
+    let reason = ""
+    if pads.len() == 0 { reason = "No touchpad was detected on this device." }
+    else if !readable { reason = "The touchpad cannot be read by this user, so edge gestures cannot work. The lock is not affected." }
+    let targets = json.array()
+    let ids = targetIds()
+    for i in 0..(ids.len() as i64) { targets = json.push(targets, json.set(json.set(json.object(), "id", ids[i]), "title", targetTitle(ids[i]))) }
+    let out = json.object()
+    out = json.set(out, "ok", true)
+    out = json.set(out, "supported", pads.len() > 0)
+    out = json.set(out, "reason", reason)
+    out = json.set(out, "devices", names)
+    out = json.set(out, "locked", state.locked)
+    out = json.set(out, "enabled", state.enabled)
+    out = json.set(out, "launch", state.launch)
+    out = json.set(out, "gesturesAvailable", pads.len() > 0 && readable)
+    out = json.set(out, "backends", backends)
+    out = json.set(out, "targets", targets)
+    return out
+}
+
+fn lastLine(text: str): str {
+    let lines = strings.split(strings.trim(text), "\n")
+    return lines.len() > 0 ? lines[lines.len() - 1] : ""
+}
+
+# Regenerates the compositor config through dev-os-touchpad so `sendEventsMode` follows the saved lock.
+fn applyLock() {
+    let command = hw.tool("DEVOS_TP_TOUCHPAD_HELPER", "")
+    if command.len() == 0 { command = Vec<str>("d", hw.parentDir(hw.selfPath("/usr/bin/dev-os-touchpad-gestures")) + "/dev-os-touchpad") }
+    let got = hw.runInput(command, json.stringify(json.set(json.object(), "action", "get")) + "\n", 30000)
+    let last = lastLine(got.out)
+    if !json.valid(last) || !json.has(hw.loadJsonText(last), "settings") { hw.failure("The touchpad settings could not be read.") }
+    let settings = json.get(json.parse(last), "settings")
+    let request = json.set(json.set(json.object(), "action", "save"), "settings", settings)
+    let saved = hw.runInput(command, json.stringify(request) + "\n", 30000)
+    let answer = json.object()
+    let answerLine = lastLine(saved.out)
+    if json.valid(answerLine) { answer = json.parse(answerLine) }
+    if saved.code != 0 || !hw.jbool(answer, "ok", false) {
+        let message = hw.jstr(answer, "error", "")
+        hw.failure(strings.charLength(message) > 0 ? message : "The compositor could not apply the touchpad lock.")
+    }
+}
+
+fn notify(text: str) {
+    if strings.charLength(hw.env("DEVOS_TP_NOTIFY")) > 0 || whichTool("notify-send") {
+        hw.runWith(hw.tool("DEVOS_TP_NOTIFY", "notify-send"), Vec<str>("-t", "1500", "Touchpad", text), 5000)
+    }
+}
+
+fn ensureService(enabled: bool) {
+    if !enabled { return }
+    let started = hw.runWith(hw.tool("DEVOS_TP_SYSTEMCTL", "systemctl"), Vec<str>("--user", "start", "--no-block", unitName()), 10000)
+    if started.code != 0 {   # live session without the packaged unit
+        hw.runWith(hw.tool("DEVOS_TP_SYSTEMRUN", "systemd-run"), Vec<str>("--user", "--unit", transientName(), "--collect", hw.selfPath("/usr/bin/dev-os-touchpad-gestures"), "serve"), 10000)
+    }
+}
+
+fn commandLock(argument: str) {
+    if !strings.equal(argument, "on") && !strings.equal(argument, "off") && !strings.equal(argument, "toggle") { hw.failure("Usage: lock on|off|toggle") }
+    let state = load()
+    let wanted = strings.equal(argument, "toggle") ? !state.locked : strings.equal(argument, "on")
+    if wanted && touchpads().len() == 0 { hw.failure("No touchpad was detected, so there is nothing to lock.") }
+    let previous = state
+    state.locked = wanted
+    save(state)
+    let applied = result.run(fn() { applyLock() })
+    if result.isErr(applied) {
+        save(previous)
+        hw.failure(hw.errorText(result.message(applied)))
+    }
+    if strings.equal(argument, "toggle") || strings.charLength(hw.env("DEVOS_TP_NOTIFY")) > 0 { notify(wanted ? "Touchpad locked" : "Touchpad unlocked") }
+}
+
+fn execute(action: str, rest: Vec<str>): json.Value {
+    if strings.equal(action, "get") { return snapshot() }
+    if strings.equal(action, "lock") { commandLock(rest.len() > 0 ? rest[0] : ""); return snapshot() }
+    if strings.equal(action, "gestures") {
+        if rest.len() < 1 || (!strings.equal(rest[0], "on") && !strings.equal(rest[0], "off")) { hw.failure("Usage: gestures on|off") }
+        if strings.equal(rest[0], "on") && touchpads().len() == 0 { hw.failure("No touchpad was detected, so gestures cannot be turned on.") }
+        let state = load()
+        state.enabled = strings.equal(rest[0], "on")
+        save(state)
+        ensureService(state.enabled)
+        return snapshot()
+    }
+    if strings.equal(action, "launch") {
+        if rest.len() != 1 || !isTarget(rest[0]) { hw.failure("Unsupported launch target.") }
+        let state = load()
+        state.launch = rest[0]
+        save(state)
+        return snapshot()
+    }
+    if strings.equal(action, "apply") {
+        if load().enabled { ensureService(true) }
+        return snapshot()
+    }
+    hw.failure("Unsupported touchpad gesture action.")
+    return json.null_value()
+}
+
+# ---- daemon --------------------------------------------------------------------------------------------------------------
+struct Dev { fd: i32, path: str, engine: Engine, buffer: Vec<u8> }
+
+fn openDevice(path: str): i32 {
+    let fd: i32 = 0 - 1
+    unsafe { fd = open(path, 0x800, 0) }   # O_RDONLY | O_NONBLOCK
+    return fd
+}
+
+fn closeAll(devs: Vec<Dev>): Vec<Dev> {
+    for i in 0..(devs.len() as i64) { unsafe { close(devs[i].fd) } }
+    return Vec<Dev>()
+}
+
+fn serve(): i32 {
+    let oneshot = strings.charLength(hw.env("DEVOS_TP_ONESHOT")) > 0
+    let devs = Vec<Dev>()
+    let running = Vec<i64>()
+    let lastScan = 0.0 - 10.0
+    while true {
+        let state = load()
+        let gate = state.enabled && !state.locked
+        if !gate {
+            devs = closeAll(devs)
+            if oneshot { return 0 }
+            hw.sleepSeconds(1.0)
+            continue
+        }
+        if devs.len() == 0 && hw.nowSeconds() - lastScan >= 5.0 {
+            lastScan = hw.nowSeconds()
+            let pads = touchpads()
+            for i in 0..(pads.len() as i64) {
+                let fd = openDevice(pads[i].path)
+                if fd < 0 { continue }
+                devs.push(Dev(fd, pads[i].path, newEngine(absRange(fd)), Vec<u8>()))
+            }
+        }
+        if devs.len() == 0 {
+            if oneshot { return 0 }
+            hw.sleepSeconds(1.0)
+            continue
+        }
+        let ready = Vec<i64>()
+        unsafe {
+            let table = malloc(devs.len() * 8)
+            for i in 0..(devs.len() as i64) {
+                let pfd = (table + i * 8) as *i32
+                pfd[0] = devs[i].fd
+                let flags = (table + i * 8 + 4) as *i16
+                flags[0] = 1
+                flags[1] = 0
+            }
+            poll(table, devs.len(), 1000)
+            for i in 0..(devs.len() as i64) {
+                let flags = (table + i * 8 + 4) as *i16
+                if flags[1] != 0 { ready.push(i) }
+            }
+            free(table as *void)
+        }
+        let closed = Vec<i64>()
+        for r in 0..(ready.len() as i64) {
+            let at = ready[r]
+            let count = 0 - 1
+            let chunk = Vec<u8>()
+            unsafe {
+                let buffer = malloc(24 * 64)
+                let got = read(devs[at].fd, buffer, 24 * 64)
+                count = got as i64
+                for i in 0..(count > 0 ? count : 0) { chunk.push(buffer[i]) }
+                free(buffer as *void)
+            }
+            if count == 0 { closed.push(at); continue }
+            if count < 0 { continue }
+            let pending = devs[at].buffer
+            for i in 0..(chunk.len() as i64) { pending.push(chunk[i]) }
+            let usable = (pending.len() as i64) - (pending.len() as i64) % 24
+            let engine = devs[at].engine
+            engine.now = hw.nowSeconds()
+            let offset = 0
+            while offset < usable {
+                let kind = (pending[offset + 16] as i64) | ((pending[offset + 17] as i64) << 8)
+                let code = (pending[offset + 18] as i64) | ((pending[offset + 19] as i64) << 8)
+                let raw = (pending[offset + 20] as i64) | ((pending[offset + 21] as i64) << 8) | ((pending[offset + 22] as i64) << 16) | ((pending[offset + 23] as i64) << 24)
+                let value = raw >= 2147483648 ? raw - 4294967296 : raw
+                engine = feed(engine, kind, code, value, gate)
+                offset = offset + 24
+            }
+            let rest = Vec<u8>()
+            for i in usable..(pending.len() as i64) { rest.push(pending[i]) }
+            devs[at].buffer = rest
+            let emitted = engine.emitted
+            engine.emitted = Vec<Emit>()
+            devs[at].engine = engine
+            for i in 0..(emitted.len() as i64) { running = perform(running, emitted[i].action, emitted[i].steps) }
+        }
+        if closed.len() > 0 {
+            let kept = Vec<Dev>()
+            for i in 0..(devs.len() as i64) {
+                if hw.containsInt(closed, i) { unsafe { close(devs[i].fd) } } else { kept.push(devs[i]) }
+            }
+            devs = kept
+            if oneshot { return 0 }
+        }
+    }
+    return 0
+}
+
+fn main(): i32 {
+    if args.len() == 0 {
+        print(json.stringify(hw.errorRaw("Usage: dev-os-touchpad-gestures get | lock | gestures | launch | apply | serve")))
+        return 1
+    }
+    let action = args.get(0)
+    let rest = Vec<str>()
+    for i in 1..(args.len() as i64) { rest.push(args.get(i)) }
+    if strings.equal(action, "serve") {
+        let served = result.attempt(fn(): i32 { return serve() })
+        if result.isErr(served) { hw.stderr(hw.errorText(result.message(served))); return 1 }
+        return result.unwrap(served)
+    }
+    let outcome = result.attempt(fn(): json.Value { return execute(action, rest) })
+    if result.isErr(outcome) {
+        print(json.stringify(hw.errorRaw(result.message(outcome))))
+        return 1
+    }
+    print(json.stringify(result.unwrap(outcome)))
+    return 0
+}

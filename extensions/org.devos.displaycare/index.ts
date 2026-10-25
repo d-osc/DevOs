@@ -45,7 +45,7 @@ export class CareShared {
         const start = () => {
             if (this.disposed) return;
             try {
-                const child = Gio.Subprocess.new(['python3', helper, 'serve'], Gio.SubprocessFlags.STDOUT_SILENCE);
+                const child = Gio.Subprocess.new(['sh', helper, 'serve'], Gio.SubprocessFlags.STDOUT_SILENCE);
                 this.child = child;
                 child.wait_check_async(null, (_source, result) => {
                     this.child = undefined;

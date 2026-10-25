@@ -76,3 +76,10 @@ Classic style เดิม, Classic solid และสุดท้ายใช�
 ไอคอนที่ไม่อยู่ใน mapping และชื่อที่ไม่ลงท้าย `-symbolic` (ไอคอนแอป) ใช้ GTK theme ตามเดิม
 
 License: Font Awesome Pro เป็น Commercial License; ดู `data/icons/fa/NOTICE.md`
+
+ไอคอนแอปพื้นฐานทั้ง 11 แอปใช้ชื่อ `dev-os-*` ใน `fa/mapping.json` และ outline จาก `assets/` เช่นกัน
+หลังอัปเดต webfonts ให้รัน `python tools/maintenance/build-fa-icons.py` แล้ว
+`node tools/maintenance/build-app-icons.mjs` เพื่อสร้าง SVG ปกติและ symbolic ใน
+`data/icons/hicolor/scalable/apps/` สำหรับ Launcher, desktop entries และ native windows.
+ไอคอน symbolic ใน shell เปลี่ยนตาม pack/style ที่เลือก ส่วนไอคอนแอปใน Launcher ใช้ Duotone Solid
+(ถ้าไม่มี glyph จะใช้ Classic Solid) โดยไม่ต้องติดตั้ง webfont บนเครื่องปลายทาง.

@@ -1,0 +1,174 @@
+# Test harness for the DevLang test suite (tests/*.test.dev): sandboxes, files, processes with a chosen environment, fake tools,
+# JSON helpers and a runner that sets the exit status. Each test file registers its cases with `test.case` and ends with `harness.finish()`.
+use "std/fs"
+use "std/json"
+use "std/module"
+use "std/path"
+use "std/process"
+use "std/regex"
+use "std/result"
+use "std/strings"
+use "std/test"
+use "std/child_process"
+use "std/encoding"
+use "std/time"
+use "../../lib/hw.dev" as hw
+
+fn root(): str {
+    let entry = io_entry()
+    let dir = path.dirname(entry)
+    for level in 0..5 {
+        if fs.existsSync(dir + "/profiles/devos-hwprofile") { return dir }
+        dir = path.dirname(dir)
+    }
+    result.raise("Cannot locate the repository root from " + entry)
+    return ""
+}
+fn io_entry(): str {
+    let real = hw.run(Vec<str>("realpath", "-m", "--", module.entry()), 10000)
+    return strings.trim(real.out)
+}
+fn d(): str {
+    let found = hw.which("d")
+    return strings.charLength(found) > 0 ? found : hw.home() + "/.local/bin/d"
+}
+
+# ---- assertions ----------------------------------------------------------------------------------------------------------
+fn expect(condition: bool, message: str) { test.expect(condition, message) }
+# Structural JSON equality (numbers compare by value: 0 equals 0.0).
+fn deepEqual(a: json.Value, b: json.Value): bool {
+    let kind = json.kind(a)
+    if !strings.equal(kind, json.kind(b)) { return false }
+    if strings.equal(kind, "number") { return json.float(a) == json.float(b) }
+    if strings.equal(kind, "array") {
+        if json.len(a) != json.len(b) { return false }
+        for i in 0..(json.len(a) as i64) { if !deepEqual(json.at(a, i), json.at(b, i)) { return false } }
+        return true
+    }
+    if strings.equal(kind, "object") {
+        let keys = json.keys(a)
+        if keys.len() != json.keys(b).len() { return false }
+        for i in 0..(keys.len() as i64) {
+            if !json.has(b, keys[i]) || !deepEqual(json.get(a, keys[i]), json.get(b, keys[i])) { return false }
+        }
+        return true
+    }
+    return strings.equal(json.stringify(a), json.stringify(b))
+}
+fn same(actual: json.Value, expected: json.Value, message: str) {
+    test.expect(deepEqual(actual, expected), message + ": " + json.stringify(actual) + " != " + json.stringify(expected))
+}
+fn equalStr(actual: str, expected: str, message: str) { test.expect(strings.equal(actual, expected), message + ": '" + actual + "' != '" + expected + "'") }
+fn equalInt(actual: i64, expected: i64, message: str) { test.expect(actual == expected, message + ": ${actual} != ${expected}") }
+fn contains(text: str, needle: str, message: str) { test.expect(strings.contains(text, needle), message + ": '" + needle + "' not in '" + text + "'") }
+fn lacks(text: str, needle: str, message: str) { test.expect(!strings.contains(text, needle), message + ": '" + needle + "' unexpectedly in '" + text + "'") }
+fn matches(text: str, pattern: str, message: str) {
+    let compiled = regex.compile(pattern, "")
+    test.expect(compiled.test(text), message + ": /" + pattern + "/ not in '" + text + "'")
+}
+
+# Runs `body`, which must raise an error whose text contains `needle`.
+fn raises(body: fn(): void, needle: str, message: str) {
+    let outcome = result.run(body)
+    test.expect(result.isErr(outcome), message + ": expected an error")
+    if result.isErr(outcome) { contains(result.message(outcome), needle, message) }
+}
+
+# ---- files and sandboxes -------------------------------------------------------------------------------------------------
+fn write(file: str, text: str) {
+    hw.run(Vec<str>("mkdir", "-p", path.dirname(file)), 10000)
+    test.expect(fs.writeFileSync(file, text), "write " + file)
+}
+fn read(file: str): str { return fs.readFileSync(file, "utf8") }
+fn readJson(file: str): json.Value { return json.parse(read(file)) }
+fn exists(file: str): bool { return fs.existsSync(file) || hw.run(Vec<str>("test", "-L", file), 5000).code == 0 }
+fn mkdirs(dir: str) { hw.run(Vec<str>("mkdir", "-p", dir), 10000) }
+fn chmod(file: str, mode: str) { hw.run(Vec<str>("chmod", mode, file), 10000) }
+fn symlink(target: str, link: str) { mkdirs(path.dirname(link)); hw.run(Vec<str>("ln", "-sfn", target, link), 10000) }
+fn remove(file: str) { hw.run(Vec<str>("rm", "-rf", "--", file), 60000) }
+fn copyTree(from: str, to: str) { mkdirs(path.dirname(to)); hw.run(Vec<str>("cp", "-a", "--", from, to), 120000) }
+fn listing(dir: str): Vec<str> { return hw.listDir(dir) }
+
+# A fresh temporary directory for the body of one test, removed afterwards (also when the body fails).
+fn sandbox(body: fn(str): void) {
+    let dir = strings.trim(hw.run(Vec<str>("mktemp", "-d", "-t", "devos-test-XXXXXXXX"), 10000).out)
+    let outcome = result.run(fn() { body(dir) })
+    let pids = strings.split(hw.readText(dir + "/.bgpids"), "\n")
+    for i in 0..(pids.len() as i64) { if hw.isInt(pids[i]) { stopBg(hw.toInt(pids[i], 0)) } }
+    hw.run(Vec<str>("rm", "-rf", "--", dir), 60000)
+    if result.isErr(outcome) { result.raise(result.message(outcome)) }
+}
+
+# An executable sh script `name` in `dir` (a stand-in for pw-dump, wpctl, debugfs, ...).
+fn fakeTool(dir: str, name: str, script: str): str {
+    let file = dir + "/" + name
+    write(file, "#!/bin/sh\n" + script)
+    chmod(file, "755")
+    return file
+}
+
+# ---- processes -----------------------------------------------------------------------------------------------------------
+struct Proc { code: i64, out: str, err: str }
+
+# Runs argv with extra NAME=VALUE environment entries (via env(1)); `input` goes to standard input.
+fn proc(argv: Vec<str>, env: Vec<str>, input: str): Proc {
+    let all = Vec<str>("env")
+    for i in 0..(env.len() as i64) { all.push(env[i]) }
+    for i in 0..(argv.len() as i64) { all.push(argv[i]) }
+    let rest = Vec<str>()
+    for i in 1..(all.len() as i64) { rest.push(all[i]) }
+    let outcome = result.attempt(fn(): Proc {
+        let o = child_process.execFileSync("env", rest, child_process.Options("", 120000, 8388608, encoding.encode(input, "utf8")))
+        return Proc(o.code, encoding.decode(o.stdout, "utf8"), encoding.decode(o.stderr, "utf8"))
+    })
+    if result.isErr(outcome) { return Proc(127, "", result.message(outcome)) }
+    return result.unwrap(outcome)
+}
+fn sh(argv: Vec<str>, env: Vec<str>): Proc { return proc(argv, env, "") }
+
+# Runs a DevLang program `d file -- args`.
+fn dev(file: str, args: Vec<str>, env: Vec<str>, input: str): Proc {
+    return proc(hw.concat(Vec<str>(d(), file, "--"), args), env, input)
+}
+
+fn envPairs(pairs: Vec<str>): Vec<str> { return pairs }
+
+# ---- background processes ------------------------------------------------------------------------------------------------
+# Starts argv (with extra NAME=VALUE entries) in its own session; returns the pid, which is also the process group to stop.
+fn startBg(dir: str, argv: Vec<str>, env: Vec<str>): i64 {
+    let all = Vec<str>("env")
+    for i in 0..(env.len() as i64) { all.push(env[i]) }
+    for i in 0..(argv.len() as i64) { all.push(argv[i]) }
+    let pid = hw.spawnDetached(all)
+    # The sandbox stops everything started in it, also when the test body fails before it cleans up.
+    fs.appendFileSync(dir + "/.bgpids", "${pid}\n")
+    return pid
+}
+# SIGTERM to the whole process group (the launcher chain execs d, which runs the program in a child).
+fn stopBg(pid: i64) {
+    if pid > 0 { hw.run(Vec<str>("kill", "-TERM", "--", "-${pid}"), 10000) }
+}
+# Polls `condition` every 20 ms for up to `seconds`.
+fn waitFor(condition: fn(): bool, seconds: f64): bool {
+    let deadline = hw.nowSeconds() + seconds
+    while hw.nowSeconds() < deadline {
+        if condition() { return true }
+        hw.sleepSeconds(0.02)
+    }
+    return condition()
+}
+# JSON lines of a log file as values.
+fn logLines(file: str): Vec<json.Value> {
+    let out = Vec<json.Value>()
+    let lines = strings.split(hw.readText(file), "\n")
+    for i in 0..(lines.len() as i64) { if strings.charLength(lines[i]) > 0 && json.valid(lines[i]) { out.push(json.parse(lines[i])) } }
+    return out
+}
+
+# ---- runner --------------------------------------------------------------------------------------------------------------
+fn finish(): i32 {
+    let report = test.run()
+    print(report.summary)
+    print("${report.passed}/${report.total} passed")
+    return report.failed > 0 ? 1 : 0
+}

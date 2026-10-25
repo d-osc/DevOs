@@ -5,7 +5,7 @@ import System from 'system';
 import {ROOT, VERSION, loadConfig} from '@dev-os/config';
 import {remoteCommand} from '@dev-os/runtime/remote';
 
-const commands = ['shell', 'camera', 'microphone', 'window-next', 'window-previous', 'window-restore', 'launcher', 'overlays-hide', 'snap-layouts', 'task-view', 'task-view-show', 'task-view-hide', 'task-manager', 'disk-manager', 'installer', 'app-store', 'terminal', 'files', 'editor', 'lock', 'logout', 'reload', 'settings', 'language', 'time', 'system', 'display', 'sound', 'power', 'storage', 'about', 'network', 'wifi', 'touchpad', 'mouse', 'keyboard', 'bluetooth-add', 'printers', 'vpn', 'hotspot', 'airplane', 'proxy', 'advanced', 'doctor'];
+const commands = ['shell', 'browser', 'camera', 'microphone', 'window-next', 'window-previous', 'window-restore', 'launcher', 'overlays-hide', 'snap-layouts', 'task-view', 'task-view-show', 'task-view-hide', 'task-manager', 'disk-manager', 'installer', 'app-store', 'terminal', 'files', 'editor', 'lock', 'logout', 'reload', 'settings', 'language', 'time', 'system', 'display', 'sound', 'power', 'storage', 'about', 'network', 'wifi', 'touchpad', 'mouse', 'keyboard', 'bluetooth-add', 'printers', 'vpn', 'hotspot', 'airplane', 'proxy', 'advanced', 'doctor'];
 
 async function main(args: string[]): Promise<number> {
     if (args.includes('--version')) { print(VERSION); return 0; }

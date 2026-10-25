@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Tests bin/dev-os-touchpad-gestures: lock persistence, touchpad detection, edge-gesture recognition and the daemon
 against fake /proc, fake evdev event streams and fake wpctl / backlight / shell tools."""
-import importlib.machinery
-import importlib.util
 import json
 import os
 import struct
@@ -14,9 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'bin' / 'dev-os-touchpad-gestures'
-loader = importlib.machinery.SourceFileLoader('touchpad_gestures', str(HELPER))
-module = importlib.util.module_from_spec(importlib.util.spec_from_loader('touchpad_gestures', loader))
-loader.exec_module(module)
+DRIVER = ROOT / 'tests/fixtures/touchpad-driver.dev'
+D = os.environ.get('DEVLANG_BIN') or str(Path.home() / '.local/bin/d')
 
 PROC = '''I: Bus=0003 Vendor=0b05 Product=1a30 Version=0100
 N: Name="ASUE1234:00 04F3:3294 Touchpad"
@@ -68,16 +65,26 @@ def up(slot=0):
 
 
 class Replay:
-    """Feeds frames into a recognizer and records what it emitted."""
-    def __init__(self, gate=lambda: True):
-        self.out, self.now = [], [100.0]
-        self.engine = module.Engine((0, W, 0, H), lambda action, steps: self.out.append((action, steps)), gate, lambda: self.now[0])
+    """Feeds frames into the recognizer of lib/touchpad-gestures.dev (through tests/fixtures/touchpad-driver.dev) and reads what it emitted."""
+    def __init__(self, gate=True):
+        self.ops = [] if gate else [{'op': 'gate', 'value': False}]
 
     def play(self, *frames):
-        for frame in frames:
-            for kind, code, value in frame + [(0, 0, 0)]:
-                self.engine.feed(kind, code, value)
+        self.ops.append({'op': 'frames', 'frames': [list(map(list, frame)) for frame in frames]})
         return self.out
+
+    def set_gate(self, value):
+        self.ops.append({'op': 'gate', 'value': value})
+
+    def advance(self, seconds):
+        self.ops.append({'op': 'advance', 'value': seconds})
+
+    @property
+    def out(self):
+        script = {'extent': [0, W, 0, H], 'ops': self.ops}
+        done = subprocess.run([D, str(DRIVER), '--'], capture_output=True, text=True, env=os.environ | {'DRIVER_SCRIPT': json.dumps(script)}, timeout=60)
+        assert done.returncode == 0, done.stdout + done.stderr
+        return [tuple(item) for item in json.loads(done.stdout)]
 
 
 def path(fraction, size):
@@ -112,7 +119,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(r.out, [('launch', 1)])
         r.play(up(), down(960, 20), *[move(960 - 12 * i, 20 + 8 * i) for i in range(1, 16)])
         self.assertEqual(r.out, [('launch', 1)], 'Cooldown suppresses an immediate repeat')
-        r.now[0] += 2.0
+        r.advance(2.0)
         r.play(up(), down(960, 20), *[move(960 - 12 * i, 20 + 8 * i) for i in range(1, 16)])
         self.assertEqual(len(r.out), 2)
 
@@ -139,14 +146,13 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(r.out)
 
     def test_gate_disables_recognition(self):
-        enabled = [False]
-        r = Replay(gate=lambda: enabled[0])
+        r = Replay(gate=False)
         r.play(down(30, 500), *[move(30, 500 - 15 * i) for i in range(1, 20)])
         self.assertEqual(r.out, [])
-        enabled[0] = True
+        r.set_gate(True)
         r.play(up(), down(30, 500), *[move(30, 500 - 15 * i) for i in range(1, 20)])
         self.assertTrue(r.out)
-        enabled[0] = False
+        r.set_gate(False)
         n = len(r.out)
         r.play(*[move(30, 200 - 3 * i) for i in range(1, 10)])
         self.assertEqual(len(r.out), n, 'Locking mid-gesture stops it')
@@ -184,7 +190,7 @@ class HelperCase(unittest.TestCase):
         (self.root / 'dev' / name).write_bytes(data)
 
     def run_helper(self, *args, env=None, code=0):
-        done = subprocess.run([sys.executable, str(HELPER), *args], capture_output=True, text=True, env=self.env | (env or {}), timeout=30)
+        done = subprocess.run(['sh', str(HELPER), *args], capture_output=True, text=True, env=self.env | (env or {}), timeout=30)
         self.assertEqual(done.returncode, code, done.stdout + done.stderr)
         return json.loads(done.stdout.splitlines()[-1])
 
@@ -282,7 +288,7 @@ class DaemonTests(HelperCase):
         saved = {'locked': False, 'enabled': True, 'launch': 'task-manager'} | state
         (self.root / 'config/dev-os').mkdir(parents=True, exist_ok=True)
         (self.root / 'config/dev-os/touchpad-gestures.json').write_text(json.dumps(saved))
-        done = subprocess.run([sys.executable, str(HELPER), 'serve'], capture_output=True, text=True, timeout=30,
+        done = subprocess.run(['sh', str(HELPER), 'serve'], capture_output=True, text=True, timeout=30,
                               env=self.env | {'DEVOS_TP_ONESHOT': '1', 'DEVOS_TP_RANGE': f'0,{W},0,{H}'})
         self.assertEqual(done.returncode, 0, done.stderr)
         import time
@@ -337,8 +343,10 @@ class PackagingTests(unittest.TestCase):
         for key, action in (('XF86TouchpadToggle', 'toggle'), ('XF86TouchpadOff', 'on'), ('XF86TouchpadOn', 'off')):
             self.assertIn(f'<keybind key="{key}"><action name="Execute" command="dev-os-touchpad-gestures lock {action}" /></keybind>', rc)
 
-    def test_helper_is_executable_python(self):
-        self.assertTrue(HELPER.read_text().startswith('#!/usr/bin/env python3'))
+    def test_helper_is_a_devlang_launcher(self):
+        self.assertTrue(HELPER.read_text().startswith('#!/bin/sh'))
+        self.assertIn('touchpad-gestures-cli.dev', HELPER.read_text())
+        self.assertTrue((ROOT / 'lib/touchpad-gestures.dev').is_file())
 
 
 if __name__ == '__main__':

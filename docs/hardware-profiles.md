@@ -104,7 +104,7 @@ paths; symlinks are refused), a generated `modprobe.d` blacklist and
 `modules-load.d` list. The tool and profile tree are copied to
 `/usr/bin/devos-hwprofile` and `/usr/share/devos/profiles` for diagnostics. If
 identification fails the boot continues with built-in defaults. `kernel.args`
-and the board DTB are build-time inputs: `distro/usb/prepare.py` composes the
+and the board DTB are build-time inputs: `distro/usb/prepare.dev` composes the
 model's arguments with `devos-hwprofile compose`.
 
 `dev-os-drivers` adds a `hardware_profile` section: selected profile, test

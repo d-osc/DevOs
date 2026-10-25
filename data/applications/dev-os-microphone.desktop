@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Dev OS Microphone
-Comment=Capture with Dev OS Microphone
+Name=Microphone
+Comment=Capture with Microphone
 Exec=dev-os-shell microphone
-Icon=audio-input-microphone
+Icon=dev-os-microphone
 Terminal=false
 Categories=AudioVideo;
 

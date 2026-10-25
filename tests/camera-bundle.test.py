@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'distro/usb'))
-import board_audio
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from usb_support import usb as board_audio
 
 @unittest.skipUnless(os.getenv('DEVOS_CAMERA_BUNDLE'), 'requires built camera bundle')
 class CameraBundleTests(unittest.TestCase):

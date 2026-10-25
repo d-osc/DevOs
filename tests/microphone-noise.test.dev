@@ -1,0 +1,234 @@
+# Tests bin/dev-os-microphone against a fake PipeWire graph: fake pw-dump / wpctl / systemctl / pipewire programs share one JSON file,
+# so selecting a default or starting the filter service changes what the next pw-dump reports.
+use "std/json"
+use "std/strings"
+use "std/test"
+use "../tests/lib/harness.dev" as harness
+use "../tests/lib/audiorig.dev" as rig
+use "../lib/hw.dev" as hw
+
+fn graph(defaultSource: str): json.Value {
+    let items = json.array()
+    items = json.push(items, rig.plain(40, "alsa_input.mic_array", "Audio/Source", "Microphone Array (Qualcomm)"))
+    items = json.push(items, rig.plain(41, "alsa_input.usb_headset", "Audio/Source", "USB Headset Mono"))
+    items = json.push(items, rig.plain(50, "alsa_output.speakers", "Audio/Sink", "Speakers"))
+    items = json.push(items, rig.plain(51, "alsa_output.speakers.monitor", "Audio/Source/Virtual", "Monitor of Speakers"))
+    items = json.push(items, rig.plain(60, "bluez_input.camera", "Video/Source", "Not audio"))
+    return json.push(items, rig.metadata(defaultSource, "alsa_output.speakers"))
+}
+
+fn setup(base: str): Vec<str> { return rig.setup(base, "mic", graph("alsa_input.mic_array")) }
+fn micro(env: Vec<str>, args: Vec<str>, extra: Vec<str>, expected: i64): json.Value { return rig.run(env, "microphone", args, extra, expected) }
+fn args1(a: str): Vec<str> { return Vec<str>(a) }
+fn args2(a: str, b: str): Vec<str> { return Vec<str>(a, b) }
+fn none(): Vec<str> { return Vec<str>() }
+fn state(base: str, mode: str, device: str) {
+    harness.write(base + "/config/devos/microphone.json", json.stringify(json.set(json.set(json.object(), "mode", mode), "device", device)))
+}
+fn sourceNames(value: json.Value): Vec<str> { return rig.names(hw.jget(value, "sources"), "name") }
+fn text(value: json.Value, key: str): str { return hw.jstr(value, key, "") }
+fn flag(value: json.Value, key: str): bool { return hw.jbool(value, key, false) }
+
+fn serve(base: str, env: Vec<str>, mode: str, device: str): str {
+    state(base, mode, device)
+    micro(env, args1("serve"), none(), 0)
+    return harness.exists(base + "/served.conf") ? harness.read(base + "/served.conf") : "<none>"
+}
+
+fn t_lists(base: str) {
+    let env = setup(base)
+    let state = micro(env, args1("get"), none(), 0)
+    harness.expect(flag(state, "ok") && flag(state, "supported"), "supported")
+    let names = sourceNames(state)
+    harness.expect(names.len() == 2 && strings.equal(names[0], "alsa_input.mic_array") && strings.equal(names[1], "alsa_input.usb_headset"), "monitors, sinks and cameras are not microphones")
+    harness.equalStr(hw.jstr(json.at(hw.jget(state, "sources"), 0), "title", ""), "Microphone Array (Qualcomm)", "title")
+    harness.equalStr(text(state, "device") + "/" + text(state, "mode") + "/" + text(state, "active") + "/" + (flag(state, "running") ? "run" : "idle"), "alsa_input.mic_array/authentic/authentic/idle", "defaults")
+    harness.same(hw.jget(state, "noise"), json.parse("{\"available\":true,\"reason\":\"\"}"), "noise")
+    harness.equalInt(rig.calls(base).len() as i64, 0, "Reading the state changes nothing")
+}
+
+fn t_noise_missing(base: str) {
+    let env = setup(base)
+    rig.plugins(base, false, "mic")
+    let state = micro(env, args1("get"), none(), 0)
+    harness.expect(!flag(hw.jget(state, "noise"), "available"), "unavailable")
+    harness.contains(text(hw.jget(state, "noise"), "reason"), "pipewire-modules-echo-cancel", "reason names the module")
+    harness.contains(text(hw.jget(state, "noise"), "reason"), "pipewire-spa-plugins-aec-webrtc", "reason names the plugin")
+    let refused = micro(env, args2("mode", "general"), none(), 1)
+    harness.expect(!flag(refused, "ok"), "refused")
+    harness.contains(text(refused, "error"), "not installed", "error")
+    harness.equalStr(text(micro(env, args1("get"), none(), 0), "mode"), "authentic", "A refused mode is not saved")
+    let calls = rig.calls(base)
+    for i in 0..(calls.len() as i64) { harness.expect(!strings.startsWith(calls[i], "systemctl"), "no systemctl call") }
+}
+
+fn t_saved_without_plugins(base: str) {
+    let env = setup(base)
+    state(base, "conference", "")
+    rig.plugins(base, false, "mic")
+    let value = micro(env, args1("get"), none(), 0)
+    harness.equalStr(text(value, "mode") + "/" + text(value, "active"), "conference/authentic", "falls back")
+    harness.contains(text(value, "warning"), "without processing", "warning")
+}
+
+fn t_general(base: str) {
+    let env = setup(base)
+    let value = micro(env, args2("mode", "general"), none(), 0)
+    harness.equalStr(text(value, "mode") + "/" + text(value, "active") + "/" + (flag(value, "running") ? "run" : "idle"), "general/general/run", "general state")
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "devos-mic-clean", "virtual source is the default")
+    harness.equalStr(rig.defaultOf(base, "default.audio.sink"), "alsa_output.speakers", "The reference sink never becomes the default output")
+    harness.expect(rig.hasCall(base, "systemctl --user restart devos-microphone.service"), "restart call")
+    let names = sourceNames(value)
+    harness.expect(names.len() == 2 && strings.equal(names[0], "alsa_input.mic_array"), "The virtual source is not offered as a device")
+    harness.equalStr(text(value, "device"), "alsa_input.mic_array", "device")
+}
+
+fn t_conference(base: str) {
+    let env = setup(base)
+    harness.equalStr(text(micro(env, args2("mode", "conference"), none(), 0), "active"), "conference", "conference active")
+    let value = micro(env, args2("mode", "authentic"), none(), 0)
+    harness.equalStr(text(value, "active") + "/" + (flag(value, "running") ? "run" : "idle"), "authentic/idle", "authentic restores")
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "alsa_input.mic_array", "raw microphone is the default again")
+    harness.expect(rig.hasCall(base, "systemctl --user stop devos-microphone.service"), "stop call")
+}
+
+fn t_device(base: str) {
+    let env = setup(base)
+    let value = micro(env, args2("device", "alsa_input.usb_headset"), none(), 0)
+    harness.equalStr(text(value, "device") + "/" + text(value, "active"), "alsa_input.usb_headset/authentic", "device chosen")
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "alsa_input.usb_headset", "Authentic recording selects the raw device")
+    micro(env, args2("mode", "general"), none(), 0)
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "devos-mic-clean", "general uses the filter")
+    value = micro(env, args2("device", "alsa_input.mic_array"), none(), 0)
+    harness.equalStr(text(value, "device") + "/" + text(value, "active"), "alsa_input.mic_array/general", "device in general")
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "devos-mic-clean", "Switching the microphone keeps the filter on")
+    harness.same(harness.readJson(base + "/config/devos/microphone.json"), json.parse("{\"mode\":\"general\",\"device\":\"alsa_input.mic_array\"}"), "saved state")
+}
+
+fn t_rejects(base: str) {
+    let env = setup(base)
+    let bad = Vec<Vec<str>>()
+    bad.push(Vec<str>("device", "alsa_input.gone"))
+    bad.push(Vec<str>("device", "devos-mic-clean"))
+    bad.push(Vec<str>("mode", "studio"))
+    bad.push(Vec<str>("mode"))
+    bad.push(Vec<str>("frobnicate"))
+    for i in 0..(bad.len() as i64) {
+        let answer = micro(env, bad[i], none(), 1)
+        harness.expect(!flag(answer, "ok"), "rejected " + strings.join(bad[i], " "))
+    }
+    harness.equalInt(rig.calls(base).len() as i64, 0, "nothing was called")
+}
+
+fn t_service_failure(base: str) {
+    let env = setup(base)
+    let failed = micro(env, args2("mode", "general"), Vec<str>("FAKE_SYSTEMCTL_FAIL=1"), 1)
+    harness.contains(text(failed, "error"), "could not start", "error")
+}
+
+fn t_apply(base: str) {
+    let env = setup(base)
+    state(base, "conference", "alsa_input.usb_headset")
+    let value = micro(env, args1("apply"), none(), 0)
+    harness.equalStr(text(value, "active"), "conference", "active")
+    harness.expect(rig.hasCall(base, "systemctl --user start devos-microphone.service"), "start")
+    harness.expect(!rig.hasCall(base, "systemctl --user restart devos-microphone.service"), "no restart")
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "devos-mic-clean", "default")
+}
+
+fn t_transient(base: str) {
+    let env = setup(base)
+    let missing = Vec<str>("FAKE_UNIT_MISSING=1")
+    let value = micro(env, args2("mode", "general"), missing, 0)
+    harness.equalStr(text(value, "active") + "/" + (flag(value, "running") ? "run" : "idle"), "general/run", "transient unit runs the filter")
+    let runs = Vec<str>()
+    let calls = rig.calls(base)
+    for i in 0..(calls.len() as i64) { if strings.startsWith(calls[i], "systemd-run") { runs.push(calls[i]) } }
+    harness.equalInt(runs.len() as i64, 1, "one systemd-run")
+    harness.contains(runs[0], "--unit=devos-microphone-session.service", "unit name")
+    harness.expect(strings.endsWith(runs[0], "dev-os-microphone serve"), "runs the launcher")
+    harness.expect(rig.hasCall(base, "systemctl --user stop devos-microphone-session.service"), "stops the old transient unit")
+    micro(env, args2("mode", "authentic"), missing, 0)
+    harness.equalStr(rig.defaultOf(base, "default.audio.source"), "alsa_input.mic_array", "raw default")
+}
+
+fn t_pipewire_down(base: str) {
+    let env = setup(base)
+    harness.write(base + "/pw-dump", "#!/bin/sh\nexit 1\n")
+    let value = micro(env, args1("get"), none(), 0)
+    harness.expect(!flag(value, "supported"), "unsupported")
+    harness.contains(text(value, "reason"), "PipeWire", "reason")
+    harness.expect(!flag(micro(env, args2("mode", "authentic"), none(), 1), "ok"), "mode fails")
+}
+
+fn t_corrupt(base: str) {
+    let env = setup(base)
+    harness.write(base + "/config/devos/microphone.json", "{\"mode\": \"evil; rm -rf /\", \"device\": 5")
+    harness.equalStr(text(micro(env, args1("get"), none(), 0), "mode"), "authentic", "corrupt state is authentic")
+}
+
+fn t_config(base: str) {
+    let env = setup(base)
+    let general = serve(base, env, "general", "alsa_input.usb_headset")
+    let expected = Vec<str>("libpipewire-module-echo-cancel", "aec/libspa-aec-webrtc", "webrtc.noise_suppression = true", "webrtc.gain_control = false",
+        "target.object = \"alsa_input.usb_headset\"", "node.name = \"devos-mic-clean\"", "devos.mic.mode = \"general\"")
+    for i in 0..(expected.len() as i64) { harness.contains(general, expected[i], "general config") }
+    harness.lacks(general, "beamforming", "No beamformer is configured or claimed")
+    let conference = serve(base, env, "conference", "alsa_input.usb_headset")
+    harness.contains(conference, "webrtc.gain_control = true", "gain control")
+    harness.contains(conference, "devos.mic.mode = \"conference\"", "mode")
+}
+
+fn t_serve_idle(base: str) {
+    let env = setup(base)
+    harness.equalStr(serve(base, env, "authentic", "alsa_input.usb_headset"), "<none>", "authentic starts nothing")
+    rig.plugins(base, false, "mic")
+    harness.equalStr(serve(base, env, "general", "alsa_input.usb_headset"), "<none>", "missing plugins")
+    rig.plugins(base, true, "mic")
+    let items = json.array()
+    items = json.push(items, rig.metadata("alsa_input.mic_array", "alsa_output.speakers"))
+    rig.writeGraph(base, items)
+    harness.equalStr(serve(base, env, "general", "alsa_input.usb_headset"), "<none>", "no microphone")
+}
+
+fn t_fallback(base: str) {
+    let env = setup(base)
+    harness.contains(serve(base, env, "general", "alsa_input.unplugged"), "target.object = \"alsa_input.mic_array\"", "falls back to a present microphone")
+}
+
+fn t_wiring() {
+    let root = harness.root()
+    let image = harness.read(root + "/distro/oe/meta-devos/recipes-core/images/devos-image.bb")
+    let packages = Vec<str>("pipewire-tools", "pipewire-modules-echo-cancel", "pipewire-spa-plugins-aec-webrtc")
+    for i in 0..(packages.len() as i64) { harness.contains(image, " " + packages[i] + " ", "image ships " + packages[i]) }
+    let session = root + "/distro/oe/meta-devos/recipes-devos/session"
+    let recipe = harness.read(session + "/devos-session.bb")
+    harness.contains(recipe, "file://devos-microphone.service", "recipe unit")
+    harness.contains(recipe, "\${systemd_user_unitdir}", "user unit dir")
+    let unit = harness.read(session + "/files/devos-microphone.service")
+    harness.contains(unit, "ExecStart=/usr/bin/dev-os-microphone serve", "ExecStart")
+    harness.contains(unit, "ExecStartPost=-/usr/bin/dev-os-microphone finish", "ExecStartPost")
+    harness.contains(harness.read(session + "/files/devos-desktop"), "devos-microphone.service", "desktop starts it")
+    harness.contains(harness.read(root + "/distro/usb/root-session"), "dev-os-microphone apply", "root session applies it")
+}
+
+fn main(): i32 {
+    test.case("lists only real microphones and reports defaults", fn() { harness.sandbox(t_lists) })
+    test.case("noise modes are unavailable without the plugins", fn() { harness.sandbox(t_noise_missing) })
+    test.case("saved noise mode without plugins falls back with a warning", fn() { harness.sandbox(t_saved_without_plugins) })
+    test.case("general mode makes the virtual source the default and keeps the speakers", fn() { harness.sandbox(t_general) })
+    test.case("conference mode is reported and authentic restores the raw microphone", fn() { harness.sandbox(t_conference) })
+    test.case("choosing a device in each mode", fn() { harness.sandbox(t_device) })
+    test.case("rejects unknown devices, modes and our own nodes", fn() { harness.sandbox(t_rejects) })
+    test.case("service failure is reported", fn() { harness.sandbox(t_service_failure) })
+    test.case("apply at login starts the saved mode without restarting it", fn() { harness.sandbox(t_apply) })
+    test.case("without the user unit a transient unit runs the filter", fn() { harness.sandbox(t_transient) })
+    test.case("pipewire not running", fn() { harness.sandbox(t_pipewire_down) })
+    test.case("corrupt state is authentic", fn() { harness.sandbox(t_corrupt) })
+    test.case("generated pipewire config", fn() { harness.sandbox(t_config) })
+    test.case("serve does nothing for authentic, missing plugins or a missing microphone", fn() { harness.sandbox(t_serve_idle) })
+    test.case("serve falls back to a present microphone", fn() { harness.sandbox(t_fallback) })
+    test.case("image and session recipes ship the filter", fn() { t_wiring() })
+    return harness.finish()
+}
+return main()

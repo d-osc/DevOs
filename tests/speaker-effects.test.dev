@@ -1,0 +1,202 @@
+# Tests bin/dev-os-speaker (voice-only filter, sound modes, Voice Mode Smart Switch) against a fake PipeWire graph.
+use "std/json"
+use "std/strings"
+use "std/test"
+use "../tests/lib/harness.dev" as harness
+use "../tests/lib/audiorig.dev" as rig
+use "../lib/hw.dev" as hw
+
+fn graph(sinkDefault: str, recorder: bool): json.Value {
+    let items = json.array()
+    items = json.push(items, rig.plain(50, "alsa_output.speakers", "Audio/Sink", "Speakers (Qualcomm)"))
+    items = json.push(items, rig.plain(52, "alsa_output.hdmi", "Audio/Sink", "HDMI Display"))
+    items = json.push(items, rig.plain(53, "devos-mic-reference", "Audio/Sink", "not an output"))
+    items = json.push(items, rig.plain(40, "alsa_input.mic", "Audio/Source", "Mic"))
+    items = json.push(items, rig.metadata("", sinkDefault))
+    if recorder { items = json.push(items, rig.plain(80, "Firefox", "Stream/Input/Audio", "call")) }
+    return items
+}
+fn setup(base: str): Vec<str> { return rig.setup(base, "spk", graph("alsa_output.speakers", false)) }
+fn spk(env: Vec<str>, args: Vec<str>, extra: Vec<str>, expected: i64): json.Value { return rig.run(env, "speaker", args, extra, expected) }
+fn a1(a: str): Vec<str> { return Vec<str>(a) }
+fn a2(a: str, b: str): Vec<str> { return Vec<str>(a, b) }
+fn none(): Vec<str> { return Vec<str>() }
+fn text(value: json.Value, key: str): str { return hw.jstr(value, key, "") }
+fn flag(value: json.Value, key: str): bool { return hw.jbool(value, key, false) }
+fn stateFile(base: str): json.Value { return harness.readJson(base + "/config/devos/speaker.json") }
+fn count(text: str, needle: str): i64 { return (strings.split(text, needle).len() as i64) - 1 }
+
+# Writes the saved state and runs `serve` once (DEVOS_SPK_ONCE); returns the configuration the filter process was started with.
+fn serve(base: str, env: Vec<str>, state: str): str {
+    harness.write(base + "/config/devos/speaker.json", state)
+    harness.remove(base + "/served.conf")
+    spk(env, a1("serve"), Vec<str>("DEVOS_SPK_ONCE=1"), 0)
+    return harness.exists(base + "/served.conf") ? harness.read(base + "/served.conf") : "<none>"
+}
+
+fn t_lists(base: str) {
+    let env = setup(base)
+    let value = spk(env, a1("get"), none(), 0)
+    let speakers = rig.names(hw.jget(value, "speakers"), "name")
+    harness.expect(speakers.len() == 2 && strings.equal(speakers[0], "alsa_output.speakers") && strings.equal(speakers[1], "alsa_output.hdmi"), "Our own sinks and sources are not outputs")
+    harness.equalStr(text(value, "device") + "/" + text(value, "mode") + "/" + text(value, "effective"), "alsa_output.speakers/dynamic/dynamic", "defaults")
+    harness.expect(!flag(value, "voice") && flag(value, "smart") && !flag(value, "active"), "flags")
+    harness.expect(flag(hw.jget(value, "filters"), "available"), "filters available")
+    harness.equalStr(harness.read(base + "/log"), "", "Reading changes nothing")
+}
+
+fn t_settings_saved(base: str) {
+    let env = setup(base)
+    spk(env, a2("voice", "on"), none(), 0)
+    spk(env, a2("mode", "movie"), none(), 0)
+    spk(env, a2("smart", "off"), none(), 0)
+    spk(env, a2("device", "alsa_output.hdmi"), none(), 0)
+    let value = spk(env, Vec<str>("custom", "custom2", "4", "-20", "3"), none(), 0)
+    harness.same(stateFile(base), json.parse("{\"mode\":\"movie\",\"voice\":true,\"boost\":false,\"smart\":false,\"device\":\"alsa_output.hdmi\",\"custom\":{\"custom1\":[0,0,0],\"custom2\":[4,-10,3],\"custom3\":[0,0,0]}}"), "saved state")
+    harness.same(hw.jget(hw.jget(value, "custom"), "custom2"), json.parse("[4,-10,3]"), "Custom levels are limited to +-10 dB")
+    harness.expect(rig.hasCall(base, "systemctl --user start devos-speaker.service"), "starts the service")
+}
+
+fn t_rejects(base: str) {
+    let env = setup(base)
+    let bad = Vec<Vec<str>>()
+    bad.push(Vec<str>("mode", "dolby"))
+    bad.push(Vec<str>("voice", "maybe"))
+    bad.push(Vec<str>("device", "alsa_output.gone"))
+    bad.push(Vec<str>("device", "devos-spk-fx"))
+    bad.push(Vec<str>("custom", "custom9", "1", "1", "1"))
+    bad.push(Vec<str>("custom", "custom1", "a", "1", "1"))
+    bad.push(Vec<str>("nonsense"))
+    for i in 0..(bad.len() as i64) { harness.expect(!flag(spk(env, bad[i], none(), 1), "ok"), "rejected " + strings.join(bad[i], " ")) }
+    harness.equalStr(harness.read(base + "/log"), "", "nothing was called")
+}
+
+fn t_corrupt(base: str) {
+    let env = setup(base)
+    harness.write(base + "/config/devos/speaker.json", "{\"mode\": \"rm -rf\", \"voice\": \"yes\"")
+    let value = spk(env, a1("get"), none(), 0)
+    harness.equalStr(text(value, "mode"), "dynamic", "mode")
+    harness.expect(!flag(value, "voice"), "voice")
+}
+
+fn t_unavailable(base: str) {
+    let env = setup(base)
+    rig.plugins(base, false, "spk")
+    spk(env, a2("voice", "on"), none(), 0)
+    let value = spk(env, a1("get"), none(), 0)
+    harness.expect(!flag(hw.jget(value, "filters"), "available"), "unavailable")
+    harness.contains(text(hw.jget(value, "filters"), "reason"), "pipewire-modules-filter-chain", "reason")
+    harness.contains(text(value, "warning"), "without effects", "warning")
+    harness.equalStr(serve(base, env, "{\"voice\":true,\"mode\":\"dynamic\"}"), "<none>", "Nothing is started without the plugins")
+}
+
+fn t_voice_graph(base: str) {
+    let env = setup(base)
+    let conf = serve(base, env, "{\"voice\":true,\"mode\":\"dynamic\",\"smart\":false}")
+    harness.equalInt(count(conf, "label = bq_highpass"), 4, "highpass stages")
+    harness.equalInt(count(conf, "label = bq_lowpass"), 4, "lowpass stages")
+    harness.contains(conf, "\"Freq\" = 300", "300 Hz")
+    harness.contains(conf, "\"Freq\" = 3400", "3.4 kHz")
+    let expected = Vec<str>("libpipewire-module-filter-chain", "node.name = \"devos-spk-fx\"", "media.class = Audio/Sink", "target.object = \"alsa_output.speakers\"", "node.dont-fallback = true")
+    for i in 0..(expected.len() as i64) { harness.contains(conf, expected[i], "voice config") }
+    harness.lacks(conf, "label = linear", "No headroom stage when nothing is boosted")
+    harness.equalStr(rig.defaultOf(base, "default.audio.sink"), "devos-spk-fx", "The effect sink becomes the default output")
+}
+
+fn t_modes(base: str) {
+    let env = setup(base)
+    let movie = serve(base, env, "{\"mode\":\"movie\",\"smart\":false}")
+    harness.contains(movie, "label = bq_lowshelf", "low shelf")
+    harness.contains(movie, "\"Gain\" = 5.0", "gain")
+    harness.contains(movie, "label = linear", "headroom")
+    harness.contains(movie, "\"Mult\" = 0.5623", "5 dB of boost is compensated by 5 dB of headroom")
+    rig.writeGraph(base, graph("alsa_output.speakers", false))
+    let combined = serve(base, env, "{\"mode\":\"music\",\"voice\":true,\"smart\":false}")
+    harness.expect(strings.indexOf(combined, "bq_highpass") < strings.indexOf(combined, "bq_lowshelf"), "The voice band is filtered before the curve is applied")
+    rig.writeGraph(base, graph("alsa_output.speakers", false))
+    harness.equalStr(serve(base, env, "{\"mode\":\"dynamic\",\"smart\":false}"), "<none>", "Dynamic without voice-only is no processing at all")
+    harness.equalStr(serve(base, env, "{\"mode\":\"custom1\",\"smart\":false}"), "<none>", "A flat custom mode is no processing either")
+    let custom = serve(base, env, "{\"mode\":\"custom3\",\"smart\":false,\"custom\":{\"custom3\":[6,0,-3]}}")
+    harness.contains(custom, "\"Gain\" = 6.0", "custom bass")
+    harness.contains(custom, "\"Gain\" = -3.0", "custom treble")
+}
+
+fn t_boost(base: str) {
+    let env = setup(base)
+    let conf = serve(base, env, "{\"boost\":true,\"smart\":false}")
+    let labels = Vec<str>("label = linear", "label = abs", "label = recip", "label = mult")
+    for i in 0..(labels.len() as i64) { harness.contains(conf, labels[i], "booster stage") }
+    harness.equalInt(count(conf, "label = mult"), 2, "One soft-saturation mixer per channel")
+    harness.contains(conf, "\"Mult\" = 3.0", "gain")
+    harness.contains(conf, "\"Mult\" = 1.3333", "Make-up gain keeps full scale at full scale")
+    harness.contains(conf, "\"Add\" = 1.0", "offset")
+    let links = Vec<str>("Lgain:Out\" input = \"Labs:In\"", "Lgain:Out\" input = \"Lmix:In 1\"", "Lrecip:Out\" input = \"Lmix:In 2\"", "Lmix:Out\" input = \"Lmakeup:In\"", "Rmix:Out\" input = \"Rmakeup:In\"")
+    for i in 0..(links.len() as i64) { harness.contains(conf, links[i], "link") }
+    harness.contains(conf, "outputs = [ \"Lmakeup:Out\" \"Rmakeup:Out\" ]", "outputs")
+    harness.contains(conf, "inputs = [ \"Lgain:In\" \"Rgain:In\" ]", "inputs")
+    rig.writeGraph(base, graph("alsa_output.speakers", false))
+    let both = serve(base, env, "{\"boost\":true,\"mode\":\"movie\",\"voice\":true,\"smart\":false}")
+    harness.expect(strings.indexOf(both, "bq_highpass") < strings.indexOf(both, "bq_lowshelf"), "voice band first")
+    harness.expect(strings.indexOf(both, "bq_lowshelf") < strings.indexOf(both, "Lgain"), "The booster is the last stage")
+    harness.expect(flag(spk(env, a2("boost", "on"), none(), 0), "boost"), "boost on")
+}
+
+fn t_smart(base: str) {
+    let env = setup(base)
+    rig.writeGraph(base, graph("alsa_output.speakers", true))
+    let value = spk(env, a1("get"), none(), 0)
+    harness.equalStr(text(value, "mode") + "/" + text(value, "effective"), "dynamic/voice", "an app is recording")
+    spk(env, a2("smart", "off"), none(), 0)
+    harness.equalStr(text(spk(env, a1("get"), none(), 0), "effective"), "dynamic", "smart switch off")
+    let items = graph("alsa_output.speakers", false)
+    items = json.push(items, rig.node(81, "meter", "Stream/Input/Audio", "monitor", json.set(json.object(), "stream.monitor", "true")))
+    items = json.push(items, rig.plain(82, "devos-mic-capture", "Stream/Input/Audio", ""))
+    rig.writeGraph(base, items)
+    spk(env, a2("smart", "on"), none(), 0)
+    harness.equalStr(text(spk(env, a1("get"), none(), 0), "effective"), "dynamic", "Level meters and our own filters are not calls")
+}
+
+fn t_fallback(base: str) {
+    let env = setup(base)
+    spk(env, a2("mode", "game"), Vec<str>("FAKE_UNIT_MISSING=1"), 0)
+    let calls = rig.calls(base)
+    let text = harness.read(base + "/log")
+    harness.contains(text, "--unit=devos-speaker-session.service", "transient unit")
+    harness.expect(strings.endsWith(calls[calls.len() - 1], "dev-os-speaker serve"), "runs the launcher")
+}
+
+fn t_down(base: str) {
+    let env = setup(base)
+    harness.write(base + "/pw-dump", "#!/bin/sh\nexit 1\n")
+    harness.expect(!flag(spk(env, a1("get"), none(), 0), "supported"), "unsupported")
+    harness.expect(!flag(spk(env, a2("mode", "game"), none(), 1), "ok"), "mode fails")
+}
+
+fn t_wiring() {
+    let root = harness.root()
+    let image = harness.read(root + "/distro/oe/meta-devos/recipes-core/images/devos-image.bb")
+    let packages = Vec<str>("pipewire-modules-filter-chain", "pipewire-spa-plugins-filter-graph", "pipewire-spa-plugins-filter-graph-plugin-builtin")
+    for i in 0..(packages.len() as i64) { harness.contains(image, " " + packages[i] + " ", "image ships " + packages[i]) }
+    let session = root + "/distro/oe/meta-devos/recipes-devos/session"
+    harness.contains(harness.read(session + "/devos-session.bb"), "file://devos-speaker.service", "recipe unit")
+    harness.contains(harness.read(session + "/files/devos-speaker.service"), "ExecStart=/usr/bin/dev-os-speaker serve", "ExecStart")
+    harness.contains(harness.read(session + "/files/devos-desktop"), "devos-speaker.service", "desktop starts it")
+    harness.contains(harness.read(root + "/distro/usb/root-session"), "dev-os-speaker apply", "root session applies it")
+}
+
+fn main(): i32 {
+    test.case("lists real outputs and defaults", fn() { harness.sandbox(t_lists) })
+    test.case("settings are saved and start the service", fn() { harness.sandbox(t_settings_saved) })
+    test.case("rejects bad requests", fn() { harness.sandbox(t_rejects) })
+    test.case("corrupt state is dynamic", fn() { harness.sandbox(t_corrupt) })
+    test.case("effects unavailable without the filter plugins", fn() { harness.sandbox(t_unavailable) })
+    test.case("voice only filter graph", fn() { harness.sandbox(t_voice_graph) })
+    test.case("sound modes and headroom", fn() { harness.sandbox(t_modes) })
+    test.case("volume booster graph", fn() { harness.sandbox(t_boost) })
+    test.case("voice mode smart switch while an app records", fn() { harness.sandbox(t_smart) })
+    test.case("service fallback without the user unit", fn() { harness.sandbox(t_fallback) })
+    test.case("pipewire not running", fn() { harness.sandbox(t_down) })
+    test.case("image and session ship the service", fn() { t_wiring() })
+    return harness.finish()
+}
+return main()

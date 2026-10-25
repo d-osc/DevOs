@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -14,12 +15,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'bin/dev-os-display-care'
-loader = importlib.machinery.SourceFileLoader('display_care', str(HELPER))
-spec = importlib.util.spec_from_loader('display_care', loader)
-care = importlib.util.module_from_spec(spec)
-loader.exec_module(care)
+DRIVER = ROOT / 'tests/fixtures/display-care-driver.dev'
+D = os.environ.get('DEVLANG_BIN') or str(Path.home() / '.local/bin/d')
+DEFAULTS = {'splendid': 'normal', 'temperature': 0, 'eyeCare': 3, 'gamut': 'native', 'dimming': 100, 'pixelRefresh': True, 'autoHidePanel': False,
+            'panelTransparency': True, 'targetMode': False, 'edgeBrightness': 0}
 
 SIZE = 256
+
+
+def ramps(*cases):
+    """(identity, [red, green, blue]) per settings override, computed by lib/display-care.dev."""
+    done = subprocess.run([D, str(DRIVER), '--'], capture_output=True, text=True, env=os.environ | {'DRIVER_SCRIPT': json.dumps(list(cases))}, timeout=60)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return [(item['identity'], [item['ramp'][:SIZE], item['ramp'][SIZE:2 * SIZE], item['ramp'][2 * SIZE:]]) for item in json.loads(done.stdout)]
 
 
 class FakeCompositor(threading.Thread):
@@ -109,7 +117,7 @@ class DisplayCareTests(unittest.TestCase):
                              'DEVOS_DISPLAY_BACKLIGHT': self.stub, 'DEVOS_DISPLAY_SYS': os.path.join(self.dir, 'sys')} | extra
 
     def run_helper(self, *args, **extra):
-        done = subprocess.run([sys.executable, str(HELPER), *args], capture_output=True, text=True, env=self.env(**extra), timeout=30)
+        done = subprocess.run(['sh', str(HELPER), *args], capture_output=True, text=True, env=self.env(**extra), timeout=30)
         return done.returncode, (json.loads(done.stdout) if done.stdout.strip() else {}), done.stderr
 
     def compositor(self, **options):
@@ -119,7 +127,7 @@ class DisplayCareTests(unittest.TestCase):
     def test_defaults_and_reasons_without_a_compositor(self):
         code, out, _ = self.run_helper('get')
         self.assertEqual(code, 0)
-        self.assertEqual(out['settings'], care.DEFAULTS)
+        self.assertEqual(out['settings'], DEFAULTS)
         self.assertFalse(out['gamma']['available']); self.assertIn('No Wayland compositor', out['gamma']['reason'])
         self.assertFalse(out['ereading']['available']); self.assertIn('black and white', out['ereading']['reason'])
         self.assertFalse(out['gamut']['available']); self.assertEqual(out['gamut']['options'], ['native'])
@@ -141,7 +149,7 @@ class DisplayCareTests(unittest.TestCase):
         _, out, _ = self.run_helper('get')
         self.assertEqual((out['settings']['dimming'], out['settings']['splendid'], out['settings']['temperature'], out['settings']['gamut'], out['settings']['targetMode'], out['settings']['eyeCare']), (12, 'normal', 0, 'native', True, 3))
         Path(self.config, 'devos/display-care.json').write_text('{broken')
-        self.assertEqual(self.run_helper('get')[1]['settings'], care.DEFAULTS)
+        self.assertEqual(self.run_helper('get')[1]['settings'], DEFAULTS)
 
     def test_reset_restores_the_splendid_group_and_the_backlight_only(self):
         for key, value in [('dimming', '30'), ('splendid', 'manual'), ('temperature', '30'), ('targetMode', 'on'), ('pixelRefresh', 'off')]:
@@ -160,19 +168,16 @@ class DisplayCareTests(unittest.TestCase):
         self.assertEqual(code, 0); self.assertFalse(out['brightness']['ok']); self.assertIn('No kernel backlight', out['brightness']['reason'])
 
     def test_ramp_maths(self):
-        identity = care.ramp(SIZE, care.DEFAULTS)
-        self.assertTrue(care.is_identity(care.DEFAULTS)); self.assertEqual(identity[0][0], 0); self.assertEqual(identity[0][-1], 65535)
-        dim = care.ramp(SIZE, care.DEFAULTS | {'dimming': 0})
+        cases = [{}, {'dimming': 0}, {'dimming': 50}, {'splendid': 'manual', 'temperature': -50}, {'splendid': 'manual', 'temperature': 50},
+                 {'splendid': 'manual', 'temperature': 0}, {'splendid': 'eyecare', 'eyeCare': 1}, {'splendid': 'eyecare', 'eyeCare': 5}, {'splendid': 'vivid'}]
+        (is_identity, identity), (_, dim), (_, half), (_, warm), (_, cool), (_, neutral), (_, low), (_, high), (_, vivid) = ramps(*cases)
+        self.assertTrue(is_identity); self.assertEqual(identity[0][0], 0); self.assertEqual(identity[0][-1], 65535)
         self.assertEqual(dim[1][-1], round(65535 * 0.25), 'Dimming never goes black')
-        half = care.ramp(SIZE, care.DEFAULTS | {'dimming': 50})
         self.assertEqual(half[0][-1], round(65535 * 0.625))
-        warm = care.ramp(SIZE, care.DEFAULTS | {'splendid': 'manual', 'temperature': -50}); cool = care.ramp(SIZE, care.DEFAULTS | {'splendid': 'manual', 'temperature': 50})
         self.assertTrue(warm[2][-1] < warm[0][-1] and cool[0][-1] < cool[2][-1], 'Negative is warm, positive is cool')
         self.assertEqual(max(warm[0][-1], warm[1][-1], warm[2][-1], cool[0][-1], cool[1][-1], cool[2][-1]), 65535, 'Temperature only removes light')
-        neutral = care.ramp(SIZE, care.DEFAULTS | {'splendid': 'manual', 'temperature': 0}); self.assertEqual(neutral, identity)
-        low, high = (care.ramp(SIZE, care.DEFAULTS | {'splendid': 'eyecare', 'eyeCare': level}) for level in (1, 5))
+        self.assertEqual(neutral, identity)
         self.assertAlmostEqual(high[2][-1] / 65535, 0.70, places=2); self.assertTrue(high[2][-1] < low[2][-1] < 65535 and high[0][-1] == 65535)
-        vivid = care.ramp(SIZE, care.DEFAULTS | {'splendid': 'vivid'})
         self.assertTrue(vivid[0][SIZE // 4] < identity[0][SIZE // 4] and vivid[0][3 * SIZE // 4] > identity[0][3 * SIZE // 4] and vivid[0][-1] == 65535, 'Vivid is an S-curve with fixed end points')
         for table in (dim, warm, cool, vivid):
             for channel in table: self.assertEqual(channel, sorted(channel), 'Ramps are monotonic')
@@ -199,7 +204,15 @@ class DisplayCareTests(unittest.TestCase):
         self.assertEqual(self.run_helper('get')[1]['battery'], {'present': True, 'onBattery': False})
 
     def serve(self, server, **extra):
-        return subprocess.Popen([sys.executable, str(HELPER), 'serve'], env=self.env(WAYLAND_DISPLAY='wayland-test', **extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return subprocess.Popen(['sh', str(HELPER), 'serve'], env=self.env(WAYLAND_DISPLAY='wayland-test', **extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+    def stop_group(self, child):
+        # The launcher execs d, which runs the program in a child (devrun): stop the whole process group.
+        if child.poll() is None:
+            try: os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError: pass
+            try: child.wait(5)
+            except subprocess.TimeoutExpired: os.killpg(child.pid, signal.SIGKILL)
 
     def wait(self, check, seconds=10):
         end = time.time() + seconds
@@ -211,7 +224,7 @@ class DisplayCareTests(unittest.TestCase):
     def test_serve_sends_the_saved_ramp_and_follows_changes(self):
         server = self.compositor()
         self.run_helper('set', 'dimming', '50')
-        child = self.serve(server); self.addCleanup(child.kill)
+        child = self.serve(server); self.addCleanup(self.stop_group, child)
         self.assertTrue(self.wait(lambda: server.ramps), 'A ramp reaches the compositor')
         red, green, blue = server.ramps[-1][:SIZE], server.ramps[-1][SIZE:2 * SIZE], server.ramps[-1][2 * SIZE:]
         self.assertEqual((red[-1], green[-1], blue[-1]), (round(65535 * 0.625),) * 3)
@@ -219,17 +232,17 @@ class DisplayCareTests(unittest.TestCase):
         self.assertTrue(self.wait(lambda: server.ramps[-1][-1] < server.ramps[-1][SIZE - 1]), 'Eye Care lowers the blue table below red')
         self.run_helper('reset')
         self.assertTrue(self.wait(lambda: server.released >= 1), 'All-default settings release the gamma control')
-        child.terminate(); child.wait(5)
+        self.stop_group(child)
 
     def test_serve_leaves_outputs_that_another_client_controls(self):
         server = self.compositor(take_gamma=False)
         self.run_helper('set', 'dimming', '60')
-        child = self.serve(server, DEVOS_DISPLAY_ONCE='1'); self.addCleanup(child.kill)
+        child = self.serve(server, DEVOS_DISPLAY_ONCE='1'); self.addCleanup(self.stop_group, child)
         child.wait(15); self.assertEqual(child.returncode, 0); self.assertIn('another client controls the gamma', child.stderr.read()); self.assertEqual(server.ramps, [])
 
     def test_pixel_refresh_flag_follows_idle_notifications(self):
         server = self.compositor()
-        child = self.serve(server, DEVOS_DISPLAY_IDLE_MS='12345'); self.addCleanup(child.kill)
+        child = self.serve(server, DEVOS_DISPLAY_IDLE_MS='12345'); self.addCleanup(self.stop_group, child)
         flag = Path(self.runtime, 'devos-pixel-refresh')
         self.assertTrue(self.wait(lambda: server.timeouts), 'An idle notification is requested'); self.assertEqual(server.timeouts, [12345])
         server.idled(True); self.assertTrue(self.wait(flag.exists), 'Idle creates the flag')
@@ -237,19 +250,19 @@ class DisplayCareTests(unittest.TestCase):
         server.idled(True); self.assertTrue(self.wait(flag.exists))
         self.run_helper('set', 'pixelRefresh', 'off')
         self.assertTrue(self.wait(lambda: not flag.exists() and server.idle_object is None), 'Turning Pixel refresh off cancels the notification and clears the flag')
-        child.terminate(); child.wait(5)
+        self.stop_group(child)
 
     def test_only_one_serve_runs_per_session(self):
         server = self.compositor()
-        first = self.serve(server); self.addCleanup(first.kill)
+        first = self.serve(server); self.addCleanup(self.stop_group, first)
         self.assertTrue(self.wait(lambda: server.timeouts), 'The first copy is running')
-        second = self.serve(server); self.addCleanup(second.kill)
+        second = self.serve(server); self.addCleanup(self.stop_group, second)
         second.wait(10); self.assertEqual(second.returncode, 0, 'A second copy leaves quietly')
-        self.assertIsNone(first.poll()); first.terminate(); first.wait(5)
+        self.assertIsNone(first.poll()); self.stop_group(first)
 
     def test_serve_exits_when_the_compositor_offers_nothing(self):
         server = self.compositor(gamma=False, idle=False)
-        child = self.serve(server); self.addCleanup(child.kill)
+        child = self.serve(server); self.addCleanup(self.stop_group, child)
         child.wait(15); self.assertEqual(child.returncode, 0); self.assertIn('neither', child.stderr.read())
 
 

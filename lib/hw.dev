@@ -1,0 +1,364 @@
+# Shared helpers for the hardware settings helpers (dev-os-microphone, -speaker, -keyboard, -display-care,
+# -touchpad-gestures): subprocesses with a tolerant result, JSON state files, number parsing and a few libc calls.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/child_process"
+use "std/result"
+use "std/time"
+use "std/process"
+use "../lib/posix.dev" as posix
+
+extern fn execvp(file: str, argv: *u8): i32
+extern fn malloc(size: usize): *u8
+extern fn free(value: *void)
+extern fn strdup(text: str): *u8
+extern fn access(path: str, mode: i32): i32
+extern fn poll(fds: *u8, count: usize, timeout: i32): i32
+extern fn write(fd: i32, data: *u8, size: usize): isize
+
+struct Run { code: i64, out: str }
+
+fn decode(bytes: Vec<u8>): str { return encoding.decode(bytes, "utf8") }
+
+# Runs a program without a shell. A program that cannot start reports code 127 with the reason, like the Python helpers did.
+fn run(argv: Vec<str>, timeoutMs: i64): Run {
+    if argv.len() == 0 { return Run(127, "empty command") }
+    let rest = Vec<str>()
+    for i in 1..(argv.len() as i64) { rest.push(argv[i]) }
+    let program = argv[0]
+    let outcome = result.attempt(fn(): Run {
+        let output = child_process.execFileSync(program, rest, child_process.Options("", timeoutMs, 8388608, Vec<u8>()))
+        if output.timedOut { return Run(127, "timed out") }
+        return Run(output.code, decode(output.stdout))
+    })
+    if result.isErr(outcome) { return Run(127, result.message(outcome)) }
+    return result.unwrap(outcome)
+}
+
+# Same as run, feeding `input` to the program's standard input.
+fn runInput(argv: Vec<str>, input: str, timeoutMs: i64): Run {
+    if argv.len() == 0 { return Run(127, "empty command") }
+    let rest = Vec<str>()
+    for i in 1..(argv.len() as i64) { rest.push(argv[i]) }
+    let program = argv[0]
+    let outcome = result.attempt(fn(): Run {
+        let output = child_process.execFileSync(program, rest, child_process.Options("", timeoutMs, 8388608, encoding.encode(input, "utf8")))
+        if output.timedOut { return Run(127, "timed out") }
+        return Run(output.code, decode(output.stdout))
+    })
+    if result.isErr(outcome) { return Run(127, result.message(outcome)) }
+    return result.unwrap(outcome)
+}
+
+fn runWith(argv: Vec<str>, extra: Vec<str>, timeoutMs: i64): Run {
+    let all = Vec<str>()
+    for i in 0..(argv.len() as i64) { all.push(argv[i]) }
+    for i in 0..(extra.len() as i64) { all.push(extra[i]) }
+    return run(all, timeoutMs)
+}
+
+fn concat(a: Vec<str>, b: Vec<str>): Vec<str> {
+    let out = Vec<str>()
+    for i in 0..(a.len() as i64) { out.push(a[i]) }
+    for i in 0..(b.len() as i64) { out.push(b[i]) }
+    return out
+}
+
+fn isBlank(ch: str): bool { return strings.equal(ch, " ") || strings.equal(ch, "\t") || strings.equal(ch, "\n") || strings.equal(ch, "\r") }
+
+# Splits on runs of whitespace (shlex.split without quoting: the test hooks and defaults never contain quotes).
+fn words(text: str): Vec<str> {
+    let out = Vec<str>()
+    let current = ""
+    for i in 0..strings.charLength(text) {
+        let ch = strings.charAt(text, i)
+        if isBlank(ch) {
+            if strings.charLength(current) > 0 { out.push(current); current = "" }
+        } else { current = current + ch }
+    }
+    if strings.charLength(current) > 0 { out.push(current) }
+    return out
+}
+
+fn env(name: str): str {
+    if process.hasEnv(name) { return process.getenv(name) }
+    return ""
+}
+fn envOr(name: str, fallback: str): str {
+    let value = env(name)
+    if strings.charLength(value) == 0 { return fallback }
+    return value
+}
+fn tool(name: str, fallback: str): Vec<str> { return words(envOr(name, fallback)) }
+
+fn home(): str { return envOr("HOME", "/root") }
+fn configHome(): str { return envOr("XDG_CONFIG_HOME", home() + "/.config") }
+fn parentDir(path: str): str {
+    let slash = strings.lastIndexOf(path, "/")
+    if slash <= 0 { return slash == 0 ? "/" : "." }
+    return strings.substring(path, 0, slash)
+}
+
+fn isFile(path: str): bool { return fs.is_file(path) }
+fn isDir(path: str): bool { return fs.is_dir(path) }
+fn exists(path: str): bool { return fs.existsSync(path) }
+fn isReadable(path: str): bool {
+    let ok: i32 = -1
+    unsafe { ok = access(path, 4) }
+    return ok == 0
+}
+fn isExecutable(path: str): bool {
+    let ok: i32 = -1
+    unsafe { ok = access(path, 1) }
+    return ok == 0 && fs.is_file(path)
+}
+fn readText(path: str): str {
+    if !fs.is_file(path) { return "" }
+    let out = ""
+    let outcome = result.attempt(fn(): str { return fs.readFileSync(path, "utf8") })
+    if result.isErr(outcome) { return "" }
+    return result.unwrap(outcome)
+}
+fn readTrim(path: str): str { return strings.trim(readText(path)) }
+fn listDir(path: str): Vec<str> {
+    if !fs.is_dir(path) { return Vec<str>() }
+    let names = Vec<str>()
+    let outcome = result.attempt(fn(): Vec<str> { return fs.readdirSync(path) })
+    if result.isErr(outcome) { return names }
+    return sorted(result.unwrap(outcome))
+}
+# Merge sort (a quadratic sort is far too slow for a /usr/lib listing in a emulated CPU). Byte-wise order.
+fn sorted(items: Vec<str>): Vec<str> {
+    let n = items.len() as i64
+    if n < 2 { return items }
+    let source = Vec<str>()
+    for i in 0..n { source.push(items[i]) }
+    let width = 1
+    while width < n {
+        let target = Vec<str>()
+        let start = 0
+        while start < n {
+            let middle = start + width < n ? start + width : n
+            let end = start + 2 * width < n ? start + 2 * width : n
+            let left = start
+            let right = middle
+            while left < middle && right < end {
+                if less(source[right], source[left]) { target.push(source[right]); right = right + 1 } else { target.push(source[left]); left = left + 1 }
+            }
+            while left < middle { target.push(source[left]); left = left + 1 }
+            while right < end { target.push(source[right]); right = right + 1 }
+            start = end
+        }
+        source = target
+        width = width * 2
+    }
+    return source
+}
+# Directory entries in the order the file system returns them (no sorting).
+fn listDirRaw(path: str): Vec<str> {
+    if !fs.is_dir(path) { return Vec<str>() }
+    let outcome = result.attempt(fn(): Vec<str> { return fs.readdirSync(path) })
+    return result.isErr(outcome) ? Vec<str>() : result.unwrap(outcome)
+}
+# Byte-wise string order.
+fn less(a: str, b: str): bool {
+    let x = encoding.encode(a, "utf8")
+    let y = encoding.encode(b, "utf8")
+    let n = x.len() < y.len() ? x.len() : y.len()
+    for i in 0..(n as i64) {
+        if x[i] < y[i] { return true }
+        if x[i] > y[i] { return false }
+    }
+    return x.len() < y.len()
+}
+
+# which(1): PATH lookup that also accepts a path.
+fn which(program: str): str { return whichIn(program, envOr("PATH", "/usr/bin:/bin")) }
+fn whichIn(program: str, searchPath: str): str {
+    if strings.contains(program, "/") { return isExecutable(program) ? program : "" }
+    let dirs = strings.split(searchPath, ":")
+    for i in 0..(dirs.len() as i64) {
+        if strings.charLength(dirs[i]) == 0 { continue }
+        let candidate = dirs[i] + "/" + program
+        if isExecutable(candidate) { return candidate }
+    }
+    return ""
+}
+
+fn writeAtomic(path: str, text: str): bool {
+    if !fs.mkdirSync(parentDir(path), true) { return false }
+    let temporary = path + ".new"
+    if !fs.writeFileSync(temporary, text) { return false }
+    return fs.renameSync(temporary, path)
+}
+fn saveText(path: str, text: str) {
+    if !fs.mkdirSync(parentDir(path), true) || !fs.writeFileSync(path, text) { result.raise("Could not save " + path) }
+}
+fn loadJson(path: str): json.Value {
+    let raw = readText(path)
+    if strings.charLength(strings.trim(raw)) == 0 || !json.valid(raw) { return json.null_value() }
+    return json.parse(raw)
+}
+fn saveJson(path: str, value: json.Value) {
+    if !writeAtomic(path, json.stringify(value)) { result.raise("Could not save " + path) }
+}
+
+fn isObject(value: json.Value): bool { return strings.equal(json.kind(value), "object") }
+fn jget(value: json.Value, key: str): json.Value {
+    if isObject(value) && json.has(value, key) { return json.get(value, key) }
+    return json.null_value()
+}
+fn jstr(value: json.Value, key: str, fallback: str): str {
+    let item = jget(value, key)
+    if strings.equal(json.kind(item), "string") { return json.string(item) }
+    return fallback
+}
+fn jbool(value: json.Value, key: str, fallback: bool): bool {
+    let item = jget(value, key)
+    if strings.equal(json.kind(item), "bool") { return json.bool(item) }
+    return fallback
+}
+fn jnum(value: json.Value, key: str, fallback: f64): f64 {
+    let item = jget(value, key)
+    if strings.equal(json.kind(item), "number") { return json.float(item) }
+    return fallback
+}
+fn jint(value: json.Value, key: str, fallback: i64): i64 {
+    let item = jget(value, key)
+    if strings.equal(json.kind(item), "number") { return json.float(item) as i64 }
+    return fallback
+}
+fn jsonStr(text: str): json.Value { return json.value(text) }
+
+# ---- numbers ----------------------------------------------------------------------------------------------------------
+fn isDigit(ch: str): bool { return strings.charLength(ch) == 1 && strings.contains("0123456789", ch) }
+# Plain decimal integer with an optional sign; anything else is not a number.
+fn isInt(text: str): bool {
+    let t = strings.trim(text)
+    let n = strings.charLength(t)
+    if n == 0 { return false }
+    let start = 0
+    if strings.startsWith(t, "-") || strings.startsWith(t, "+") { start = 1 }
+    if start >= n { return false }
+    for i in start..n { if !isDigit(strings.charAt(t, i)) { return false } }
+    return true
+}
+fn toInt(text: str, fallback: i64): i64 {
+    let t = strings.trim(text)
+    if !isInt(t) { return fallback }
+    let negative = strings.startsWith(t, "-")
+    let start = (negative || strings.startsWith(t, "+")) ? 1 : 0
+    let value = 0
+    for i in start..strings.charLength(t) { value = value * 10 + (strings.indexOf("0123456789", strings.charAt(t, i))) }
+    return negative ? 0 - value : value
+}
+# Decimal or exponent number through the JSON parser.
+fn isNumber(text: str): bool {
+    let t = strings.trim(text)
+    if strings.charLength(t) == 0 || !json.valid(t) { return false }
+    return strings.equal(json.kind(json.parse(t)), "number")
+}
+fn toFloat(text: str, fallback: f64): f64 {
+    let t = strings.trim(text)
+    if strings.startsWith(t, "+") { t = strings.substring(t, 1, strings.charLength(t)) }
+    if strings.startsWith(t, ".") { t = "0" + t }
+    if strings.startsWith(t, "-.") { t = "-0" + strings.substring(t, 1, strings.charLength(t)) }
+    if strings.endsWith(t, ".") { t = t + "0" }
+    if !isNumber(t) { return fallback }
+    return json.float(json.parse(t))
+}
+fn fmtFloat(value: f64): str { return json.stringify(value) }
+
+fn nowSeconds(): f64 { return (time.now_ms() as f64) / 1000.0 }
+fn sleepSeconds(seconds: f64) { time.sleep_ms((seconds * 1000.0) as i64) }
+
+# ---- text -------------------------------------------------------------------------------------------------------------
+# One line, no quotes or backslashes, at most 240 characters: safe inside the JSON error strings of the Settings pages.
+fn clean(text: str): str {
+    let t = strings.replaceAll(text, "\"", "'")
+    t = strings.replaceAll(t, "\\", "/")
+    t = strings.replaceAll(t, "\n", " ")
+    t = strings.replaceAll(t, "\r", " ")
+    t = strings.replaceAll(t, "\t", " ")
+    let joined = strings.join(words(t), " ")
+    if strings.charLength(joined) > 240 { return strings.substring(joined, 0, 240) }
+    return joined
+}
+fn failure(message: str) { result.raise(message) }
+fn require(condition: bool, message: str) { if !condition { result.raise(message) } }
+# Located runtime exceptions carry a prefix; the Settings pages show only the message.
+fn errorText(message: str): str {
+    let marker = "std/result.raise: "
+    let offset = strings.lastIndexOf(message, marker)
+    if offset >= 0 { return strings.substring(message, offset + strings.charLength(marker), strings.charLength(message)) }
+    return message
+}
+fn errorJson(message: str): json.Value {
+    return json.set(json.set(json.object(), "ok", false), "error", clean(errorText(message)))
+}
+fn errorRaw(message: str): json.Value {
+    return json.set(json.set(json.object(), "ok", false), "error", errorText(message))
+}
+# Plain write (no temp file), for sysfs attributes.
+fn writeFileQuiet(path: str, text: str): bool {
+    let outcome = result.attempt(fn(): bool { return fs.writeFileSync(path, text) })
+    return result.isOk(outcome) && result.unwrap(outcome)
+}
+fn stderr(text: str) {
+    let line = text + "\n"
+    unsafe {
+        let data = strdup(line)
+        write(2, data, strings.len(line))
+        free(data as *void)
+    }
+}
+
+fn containsInt(items: Vec<i64>, value: i64): bool {
+    for i in 0..(items.len() as i64) { if items[i] == value { return true } }
+    return false
+}
+fn loadJsonText(raw: str): json.Value {
+    if strings.charLength(strings.trim(raw)) == 0 || !json.valid(raw) { return json.null_value() }
+    return json.parse(raw)
+}
+fn contains(items: Vec<str>, value: str): bool {
+    for i in 0..(items.len() as i64) { if strings.equal(items[i], value) { return true } }
+    return false
+}
+
+# Replaces this process (execvp). Only returns when the program cannot be started.
+fn execProgram(argv: Vec<str>): i32 {
+    let status: i32 = -1
+    unsafe {
+        let table = malloc((argv.len() + 1) * 8)
+        let slots = table as **u8
+        for i in 0..(argv.len() as i64) { slots[i] = strdup(argv[i]) }
+        slots[argv.len() as i64] = null
+        status = execvp(argv[0], table)
+    }
+    return status
+}
+
+# Absolute path of the launcher script (bin/dev-os-*), exported by the sh launcher as DEVOS_SELF.
+fn selfPath(fallback: str): str { return envOr("DEVOS_SELF", fallback) }
+
+# ---- background processes -----------------------------------------------------------------------------------------------
+# Starts `argv` in its own session with its output discarded and returns its pid (-1 when it could not be started).
+# The shell exits at once, so the child is reparented to init and never blocks the caller.
+fn spawnDetached(argv: Vec<str>): i64 {
+    let shell = Vec<str>("sh", "-c", "setsid \"$@\" >/dev/null 2>&1 </dev/null & echo $!", "sh")
+    let started = run(concat(shell, argv), 10000)
+    if started.code != 0 { return 0 - 1 }
+    return toInt(started.out, 0 - 1)
+}
+fn alive(pid: i64): bool { return pid > 0 && posix.send(pid, 0) }
+# SIGTERM, up to `graceSeconds` for it to exit, then SIGKILL.
+fn terminate(pid: i64, graceSeconds: f64) {
+    if !alive(pid) { return }
+    posix.send(pid, 15)
+    let deadline = nowSeconds() + graceSeconds
+    while alive(pid) && nowSeconds() < deadline { sleepSeconds(0.1) }
+    if alive(pid) { posix.send(pid, 9) }
+}

@@ -1,4 +1,5 @@
 import {React, Box, Label, Image, Button, Scale, Entry, ComboBoxText, ProgressBar, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {RadioRow} from './radio-row.js';
 import {Swap, emptySwap, draftArguments, draftOf, draftProblem, formatSize, gigabytesToMiB, mibOf, swapPresets, swapTypes, type SwapAction, type SwapAlgorithm, type SwapControls, type SwapDraft, type SwapState, type SwapType} from './swap.js';
 
 /** Memory & swap: compressed RAM swap (default, as large as RAM), a swap file on installed systems, or off. */
@@ -48,9 +49,7 @@ export function SwapSettings({controls}: {controls?: SwapControls}) {
             <Box orientation="vertical" spacing={9}>
                 {(Object.keys(swapTypes) as SwapType[]).map(id => {
                     const blocked = id === 'file' && ready && !state.fileAllowed;
-                    return <Button key={id} id={`swap-type-${id}`} className={`power-mode ${draft.type === id ? 'power-mode-selected' : ''}`} sensitive={ready && !busy && !blocked} onClicked={() => edit({type: id})}>
-                        <Box spacing={14}><Image iconName={draft.type === id ? 'radio-checked-symbolic' : 'radio-symbolic'} pixelSize={18} /><Box orientation="vertical" spacing={3} expand><Label className="settings-field-title" xalign={0}>{swapTypes[id].title}</Label><Label className="settings-description" xalign={0} wrap>{swapTypes[id].description}</Label></Box></Box>
-                    </Button>;
+                    return <RadioRow key={id} id={`swap-type-${id}`} selected={draft.type === id} sensitive={ready && !busy && !blocked} title={swapTypes[id].title} description={swapTypes[id].description} onClicked={() => edit({type: id})} />;
                 })}
             </Box>
             {ready && !state.fileAllowed && <Label id="swap-file-unavailable" className="settings-description" xalign={0} wrap>{state.fileReason}</Label>}

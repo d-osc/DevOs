@@ -1,0 +1,3 @@
+# Entry point of bin/dev-os-touchpad-gestures (the implementation is lib/touchpad-gestures.dev so tests can drive the recognizer).
+use "../lib/touchpad-gestures.dev" as pad
+return pad.main()

@@ -1,8 +1,8 @@
 // DevOs tools share the protected shell process. They do not consume external
-// app ranks; Chrome and VS Code intentionally remain external applications.
+// app ranks; third-party applications remain external.
 const systemApps = new Set([
     'dev-os-shell.desktop', 'dev-os-terminal.desktop', 'dev-os-files.desktop',
-    'dev-os-editor.desktop', 'dev-os-task-manager.desktop',
+    'dev-os-browser.desktop', 'dev-os-editor.desktop', 'dev-os-task-manager.desktop',
     'dev-os-disk-manager.desktop', 'dev-os-app-store.desktop',
     'dev-os-settings.desktop', 'org.devos.settings.desktop',
     'org.devos.files.desktop', 'org.devos.terminal.desktop',

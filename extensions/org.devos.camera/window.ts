@@ -18,17 +18,18 @@ export class MediaWindow {
     private refresh = new Gtk.Button({label: 'Refresh devices'});
     constructor(context: UIContext, private kind: CaptureKind, private closed: () => void) {
         const camera = kind === 'camera', title = camera ? 'Camera' : 'Microphone';
-        this.window = new Gtk.ApplicationWindow({application: context.application, title: `Dev OS ${title}`, default_width: 900, default_height: 620});
+        this.window = new Gtk.ApplicationWindow({application: context.application, title, default_width: 900, default_height: 620});
         this.window.get_style_context().add_class('media-window');
         const body = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 18, margin: 24});
         body.get_style_context().add_class('media-content'); this.window.add(body);
-        this.header = mountWindowHeader(this.window, {title, iconName: camera ? 'camera-photo-symbolic' : 'audio-input-microphone-symbolic'});
+        this.header = mountWindowHeader(this.window, {title, iconName: camera ? 'dev-os-camera-symbolic' : 'dev-os-microphone-symbolic',
+            windowIconName: camera ? 'dev-os-camera' : 'dev-os-microphone'});
         const eyebrow = new Gtk.Label({label: camera ? 'CAPTURE YOUR MOMENT' : 'MAKE YOURSELF HEARD', xalign: 0}); eyebrow.get_style_context().add_class('media-eyebrow'); body.pack_start(eyebrow, false, false, 0);
         const heading = new Gtk.Label({label: camera ? 'A new perspective.' : 'Every voice matters.', xalign: 0}); heading.get_style_context().add_class('media-heading'); body.pack_start(heading, false, false, 0);
         const toolbar = new Gtk.Box({spacing: 12}); toolbar.pack_start(this.selector, true, true, 0); toolbar.pack_start(this.refresh, false, false, 0); body.pack_start(toolbar, false, false, 0);
         this.preview.get_style_context().add_class('media-preview'); body.pack_start(this.preview, true, true, 0);
         this.placeholder = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 16, valign: Gtk.Align.CENTER, halign: Gtk.Align.CENTER, vexpand: true});
-        this.placeholder.pack_start(baseImage(camera ? 'camera-photo-symbolic' : 'audio-input-microphone-symbolic', 64), false, false, 0);
+        this.placeholder.pack_start(baseImage(camera ? 'dev-os-camera-symbolic' : 'dev-os-microphone-symbolic', 64), false, false, 0);
         this.placeholder.pack_start(new Gtk.Label({label: camera ? 'Your camera is off' : 'Your microphone is off'}), false, false, 0);
         this.preview.pack_start(this.placeholder, true, true, 0);
         const meter = new Gtk.LevelBar({min_value: 0, max_value: 1, value: 0, hexpand: true, margin_start: 50, margin_end: 50});

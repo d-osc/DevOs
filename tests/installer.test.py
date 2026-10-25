@@ -132,11 +132,11 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn('bin/*', recipe, 'Every script in bin/ is installed, including dev-os-install')
 
     def test_live_usb_builds_the_installed_system_boot_image(self):
-        prepare = (ROOT / 'distro/usb/prepare.py').read_text()
+        prepare = (ROOT / 'distro/usb/usbimage.dev').read_text()
         self.assertIn('EFI/DEVOS/INSTALLED.EFI', prepare)
         self.assertIn('devos.root=LABEL=devos-root', prepare)
-        self.assertNotIn('devos.live.uuid', prepare.split('installed_cmdline=', 1)[1].splitlines()[0],
-                         'The installed system must not boot as Live')
+        installed = [line for line in prepare.splitlines() if 'devos.root=LABEL=devos-root' in line][0]
+        self.assertNotIn('devos.live.uuid', installed, 'The installed system must not boot as Live')
         self.assertIn('INSTALLED.EFI', SCRIPT.read_text())
 
     def test_initramfs_has_an_installed_boot_path_without_the_live_overlay(self):

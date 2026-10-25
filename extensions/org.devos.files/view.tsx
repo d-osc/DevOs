@@ -224,7 +224,7 @@ export function mountFiles(window: Gtk.ApplicationWindow, model: FileBrowser, op
     const copyPath = (path: string) => Gtk.Clipboard.get_for_display(display, Gdk.Atom.intern('CLIPBOARD', false)).set_text(path, -1);
     const render = (next: BrowserOptions) => root.render(<FilesView {...{model, search, options: next, handle, copyPath}} />);
     render(options);
-    const header = !container ? mountWindowHeader(window, {title: 'Files', iconName: 'folder-symbolic',
-        windowIconName: 'system-file-manager', iconId: 'files-window-icon'}) : undefined;
+    const header = !container ? mountWindowHeader(window, {title: 'Files', iconName: 'dev-os-files-symbolic',
+        windowIconName: 'dev-os-files', iconId: 'files-window-icon'}) : undefined;
     return {update: render, focusAddress: () => handle.current?.focusAddress(), toggleHidden: () => handle.current?.toggleHidden(), submitName: () => handle.current?.submitName(), setGrid: (value: boolean) => handle.current?.setGrid(value), quickOpen: () => flushSync(() => handle.current?.quickOpen()), searchKey: (key: number, shift = false) => flushSync(() => handle.current?.searchKey(key, shift) ?? false), destroy: () => { search.dispose(); root.unmount(); header?.destroy(); }};
 }

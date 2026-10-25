@@ -1,4 +1,5 @@
-import {React, Box, Label, Image, Button, Switch, Scale, ComboBoxText, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {React, Box, Label, Image, Button, Scale, ComboBoxText, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {SwitchRow} from './switch-row.js';
 import {DisplayCare, splendidModes, unsupportedDisplayCare, type DisplayCareAction, type DisplayCareControls, type DisplayCareState, type CareSettings, type Splendid} from './display-care.js';
 
 /** A slider that follows the saved value, but never fights the hand: it saves once the thumb stops moving. */
@@ -18,7 +19,7 @@ function Toggle({id, title, description, notice, note, active, sensitive, nonce,
         <Label className="settings-field-title" xalign={0} wrap>{title}</Label>
         <Label className="settings-description" xalign={0} wrap>{description}</Label>
         {notice && <Label className="settings-notice" xalign={0} wrap>{notice}</Label>}
-        <Box spacing={12}><Switch key={`${id}-${nonce}`} id={`${id}-switch`} active={active} sensitive={sensitive} onActiveChanged={w => {if (w.active !== active) change(w.active);}} /><Label id={`${id}-state`} className="settings-description">{onOff(active)}</Label></Box>
+        <SwitchRow key={`${id}-${nonce}`} id={`${id}-switch`} stateId={`${id}-state`} active={active} sensitive={sensitive} label={onOff(active)} onToggled={change} />
         {note && <Label id={`${id}-note`} className="settings-description" xalign={0} wrap>{note}</Label>}
     </Box>;
 }

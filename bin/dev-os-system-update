@@ -1,0 +1,21 @@
+#!/bin/sh
+# Settings front end for system updates (kernel, initramfs, bootloader/ESP, firmware, system files).
+# Usage: dev-os-system-update status | apply --archive F --name N --sha256 H [--sums F --sig F] | cancel | rollback | commit
+# `status` runs as the user; everything else goes through pkexec to /usr/libexec/devos-system-update (polkit action
+# org.devos.system.update, administrator approval). JSON on stdout, exit 1 on failure.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+here=$(dirname "$0")
+core=${DEVOS_SYSTEM_UPDATE_CORE:-/usr/libexec/devos-system-update}
+[ -x "$core" ] || core="$here/../native/devos-system-update"
+[ -f "$core" ] || { echo '{"ok":false,"error":"System updates are not installed."}'; exit 1; }
+case "$1" in
+    status) sh "$core" status ;;
+    apply|cancel|rollback|commit)
+        if [ "$(id -u)" = 0 ] || [ -n "$DEVOS_SYS_ALLOW_USER" ]; then sh "$core" "$@"
+        else
+            # pkexec runs the installed helper itself; only the installed copy is trusted for privileged work.
+            [ "$core" = /usr/libexec/devos-system-update ] || { echo '{"ok":false,"error":"System updates need the installed helper (run from an installed Dev OS)."}'; exit 1; }
+            pkexec "$core" "$@"
+        fi ;;
+    *) echo '{"ok":false,"error":"Unsupported system update action."}'; exit 1 ;;
+esac

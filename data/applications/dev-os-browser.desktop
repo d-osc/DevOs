@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Comment=Browse and search the web
+Exec=dev-os-shell browser
+Icon=dev-os-browser
+Terminal=false
+Categories=Network;WebBrowser;
+Keywords=browser;web;internet;search;

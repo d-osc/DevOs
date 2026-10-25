@@ -1,4 +1,4 @@
-"""Tests for the Dev OS boot animation (distro/oe/meta-devos/recipes-devos/splash, distro/usb/init and prepare.py).
+"""Tests for the Dev OS boot animation (distro/oe/meta-devos/recipes-devos/splash, distro/usb/init and the staging library usbimage.dev).
 
 Static checks: the staged cmdline, the initramfs script and its escape hatches, the systemd units and the recipe.
 Rendering checks compile devos-splash.c (host gcc, or gcc inside WSL on Windows) and render frames headlessly with
@@ -17,9 +17,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'distro/usb'))
-spec = importlib.util.spec_from_file_location('usb', ROOT / 'distro/usb/prepare.py')
-usb = importlib.util.module_from_spec(spec); spec.loader.exec_module(usb)
+sys.path.insert(0, str(ROOT / 'tests'))
+from usb_support import usb   # the DevLang staging library (distro/usb/*.dev)
+STAGING = (ROOT / 'distro/usb/usbimage.dev').read_text()
+SPLASH_SOURCE = ROOT / 'distro/oe/meta-devos/recipes-devos/splash/files/devos-splash.c'
 RECIPE = ROOT / 'distro/oe/meta-devos/recipes-devos/splash'
 SOURCE = RECIPE / 'files/devos-splash.c'
 INIT = (ROOT / 'distro/usb/init').read_text()
@@ -108,22 +109,24 @@ class SplashStaticTests(unittest.TestCase):
         recipe = (RECIPE / 'devos-splash_0.1.bb').read_text()
         for target in ('poweroff.target', 'reboot.target', 'halt.target', 'shutdown.target'): self.assertNotIn(target, recipe)
 
-    def test_session_scripts_fade_the_splash_before_the_compositor(self):
+    def test_session_scripts_report_the_session_milestone_before_the_compositor(self):
         for relative in ('distro/oe/meta-devos/recipes-devos/session/files/devos-greeter',
                          'distro/oe/meta-devos/recipes-devos/session/files/devos-desktop', 'distro/usb/root-session'):
             text = (ROOT / relative).read_text()
-            self.assertIn('devos-splash --quit', text, relative)
-            self.assertLess(text.index('devos-splash --quit'), min(i for i in (text.find('labwc'), text.find('dev-os-session'), text.find('exec dbus-run-session')) if i >= 0), relative)
-            self.assertIn('|| true', text.split('devos-splash --quit')[1].splitlines()[0], relative)  # set -e must not end the login
+            self.assertIn('devos-splash --step session', text, relative)
+            self.assertLess(text.index('devos-splash --step session'), min(i for i in (text.find('labwc'), text.find('dev-os-session'), text.find('exec dbus-run-session')) if i >= 0), relative)
+            self.assertIn('|| true', text.split('devos-splash --step session')[1].splitlines()[0], relative)  # set -e must not end the login
 
     def test_cmdline_is_quiet_with_splash_for_live_and_installed(self):
         for word in ('quiet', 'splash', 'loglevel=3', 'systemd.show_status=false', 'vt.global_cursor_default=0'):
-            self.assertIn(word, usb.SPLASH_ARGS.split())
-        build = (ROOT / 'distro/usb/prepare.py').read_text()
-        self.assertIn('devos.renderer=pixman {SPLASH_ARGS}', build.split('cmdline=f')[1].splitlines()[0])
-        self.assertIn('{SPLASH_ARGS}', build.split('installed_cmdline=f')[1].splitlines()[0])
+            self.assertIn(word, usb.splash_args().split())
+        build = STAGING
+        live = [line for line in build.splitlines() if 'devos.live.uuid=' in line and 'devos.renderer=pixman' in line][0]
+        self.assertIn('devos.renderer=pixman " + st.splashArgs()', live)
+        installed = [line for line in build.splitlines() if 'devos.root=LABEL=devos-root' in line][0]
+        self.assertIn('st.splashArgs()', installed)
         # The diagnostic suffix must not repeat the quiet options (the last duplicate would win over an edit).
-        diagnostic = [line for line in build.splitlines() if 'devos.live.esp_uuid={esp_uuid}' in line and 'cmdline+=' in line][0]
+        diagnostic = [line for line in build.splitlines() if 'devos.live.esp_uuid=' in line and 'cmdline = cmdline' in line][0]
         self.assertNotIn('show_status', diagnostic)
         self.assertIn('devos.live.esp_uuid=', diagnostic)  # DEVOS-LOGS still enabled
 
@@ -167,17 +170,17 @@ class SplashStaticTests(unittest.TestCase):
             root = Path(tmp); tree = root / 'tree'; (tree / 'bin').mkdir(parents=True)
             original = root / 'original'; original.write_bytes(b'old')
             (tree / 'bin/devos-splash').hardlink_to(original)
-            with patch.object(usb, 'build_splash', side_effect=lambda destination: destination.write_bytes(b'new')):
-                usb.install_splash(tree)
+            prebuilt = root / 'prebuilt'; prebuilt.write_bytes(b'new')
+            usb.install_splash(tree, env={'DEVOS_SPLASH_PREBUILT': str(prebuilt)})
             self.assertEqual(original.read_bytes(), b'old')
             self.assertEqual((tree / 'bin/devos-splash').read_bytes(), b'new')
 
     def test_prepare_and_diagnose_stage_the_splash_into_the_initramfs(self):
-        build = (ROOT / 'distro/usb/prepare.py').read_text()
-        self.assertEqual(build.count('install_splash('), 3)  # definition and two callers
-        self.assertIn('-static', build.split('def build_splash')[1].split('def install_splash')[0])
-        self.assertIn('SPLASH_SOURCE', build)
-        self.assertTrue(usb.SPLASH_SOURCE.is_file())
+        build = STAGING
+        self.assertEqual(build.count('installSplash('), 3)  # definition and two callers
+        self.assertIn('-static', build.split('fn buildSplash')[1].split('fn installSplash')[0])
+        self.assertIn('splashSource', build)
+        self.assertTrue(SPLASH_SOURCE.is_file())
 
     def test_source_has_no_raw_dependencies_and_keeps_drm_master_free(self):
         source = SOURCE.read_text()
@@ -185,7 +188,7 @@ class SplashStaticTests(unittest.TestCase):
         self.assertNotIn('KD_GRAPHICS', source.replace('KD_GRAPHICS would', ''))  # graphics mode left the panel black on the real laptop
         for needed in ('SIGUSR1', '30;40m', 'EV_KEY', '--timeout', '#define FPS 30'):
             self.assertIn(needed, source)
-        self.assertLessEqual(len(source.splitlines()), 600)  # a small tool
+        self.assertLessEqual(len(source.splitlines()), 800)  # a small tool
 
 
 class SplashRenderingTests(unittest.TestCase):

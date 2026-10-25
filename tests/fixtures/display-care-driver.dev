@@ -1,0 +1,24 @@
+# Test driver for lib/display-care.dev: DRIVER_SCRIPT is a list of settings overrides; for each one it prints whether the
+# settings are the identity and the 3 x 256-entry gamma ramp.
+use "std/json"
+use "std/strings"
+use "../../lib/display-care.dev" as care
+use "../../lib/hw.dev" as hw
+
+fn main(): i32 {
+    let cases = json.parse(hw.env("DRIVER_SCRIPT"))
+    let out = json.array()
+    for i in 0..(json.len(cases) as i64) {
+        let values = care.defaults()
+        let overrides = json.at(cases, i)
+        let keys = json.keys(overrides)
+        for k in 0..(keys.len() as i64) { values = json.set(values, keys[k], json.get(overrides, keys[k])) }
+        let entries = care.ramp(256, values)
+        let ramp = json.array()
+        for e in 0..(entries.len() as i64) { ramp = json.push(ramp, entries[e]) }
+        out = json.push(out, json.set(json.set(json.object(), "identity", care.isIdentity(values)), "ramp", ramp))
+    }
+    print(json.stringify(out))
+    return 0
+}
+return main()

@@ -1,4 +1,4 @@
-import {React, Box, Label, Button, Image, ScrolledWindow, Gtk, useState, useEffect} from '@dev-os/core';
+import {React, Box, Label, Button, Image, ScrolledWindow, Gtk} from '@dev-os/core';
 import {WifiSettings} from './wifi-view.js';
 import {NativeNetworkSettings, type NativeNetworkPage} from './network-pages.js';
 import {ProxySettings} from './proxy-view.js';

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <!-- background colour, can be removed for a transparent background -->
+  <rect width="100" height="100" fill="#242424" />
+  <!-- white rectangle, centre but towards the top-left -->
+  <rect x="22" y="32" width="40" height="32" rx="2" fill="#EAEAEA" />
+  <!-- small white circle, bottom-right -->
+  <circle cx="81" cy="67" r="5" fill="#EAEAEA" />
+</svg>

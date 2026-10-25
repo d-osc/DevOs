@@ -1,7 +1,7 @@
 import {React, Gtk, Box, Label, Button, Image, SearchEntry, Switch, FlowBox, ScrolledWindow, useState, useMemo, useRef, useLayoutEffect, type SettingsHost} from '@dev-os/core';
 import {installedIconThemes} from './themes.js';
 import {materialIcon} from './material.js';
-import {PACKS, STYLES, PACK_TITLES, PACK_STYLES, hasCombination, parseChoice, savedChoice, renderIcon, resolveIcon, type IconChoice, type Pack, type Style} from './fa-icons.js';
+import {PACKS, STYLES, PACK_TITLES, PACK_STYLES, hasCombination, parseChoice, savedChoice, renderIcon, resolveIcon, type IconChoice, type Pack} from './fa-icons.js';
 const id = 'org.devos.icons';
 function PreviewIcon({theme, name, title}: {theme: Gtk.IconTheme; name: string; title: string}) {
     const host = useRef<Gtk.Box>(null);

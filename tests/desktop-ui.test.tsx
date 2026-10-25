@@ -201,7 +201,7 @@ asyncTest('Wayland taskbar tracks minimize, restores exact windows and updates R
         runCommand: () => { launched++; return true; }}, monitor);
     const first = makeWindow(), second = makeWindow();
     let firstClosed = false, secondClosed = false;
-    first.set_title('Dev OS Terminal · taskbar "first" ภาษาไทย'); second.set_title('Dev OS Terminal · taskbar second');
+    first.set_title('Terminal · taskbar "first" ภาษาไทย'); second.set_title('Terminal · taskbar second');
     const terminalButton = () => widgets(panelWindow).find(widget => widget.name === 'panel-terminal') as Gtk.Button;
     const waitFor = async (condition: () => boolean) => {
         for (let count = 0; count < 100; count++) {

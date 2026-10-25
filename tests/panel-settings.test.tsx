@@ -76,7 +76,7 @@ async function verify() {
         const panel = mountPanel(native, {config: {name: 'Dev OS', clock_format: '%H:%M'}, options: panelOptions({position, showPinned: false, showDate: false, iconSize: 24}),
             launcher: {toggle: () => {menu++;}}, runCommand: () => true,
             toggleTaskView: () => {taskView++;},
-            windows: {state: [{id: 1, title: 'Dev OS Terminal', appId: 'terminal', active: true, minimized: false}], subscribe: () => () => {}, activate: () => {}, toggle: () => {toggled++;}}}, Gdk.Display.get_default()!.get_primary_monitor()!);
+            windows: {state: [{id: 1, title: 'Terminal', appId: 'terminal', active: true, minimized: false}], subscribe: () => () => {}, activate: () => {}, toggle: () => {toggled++;}}}, Gdk.Display.get_default()!.get_primary_monitor()!);
         try {
             await wait(); const children = widgets(native);
             assert(!children.some(widget => widget.name === 'panel-terminal'), 'Pinned launch shortcut is hidden');

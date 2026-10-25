@@ -1,5 +1,5 @@
 import {testTheme} from './theme-helper.js';
-import {React, Gtk, Gdk, GLib, Box, Label, Image, createRoot, setBaseIconProvider} from '@dev-os/core';
+import {React, Gtk, Gdk, GLib, Box, Label, createRoot, setBaseIconProvider} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {renderIcon} from '../extensions/org.devos.icons/fa-icons.js';
 import {PanelBattery} from '../extensions/org.devos.panel/battery-view.js';

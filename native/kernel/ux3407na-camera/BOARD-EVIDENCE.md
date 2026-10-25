@@ -37,14 +37,14 @@ and module-configuration tables, or schematic data. Do not copy the A16 values.
 
 ## Next step once the values exist
 
-1. `python3 prepare-source.py --source <pinned> --output <new private copy>`.
+1. `d prepare-source.dev -- --source <pinned> --output <new private copy>`.
 2. Fill `profiles/asus/ux3407na/kernel/ux3407na-camera.dtsi` (it refuses to compile
    until its `#error` is removed) and append it with the audio fragment.
 3. Rebuild kernel + modules + DTB (not done here), then run `devos-camera-report`.
 
 ## Update 2026-10-24 (later): real sources found; candidate graph written
 
-**Decoder result.** `tools/live/decode-camx-sensormodule.py` on `com.qti.sensormodule.ov02c10.bin` (220798 bytes) confirms
+**Decoder result.** `tools/live/decode-camx-sensormodule.dev` on `com.qti.sensormodule.ov02c10.bin` (220798 bytes) confirms
 sensor/module identity only: names `sensorDriverData` 0xd0, `cameraModuleData` 0x108, `powerSetting` 0x258,
 `luxvision_ov02c10` 0x35cbc, `m24c64x_ov02c10_eeprom` 0x35c9d, a 19.2 MHz value at 0x2bb16, slave byte 0x6c (7-bit 0x36).
 The file holds sensor register tables and logical power-step types, **not** GPIO numbers, rails, CSI lanes or the CCI bus
@@ -78,7 +78,7 @@ HM1092 IR sensor, experimental). Their A14 values are third-party claims; Dev OS
 | CSIPHY4 rails vreg_l1f_e1 / vreg_l4f_e1 | `vdda-0p9/1p2-supply` | [A16]; rails exist in the pinned A14 DTS |
 
 `dtc` compiles the pinned A14 DTS + the SoC patches + this candidate (checked in WSL). Enabling is explicit:
-`prepare-board-fixes.py ... --enable-camera-candidate` (needs a source prepared with `prepare-source.py --output`, records the
+`prepare-board-fixes.dev ... --enable-camera-candidate` (needs a source prepared with `prepare-source.dev --output`, records the
 candidate hash in `board-fixes.json`). Because the driver patches are required too, the matching kernel/modules must be rebuilt
 from that same source; a DTB alone, or the stock kernel (no `qcom,glymur-camss` or PM8010 alias), shows nothing.
 Remaining risk: the unverified values could mis-power the sensor or PMIC (wrong GPIO or rail); try on the laptop only

@@ -1,6 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="#34456d"/>
-  <path d="M22 14h16l10 10v23a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V18a4 4 0 0 1 4-4Z" fill="#d5e3ff"/>
-  <path d="M38 14v7a3 3 0 0 0 3 3h7" fill="#8da7dc"/>
-  <path d="m26 31-5 5 5 5m14-10 5 5-5 5m-6-12-4 14" fill="none" stroke="#34456d" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 576 576"><!-- Font Awesome: assets/font/fa-duotone-900.woff2; code --><g fill="#57a5e5"><path d="M193 471C188 488 198 506 215 511C232 516 250 506 255 489L383 41C388 24 378 6 361 1C344 -4 326 6 321 23L193 471Z" opacity=".4"/><path d="M425 137C413 150 413 170 425 183L499 256L425 330C413 342 413 362 425 375C438 387 458 387 471 375L567 279C579 266 579 246 567 234L471 138C458 125 438 125 425 138ZM425 137ZM151 137C138 125 118 125 105 137L9 233C-3 246 -3 266 9 279L105 375C118 387 138 387 151 375C163 362 163 342 151 329L77 256L151 183C163 170 163 150 151 137Z"/></g></svg>

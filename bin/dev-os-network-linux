@@ -13,8 +13,10 @@ fn gioLibrary(): str {
         let direct = base + "/libgio-2.0.so.0"
         if fs.is_file(direct) { return direct }
         for name in util.children(base) {
-            let candidate = base + "/" + name + "/libgio-2.0.so.0"
-            if fs.is_file(candidate) { return candidate }
+            if fs.is_dir(base + "/" + name) {
+                let candidate = base + "/" + name + "/libgio-2.0.so.0"
+                if fs.is_file(candidate) { return candidate }
+            }
         }
     }
     result.raise("The system GIO library is not installed.")

@@ -7,11 +7,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'distro/usb'))
-import board_audio as audio
+sys.path.insert(0, str(ROOT / 'tests'))
+from usb_support import usb as audio, fake_tool   # the DevLang implementation (distro/usb/usbstage.dev)
 
 
 class BoardAudioTests(unittest.TestCase):
@@ -56,14 +55,27 @@ class BoardAudioTests(unittest.TestCase):
             self.assertTrue(board.read_text().startswith(original))
             self.assertIn('SpkrLeft', board.read_text())
             self.assertIn('DMIC1', board.read_text())
+            other = Path(directory) / 'other.dts'
+            other.write_text('compatible = "another,board";\n')
+            with self.assertRaisesRegex(ValueError, 'requires the UX3407NA board source'):
+                audio.append_audio(other)
 
     def test_ec_patch_only_for_ec_bundle(self):
-        with patch.object(audio.subprocess, 'run') as run:
-            audio.preserve_ec(ROOT, {'files': {}})
-            run.assert_not_called()
-            audio.preserve_ec(ROOT, {'files': {'suspend-fixes.json': 'hash'}})
-            run.assert_called_once()
-            self.assertIn('--fuzz=0', run.call_args.args[0])
+        with tempfile.TemporaryDirectory() as directory:
+            tools = Path(directory) / 'tools'
+            tools.mkdir()
+            log = Path(directory) / 'patch.log'
+            fake_tool(tools, 'patch', 'echo "$*" >> "$FAKE_LOG"\n')
+            tree = Path(directory) / 'tree'
+            tree.mkdir()
+            env = {'FAKE_LOG': str(log)}
+            audio.preserve_ec(tree, {'files': {}}, tools=tools, env=env)
+            self.assertFalse(log.exists(), 'No EC bundle: nothing is patched')
+            audio.preserve_ec(tree, {'files': {'suspend-fixes.json': 'hash'}}, tools=tools, env=env)
+            calls = log.read_text().splitlines()
+            self.assertEqual(len(calls), 1)
+            self.assertIn('--fuzz=0', calls[0])
+            self.assertIn('0002-ux3407na-ec.patch', calls[0])
 
     def test_missing_and_stale_provenance_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

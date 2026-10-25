@@ -1,4 +1,4 @@
-import {React, Gtk, Gio, GLib, Box, Label, Button, Entry, useState, useEffect} from '@dev-os/core';
+import {React, Gio, GLib, Box, Label, Button, Entry, useState, useEffect} from '@dev-os/core';
 import {AccountAvatar} from './avatar.js';
 import type {GreeterControls, GreeterResult} from './os-login.js';
 

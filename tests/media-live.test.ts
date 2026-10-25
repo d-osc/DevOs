@@ -1,6 +1,6 @@
 import {testTheme} from './theme-helper.js';
-import {Gdk, Gio, GLib, Gtk, type UIContext} from '@dev-os/core';
-import {Capture, Gst, devices} from '../extensions/org.devos.camera/capture.js';
+import {Gdk, GLib, Gtk, type UIContext} from '@dev-os/core';
+import {Capture, devices} from '../extensions/org.devos.camera/capture.js';
 import {MediaWindow} from '../extensions/org.devos.camera/window.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): asserts value {if (!value) throw new Error(message);}

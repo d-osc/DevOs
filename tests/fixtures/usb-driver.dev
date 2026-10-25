@@ -1,0 +1,84 @@
+# Test driver for the Live USB staging library (distro/usb/usbimage.dev): DRIVER_CALL_FILE (or DRIVER_CALL) holds {"fn": name, "args": [...]}.
+# Prints one JSON line: {"result": value} or {"error": message}. Anything the library prints comes before that last line.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../distro/usb/usbimage.dev" as img
+use "../../distro/usb/usbstage.dev" as st
+
+fn arg(args: json.Value, i: i64): str {
+    if i >= (json.len(args) as i64) { return "" }
+    return json.string(json.at(args, i))
+}
+
+fn dispatch(name: str, args: json.Value): json.Value {
+    if strings.equal(name, "firmwareBundle") { return img.firmwareBundle(arg(args, 0)) }
+    if strings.equal(name, "check") { return img.check(arg(args, 0)) }
+    if strings.equal(name, "kernelBundle") {
+        let bundle = st.kernelBundle(arg(args, 0))
+        return json.set(json.set(json.object(), "record", bundle.record), "modules", bundle.modules)
+    }
+    if strings.equal(name, "profileKernelArgs") { return json.value(img.profileKernelArgs(strings.charLength(arg(args, 0)) > 0 ? arg(args, 0) : st.boardProfile())) }
+    if strings.equal(name, "profileEarlyFirmware") {
+        let names = img.profileEarlyFirmware(st.boardProfile(), "qca/")
+        let out = json.array()
+        for i in 0..(names.len() as i64) { out = json.push(out, names[i]) }
+        return out
+    }
+    if strings.equal(name, "peSections") {
+        let sections = img.peSections(arg(args, 0))
+        let out = json.array()
+        for i in 0..(sections.names.len() as i64) {
+            out = json.push(out, json.set(json.set(json.set(json.object(), "name", sections.names[i]), "offset", sections.offsets[i]), "size", sections.sizes[i]))
+        }
+        return out
+    }
+    if strings.equal(name, "installModules") { img.installModules(arg(args, 0), arg(args, 1), arg(args, 2), arg(args, 3)); return json.null_value() }
+    if strings.equal(name, "installBootTools") { img.installBootTools(arg(args, 0), arg(args, 1)); return json.null_value() }
+    if strings.equal(name, "stageBluetoothFirmware") {
+        let names = img.stageBluetoothFirmware(arg(args, 0), arg(args, 1), img.profileEarlyFirmware(st.boardProfile(), "qca/"))
+        let out = json.array()
+        for i in 0..(names.len() as i64) { out = json.push(out, names[i]) }
+        return out
+    }
+    if strings.equal(name, "stageCameraModules") {
+        let names = img.stageCameraModules(arg(args, 0), arg(args, 1), arg(args, 2))
+        let out = json.array()
+        for i in 0..(names.len() as i64) { out = json.push(out, names[i]) }
+        return out
+    }
+    if strings.equal(name, "cpio") { img.cpio(arg(args, 0), arg(args, 1)); return json.null_value() }
+    if strings.equal(name, "build") { img.build(arg(args, 0)); return json.null_value() }
+    if strings.equal(name, "identity") { return json.value(st.identity(arg(args, 0))) }
+    if strings.equal(name, "shrinkRootfs") { img.shrinkRootfs(arg(args, 0)); return json.null_value() }
+    if strings.equal(name, "checkShrunk") { img.checkShrunk(arg(args, 0), img.shrinkMargin()); return json.null_value() }
+    if strings.equal(name, "shrinkMargin") { return json.value(img.shrinkMargin()) }
+    if strings.equal(name, "splashArgs") { return json.value(st.splashArgs()) }
+    if strings.equal(name, "installSplash") { img.installSplash(arg(args, 0)); return json.null_value() }
+    if strings.equal(name, "checkCameraSource") { st.checkCameraSource(arg(args, 0)); return json.null_value() }
+    if strings.equal(name, "appendAudio") { st.appendAudio(arg(args, 0)); return json.null_value() }
+    if strings.equal(name, "preserveEc") { st.preserveEc(arg(args, 0), json.parse(arg(args, 1))); return json.null_value() }
+    if strings.equal(name, "writeProof") { return json.value(st.writeProof(arg(args, 0), arg(args, 1), strings.equal(arg(args, 2), "1"))) }
+    if strings.equal(name, "validateProof") {
+        st.validateProof(arg(args, 0), json.parse(arg(args, 1)), strings.charLength(arg(args, 2)) > 0 ? arg(args, 2) : "board-fixes.json")
+        return json.null_value()
+    }
+    hw.failure("Unknown call " + name)
+    return json.null_value()
+}
+
+fn main(): i32 {
+    # The call travels in a file: bundle manifests are larger than one environment string may be.
+    let call = json.parse(strings.charLength(hw.env("DRIVER_CALL_FILE")) > 0 ? hw.readText(hw.env("DRIVER_CALL_FILE")) : hw.env("DRIVER_CALL"))
+    let name = hw.jstr(call, "fn", "")
+    let args = hw.jget(call, "args")
+    let outcome = result.attempt(fn(): json.Value { return dispatch(name, args) })
+    if result.isErr(outcome) {
+        print(json.stringify(json.set(json.object(), "error", hw.errorText(result.message(outcome)))))
+    } else {
+        print(json.stringify(json.set(json.object(), "result", result.unwrap(outcome))))
+    }
+    return 0
+}
+return main()

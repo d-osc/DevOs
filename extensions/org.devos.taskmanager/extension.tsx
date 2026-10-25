@@ -64,7 +64,7 @@ export default {id: 'org.devos.taskmanager', activate(context) {
         context.invoke('launcher.hide');
         if (window) {window.present(); return;}
         window = new Gtk.ApplicationWindow({application: context.application, title: 'Task Manager', default_width: 900, default_height: 680}); window.name = 'task-manager';
-        const root = createRoot(window), header = mountWindowHeader(window, {title: 'Task Manager', iconName: 'dev-os-task-manager'});
+        const root = createRoot(window), header = mountWindowHeader(window, {title: 'Task Manager', iconName: 'dev-os-task-manager-symbolic', windowIconName: 'dev-os-task-manager'});
         let controls: Processes | undefined, focused = true, minimised = false;
         // Sample fast while focused, slowly while visible behind another window, and not at all when minimised.
         const render = () => {if (controls) root.render(<TaskManager controls={controls} interval={minimised ? 0 : focused ? LIVE_INTERVAL : BACKGROUND_INTERVAL}/>);};

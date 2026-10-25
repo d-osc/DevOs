@@ -1,3 +1,5 @@
+<p align="center"><img src="data/icons/devos/devos-mark.svg" width="96" alt="Dev OS"></p>
+
 # Dev OS — Wayland Desktop Environment Base
 
 เตรียม Live USB ARM64: ดู [Live USB](docs/live-usb.md) และใช้ `.\live-usb.ps1 prepare`.
@@ -29,7 +31,7 @@ UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, 
 - Lock screen ใช้ธีม Dev OS พร้อมชื่อผู้ใช้และตัวบอกสถานะรหัสผ่านผ่าน `swaylock`; logout มีขั้นตอนยืนยัน
 - ตัวติดตั้งและ Wayland session entry สำหรับ display manager
 - Dependency doctor, config tests และ smoke test บน Wayland compositor จริง
-- Settings → Updates: ดาวน์โหลดรุ่น stable จาก GitHub Releases, ตรวจ SHA-256 และย้อนกลับรุ่นก่อนหน้าได้
+- Settings → Updates: ดาวน์โหลดรุ่น stable จาก GitHub Releases, ตรวจ SHA-256 และย้อนกลับรุ่นก่อนหน้าได้ ติดตั้งจากไฟล์ในเครื่อง (USB) และ patch ขนาดเล็กได้ตรวจลายเซ็น Ed25519 เมื่อ image มี public key; Live USB ไม่อัปเดตในที่เดิม (ดู docs/updates.md).
 - Settings → Extension Store: เชื่อม GitHub repo แล้วติดตั้ง/อัปเดต user extensions จาก Releases ([วิธีเผยแพร่](docs/extension-store.md))
 
 นี่เป็นฐานเริ่มต้น ยังไม่มี taskbar รายการหน้าต่าง, system tray, notification daemon,
@@ -76,7 +78,7 @@ bin/dev-os-session --nested
 
 ตั้งค่าเครือข่ายได้ที่ **Settings → Network & Internet → Wi-Fi** หรือปุ่ม Wi-Fi ใน Quick settings ดู [docs/wifi.md](docs/wifi.md).
 
-รองรับ Windows ARM64 / Snapdragon ผ่าน Ubuntu WSL2 ดูการเตรียม dependencies และ Chrome ใน [docs/wsl-arm64.md](docs/wsl-arm64.md).
+รองรับ Windows ARM64 / Snapdragon ผ่าน Ubuntu WSL2 ดูการเตรียม dependencies ใน [docs/wsl-arm64.md](docs/wsl-arm64.md).
 
 โปรเจกต์นี้อยู่ใน Windows แต่ runtime ของ Wayland ต้องอยู่ใน Linux
 `dev.ps1` ใช้ WSL distribution ชื่อ `Ubuntu` และ WSLg
@@ -440,11 +442,7 @@ Header ที่ compositor วาดใช้ไอคอนแอปขนา�
 บน Linux ติดตั้ง `gir1.2-vte-2.91`; WSL ใช้ `tools/setup/bootstrap-terminal.sh`
 ซึ่งจัดเตรียม dependency ใน `build/wsl/vte` และ `dev.ps1 run` เรียกให้อัตโนมัติ.
 
-VS Code ใช้แพ็กเกจ Linux `code` จาก Microsoft และเปิดจากเมนู Applications ได้.
-`bin/code` เลือก Wayland ใน DE และรองรับ `code .` จาก Terminal รวมถึง session บน WSL.
-อิมเมจ DevOs desktop รวม Google Chrome และ VS Code เวอร์ชัน Linux มาด้วยแล้วผ่านสูตร OpenEmbedded
-ที่ตรึงเวอร์ชันและ SHA-256 สำหรับ ARM64/x64; ดู [Bundled apps](docs/bundled-apps.md).
-`dev.ps1 run` เตรียมทั้งสองแอปบน WSL ให้อัตโนมัติด้วย เมนู VS Code ใช้ตัวเปิด Wayland ของ DevOs.
+อิมเมจ DevOs ไม่รวม VS Code, Chrome, Rust, Node.js/nvm และ QEMU เพื่อให้ไฟล์เล็ก (ดู [Bundled apps](docs/bundled-apps.md)); ไม่มี Python ด้วย (helper ใน Settings เขียนด้วย DevLang).
 
 Editor ของระบบใช้ Monaco + WebKitGTK และ header แบบแท็บร่วมกับ Terminal.
 เปิดจาก Applications → Editor หรือ `dev-os-editor file.ts`; ใช้ Ctrl+O / Ctrl+S และลากแท็บแยกหรือรวมหน้าต่างได้.

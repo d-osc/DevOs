@@ -1,0 +1,211 @@
+# Stage independent DevOs Live USB inputs; never open a physical disk.
+# Library of distro/usb/prepare.dev (and the board-fixes tools): kernel/firmware bundle checks, module and firmware staging into
+# a private rootfs copy with debugfs, initramfs packing, the UEFI image build and its verification.
+use "std/args"
+use "std/fs"
+use "std/json"
+use "std/module"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../usb/hostio.dev" as io
+
+fn fail(message: str) { result.raise(message) }
+fn require(condition: bool, message: str) { if !condition { result.raise(message) } }
+
+# ---- locations -----------------------------------------------------------------------------------------------------------
+fn repoRoot(): str {
+    let override = hw.env("DEVOS_REPO_ROOT")
+    if strings.charLength(override) > 0 { return override }
+    let dir = hw.parentDir(io.resolve(module.entry()))
+    for level in 0..6 {
+        if fs.existsSync(dir + "/profiles/devos-hwprofile") { return dir }
+        dir = hw.parentDir(dir)
+    }
+    fail("Cannot locate the DevOs repository root from " + module.entry())
+    return ""
+}
+fn here(): str { return repoRoot() + "/distro/usb" }
+fn profiles(): str { return repoRoot() + "/profiles" }
+fn boardProfile(): str { return "asus/ux3407na" }
+fn defaultImages(): str { return "/var/tmp/devos-oe/build/tmp/deploy/images/qemuarm64" }
+fn wifiBoard(): str { return "ath12k/QCC2072/hw1.0/board.bin" }
+fn splashSource(): str { return repoRoot() + "/distro/oe/meta-devos/recipes-devos/splash/files/devos-splash.c" }
+# Quiet boot behind the animated splash (distro/oe/meta-devos/recipes-devos/splash). `splash` is read by the initramfs;
+# devos.splash=0, debug or systemd.show_status=1 on the command line bring the plain text boot back.
+fn splashArgs(): str { return "quiet splash loglevel=3 systemd.show_status=false vt.global_cursor_default=0" }
+fn requiredApplets(): Vec<str> {
+    return Vec<str>("mount", "modprobe", "switch_root", "sh", "find", "findfs", "seq", "cat", "mkdir", "sleep", "cp", "chmod", "ln", "readlink", "dmesg",
+        "timeout", "kill", "umount", "sync", "mv", "tail", "echo", "true", "false", "test", "[")
+}
+# Used by the hardware profile tool when this BusyBox provides them.
+fn optionalApplets(): Vec<str> { return Vec<str>("tr", "uname") }
+
+fn digest(path: str): str { return io.digest(path) }
+fn run(argv: Vec<str>): str { return io.run(argv) }
+fn jstr(v: json.Value, key: str): str { return hw.jstr(v, key, "") }
+
+fn regular(path: str): str {
+    let real = io.resolve(path)
+    require(fs.is_file(real) && io.size(real) > 0, "Missing regular file: " + real)
+    return real
+}
+
+fn isRelativeTo(path: str, base: str): bool { return strings.startsWith(path, base + "/") }
+
+# First bytes of a file as lowercase hex pairs.
+fn headHex(path: str, offset: i64, count: i64): str {
+    return strings.trim(run(Vec<str>("od", "-An", "-tx1", "-v", "-j", "${offset}", "-N", "${count}", path)))
+}
+fn isArm64Elf(path: str): bool {
+    let header = hw.words(headHex(path, 0, 20))
+    return header.len() >= 20 && strings.equal(header[0], "7f") && strings.equal(header[1], "45") && strings.equal(header[2], "4c") && strings.equal(header[3], "46") && strings.equal(header[18], "b7") && strings.equal(header[19], "00")
+}
+fn hasElfMagic(path: str): bool {
+    let header = hw.words(headHex(path, 0, 4))
+    return header.len() == 4 && strings.equal(header[0], "7f") && strings.equal(header[1], "45") && strings.equal(header[2], "4c") && strings.equal(header[3], "46")
+}
+fn isStaticElf(path: str): bool { return !strings.contains(run(Vec<str>("readelf", "-l", path)), "INTERP") }
+
+# ---- kernel image and root file system -----------------------------------------------------------------------------------
+fn kernelRelease(kernel: str): str {
+    let magic = strings.replaceAll(headHex(kernel, 56, 4), " ", "")
+    require(strings.equal(magic, "41524d64"), "An ARM64 Linux Image is required")
+    let found = io.runCode(Vec<str>("grep", "-a", "-o", "-m1", "-E", "Linux version [0-9][A-Za-z0-9.+_-]*-devos[A-Za-z0-9.+_-]* ", kernel))
+    require(found.code == 0 && strings.charLength(strings.trim(found.out)) > 0, "Expected a DevOs kernel")
+    let line = strings.trim(strings.split(found.out, "\n")[0])
+    return strings.substring(line, 14, strings.charLength(line))
+}
+
+fn identity(rootfs: str): str {
+    let paths = Vec<str>("/etc/os-release", "/usr/lib/os-release")
+    for i in 0..(paths.len() as i64) {
+        let text = run(Vec<str>("debugfs", "-R", "cat " + paths[i], rootfs))
+        let lines = strings.split(text, "\n")
+        for l in 0..(lines.len() as i64) {
+            if !strings.startsWith(lines[l], "ID=") { continue }
+            let value = strings.trim(strings.substring(lines[l], 3, strings.charLength(lines[l])))
+            value = strings.replaceAll(strings.replaceAll(value, "\"", ""), "'", "")
+            require(strings.equal(value, "devos"), "The rootfs is not independent DevOs")
+            return text
+        }
+    }
+    fail("Cannot read DevOs OS identity")
+    return ""
+}
+
+# ---- board audio / camera provenance (was board_audio.py) ----------------------------------------------------------------
+fn audioDtsi(): str { return repoRoot() + "/profiles/asus/ux3407na/kernel/ux3407na-audio.dtsi" }
+fn cameraDtsi(): str { return repoRoot() + "/profiles/asus/ux3407na/kernel/ux3407na-camera-candidate.dtsi" }
+fn ecPatch(): str { return repoRoot() + "/native/kernel/asus-glymur-ec/0002-ux3407na-ec.patch" }
+fn ecPatchSha(): str { return "e8110cf1d5fa3aad9c17f914da0c951142da463cffdc7718dbeb03fc6982fc83" }
+
+fn appendAudio(board: str) {
+    let text = hw.readText(board)
+    require(strings.contains(text, "asus,zenbook-a14-ux3407na"), "Audio configuration requires the UX3407NA board source")
+    io.writeText(board, text + "\n" + hw.readText(audioDtsi()))
+}
+
+fn checkCameraSource(source: str) {
+    let soc = hw.readText(source + "/arch/arm64/boot/dts/qcom/glymur.dtsi")
+    let pmic = hw.readText(source + "/drivers/mfd/qcom-pm8008.c")
+    require(strings.contains(soc, "qcom,glymur-camss") && strings.contains(pmic, "qcom,pm8010-i2c"),
+        "Camera candidate needs a source tree prepared with native/kernel/ux3407na-camera/prepare-source.dev --output")
+}
+
+fn appendCameraCandidate(board: str) { io.writeText(board, hw.readText(board) + "\n" + hw.readText(cameraDtsi())) }
+
+# Reapplies the known EC change when rebuilding audio from pinned source.
+fn preserveEc(tree: str, record: json.Value) {
+    if !json.has(json.get(record, "files"), "suspend-fixes.json") { return }
+    require(strings.equal(digest(ecPatch()), ecPatchSha()), "EC board patch checksum mismatch")
+    run(Vec<str>("sh", "-c", "cd " + io.quote(tree) + " && patch --batch --fuzz=0 -p1 -i " + io.quote(ecPatch())))
+}
+
+fn writeProof(bundle: str, original: str, camera: bool): str {
+    let proof = bundle + "/board-fixes.json"
+    let value = json.object()
+    value = json.set(value, "baseDtsSha256", digest(original))
+    value = json.set(value, "overrideSha256", digest(audioDtsi()))
+    value = json.set(value, "audioLayout", "two-speakers-two-dmics")
+    value = json.set(value, "upstreamAudio", "https://patchew.org/linux/20260915-zenbook-dts-v2-0-41de8669a7a8@oss.qualcomm.com/")
+    value = json.set(value, "bluetoothFirmware", json.push(json.push(json.array(), "qca/ornnv11.bin"), "qca/ornbtfw11.tlv"))
+    value = json.set(value, "hardwareTested", false)
+    if camera {
+        value = json.set(value, "cameraCandidateSha256", digest(cameraDtsi()))
+        value = json.set(value, "cameraCandidate", "unverified community wiring; see native/kernel/ux3407na-camera/BOARD-EVIDENCE.md")
+    }
+    io.writeJson(proof, value)
+    return digest(proof)
+}
+
+fn baseName(path: str): str {
+    let slash = strings.lastIndexOf(path, "/")
+    return slash < 0 ? path : strings.substring(path, slash + 1, strings.charLength(path))
+}
+
+fn validateProof(bundle: str, record: json.Value, filename: str) {
+    let files = json.get(record, "files")
+    require(json.has(files, filename), "UX3407NA audio routing correction is missing. Prepare a fresh corrected board bundle; the four-speaker DTB does not match the ASUS microphone UCM profile.")
+    let proof = io.readJson(bundle + "/" + filename)
+    require(strings.equal(hw.jstr(proof, "overrideSha256", ""), digest(audioDtsi())) && strings.equal(hw.jstr(proof, "audioLayout", ""), "two-speakers-two-dmics"),
+        "UX3407NA audio routing proof is stale; prepare a corrected board bundle")
+    if !json.has(proof, "cameraCandidateSha256") { return }
+    require(strings.equal(hw.jstr(proof, "cameraCandidateSha256", ""), digest(cameraDtsi())) && json.has(files, "camera-fixes.json"),
+        "Camera DTB needs matching rebuilt camera modules; use prepare-bundle.dev")
+    let camera = io.readJson(bundle + "/camera-fixes.json")
+    let modules = hw.jget(camera, "patchedModules")
+    let names = hw.isObject(modules) ? json.keys(modules) : Vec<str>()
+    let expected = Vec<str>("qcom-camss.ko", "qcom-pm8008.ko", "qcom-pm8008-regulator.ko")
+    let seen = Vec<str>()
+    for i in 0..(names.len() as i64) { seen.push(baseName(names[i])) }
+    let same = seen.len() == expected.len()
+    for i in 0..(expected.len() as i64) { if !hw.contains(seen, expected[i]) { same = false } }
+    require(same, "Matching camera module provenance is incomplete")
+    let plain = strings.equal(filename, "board-fixes.json")
+    let kernelRecord = plain ? record : io.readJson(bundle + "/kernel-provenance.json")
+    for i in 0..(names.len() as i64) {
+        let name = names[i]
+        let value = json.string(json.get(modules, name))
+        let target = plain ? name : "staged-camera-" + baseName(name)
+        let kernelFiles = json.get(kernelRecord, "files")
+        let ok = json.has(kernelFiles, name) && strings.equal(json.string(json.get(kernelFiles, name)), value) && json.has(files, target) && strings.equal(json.string(json.get(files, target)), value) && strings.equal(digest(bundle + "/" + target), value)
+        require(ok, "Camera module does not match the camera DTB: " + name)
+    }
+}
+
+# ---- bundles -------------------------------------------------------------------------------------------------------------
+struct KernelBundle { record: json.Value, modules: str }
+
+fn emptyBundle(): KernelBundle { return KernelBundle(json.null_value(), "") }
+
+fn kernelBundle(base: str): KernelBundle {
+    let path = io.resolve(base)
+    let record = io.readJson(path + "/manifest.json")
+    require(strings.equal(jstr(record, "board"), "asus-ux3407na") && strings.equal(jstr(record, "architecture"), "aarch64"), "The kernel bundle must target ASUS UX3407NA ARM64")
+    let files = json.get(record, "files")
+    let names = json.keys(files)
+    let resolved = io.resolveAll(path, names)
+    let ok = Vec<str>()
+    for i in 0..(names.len() as i64) {
+        require(isRelativeTo(resolved[i], path) && fs.is_file(resolved[i]), "Invalid kernel bundle input: " + names[i])
+        ok.push(names[i])
+    }
+    let hashes = io.digestAll(path, names)
+    for i in 0..(names.len() as i64) { require(strings.equal(hashes[i], json.string(json.get(files, names[i]))), "Invalid kernel bundle input: " + names[i]) }
+    validateProof(path, record, "board-fixes.json")
+    let release = kernelRelease(regular(path + "/Image"))
+    require(strings.equal(release, jstr(record, "release")), "Kernel bundle release mismatch")
+    let dtb = regular(path + "/board.dtb")
+    let head = strings.replaceAll(headHex(dtb, 0, 4), " ", "")
+    let needle = io.bytesOf("asus,zenbook-a14-ux3407na")
+    needle.push(0)
+    require(strings.equal(head, "d00dfeed") && io.bytesContain(fs.read_bytes(dtb), needle), "The DTB does not target UX3407NA")
+    let config = strings.split(hw.readText(path + "/kernel.config"), "\n")
+    let flags = Vec<str>("CONFIG_EFI_STUB=y", "CONFIG_MODULES=y", "CONFIG_OVERLAY_FS=y", "CONFIG_EXT4_FS=y", "CONFIG_DRM_SIMPLEDRM=y", "CONFIG_PINCTRL_GLYMUR=y",
+        "CONFIG_CLK_GLYMUR_GCC=y", "CONFIG_CLK_GLYMUR_TCSRCC=y", "CONFIG_INTERCONNECT_QCOM_GLYMUR=y", "CONFIG_QCOM_CPUCP_MBOX=y", "CONFIG_QCOM_AOSS_QMP=y")
+    for i in 0..(flags.len() as i64) { require(hw.contains(config, flags[i]), "X2 kernel missing " + flags[i]) }
+    let modules = path + "/modules/lib/modules/" + release
+    require(fs.is_file(modules + "/modules.dep"), "Missing matching X2 kernel modules")
+    return KernelBundle(record, modules)
+}
