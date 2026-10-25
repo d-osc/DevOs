@@ -155,7 +155,7 @@ export function releaseExtras(raw: unknown, repo: string, platform: UpdatePlatfo
         const found = find(patchAssetName(installed, to, platform), 128 * 1024 * 1024);
         if (found) patch = {from: installed, url: found.url, size: found.size, sha256: found.sha256, name: found.name};
     }
-    const bundle = find(`dev-os-system-${platform}.tar.gz`, 2 * 1024 * 1024 * 1024 - 1), meta = find(`dev-os-system-${platform}.json`, 256 * 1024);
+    const bundle = find(`dev-os-system-${platform}.tar.gz`, 2 * 1024 * 1024 * 1024 - 1), meta = find(`dev-os-system-${platform}.json`, 8 * 1024 * 1024);
     const system = bundle && meta ? {name: bundle.name, url: bundle.url, size: bundle.size, sha256: bundle.sha256, metaUrl: meta.url, metaSize: meta.size, metaSha256: meta.sha256} : null;
     return {sums: sums && {url: sums.url, size: sums.size}, signature: signature && {url: signature.url, size: signature.size}, patch, system};
 }

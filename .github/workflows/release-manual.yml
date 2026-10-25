@@ -8,8 +8,12 @@ name: Build and publish DevOs release
 #   dev-os-patch-<from>-to-<version>-<platform>.tar.gz   file-level patch from the previous release (when it has a manifest)
 #   SHA256SUMS (every asset) and, when the DEVOS_UPDATE_SIGNING_KEY secret is set, SHA256SUMS.sig (Ed25519)
 # Settings > Updates reads these (docs/updates.md describes the format and the trust model).
-# It does not build the Live USB image: that is a long OpenEmbedded build and ~6 GB, over the 2 GiB GitHub release
-# asset limit. Build it locally with tools/live/release-live-usb.ps1.
+# Optional, on a self-hosted ARM64 runner (inputs build_image / build_system_bundle; the OpenEmbedded build needs 100+ GB, hours and the
+# kernel bundle and firmware that are not in the repository, so a GitHub-hosted runner cannot do it):
+#   devos-live-<version>-arm64-ux3407na.img.zst.part-NN  the Live USB image, zstd-compressed and split below the 2 GiB asset limit
+#   dev-os-system-linux-arm64.tar.gz + .json             system update (boot image, kernel modules, firmware) for Settings > Updates
+#   IMAGE-INFO.txt                                       how to join and verify the parts
+# tools/release/build-image-release.sh does the work (same steps as tools/live/release-live-usb.ps1); see docs/releases/README.md.
 # The archives include the Font Awesome files (assets/, data/icons/fa/) like every other tracked file.
 on:
   workflow_dispatch:
@@ -17,6 +21,21 @@ on:
       version:
         description: Release tag such as v0.3.7 (vMAJOR.MINOR.PATCH, must equal package.json, must not exist yet)
         required: true
+        type: string
+      build_image:
+        description: Also build the Live USB image on the self-hosted runner and publish it in parts (hours; needs the runner)
+        required: false
+        default: false
+        type: boolean
+      build_system_bundle:
+        description: Also build the system update (kernel/boot image, modules, firmware) on the self-hosted runner
+        required: false
+        default: false
+        type: boolean
+      image_runner:
+        description: Runner labels (JSON array) of the ARM64 build host for the two options above
+        required: false
+        default: '["self-hosted","linux","ARM64","devos-image"]'
         type: string
 env:
   RELEASE_VERSION: ${{ inputs.version }}
@@ -112,8 +131,42 @@ jobs:
           name: release-devos
           path: build/release-devos/
           if-no-files-found: error
+  image:
+    # Needs a self-hosted ARM64 Linux runner with the build tools (docs/releases/README.md) and the repository variables
+    # DEVOS_KERNEL_BUNDLE and DEVOS_FIRMWARE_DIR (paths on that host). Skipped unless one of the inputs is set.
+    needs: checks
+    if: ${{ inputs.build_image || inputs.build_system_bundle }}
+    runs-on: ${{ fromJSON(inputs.image_runner) }}
+    timeout-minutes: 1440
+    env:
+      DEV_OS_RELEASE_VERSION: ${{ inputs.version }}
+      DEVOS_KERNEL_BUNDLE: ${{ vars.DEVOS_KERNEL_BUNDLE }}
+      DEVOS_FIRMWARE_DIR: ${{ vars.DEVOS_FIRMWARE_DIR }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm ci
+      - name: Build the image and the system update
+        run: |
+          flags=""
+          if [ "${{ inputs.build_image }}" != "true" ]; then flags="$flags --no-image"; fi
+          if [ "${{ inputs.build_system_bundle }}" != "true" ]; then flags="$flags --no-bundle"; fi
+          rm -rf build/release-image
+          # shellcheck disable=SC2086
+          bash tools/release/build-image-release.sh --version "$RELEASE_VERSION" --output build/release-image $flags
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image
+          path: build/release-image/
+          if-no-files-found: error
   publish:
-    needs: build
+    needs: [build, image]
+    # The image job is optional: publish when the packages built and the image job either succeeded or was not requested.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.image.result == 'success' || needs.image.result == 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -141,9 +194,10 @@ jobs:
           required={'dev-os-linux-x64.tar.gz','dev-os-linux-arm64.tar.gz','devos-%s-runtime.tar.gz'%version[1:],'devos-%s-source.tar.gz'%version[1:]}
           import re
           patch=re.compile(r'dev-os-patch-\d+\.\d+\.\d+-to-%s-linux-(x64|arm64)\.tar\.gz'%re.escape(version[1:]))
+          image=re.compile(r'devos-live-%s-arm64-ux3407na\.img\.zst\.part-\d\d|IMAGE-INFO\.txt|dev-os-system-linux-arm64\.(tar\.gz|json)'%re.escape(version[1:]))
           extra=[x.name for x in assets if x.name not in required]
-          # Everything beyond the four required archives must be a patch to this very version.
-          if not required<={x.name for x in assets} or any(not patch.fullmatch(name) for name in extra):
+          # Everything beyond the four required archives must be a patch to this very version, an image part or the system update.
+          if not required<={x.name for x in assets} or any(not (patch.fullmatch(name) or image.fullmatch(name)) for name in extra):
               raise SystemExit('Unexpected release assets: %s'%', '.join(x.name for x in assets))
           for asset in assets:
               if asset.stat().st_size>=2**31:raise SystemExit(asset.name+' exceeds the 2 GiB release asset limit')

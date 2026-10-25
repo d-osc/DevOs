@@ -33,11 +33,35 @@ python tools/release/package.py check --version v0.3.7
 | `devos-<version>-source.tar.gz` | tracked sources |
 | `SHA256SUMS` | checksum of every asset |
 | `SHA256SUMS.sig` | Ed25519 signature of `SHA256SUMS`, only when the `DEVOS_UPDATE_SIGNING_KEY` secret is set |
-| `dev-os-system-<platform>.tar.gz`, `dev-os-system-<platform>.json` | optional system update (kernel, boot image, firmware, system files; restart needed). Built locally from an OpenEmbedded build with `gjs -m dist/make-system-bundle.js` and attached with `tools/release/publish-system-bundle.sh`, which also signs `SHA256SUMS` again |
+| `dev-os-system-linux-arm64.tar.gz`, `dev-os-system-linux-arm64.json` | optional system update (kernel/boot image, modules, firmware; restart needed), workflow input `build_system_bundle` |
+| `devos-live-<version>-arm64-ux3407na.img.zst.part-NN`, `IMAGE-INFO.txt` | optional Live USB image, zstd-compressed and split into 1900 MiB parts (GitHub allows 2 GiB per asset), workflow input `build_image`; `IMAGE-INFO.txt` has the join and verify commands |
 
 The update packages contain a `manifest.json` (every file with its sha256) and are what Settings > Updates installs; the
 release description shown there is `docs/releases/<version>.md`. The package format, the patch format and the trust model
 are described in `docs/updates.md`.
+
+## Image and system update (self-hosted runner)
+
+The workflow inputs `build_image` and `build_system_bundle` (both off by default) run the `image` job on a self-hosted ARM64 Linux
+runner (input `image_runner`, default labels `["self-hosted","linux","ARM64","devos-image"]`). A GitHub-hosted runner cannot do this:
+the OpenEmbedded build needs 100+ GB of disk and many hours, plus inputs that are not in the repository. The job runs
+`tools/release/build-image-release.sh`, which performs the stages of `tools/live/release-live-usb.ps1` (OE image, staging, image, check,
+export) and then builds the system update from the result (boot image from the image's EFI partition, modules and firmware from the
+staged root file system).
+
+Runner set-up: Ubuntu ARM64 with the build tools used locally (`d` DevLang, bitbake host packages, `sfdisk`, `mtools`, `e2fsprogs`
+(`debugfs`), `zstd`, `gjs`, Node.js), at least 150 GB free, registered with the label `devos-image`. Set the repository variables
+`DEVOS_KERNEL_BUNDLE` (kernel bundle directory, from DevOsLinuxKernel `scripts/build-snapdragon-x2.sh`) and `DEVOS_FIRMWARE_DIR`
+(firmware bundle from `distro/usb/stage-x2-firmware.ps1`) to paths on that host. Only trusted collaborators may dispatch the workflow:
+self-hosted runners execute repository code.
+
+The same script runs by hand: `tools/release/build-image-release.sh --version v0.3.7 --output build/release-image`, or, from an
+existing build, `--stage <staging dir> --image <exported .img> --bundle-only`. Add `--no-firmware` to leave vendor firmware out of the
+public system update.
+
+**Firmware licences.** The image and the system update contain the ASUS/Qualcomm firmware files that the Live USB needs (see
+`LICENSE.qcom` inside). Check that you may redistribute them before publishing a public release; `--no-firmware` keeps them out of
+the system update, but the full image still contains them.
 
 ## Signing
 
