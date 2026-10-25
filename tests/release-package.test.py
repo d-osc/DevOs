@@ -207,7 +207,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('package.py check --version "$RELEASE_VERSION"', self.job('validate'))
         self.assertIn('needs: validate', self.job('checks'))
         self.assertIn('needs: checks', self.job('build'))
-        self.assertIn('needs: build', self.job('publish'))
+        self.assertIn('needs: [build, image]', self.job('publish'))
 
     def test_only_publish_can_write_and_user_input_is_not_interpolated_into_scripts(self):
         self.assertEqual(RELEASE.count('contents: write'), 1)
@@ -244,7 +244,7 @@ class WorkflowTests(unittest.TestCase):
             data = yaml.safe_load((ROOT / '.github/workflows' / name).read_text(encoding='utf-8'))
             self.assertIn('jobs', data, name)
         data = yaml.safe_load(RELEASE)
-        self.assertEqual(set(data['jobs']), {'validate', 'checks', 'build', 'publish'})
+        self.assertEqual(set(data['jobs']), {'validate', 'checks', 'build', 'image', 'publish'})
         self.assertEqual(data[True]['workflow_dispatch']['inputs']['version']['required'], True)
 
     def test_nothing_excludes_font_awesome(self):

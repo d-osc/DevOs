@@ -151,10 +151,13 @@ jobs:
           node-version: '24'
       - run: npm ci
       - name: Build the image and the system update
+        env:
+          BUILD_IMAGE: ${{ inputs.build_image }}
+          BUILD_SYSTEM_BUNDLE: ${{ inputs.build_system_bundle }}
         run: |
           flags=""
-          if [ "${{ inputs.build_image }}" != "true" ]; then flags="$flags --no-image"; fi
-          if [ "${{ inputs.build_system_bundle }}" != "true" ]; then flags="$flags --no-bundle"; fi
+          if [ "$BUILD_IMAGE" != "true" ]; then flags="$flags --no-image"; fi
+          if [ "$BUILD_SYSTEM_BUNDLE" != "true" ]; then flags="$flags --no-bundle"; fi
           rm -rf build/release-image
           # shellcheck disable=SC2086
           bash tools/release/build-image-release.sh --version "$RELEASE_VERSION" --output build/release-image $flags
