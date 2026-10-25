@@ -28,9 +28,30 @@ python tools/release/package.py check --version v0.3.7
 | Asset | Contents |
 | --- | --- |
 | `dev-os-linux-x64.tar.gz`, `dev-os-linux-arm64.tar.gz` | update packages for Settings > Updates (`tools/build/release.ts`) |
+| `dev-os-patch-<from>-to-<version>-<platform>.tar.gz` | optional file-level patch from the previous release (`gjs -m dist/make-patch.js`); Settings > Updates uses it when the installed version is `<from>`, otherwise the full package |
 | `devos-<version>-runtime.tar.gz` | desktop payload for the OpenEmbedded image (`tools/release/package.py`) |
 | `devos-<version>-source.tar.gz` | tracked sources |
 | `SHA256SUMS` | checksum of every asset |
+| `SHA256SUMS.sig` | Ed25519 signature of `SHA256SUMS`, only when the `DEVOS_UPDATE_SIGNING_KEY` secret is set |
+
+The update packages contain a `manifest.json` (every file with its sha256) and are what Settings > Updates installs; the
+release description shown there is `docs/releases/<version>.md`. The package format, the patch format and the trust model
+are described in `docs/updates.md`.
+
+## Signing
+
+Installed systems that ship a public key in `data/update-keys/*.pub` only accept releases whose `SHA256SUMS.sig` verifies
+with one of those keys; without a key they check HTTPS and SHA-256 only. To turn signing on:
+
+```bash
+openssl genpkey -algorithm ed25519 -out private.pem
+openssl pkey -in private.pem -pubout -out data/update-keys/release.pub
+```
+
+Store the content of `private.pem` as the repository secret `DEVOS_UPDATE_SIGNING_KEY`, commit only `release.pub`, and
+delete `private.pem` from the machine. The private key never goes into the repository. From then on the workflow refuses
+to publish unless the secret is set and the signature verifies with `data/update-keys/*.pub`. Images built after the key
+is committed enforce signatures.
 
 The Live USB image is not published: it needs a long OpenEmbedded build, is about 6 GB, and GitHub release assets are
 limited to 2 GiB each. Build it locally with `tools/live/release-live-usb.ps1`.

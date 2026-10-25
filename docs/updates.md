@@ -8,6 +8,25 @@
 หาก repository ยังไม่มี release หน้าจอจะแสดง **No published releases yet**.
 ตัวเลือก **Check when opening Updates** เปิดการตรวจเมื่อเข้าหน้านี้ได้; ค่าเริ่มต้นปิด.
 การตรวจรุ่นไม่ดาวน์โหลดหรือติดตั้งแพ็กเกจอัตโนมัติ.
+ตัวเลือก **Check for updates daily in the background** (ค่าเริ่มต้นปิด) ตรวจเองไม่เกินวันละครั้งขณะ shell ทำงาน; เปิดแล้วจะมี request ไป GitHub โดยไม่ต้องกดปุ่ม.
+
+หน้า Updates แสดง: รุ่นที่รันอยู่/ติดตั้งไว้/รุ่นก่อนหน้า, ขนาด, สถานะ checksum และ signature, release notes (เนื้อหา `docs/releases/<version>.md`),
+แถบ progress ระหว่างดาวน์โหลด, และข้อความที่บอกวิธีแก้เมื่อผิดพลาด (ไม่มีอินเทอร์เน็ต, GitHub rate limit พร้อมเวลาที่ลองใหม่ได้, พื้นที่ดิสก์ไม่พอ).
+เมื่อติดตั้งเสร็จ ปุ่ม **Restart shell now** สลับไปรุ่นใหม่ (ต้องยืนยัน) หรือ **Restart later** เพื่อใช้ต่อก่อน.
+**Use previous version** ย้อนกลับได้ทุกเมื่อ; ไฟล์ของแต่ละรุ่นไม่ถูกแก้ไขหลังติดตั้ง.
+
+**Apply an update file** — เครื่องที่ไม่มีอินเทอร์เน็ต: คัดลอก `dev-os-linux-<arch>.tar.gz` (หรือ `dev-os-patch-…tar.gz`) จากหน้า GitHub release
+ลง USB stick/Downloads พร้อม `SHA256SUMS` และ `SHA256SUMS.sig` ของ release เดียวกัน แล้วเลือกไฟล์ในหน้านี้ (ต้องกดยืนยันอีกครั้ง).
+ไฟล์ถูกคัดลอกเป็นสำเนาส่วนตัวก่อนตรวจ จึงไม่เปลี่ยนระหว่างตรวจ; ไม่รับรุ่นที่ไม่ใหม่กว่ารุ่นที่ติดตั้ง (ใช้ **Use previous version** แทน).
+
+### ขอบเขตและข้อจำกัด
+
+- อัปเดตเฉพาะ **Dev OS desktop layer**: shell, extensions, bin helpers, data, config, native tools. **ไม่แตะ** kernel, initramfs, firmware, bootloader/ESP
+  หรือ package ของระบบ; ส่วนเหล่านั้นอัปเดตด้วยการเขียน image ใหม่ (หรือ package manager ของ distro).
+- **Live USB ไม่อัปเดตในที่เดิม**: root เป็น read-only image + RAM overlay การเปลี่ยนแปลงหายเมื่อปิดเครื่อง. หน้า Updates ตรวจพบ `/run/devos-live` จึงแสดง
+  "Live USB is not updated in place" และปิดปุ่มติดตั้ง/Apply file (ยังตรวจรุ่นใหม่และอ่าน release notes ได้). ให้เขียน image ใหม่ลง USB (`tools/live/release-live-usb.ps1`).
+- การติดตั้งเป็นต่อผู้ใช้ (`~/.local/share/dev-os-updates`) ไม่ต้องใช้ root จึง **ไม่มี polkit action หรือ helper ที่รันเป็น root**: ผู้ใช้หลายคนบนเครื่องเดียวกันมีรุ่นของตัวเอง
+  และไฟล์ที่ดาวน์โหลดไม่เคยถูกรันด้วยสิทธิ์สูง. การอัปเดตทั้งเครื่อง (`/usr/share/dev-os`) ยังไม่ทำ.
 
 เมื่อติดตั้งเสร็จแล้ว ให้สลับ session ไปใช้รุ่นที่ติดตั้งไว้:
 
@@ -61,8 +80,7 @@ install.lock                        ป้องกันตัวติดต�
 ตรวจขนาดและ SHA-256 เทียบกับ asset digest จาก GitHub Releases API ก่อนแตกไฟล์.
 ปฏิเสธ path traversal, symlink, hardlink และ special files ใน tar รวมถึงแพ็กเกจที่ขาด runtime ที่จำเป็น.
 metadata ต้องระบุ version และ platform ตรงกับ release และ session commands ต้อง executable.
-SHA-256 ใช้ตรวจความครบถ้วนจาก metadata ที่รับผ่าน HTTPS; แพ็กเกจยังไม่ได้ใช้ digital signature.
-แหล่งอัปเดตจึงควรเป็น repository ที่คุณเชื่อถือ.
+ดูรายละเอียดความเชื่อถือใน "Trust model" ด้านล่าง.
 
 หลังตรวจครบจึงย้ายไปเก็บเป็นรุ่นแยก แล้วแทนที่ `history.json` แบบ atomic เพื่อเลือก session ถัดไป.
 launcher อ่าน selection ครั้งเดียวและใช้ path ของรุ่นนั้นตลอด session.
@@ -73,7 +91,72 @@ runtime เก่าเก็บไว้เพื่อย้อนกลับ
 แล้วลบเฉพาะไฟล์ lock ที่ระบุใน error เพื่อให้ติดตั้งใหม่ได้.
 ถ้า `history.json` เสีย ระบบจะรายงาน error และไม่ทับ selection ด้วยประวัติที่อ่านไม่ได้.
 
+## รูปแบบแพ็กเกจ
+
+`dev-os-linux-<arch>.tar.gz` (สร้างโดย `tools/build/release.ts`) มีโฟลเดอร์ `dev-os/` ที่ประกอบด้วย payload (`bin`, `lib`, `dist`, `data`, `config`, `extensions`, `native`),
+`release.json` และ **`manifest.json`**:
+
+```json
+{
+  "format": 1, "version": "0.3.7", "platform": "linux-arm64",
+  "minCompatible": "0.3.0",
+  "postInstall": ["restart-shell"],
+  "rollback": {"strategy": "keep-previous"},
+  "files": [{"path": "dist/main.js", "sha256": "…64 hex…", "size": 123456, "mode": "644"}]
+}
+```
+
+- `files` ครบทุกไฟล์ (ยกเว้น `manifest.json`) พร้อม sha256/ขนาด/โหมด (`644` หรือ `755`); path ต้องเป็น `[A-Za-z0-9._-]` คั่นด้วย `/` ไม่มี `..`.
+  ตัวติดตั้งตรวจว่าต้นไม้ที่แตกไฟล์ **เท่ากับ** manifest พอดี: เนื้อหา, ชุดไฟล์ (ไฟล์เกิน/ขาดถูกปฏิเสธ) และ executable bit.
+- `minCompatible` — รุ่นที่ติดตั้งอยู่ต้องไม่เก่ากว่านี้ (ตั้งผ่าน `DEV_OS_MIN_COMPATIBLE` ตอน package) ไม่งั้นแจ้งให้ลงรุ่นกลางก่อน.
+- `postInstall` เป็นรายการปิด (ตอนนี้มีแค่ `restart-shell`): แพ็กเกจ **สั่งรันคำสั่งไม่ได้** ค่าที่ไม่รู้จักทำให้ปฏิเสธทั้งแพ็กเกจ.
+- `rollback` — รุ่นก่อนหน้าเก็บไว้ครบ; ย้อนกลับคือสลับ `history.json` แบบ atomic. หลังติดตั้งรุ่นใหม่เก็บเฉพาะ current + previous
+  (และรุ่นที่ session นี้รันอยู่); รุ่นเก่ากว่านั้นถูกลบเพื่อคืนพื้นที่.
+- แพ็กเกจจากรุ่นก่อนมี manifest (ไม่มี `manifest.json`) ยังติดตั้งได้ถ้า hash ของ archive ตรง แต่ใช้เป็นฐานของ patch ไม่ได้.
+
+### Patch (delta ระดับไฟล์)
+
+`dev-os-patch-<from>-to-<to>-<platform>.tar.gz` มีเฉพาะไฟล์ที่เพิ่ม/เปลี่ยน (`tree/…`), manifest ของรุ่นปลายทางและ `patch.json`
+(sha256 ของ manifest ฐานและปลายทาง + รายการ add/replace/remove พร้อม sha256 ของแต่ละไฟล์). สร้างด้วย:
+
+```sh
+gjs -m dist/make-patch.js --from build/previous/dev-os-linux-arm64.tar.gz --to build/release/dev-os-linux-arm64.tar.gz --output build/release
+```
+
+ตัวติดตั้ง **คัดลอกรุ่นที่ติดตั้งไว้** (ไม่แก้ของเดิม) แล้วลบ/ทับตาม patch และตรวจผลทั้งต้นไม้กับ manifest ปลายทาง; ปฏิเสธเมื่อ manifest ฐานไม่ตรงกับ
+`patch.json`, ไฟล์ที่ติดตั้งไว้ถูกแก้, patch มีไฟล์เกินจากความต่างของสอง manifest หรือ checksum ไม่ตรง. ถ้า patch ใช้ไม่ได้ด้วยเหตุใดก็ตาม
+จะดาวน์โหลดแพ็กเกจเต็มแทนโดยอัตโนมัติ (ตรวจแยกต่างหาก). Workflow สร้าง patch จาก release ก่อนหน้าให้เมื่อมี `manifest.json`; ผู้ใช้ที่ข้ามหลายรุ่นได้แพ็กเกจเต็ม.
+
+## Trust model
+
+| ชั้น | ตรวจอะไร | ป้องกันอะไร |
+| --- | --- | --- |
+| HTTPS + repository ที่ pin (`d-osc/DevOs`; URL ต้องเป็น `github.com/<repo>/releases/download/<tag>/…`) | ที่มาของ metadata และไฟล์ | คนกลางในเครือข่าย, asset ที่ชี้ไปโฮสต์อื่น |
+| SHA-256 จาก GitHub API `digest` **และ** `SHA256SUMS` ของ release เดียวกัน (ต้องตรงกันทั้งคู่) | archive ที่ดาวน์โหลด | ไฟล์เสีย/ถูกสลับระหว่างทาง, asset ที่ถูกอัปโหลดทับโดยไม่แก้ sums |
+| **Ed25519** ของ `SHA256SUMS` (`SHA256SUMS.sig`) กับ public key ใน `data/update-keys/*.pub` ของรุ่นที่รันอยู่ | ว่า sums มาจากผู้ถือ private key | ผู้ที่แก้ได้เฉพาะ release บน GitHub: แก้ asset หรือ sums แล้วไม่มีลายเซ็นที่ถูกต้อง |
+| `manifest.json` ต่อไฟล์ | ต้นไม้ที่แตกไฟล์ทั้งหมด | patch/แพ็กเกจที่ประกอบผิด, ไฟล์แทรกเพิ่ม, executable bit ผิด |
+
+กติกา: ถ้ารุ่นที่ติดตั้งมี public key อย่างน้อยหนึ่งดอก จะติดตั้ง **เฉพาะ release ที่ลายเซ็นถูกต้อง** (ไม่มี sums/ไม่มี sig/ลายเซ็นผิด = ปฏิเสธและไม่เปลี่ยนอะไร) ทั้งจาก GitHub
+และไฟล์ในเครื่อง. ถ้ายังไม่มี key (สถานะปัจจุบันของ repository) จะตรวจเพียง HTTPS + SHA-256 และหน้า Updates แสดง "Not signed (checksum only)".
+Private key **ไม่อยู่ใน repository**: เก็บเป็น GitHub secret `DEVOS_UPDATE_SIGNING_KEY` (PEM; workflow ใช้ `openssl pkeyutl -sign -rawin`).
+หมุน key ได้โดย release ที่เซ็นด้วย key เดิมนำ `.pub` ใหม่มาด้วย.
+
+**สิ่งที่ยังไม่ป้องกัน:**
+- ถ้าไม่มี public key ใน image: ผู้ที่ควบคุม release ของ `d-osc/DevOs` บน GitHub (เช่น ขโมย token ของเจ้าของ repo) ทำให้เครื่องติดตั้งโค้ดอะไรก็ได้ (รันด้วยสิทธิ์ผู้ใช้ ไม่ใช่ root).
+- ผู้ถือ private key, หรือ workflow/runner ที่ build ถูกบุกรุกก่อนเซ็น. ลายเซ็นยืนยัน "ใครปล่อย" ไม่ใช่ "โค้ดปลอดภัย".
+- Freeze attack: ผู้โจมตีซ่อน release ใหม่ได้ (เครื่องจะไม่เห็นรุ่นใหม่) แม้ลงรุ่นเก่ากว่าไม่ได้ (รุ่นที่ไม่ใหม่กว่าถูกปฏิเสธ).
+- ไฟล์อัปเดตในเครื่องบนระบบที่ยังไม่มี key: เชื่อถือเฉพาะ checksum ข้างไฟล์ (ถ้ามี).
+- เครื่องที่ถูกบุกรุกอยู่แล้ว (แก้ `dev-os-updates` หรือ `data/update-keys` ได้).
+- ความเป็นส่วนตัว: การตรวจรุ่นเปิดเผยต่อ GitHub ว่า IP นี้ใช้ Dev OS; จึงปิดการตรวจอัตโนมัติเป็นค่าเริ่มต้น.
+
 ## สร้าง release
+
+**วิธี release ที่รองรับ** คือ workflow "Build and publish DevOs release" (`release-manual.yml` บน branch `ux3407na-dev`; เขียน notes ที่
+`docs/releases/<version>.md` ก่อน — เนื้อหานั้นคือ release body ที่หน้า Updates แสดง). มันเผยแพร่ `dev-os-linux-x64/arm64.tar.gz` (มี `manifest.json`),
+patch จาก release ก่อนหน้า (`dev-os-patch-*`), runtime/source archives, `SHA256SUMS` ของทุก asset และ `SHA256SUMS.sig` เมื่อตั้ง secret `DEVOS_UPDATE_SIGNING_KEY`.
+เปิดใช้ลายเซ็น: `openssl genpkey -algorithm ed25519 -out private.pem` แล้ว `openssl pkey -in private.pem -pubout -out data/update-keys/release.pub`,
+เก็บ `private.pem` เป็น secret และ commit เฉพาะ `.pub` (หลังนั้น workflow ปฏิเสธการ release ที่ไม่มี secret). image ที่ build หลังจากนั้นจึงบังคับลายเซ็น.
+ก่อนมี key คู่แรกใน image การติดตั้งเป็นแบบ checksum อย่างเดียว.
 
 workflow `.github/workflows/release.yml` build บน Ubuntu 24.04 ทั้ง x64 และ ARM64 แล้ว publish GitHub Release พร้อมแพ็กเกจทั้งสองสถาปัตยกรรมและ SHA256SUMS เมื่อ push tag `vX.Y.Z`.
 ต้องส่ง source และ workflow ไปยัง repository ก่อน; การเพิ่ม Git remote อย่างเดียวไม่ได้ publish release.
@@ -111,6 +194,8 @@ workflow ปัจจุบัน build อัตโนมัติเฉพา�
 
 ## โครงสร้างสำหรับ extension
 
+`packages/updates/manifest.ts` รูปแบบ manifest/patch/SHA256SUMS (ไม่ใช้ GLib); `package.ts` ตรวจต้นไม้, ตรวจลายเซ็น, สร้าง/ใช้ patch; `make-patch.ts` คำสั่งสำหรับ release.
+
 `packages/updates/service.ts` ดูแลการตรวจ ดาวน์โหลด ติดตั้ง และย้อนกลับ.
 `packages/updates/protocol.ts` ตรวจข้อมูล release และ archive.
 `packages/extensions/settings-pages.ts` เป็น registry ใน base สำหรับ Settings page contributions.
@@ -125,6 +210,9 @@ npm run build
 gjs -m dist/updates-test.js
 gjs -m dist/extensions-test.js
 d tools/test/smoke.dev --
+gjs -m dist/update-package-test.js   # manifest, ตรวจต้นไม้, patch, ลายเซ็น Ed25519, make-patch (ต้องมี openssl)
+gjs -m dist/updates-patch-test.js    # ติดตั้ง/patch/ย้อนกลับ/ไฟล์ในเครื่อง/ล้มเหลวกลางทาง/Live USB/offline/rate limit ด้วย GitHub จำลอง
+gjs -m dist/updates-ui-test.js       # หน้า Settings → Updates
 ```
 
 integration test ใช้ tar จริงใน temporary directories และ mock เฉพาะ network:

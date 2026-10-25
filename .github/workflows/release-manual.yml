@@ -4,7 +4,10 @@ name: Build and publish DevOs release
 # release.yml uses generated notes instead). Publishes, for the dispatched ref:
 #   dev-os-linux-x64.tar.gz, dev-os-linux-arm64.tar.gz   update packages for Settings > Updates (tools/build/release.ts)
 #   devos-<version>-runtime.tar.gz                       desktop payload for the OpenEmbedded image (tools/release/package.py)
-#   devos-<version>-source.tar.gz, SHA256SUMS
+#   devos-<version>-source.tar.gz
+#   dev-os-patch-<from>-to-<version>-<platform>.tar.gz   file-level patch from the previous release (when it has a manifest)
+#   SHA256SUMS (every asset) and, when the DEVOS_UPDATE_SIGNING_KEY secret is set, SHA256SUMS.sig (Ed25519)
+# Settings > Updates reads these (docs/updates.md describes the format and the trust model).
 # It does not build the Live USB image: that is a long OpenEmbedded build and ~6 GB, over the 2 GiB GitHub release
 # asset limit. Build it locally with tools/live/release-live-usb.ps1.
 # The archives include the Font Awesome files (assets/, data/icons/fa/) like every other tracked file.
@@ -75,6 +78,26 @@ jobs:
       - run: npm run build
       - name: Package the update archive
         run: node tools/build/release.ts
+      - name: Build a patch from the previous release
+        # Optional: users on the previous version download a few MB instead of the full package. No previous release, or
+        # one from before manifests existed, simply means no patch; the full package is always published.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          package="build/release/dev-os-$PLATFORM.tar.gz"
+          previous=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          if [ -z "$previous" ]; then echo "::notice::No previous release, so no patch for $PLATFORM"; else
+            mkdir -p build/previous
+            if gh release download "$previous" --pattern "dev-os-$PLATFORM.tar.gz" --dir build/previous                && tar -tzf "build/previous/dev-os-$PLATFORM.tar.gz" dev-os/manifest.json >/dev/null 2>&1; then
+              gjs -m dist/make-patch.js --from "build/previous/dev-os-$PLATFORM.tar.gz" --to "$package" --output build/release
+            else
+              echo "::notice::$previous has no $PLATFORM package with a manifest, so no patch"
+            fi
+          fi
+          # SHA256SUMS of this runner's files (the publish job checks every artifact against it).
+          (cd build/release && sha256sum dev-os-*.tar.gz > SHA256SUMS)
       - name: Package runtime and source archives
         if: matrix.archives
         run: python tools/release/package.py build --version "$RELEASE_VERSION" --output build/release-devos
@@ -114,10 +137,40 @@ jobs:
                   if (destination/name).exists():raise SystemExit('Duplicate release asset')
                   shutil.copy2(source,destination/name)
           assets=sorted(destination.iterdir())
-          if len(assets)!=4:raise SystemExit('Expected 4 release assets, found %d'%len(assets))
+          version=__import__('os').environ['RELEASE_VERSION']
+          required={'dev-os-linux-x64.tar.gz','dev-os-linux-arm64.tar.gz','devos-%s-runtime.tar.gz'%version[1:],'devos-%s-source.tar.gz'%version[1:]}
+          import re
+          patch=re.compile(r'dev-os-patch-\d+\.\d+\.\d+-to-%s-linux-(x64|arm64)\.tar\.gz'%re.escape(version[1:]))
+          extra=[x.name for x in assets if x.name not in required]
+          # Everything beyond the four required archives must be a patch to this very version.
+          if not required<={x.name for x in assets} or any(not patch.fullmatch(name) for name in extra):
+              raise SystemExit('Unexpected release assets: %s'%', '.join(x.name for x in assets))
           for asset in assets:
               if asset.stat().st_size>=2**31:raise SystemExit(asset.name+' exceeds the 2 GiB release asset limit')
           (destination/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in assets))
+      - name: Sign SHA256SUMS
+        # Ed25519 over the checksum file (see docs/updates.md). Installed systems that ship a public key in
+        # data/update-keys/ only accept signed releases, so a repository with a key must also have the secret.
+        env:
+          DEVOS_UPDATE_SIGNING_KEY: ${{ secrets.DEVOS_UPDATE_SIGNING_KEY }}
+        run: |
+          set -eu
+          keys=$(ls data/update-keys/*.pub 2>/dev/null || true)
+          if [ -z "${DEVOS_UPDATE_SIGNING_KEY:-}" ]; then
+            if [ -n "$keys" ]; then echo "::error::data/update-keys has a public key but the DEVOS_UPDATE_SIGNING_KEY secret is not set; installed systems would refuse this release"; exit 1; fi
+            echo "::warning::DEVOS_UPDATE_SIGNING_KEY is not set: SHA256SUMS is not signed (checksum-only updates)"
+            exit 0
+          fi
+          umask 077
+          key=$(mktemp)
+          printf '%s\n' "$DEVOS_UPDATE_SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -inkey "$key" -rawin -in publish/SHA256SUMS -out publish/SHA256SUMS.sig
+          rm -f "$key"
+          # Never publish a signature the shipped public key would reject (wrong or rotated secret).
+          for pub in $keys; do
+            if openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in publish/SHA256SUMS -sigfile publish/SHA256SUMS.sig >/dev/null; then ok=1; fi
+          done
+          if [ -n "$keys" ] && [ -z "${ok:-}" ]; then echo "::error::The signature does not verify with data/update-keys/*.pub"; exit 1; fi
       - name: Publish release after every architecture passes
         env:
           GH_TOKEN: ${{ github.token }}
