@@ -16,7 +16,9 @@ try {
     mkdirSync(destination);
     for (const directory of ['bin', 'lib', 'dist', 'data', 'config', 'extensions']) cpSync(join(root, directory), join(destination, directory), {
         recursive: true, dereference: false,
-        filter: source => !source.endsWith('.pyc') && !source.includes('__pycache__') && !source.endsWith('-test.js') && !source.includes('/dist/types'),
+        filter: source => !source.endsWith('.pyc') && !source.includes('__pycache__') && !source.endsWith('-test.js') && !source.includes('/dist/types')
+            // Font Awesome Pro outlines are commercially licensed (data/icons/fa/NOTICE.md); the shell falls back to the GTK icon theme without them.
+            && !source.endsWith('/data/icons/fa') && !source.includes('/data/icons/fa/'),
     });
     mkdirSync(join(destination, 'native'));
     for (const entry of readdirSync(join(root, 'native')).filter(name => name.endsWith('.dev'))) {

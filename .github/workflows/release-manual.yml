@@ -1,0 +1,129 @@
+name: Build and publish DevOs release
+
+# Manual release with notes from $RELEASE_NOTES_DIR/<version>.md (the tag-triggered "Publish Dev OS release" in
+# release.yml uses generated notes instead). Publishes, for the dispatched ref:
+#   dev-os-linux-x64.tar.gz, dev-os-linux-arm64.tar.gz   update packages for Settings > Updates (tools/build/release.ts)
+#   devos-<version>-runtime.tar.gz                       desktop payload for the OpenEmbedded image (tools/release/package.py)
+#   devos-<version>-source.tar.gz, SHA256SUMS
+# It does not build the Live USB image: that is a long OpenEmbedded build and ~6 GB, over the 2 GiB GitHub release
+# asset limit. Build it locally with tools/live/release-live-usb.ps1.
+# The Font Awesome Pro fonts (assets/) and the outlines derived from them (data/icons/fa/) are licensed and are never
+# published; the publish job refuses any archive that contains them.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag such as v0.3.7 (vMAJOR.MINOR.PATCH, must equal package.json, must not exist yet)
+        required: true
+        type: string
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  # Directory of <version>.md release notes; tools/release/package.py reads the same variable.
+  RELEASE_NOTES_DIR: docs/releases
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check version and release notes
+        run: python tools/release/package.py check --version "$RELEASE_VERSION"
+      - name: Refuse a version that is already tagged
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_VERSION" >/dev/null; then
+            echo "::error::Tag $RELEASE_VERSION already exists; bump package.json to a new version"
+            exit 1
+          fi
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+            archives: true
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            archives: false
+    runs-on: ${{ matrix.runner }}
+    env:
+      DEV_OS_RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0
+      - run: npm ci
+      - run: npm run build
+      - name: Package the update archive
+        run: node tools/build/release.ts
+      - name: Package runtime and source archives
+        if: matrix.archives
+        run: python tools/release/package.py build --version "$RELEASE_VERSION" --output build/release-devos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: build/release/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.archives
+        with:
+          name: release-devos
+          path: build/release-devos/
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+      - name: Assemble verified assets
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib, shutil, subprocess
+          destination=Path('publish');destination.mkdir()
+          for manifest in sorted(Path('release-assets').rglob('SHA256SUMS')):
+              for line in manifest.read_text().splitlines():
+                  digest,name=line.split('  ',1)
+                  source=(manifest.parent/name).resolve()
+                  if not source.is_relative_to(manifest.parent.resolve()) or hashlib.sha256(source.read_bytes()).hexdigest()!=digest:
+                      raise SystemExit('Invalid artifact checksum')
+                  if (destination/name).exists():raise SystemExit('Duplicate release asset')
+                  shutil.copy2(source,destination/name)
+          assets=sorted(destination.iterdir())
+          if len(assets)!=4:raise SystemExit('Expected 4 release assets, found %d'%len(assets))
+          for asset in assets:
+              if asset.stat().st_size>=2**31:raise SystemExit(asset.name+' exceeds the 2 GiB release asset limit')
+              for entry in subprocess.run(['tar','-tzf',str(asset)],check=True,capture_output=True,text=True).stdout.splitlines():
+                  if entry.split('/',1)[-1].startswith(('assets/','data/icons/fa/')):
+                      raise SystemExit(asset.name+' contains licensed Font Awesome Pro files: '+entry)
+          (destination/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in assets))
+      - name: Publish release after every architecture passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA" --title "DevOs $RELEASE_VERSION" --notes-file "$RELEASE_NOTES_DIR/$RELEASE_VERSION.md"
