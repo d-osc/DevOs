@@ -1,5 +1,8 @@
 import os
+import json
+from pathlib import Path
 import subprocess
+import tempfile
 import time
 import unittest
 from bridge_support import BridgeFixture, literal
@@ -16,6 +19,22 @@ class ProcessesTest(unittest.TestCase):
         own = next(row for row in state['processes'] if row['pid'] == os.getpid())
         self.assertFalse(own['canStop'])
         self.assertGreater(own['memory'], 0)
+
+    def test_sampler_starts_without_getconf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / 'getconf'
+            tool.write_text('#!/bin/sh\nprintf "getconf is not installed\\n" >&2\nexit 127\n')
+            tool.chmod(0o755)
+            result = self.bridge.cli({'action': 'get'}, env={'PATH': tmp + os.pathsep + os.environ['PATH']})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads(result.stdout)
+            self.assertTrue(state['ok'])
+            self.assertGreater(state['memoryTotal'], 0)
+            self.assertGreater(len(state['processes']), 0)
+
+    def test_sampling_parameters_match_libc(self):
+        self.assertEqual(self.bridge.value('bridge.confValue("PAGE_SIZE")'), os.sysconf('SC_PAGE_SIZE'))
+        self.assertEqual(self.bridge.value('bridge.confValue("CLK_TCK")'), os.sysconf('SC_CLK_TCK'))
 
     def test_uid_cache_and_owner(self):
         child = subprocess.Popen(['sleep', '30'])

@@ -7,11 +7,14 @@ use "std/strings"
 use "std/io"
 use "std/time"
 use "std/os"
+use "std/result" as errors
 use "../lib/posix.dev" as posix
 
 extern fn pidfd_open(pid: i32, flags: u32): i32
 extern fn pidfd_send_signal(fd: i32, signal: i32, info: *void, flags: u32): i32
 extern fn close(fd: i32): i32
+extern fn getpagesize(): i32
+extern fn sysconf(name: i32): i64
 
 fn decodeText(bytes: Vec<u8>): str {
     let out = ""
@@ -34,12 +37,12 @@ fn capture(command: str): str {
 }
 
 fn confValue(name: str): i64 {
-    let text = strings.trim(capture("getconf " + name))
     let value = 0
-    for i in 0..strings.charLength(text) {
-        let ch = strings.charAt(text, i)
-        if strings.contains("0123456789", ch) { value = value * 10 + digitOf(ch) }
-    }
+    # getconf is not part of the minimal Live image. Query libc instead of starting a shell.
+    if strings.equal(name, "PAGE_SIZE") { unsafe { value = getpagesize() as i64 } }
+    # Linux/glibc _SC_CLK_TCK is 2; use the runtime value, not a guessed tick rate.
+    else if strings.equal(name, "CLK_TCK") { unsafe { value = sysconf(2) } }
+    if value <= 0 { errors.raise("Cannot read process sampling parameter " + name) }
     return value
 }
 
