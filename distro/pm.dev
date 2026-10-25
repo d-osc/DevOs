@@ -32,6 +32,15 @@ fn snapshot(payload: str): json.Value {
     }
     let home = os.homedir()
     posix.setEnv("PATH", home + "/.cargo/bin:" + home + "/.local/zig:" + process.getenv("PATH"))
+    let metadata = child_process.execFileSync("cargo", Vec<str>("metadata", "--manifest-path", project + "/Cargo.toml", "--locked", "--no-deps", "--format-version", "1"), child_process.options())
+    if !metadata.success { print("Cannot read DevOsPM package metadata."); return json.null_value() }
+    let packages = json.get(json.parse(encoding.decode(metadata.stdout, "utf8")), "packages")
+    let version = ""
+    for i in 0..(json.len(packages) as i64) {
+        let item = json.at(packages, i)
+        if strings.equal(json.string(json.get(item, "name")), "dev-os-package-manager") { version = json.string(json.get(item, "version")) }
+    }
+    if !strings.equal(version, "0.6.2") { print("DevOsPM source must be version 0.6.2, got: " + version); return json.null_value() }
     let target = "/var/tmp/devos-pm-build"
     let args = Vec<str>("zigbuild", "--manifest-path", project + "/Cargo.toml", "--release", "--locked",
         "--target", "aarch64-unknown-linux-musl", "--target-dir", target)
@@ -49,6 +58,7 @@ fn snapshot(payload: str): json.Value {
     fs.write_bytes(payload + "/devospm-arm64", data)
     fs.writeFileSync(payload + "/devospm-LICENSE", fs.readFileSync(project + "/LICENSE", "utf8"))
     let record = json.set(json.object(), "target", "aarch64-unknown-linux-musl")
+    record = json.set(record, "version", version)
     record = json.set(record, "binarySha256", hex(crypto.hash("sha256", data)))
     fs.writeFileSync(payload + "/devospm-provenance.json", json.pretty(record) + "\n")
     return record
