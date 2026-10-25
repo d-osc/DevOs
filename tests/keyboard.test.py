@@ -299,7 +299,20 @@ class IdleSleepTests(Fixture):
         self.daemon.stopped = True
         if self.thread.is_alive(): self.thread.join(3)
 
-    def level(self): return int(self.level_file.read_text())
+    def level(self):
+        # Regular-file sysfs fixtures can be empty between truncate and write.
+        # None keeps wait_for polling without mistaking an unfinished write for off.
+        text = self.level_file.read_text().strip()
+        return int(text) if text else None
+
+    def test_level_waits_for_a_complete_brightness_write(self):
+        self.level_file.write_text('')
+        self.assertIsNone(self.level())
+        self.assertFalse(wait_for(lambda: self.level() == 0, seconds=0.05))
+        self.level_file.write_text('0\n')
+        self.assertTrue(wait_for(lambda: self.level() == 0))
+        self.level_file.write_text('2\n')
+        self.assertTrue(wait_for(lambda: self.level() == 2))
 
     def prefs_set(self, **values):
         self.kbd.save_prefs(self.kbd.validate({**self.kbd.DEFAULTS, **values}))
