@@ -1,7 +1,7 @@
 name: Build and publish DevOs release
 
 # Manual release with notes from $RELEASE_NOTES_DIR/<version>.md (the tag-triggered "Publish Dev OS release" in
-# release.yml uses generated notes instead). Publishes, for the dispatched ref:
+# release.yml reads docs/releases/<tag>.md too). Publishes, for the dispatched ref:
 #   dev-os-linux-x64.tar.gz, dev-os-linux-arm64.tar.gz   update packages for Settings > Updates (tools/build/release.ts)
 #   devos-<version>-runtime.tar.gz                       desktop payload for the OpenEmbedded image (tools/release/package.py)
 #   devos-<version>-source.tar.gz
@@ -16,6 +16,20 @@ name: Build and publish DevOs release
 # tools/release/build-image-release.sh does the work (same steps as tools/live/release-live-usb.ps1); see docs/releases/README.md.
 # The archives include the Font Awesome files (assets/, data/icons/fa/) like every other tracked file.
 on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      build_image:
+        default: false
+        type: boolean
+      build_system_bundle:
+        default: false
+        type: boolean
+      image_runner:
+        default: '["self-hosted","linux","ARM64","devos-image"]'
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -54,6 +68,7 @@ jobs:
       - name: Check version and release notes
         run: python tools/release/package.py check --version "$RELEASE_VERSION"
       - name: Refuse a version that is already tagged
+        if: github.event_name != 'push'
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_VERSION" >/dev/null; then
             echo "::error::Tag $RELEASE_VERSION already exists; bump package.json to a new version"
@@ -92,7 +107,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
-            gir1.2-webkit2-4.1 gir1.2-soup-3.0
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
+      - name: Install pinned DevLang tool runtime
+        run: |
+          machine=$(uname -m)
+          case "$machine" in
+            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
+            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
+            *) exit 1 ;;
+          esac
+          archive="devlang-d-v0.5.5-linux-$arch.tar.gz"
+          curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/v0.5.5/$archive"
+          printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/devlang-d-v0.5.5-linux-$arch" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run build
       - name: Package the update archive
@@ -150,6 +178,11 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
+      - name: Install image build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0
       - name: Build the image and the system update
         env:
           BUILD_IMAGE: ${{ inputs.build_image }}
@@ -180,6 +213,9 @@ jobs:
           path: release-assets
       - name: Assemble verified assets
         shell: python
+        env:
+          BUILD_IMAGE: ${{ inputs.build_image }}
+          BUILD_SYSTEM_BUNDLE: ${{ inputs.build_system_bundle }}
         run: |
           from pathlib import Path
           import hashlib, shutil, subprocess
@@ -195,6 +231,10 @@ jobs:
           assets=sorted(destination.iterdir())
           version=__import__('os').environ['RELEASE_VERSION']
           required={'dev-os-linux-x64.tar.gz','dev-os-linux-arm64.tar.gz','devos-%s-runtime.tar.gz'%version[1:],'devos-%s-source.tar.gz'%version[1:]}
+          if __import__('os').environ['BUILD_SYSTEM_BUNDLE'] == 'true':
+              required.update({'dev-os-system-linux-arm64.tar.gz', 'dev-os-system-linux-arm64.json'})
+          if __import__('os').environ['BUILD_IMAGE'] == 'true':
+              required.update({'IMAGE-INFO.txt', 'devos-live-%s-arm64-ux3407na.img.zst.part-00'%version[1:]})
           import re
           patch=re.compile(r'dev-os-patch-\d+\.\d+\.\d+-to-%s-linux-(x64|arm64)\.tar\.gz'%re.escape(version[1:]))
           image=re.compile(r'devos-live-%s-arm64-ux3407na\.img\.zst\.part-\d\d|IMAGE-INFO\.txt|dev-os-system-linux-arm64\.(tar\.gz|json)'%re.escape(version[1:]))
@@ -232,4 +272,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA" --title "DevOs $RELEASE_VERSION" --notes-file "$RELEASE_NOTES_DIR/$RELEASE_VERSION.md"
+          flags=()
+          if [ "$GITHUB_EVENT_NAME" = push ]; then flags=(--verify-tag); fi
+          gh release create "$RELEASE_VERSION" publish/* --target "$GITHUB_SHA" --title "DevOs $RELEASE_VERSION" --notes-file "$RELEASE_NOTES_DIR/$RELEASE_VERSION.md" "${flags[@]}"

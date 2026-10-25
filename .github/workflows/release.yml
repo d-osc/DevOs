@@ -2,101 +2,35 @@ name: Publish Dev OS release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (for example, v0.3.7); reads docs/releases/<version>.md'
+        required: true
+        type: string
+      build_image:
+        description: Build and publish the Live USB image (requires the ARM64 image runner)
+        default: false
+        type: boolean
+      build_system_bundle:
+        description: Build and publish the system update for Settings > Updates (requires the ARM64 image runner)
+        default: false
+        type: boolean
+      image_runner:
+        description: ARM64 image runner labels (JSON array)
+        default: '["self-hosted","linux","ARM64","devos-image"]'
+        type: string
 permissions:
   contents: write
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            platform: linux-x64
-          - runner: ubuntu-24.04-arm
-            platform: linux-arm64
-    runs-on: ${{ matrix.runner }}
-    env:
-      DEV_OS_RELEASE_VERSION: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
-            gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
-            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
-          sudo sh tools/setup/bootstrap-lock.sh
-          sudo chown -R "$(id -u):$(id -g)" build
-      - run: npm ci
-      - name: Install pinned DevLang tool runtime
-        shell: bash
-        run: |
-          machine=$(uname -m)
-          case "$machine" in
-            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
-            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
-            *) exit 1 ;;
-          esac
-          archive="devlang-d-v0.5.5-linux-$arch.tar.gz"
-          curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/v0.5.5/$archive"
-          printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/$archive" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/devlang-d-v0.5.5-linux-$arch" >> "$GITHUB_PATH"
-      - run: npm run build
-      - name: Test update protocol and installation
-        run: gjs -m dist/updates-test.js
-      - name: Test Extension Store
-        run: gjs -m dist/store-test.js
-      - name: Test Wi-Fi scan data
-        run: gjs -m dist/wifi-test.js
-      - name: Test shared helpers and supervisor library
-        run: |
-          gjs -m dist/core-test.js
-          gjs -m dist/lock-test.js
-          gjs -m dist/supervisor-test.js
-      - name: Test session dependency environment
-        run: |
-          python3 tests/runtime-env.test.py
-          d tools/test/runtime-env-test.dev --
-      - name: Test native DevLang service boundaries
-        shell: bash
-        run: |
-          for engine in auto ast; do
-            export DEVLANG_ENGINE="$engine"
-            python3 tests/os-accounts.test.py
-            python3 tests/app-store.test.py
-            sudo env DEVLANG_ENGINE="$engine" DEVLANG_BIN="$(command -v d)" python3 tests/native-services.test.py
-          done
-      - name: Test migrated DevLang desktop helpers and distro planning
-        run: d tools/test/native-migration-check.dev -- --python-only
-      - run: node tools/build/release.ts
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dev-os-${{ matrix.platform }}
-          path: build/release/dev-os-${{ matrix.platform }}.tar.gz
-          if-no-files-found: error
   release:
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: dev-os-linux-*
-          merge-multiple: true
-          path: build/release
-      - name: Generate checksums for both architectures
-        working-directory: build/release
-        run: sha256sum dev-os-linux-*.tar.gz > SHA256SUMS
-      - name: Publish verified runtime package
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" build/release/dev-os-linux-*.tar.gz build/release/SHA256SUMS --verify-tag --generate-notes --title "Dev OS $GITHUB_REF_NAME"
+    uses: ./.github/workflows/release-manual.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+      build_image: ${{ inputs.build_image == true || (github.event_name == 'push' && vars.DEVOS_RELEASE_IMAGE == 'true') }}
+      build_system_bundle: ${{ inputs.build_system_bundle == true || (github.event_name == 'push' && vars.DEVOS_RELEASE_SYSTEM_BUNDLE == 'true') }}
+      image_runner: ${{ inputs.image_runner || vars.DEVOS_IMAGE_RUNNER || '["self-hosted","linux","ARM64","devos-image"]' }}
+    secrets: inherit

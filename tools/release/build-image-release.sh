@@ -30,6 +30,9 @@ done
 [ -n "$output" ] || { echo '--output is required' >&2; exit 2; }
 [ "$(uname -m)" = aarch64 ] || { echo 'The UX3407NA image is built on an ARM64 Linux host.' >&2; exit 2; }
 for tool in d sfdisk mcopy debugfs zstd split sha256sum gjs; do command -v "$tool" >/dev/null || { echo "Missing build-host tool: $tool" >&2; exit 2; }; done
+# Use the staging tool shipped by the checked-out branch.
+prepare=(python3 "$root/distro/usb/prepare.py")
+if [ -f "$root/distro/usb/prepare.dev" ]; then prepare=(d "$root/distro/usb/prepare.dev" --); fi
 mkdir -p "$output"
 output=$(CDPATH= cd -- "$output" && pwd)
 name=${version#v}
@@ -44,15 +47,15 @@ if [ "$bundle_only" = 0 ]; then
     (cd "$root" && DEV_OS_RELEASE_VERSION=$name npm run build)
     DEVOS_KERNEL_PROJECT=${DEVOS_KERNEL_PROJECT:-} bash "$root/distro/oe/build.sh" --build
     bash "$root/distro/usb/busybox.sh"
-    d "$root/distro/usb/prepare.dev" -- firmware-check --firmware "$DEVOS_FIRMWARE_DIR"
+    "${prepare[@]}" firmware-check --firmware "$DEVOS_FIRMWARE_DIR"
     stage="$staging_root/x2-release-$name-$(date +%Y%m%d-%H%M%S)"
     [ ! -e "$stage" ] || { echo "$stage already exists" >&2; exit 1; }
     # A release image is the plain variant (no DEVOS-LOGS diagnostics on the ESP).
-    d "$root/distro/usb/prepare.dev" -- prepare --output "$stage" --kernel-bundle "$DEVOS_KERNEL_BUNDLE" --firmware "$DEVOS_FIRMWARE_DIR"
-    d "$root/distro/usb/prepare.dev" -- build --output "$stage"
-    d "$root/distro/usb/prepare.dev" -- check --output "$stage"
+    "${prepare[@]}" prepare --output "$stage" --kernel-bundle "$DEVOS_KERNEL_BUNDLE" --firmware "$DEVOS_FIRMWARE_DIR"
+    "${prepare[@]}" build --output "$stage"
+    "${prepare[@]}" check --output "$stage"
     rm -rf "$output/export"; mkdir -p "$output/export"
-    d "$root/distro/usb/prepare.dev" -- export --output "$stage" --export-directory "$output/export"
+    "${prepare[@]}" export --output "$stage" --export-directory "$output/export"
     image="$output/export/devos-live-arm64-ux3407na.img"
 fi
 [ -d "$stage" ] && [ -f "$stage/rootfs.ext4" ] && [ -f "$stage/manifest.json" ] || { echo "--stage must be a prepared staging directory" >&2; exit 2; }

@@ -78,8 +78,8 @@ delete `private.pem` from the machine. The private key never goes into the repos
 to publish unless the secret is set and the signature verifies with `data/update-keys/*.pub`. Images built after the key
 is committed enforce signatures.
 
-The Live USB image is not published: it needs a long OpenEmbedded build, is about 6 GB, and GitHub release assets are
-limited to 2 GiB each. Build it locally with `tools/live/release-live-usb.ps1`.
+The Live USB image needs a long OpenEmbedded build and is about 6 GB. When requested, the workflow publishes compressed
+parts below the 2 GiB GitHub asset limit. It can also be built locally with `tools/live/release-live-usb.ps1`.
 
 ## Font Awesome
 
@@ -89,5 +89,22 @@ tests, build outputs, `node_modules`, caches and secrets stay out of the runtime
 
 ## Tag-triggered workflow
 
-`.github/workflows/release.yml` also exists: pushing a `v*` tag builds the update packages and publishes them with
-generated notes. Use one path per release, because both create the GitHub release for the same tag.
+`.github/workflows/release.yml` calls the same release pipeline as `release-manual.yml`: checks, full update packages for
+x64/ARM64, patches from the previous release when its package has a manifest, runtime/source archives, checksums and
+optional image/system update assets. It reads `docs/releases/<tag>.md` (for example, `docs/releases/v0.3.7.md`), just like DevLang.
+Use one entry point per release, because both create the GitHub release for the same tag.
+
+To run this workflow manually, open Actions > "Publish Dev OS release" > Run workflow, choose the branch in
+"Use workflow from", and enter the version (for example, `v0.3.7`). It builds the selected commit and creates the
+release tag there if it does not exist. The version must match `package.json` and have a nonempty notes file.
+
+Select `build_image` to publish the Live USB image parts, and `build_system_bundle` to publish the kernel/boot/modules/
+firmware update used by Settings > Updates. Both need the ARM64 image runner and inputs described above. For tag pushes,
+set repository variables `DEVOS_RELEASE_IMAGE=true` and/or `DEVOS_RELEASE_SYSTEM_BUNDLE=true` to request these builds;
+`DEVOS_IMAGE_RUNNER` optionally overrides the runner labels as a JSON array. Without these options, the desktop full
+packages and available patches still publish. `release.yml` forwards the signing secret to the shared pipeline.
+
+Settings > Updates discovers the latest stable GitHub release and its `dev-os-<platform>.tar.gz`. The newer updater
+selects `dev-os-patch-<installed>-to-<release>-<platform>.tar.gz` when applicable and otherwise uses the full package.
+System updates use the separate `dev-os-system-<platform>.tar.gz` and `.json` pair; the Live USB image parts are for
+downloading and writing installation media. Older updaters continue to use the full desktop package.

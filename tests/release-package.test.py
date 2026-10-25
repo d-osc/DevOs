@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('devos_release_package', ROOT / 'tools/release/package.py')
@@ -234,6 +235,60 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('workflow_call:', CI)
         self.assertRegex(CI, r'branches: \[main, ux3407na-dev\]')
         self.assertIn('ubuntu-24.04-arm', CI)
+
+    def test_tag_and_branch_entry_point_uses_the_shared_pipeline(self):
+        entry = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
+        self.assertIn('workflow_dispatch:', entry)
+        self.assertIn("tags: ['v*']", entry)
+        self.assertIn('uses: ./.github/workflows/release-manual.yml', entry)
+        self.assertIn('version: ${{ inputs.version || github.ref_name }}', entry)
+        self.assertIn('secrets: inherit', entry)
+        self.assertIn('workflow_call:', RELEASE)
+        for option in ('build_image', 'build_system_bundle', 'image_runner'):
+            self.assertIn(option + ':', entry)
+
+    def test_publish_requires_requested_assets_and_verifies_their_contents(self):
+        # Execute the actual assembly step with tiny artifacts, without GitHub or an image build host.
+        publish = self.job('publish')
+        step = publish.split('      - name: Assemble verified assets\n', 1)[1].split('      - name:', 1)[0]
+        script = __import__('textwrap').dedent(step.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'release-assets/test'
+            source.mkdir(parents=True)
+            names = ['dev-os-linux-x64.tar.gz', 'dev-os-linux-arm64.tar.gz',
+                     'devos-1.2.3-runtime.tar.gz', 'devos-1.2.3-source.tar.gz',
+                     'dev-os-patch-1.2.2-to-1.2.3-linux-arm64.tar.gz']
+            def manifest():
+                (source / 'SHA256SUMS').write_text(''.join(
+                    hashlib.sha256((source / name).read_bytes()).hexdigest() + '  ' + name + '\n' for name in names))
+            for name in names:
+                (source / name).write_bytes(b'release asset')
+            manifest()
+            with contextlib.chdir(root), patch.dict(os.environ, RELEASE_VERSION='v1.2.3', BUILD_IMAGE='false', BUILD_SYSTEM_BUNDLE='false'):
+                exec(script, {})
+                self.assertTrue((root / 'publish' / names[-1]).is_file())
+                shutil.rmtree(root / 'publish')
+                with patch.dict(os.environ, BUILD_IMAGE='true'), self.assertRaisesRegex(SystemExit, 'Unexpected release assets'):
+                    exec(script, {})
+                shutil.rmtree(root / 'publish')
+                with patch.dict(os.environ, BUILD_SYSTEM_BUNDLE='true'), self.assertRaisesRegex(SystemExit, 'Unexpected release assets'):
+                    exec(script, {})
+                shutil.rmtree(root / 'publish')
+                names += ['devos-live-1.2.3-arm64-ux3407na.img.zst.part-00', 'IMAGE-INFO.txt',
+                          'dev-os-system-linux-arm64.tar.gz', 'dev-os-system-linux-arm64.json']
+                for name in names[-4:]:
+                    (source / name).write_bytes(b'image or system asset')
+                manifest()
+                with patch.dict(os.environ, BUILD_IMAGE='true', BUILD_SYSTEM_BUNDLE='true'):
+                    exec(script, {})
+                sums = (root / 'publish/SHA256SUMS').read_text()
+                for name in names:
+                    self.assertIn('  ' + name + '\n', sums)
+                shutil.rmtree(root / 'publish')
+                (source / names[0]).write_bytes(b'corrupted')
+                with self.assertRaisesRegex(SystemExit, 'Invalid artifact checksum'):
+                    exec(script, {})
 
     def test_workflows_are_valid_yaml(self):
         try:
