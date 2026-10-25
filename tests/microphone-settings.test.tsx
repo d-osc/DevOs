@@ -12,7 +12,8 @@ const controls: AudioControls = {async load() {return state;}, async volume() {}
 const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(800, 850);
 const body = new Gtk.Box(); window.add(body); const root = createRoot(body);
 let opened = false;
-root.render(<MicrophoneSettings controls={controls} open={() => {opened = true;}} />);
+const noise = {async request() {return {supported: true, reason: '', mode: 'authentic' as const, active: 'authentic' as const, running: false, sources: [], device: '', noise: {available: true, reason: ''}, warning: ''};}, destroy() {}};
+root.render(<MicrophoneSettings controls={controls} noise={noise} open={() => {opened = true;}} />);
 const loop = new GLib.MainLoop(null, false); let failed: unknown;
 function all(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(all) : [])];}
 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 600, () => {

@@ -28,6 +28,9 @@
     <keybind key="XF86AudioRaiseVolume"><action name="Execute" command="wpctl set-volume --limit 1.0 @DEFAULT_AUDIO_SINK@ 5%+" /></keybind>
     <keybind key="XF86AudioLowerVolume"><action name="Execute" command="wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" /></keybind>
     <keybind key="XF86AudioMute"><action name="Execute" command="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" /></keybind>
+    <keybind key="XF86TouchpadToggle"><action name="Execute" command="dev-os-touchpad-gestures lock toggle" /></keybind>
+    <keybind key="XF86TouchpadOff"><action name="Execute" command="dev-os-touchpad-gestures lock on" /></keybind>
+    <keybind key="XF86TouchpadOn"><action name="Execute" command="dev-os-touchpad-gestures lock off" /></keybind>
     <keybind key="W-Return"><action name="Execute" command="dev-os-shell terminal" /></keybind>
     <keybind key="W-space"><action name="Execute" command="dev-os-shell launcher" /></keybind>
     <keybind key="W-Tab"><action name="Execute" command="dev-os-shell task-view" /></keybind>

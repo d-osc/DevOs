@@ -1,0 +1,11 @@
+[Unit]
+Description=DevOs Fn key mode (re-apply the saved Locked / Normal Fn key setting)
+After=local-fs.target
+ConditionPathExists=/usr/libexec/devos-keyboard
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/devos-keyboard apply
+
+[Install]
+WantedBy=multi-user.target

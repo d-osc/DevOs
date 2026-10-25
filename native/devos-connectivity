@@ -1,0 +1,258 @@
+#!/bin/sh
+# Connectivity: TaskFirst (local egress prioritization) and WiFi SmartConnect (roam to a clearly better access point).
+# Usage: devos-connectivity get | apply | taskfirst off|productivity|streaming|games | smartconnect on|off | daemon     (JSON on stdout)
+#
+# TaskFirst is honest traffic shaping on this computer, not extra bandwidth and not a hardware feature. For every
+# physical interface that is up it installs a two-band `prio` qdisc (handle 7a10:) with fq_codel in each band and
+# `flower` filters that send the chosen kind of traffic (well-known ports and DSCP markings) into the first band, so
+# it leaves the machine before everything else whenever the uplink is busy. Everything else is best effort in band
+# two. It only affects what this computer sends (egress); it cannot speed up the internet connection, the router or
+# downloads, and port based classification is a heuristic (apps on port 443 look alike). Needs tc (iproute2) and the
+# kernel modules sch_prio, sch_fq_codel and cls_flower; without them it reports why and changes nothing.
+#
+# SmartConnect is a daemon (devos-smartconnect.service). It never scans while the current signal is good. When the
+# signal of the connected network is weak it rescans (rate limited), looks for another access point of the SAME network
+# name and only switches (activating the saved network pinned to that BSSID, not stored) when its signal is clearly
+# better (hysteresis), the same access point won on several consecutive scans, no switch happened recently and the
+# link is not carrying a transfer or call.
+#
+# State (root-owned): taskfirst=<profile>, smartconnect=0|1. Installed as /usr/libexec/devos-connectivity (polkit
+# action org.devos.connectivity) and applied at boot, by the NetworkManager dispatcher and by systemd.
+# Test hooks: DEVOS_CONN_ROOT (prefix for /sys, /lib/modules), DEVOS_CONN_STATE, DEVOS_CONN_RUN, DEVOS_CONN_ALLOW_USER=1,
+# DEVOS_CONN_TC, DEVOS_CONN_IP, DEVOS_CONN_NMCLI, DEVOS_CONN_SYSTEMCTL, DEVOS_CONN_KREL, DEVOS_CONN_FAKE_TIME=<file>,
+# DEVOS_CONN_TICKS (daemon ticks to run, 0 = forever) and the SmartConnect tuning values below.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+ROOT=${DEVOS_CONN_ROOT:-}
+STATE=${DEVOS_CONN_STATE:-/var/lib/devos/connectivity.conf}
+RUN=${DEVOS_CONN_RUN:-/run/devos}
+TC=${DEVOS_CONN_TC:-tc}
+IP=${DEVOS_CONN_IP:-ip}
+NMCLI=${DEVOS_CONN_NMCLI:-nmcli}
+SYSTEMCTL=${DEVOS_CONN_SYSTEMCTL:-systemctl}
+HANDLE=7a10
+# SmartConnect tuning (signal is NetworkManager's 0-100 percentage: 2 percent = 1 dBm, 20 = 10 dBm).
+GOOD=${DEVOS_CONN_GOOD:-60}          # at or above this the current network is never scanned or left
+MARGIN=${DEVOS_CONN_MARGIN:-20}      # candidate must be this much stronger (10 dBm)
+SUSTAIN=${DEVOS_CONN_SUSTAIN:-3}     # ... on this many consecutive scans
+POLL=${DEVOS_CONN_POLL:-20}          # seconds between looks at the current signal
+SCAN_EVERY=${DEVOS_CONN_SCAN_EVERY:-60}      # minimum seconds between rescans
+SWITCH_EVERY=${DEVOS_CONN_SWITCH_EVERY:-300} # minimum seconds between switches
+BUSY=${DEVOS_CONN_BUSY:-200000}      # bytes per second of traffic that count as a transfer or call
+
+clean() { printf '%s' "$1" | tr -d '"\\\r' | tr '\n\t' '  ' | cut -c1-240; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$(clean "$1")"; exit 1; }
+require_root() { [ "$(id -u)" = 0 ] || [ "$DEVOS_CONN_ALLOW_USER" = 1 ] || fail "Changing connectivity settings needs administrator access."; }
+have() { command -v "$1" >/dev/null 2>&1; }
+tc_ok() { have "$TC"; }
+isnum() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# ---- state ----------------------------------------------------------------------------------------------------------
+state_get() { [ -r "$STATE" ] && sed -n "s/^$1=//p" "$STATE" | head -n1; }
+state_set() { # key value
+    dir=$(dirname "$STATE"); mkdir -p "$dir" 2>/dev/null || fail "Cannot save connectivity settings."
+    tmp="$STATE.$$"
+    { [ -r "$STATE" ] && grep -v "^$1=" "$STATE"; printf '%s=%s\n' "$1" "$2"; } > "$tmp" 2>/dev/null && mv "$tmp" "$STATE" || { rm -f "$tmp"; fail "Cannot save connectivity settings."; }
+}
+profile() { p=$(state_get taskfirst); case "$p" in productivity|streaming|games) echo "$p" ;; *) echo off ;; esac; }
+smart_enabled() { [ "$(state_get smartconnect)" = 1 ]; }
+
+# ---- TaskFirst ------------------------------------------------------------------------------------------------------
+have_kmod() { # module name: loaded, built in or installed for the running kernel
+    [ -d "$ROOT/sys/module/$1" ] && return 0
+    rel=${DEVOS_CONN_KREL:-$(uname -r)}; base="$ROOT/lib/modules/$rel"
+    for f in "$base/modules.builtin" "$base/modules.dep"; do
+        [ -r "$f" ] && grep -Eq "(^|/)$1\.ko" "$f" && return 0
+    done
+    return 1
+}
+tf_reason() { # prints why TaskFirst cannot work, nothing when it can
+    tc_ok || { echo "The tc tool (iproute2) is not installed."; return; }
+    missing=
+    for m in sch_prio sch_fq_codel cls_flower; do have_kmod "$m" || missing="$missing $m"; done
+    [ -z "$missing" ] || echo "This kernel lacks the traffic control modules:$missing."
+}
+# Ports per profile as proto:port, one per line. These are heuristics for well-known services.
+ports_for() {
+    case "$1" in
+        productivity) # web, cloud drives, mail, chat and VoIP/video-call signalling and media
+            for p in 80 443 465 587 993 995 5222 5223 5228 5060 5061 3478 3479 3480 3481 8801 8802 8803 8804 8805 8806 8807 8808 8809 8810 19302 19303 19304 19305 19306 19307 19308 19309; do echo "tcp:$p"; done
+            for p in 3478 3479 3480 3481 5060 5061 8801 8802 8803 8804 8805 8806 8807 8808 8809 8810 19302 19303 19304 19305 19306 19307 19308 19309 53; do echo "udp:$p"; done ;;
+        streaming) # HLS/DASH over HTTP(S), QUIC, RTMP, RTSP, casting
+            for p in 80 443 1935 554 8554 8008 8009 8080 8443; do echo "tcp:$p"; done
+            for p in 443 554 8554 5004 5005 1935; do echo "udp:$p"; done ;;
+        games) # Steam, Xbox/PlayStation, Epic/Unreal, Blizzard/Riot, Minecraft and typical game servers
+            for p in 27015 27016 27017 27018 27019 27020 27036 3074 3478 3479 3480 6112 5222 25565 7777 7778 7779 7780 5000 5001 5002; do echo "tcp:$p"; done
+            for p in 27015 27016 27017 27018 27019 27020 27021 27022 27023 27024 27025 27026 27027 27028 27029 27030 27031 27032 27033 27034 27035 27036 4380 3074 3075 3478 3479 3480 6112 7777 7778 7779 7780 9308 19132 19133 25565 5000 5001 5002 5003 5004 5005 5222 5223 6672 61455 61456 61457 61458 3659 8393 8394 8395 8396 8397 8398 8399 8400; do echo "udp:$p"; done ;;
+    esac
+}
+# DSCP/TOS values (the whole TOS byte, mask 0xfc) that mark latency sensitive traffic of a profile.
+tos_for() {
+    case "$1" in
+        productivity) echo 0xb8 ;;       # EF: voice
+        streaming) echo "0x88 0x68 0x48" ;; # AF41, AF31, AF21: video and streaming
+        games) echo "0xb8 0xa0 0x88" ;;  # EF, CS5, AF41: interactive
+    esac
+}
+physical_up() { # physical interfaces that are up, one per line
+    for d in "$ROOT"/sys/class/net/*; do
+        [ -e "$d/device" ] || continue
+        n=${d##*/}; [ "$n" = lo ] && continue
+        state=$(cat "$d/operstate" 2>/dev/null)
+        case "$state" in up|unknown) echo "$n" ;; esac
+    done
+}
+ours() { "$TC" qdisc show dev "$1" 2>/dev/null | grep -q "prio $HANDLE:"; }
+tf_clear() { # remove our qdisc from every interface that has it
+    for d in "$ROOT"/sys/class/net/*; do
+        n=${d##*/}; [ "$n" = lo ] && continue
+        ours "$n" && "$TC" qdisc del dev "$n" root >/dev/null 2>&1
+    done
+    rm -f "$RUN/taskfirst.dev" 2>/dev/null
+    return 0
+}
+tf_install() { # dev profile
+    dev=$1; prof=$2
+    ours "$dev" && "$TC" qdisc del dev "$dev" root >/dev/null 2>&1
+    "$TC" qdisc add dev "$dev" root handle $HANDLE: prio bands 2 priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 >/dev/null 2>&1 || return 1
+    "$TC" qdisc add dev "$dev" parent $HANDLE:1 handle 7a11: fq_codel >/dev/null 2>&1 || { "$TC" qdisc del dev "$dev" root >/dev/null 2>&1; return 1; }
+    "$TC" qdisc add dev "$dev" parent $HANDLE:2 handle 7a12: fq_codel >/dev/null 2>&1 || { "$TC" qdisc del dev "$dev" root >/dev/null 2>&1; return 1; }
+    added=0; pref=1
+    for entry in $(ports_for "$prof"); do
+        proto=${entry%%:*}; port=${entry##*:}
+        for family in ip ipv6; do
+            "$TC" filter add dev "$dev" parent $HANDLE: protocol $family pref $pref flower ip_proto "$proto" dst_port "$port" classid $HANDLE:1 >/dev/null 2>&1 && added=$((added + 1))
+            pref=$((pref + 1))
+        done
+    done
+    for tos in $(tos_for "$prof"); do
+        for family in ip ipv6; do
+            "$TC" filter add dev "$dev" parent $HANDLE: protocol $family pref $pref flower ip_tos "$tos/0xfc" classid $HANDLE:1 >/dev/null 2>&1 && added=$((added + 1))
+            pref=$((pref + 1))
+        done
+    done
+    [ "$added" -gt 0 ] || { "$TC" qdisc del dev "$dev" root >/dev/null 2>&1; return 1; }
+    return 0
+}
+tf_apply() { # applies the saved profile; prints the interfaces it shaped (space separated) on success
+    prof=$(profile)
+    if [ "$prof" = off ]; then tf_clear; return 0; fi
+    why=$(tf_reason); [ -z "$why" ] || return 2
+    mkdir -p "$RUN" 2>/dev/null; done_devs=; failed=0
+    tf_clear
+    for dev in $(physical_up); do
+        if tf_install "$dev" "$prof"; then done_devs="$done_devs $dev"; else failed=1; fi
+    done
+    printf '%s\n' "$done_devs" > "$RUN/taskfirst.dev" 2>/dev/null
+    [ "$failed" = 0 ]
+}
+
+# ---- reporting ------------------------------------------------------------------------------------------------------
+wifi_device() { # first Wi-Fi device NetworkManager manages
+    have "$NMCLI" || return 1
+    "$NMCLI" -t -f DEVICE,TYPE,STATE device 2>/dev/null | awk -F: '$2=="wifi" && $3!="unmanaged" && $3!="unavailable" {print $1; exit}'
+}
+sc_reason() {
+    have "$NMCLI" || { echo "NetworkManager (nmcli) is not installed."; return; }
+    [ -n "$(wifi_device)" ] || echo "No Wi-Fi adapter managed by NetworkManager was found."
+}
+sc_running() { [ -r "$RUN/smartconnect.pid" ] && kill -0 "$(cat "$RUN/smartconnect.pid" 2>/dev/null)" 2>/dev/null; }
+bool() { [ "$1" = 1 ] && echo true || echo false; }
+report() {
+    prof=$(profile); tfr=$(tf_reason); active=0; devs=
+    if [ -z "$tfr" ] && [ "$prof" != off ]; then
+        for d in $(physical_up); do ours "$d" && { active=1; devs="$devs $d"; }; done
+    fi
+    scr=$(sc_reason); en=0; smart_enabled && en=1; run=0; sc_running && run=1
+    last=$(cat "$RUN/smartconnect.status" 2>/dev/null | head -n1)
+    printf '{"ok":true,"taskfirstSupported":%s,"taskfirstReason":"%s","taskfirst":"%s","taskfirstActive":%s,"taskfirstInterfaces":"%s","smartconnectSupported":%s,"smartconnectReason":"%s","smartconnect":%s,"smartconnectRunning":%s,"smartconnectLast":"%s"}\n' \
+        "$([ -z "$tfr" ] && echo true || echo false)" "$(clean "$tfr")" "$prof" "$(bool $active)" "$(clean "${devs# }")" \
+        "$([ -z "$scr" ] && echo true || echo false)" "$(clean "$scr")" "$(bool $en)" "$(bool $run)" "$(clean "$last")"
+}
+
+# ---- SmartConnect ---------------------------------------------------------------------------------------------------
+now() { if [ -n "$DEVOS_CONN_FAKE_TIME" ]; then cat "$DEVOS_CONN_FAKE_TIME"; else date +%s; fi; }
+nap() { if [ -n "$DEVOS_CONN_FAKE_TIME" ]; then echo $(( $(cat "$DEVOS_CONN_FAKE_TIME") + $1 )) > "$DEVOS_CONN_FAKE_TIME"; else sleep "$1"; fi; }
+note() { mkdir -p "$RUN" 2>/dev/null; printf '%s\n' "$1" > "$RUN/smartconnect.status" 2>/dev/null; }
+SEP=$(printf '\001')
+# Prints "ssid<TAB>bssid<TAB>signal<TAB>active" for each access point NetworkManager knows on the device.
+ap_list() { # dev rescan
+    "$NMCLI" -t -f ACTIVE,SSID,BSSID,SIGNAL device wifi list ifname "$1" --rescan "$2" 2>/dev/null | sed "s/\\\\:/$SEP/g" | awk -F: -v sep="$SEP" '{ gsub(sep, ":", $2); gsub(sep, ":", $3); if ($2 != "") printf "%s\t%s\t%s\t%s\n", $2, $3, $4, $1 }'
+}
+bytes_now() { # rx+tx bytes of the interface
+    r=$(cat "$ROOT/sys/class/net/$1/statistics/rx_bytes" 2>/dev/null); t=$(cat "$ROOT/sys/class/net/$1/statistics/tx_bytes" 2>/dev/null)
+    isnum "$r" || r=0; isnum "$t" || t=0; echo $((r + t))
+}
+daemon() {
+    have "$NMCLI" || fail "NetworkManager (nmcli) is not installed."
+    mkdir -p "$RUN" 2>/dev/null; echo $$ > "$RUN/smartconnect.pid"
+    trap 'rm -f "$RUN/smartconnect.pid"; exit 0' TERM INT
+    ticks=${DEVOS_CONN_TICKS:-0}; n=0; cand=; seen=0; last_scan=-100000; last_switch=-100000; prev=; prev_t=
+    while :; do
+        smart_enabled || { note "SmartConnect is off."; break; }
+        n=$((n + 1)); t=$(now); dev=$(wifi_device)
+        cur=; [ -n "$dev" ] && cur=$(ap_list "$dev" no | awk -F'\t' '$4=="yes" {print; exit}')
+        # Traffic since the previous look: a transfer or a call must not be interrupted.
+        rate=0
+        if [ -n "$dev" ]; then
+            b=$(bytes_now "$dev")
+            if [ -n "$prev" ] && [ "$t" -gt "$prev_t" ]; then rate=$(( (b - prev) / (t - prev_t) )); [ "$rate" -lt 0 ] && rate=0; fi
+            prev=$b; prev_t=$t
+        fi
+        if [ -z "$cur" ]; then note "Not connected to a Wi-Fi network."; cand=; seen=0
+        else
+            ssid=$(printf '%s' "$cur" | cut -f1); bssid=$(printf '%s' "$cur" | cut -f2); sig=$(printf '%s' "$cur" | cut -f3)
+            if ! isnum "$sig"; then note "Signal strength is unknown."
+            elif [ "$sig" -ge "$GOOD" ]; then note "Signal of $ssid is good ($sig%); not scanning."; cand=; seen=0
+            else
+                if [ $((t - last_scan)) -ge "$SCAN_EVERY" ]; then "$NMCLI" device wifi rescan ifname "$dev" >/dev/null 2>&1; nap "${DEVOS_CONN_SCAN_WAIT:-5}"; last_scan=$(now); fi
+                best=$(ap_list "$dev" no | awk -F'\t' -v s="$ssid" -v b="$bssid" '$1==s && $2!=b && $3+0 > m+0 {m=$3; l=$0} END {if (l != "") print l}')
+                if [ -z "$best" ]; then note "Signal of $ssid is weak ($sig%); no other access point of this network is in range."; cand=; seen=0
+                else
+                    cb=$(printf '%s' "$best" | cut -f2); cs=$(printf '%s' "$best" | cut -f3)
+                    if isnum "$cs" && [ "$cs" -ge $((sig + MARGIN)) ]; then
+                        if [ "$cb" = "$cand" ]; then seen=$((seen + 1)); else cand=$cb; seen=1; fi
+                        if [ "$seen" -lt "$SUSTAIN" ]; then note "A stronger access point of $ssid ($cs% vs $sig%) was seen $seen of $SUSTAIN times."
+                        elif [ $((t - last_switch)) -lt "$SWITCH_EVERY" ]; then note "Switching to a stronger access point is waiting: the last switch was recent."
+                        elif [ "$rate" -ge "$BUSY" ]; then note "Switching to a stronger access point is waiting: the connection is busy."
+                        elif "$NMCLI" device wifi connect "$ssid" bssid "$cb" ifname "$dev" >/dev/null 2>&1; then
+                            last_switch=$(now); note "Switched $ssid to a stronger access point ($cs% instead of $sig%)."; cand=; seen=0
+                        else note "Switching to a stronger access point of $ssid failed; staying connected."; last_switch=$(now); fi
+                    else note "Signal of $ssid is weak ($sig%) but no access point is clearly better."; cand=; seen=0; fi
+                fi
+            fi
+        fi
+        [ "$ticks" -gt 0 ] && [ "$n" -ge "$ticks" ] && break
+        nap "$POLL"
+    done
+    rm -f "$RUN/smartconnect.pid"
+}
+
+# ---- commands -------------------------------------------------------------------------------------------------------
+case "$1" in
+    get) report ;;
+    apply)
+        prof=$(profile)
+        if [ "$prof" = off ]; then tf_clear; printf '{"ok":true,"applied":false}\n'; exit 0; fi
+        if tf_apply; then printf '{"ok":true,"applied":true}\n'; exit 0; fi
+        printf '{"ok":true,"applied":false}\n' ;;
+    taskfirst)
+        require_root
+        case "$2" in off|productivity|streaming|games) ;; *) fail "Choose Off, Productivity and Communication, Multimedia streaming or Games." ;; esac
+        if [ "$2" != off ]; then why=$(tf_reason); [ -z "$why" ] || fail "TaskFirst is not supported on this system. $why"; fi
+        old=$(profile); state_set taskfirst "$2"
+        if tf_apply; then report; else
+            state_set taskfirst "$old"; tf_apply >/dev/null 2>&1
+            fail "TaskFirst could not be applied. The kernel rejected the traffic classes; the previous setting was kept."
+        fi ;;
+    smartconnect)
+        require_root
+        case "$2" in on|off) ;; *) fail "Choose on or off." ;; esac
+        if [ "$2" = on ]; then why=$(sc_reason); [ -z "$why" ] || fail "WiFi SmartConnect is not supported on this system. $why"; fi
+        state_set smartconnect "$([ "$2" = on ] && echo 1 || echo 0)"
+        if have "$SYSTEMCTL"; then
+            if [ "$2" = on ]; then "$SYSTEMCTL" start devos-smartconnect.service >/dev/null 2>&1; else "$SYSTEMCTL" stop devos-smartconnect.service >/dev/null 2>&1; fi
+        fi
+        report ;;
+    daemon) smart_enabled || { printf '{"ok":true,"running":false}\n'; exit 0; }; daemon ;;
+    *) fail "Unsupported connectivity action." ;;
+esac

@@ -1,0 +1,11 @@
+[Unit]
+Description=DevOs TaskFirst traffic prioritization
+After=local-fs.target NetworkManager.service
+ConditionPathExists=/usr/libexec/devos-connectivity
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/devos-connectivity apply
+
+[Install]
+WantedBy=multi-user.target

@@ -84,6 +84,8 @@ menu.files-context-menu menuitem:disabled, menu.desktop-context-menu menuitem:di
 #settings .settings-app-card { padding: 22px 18px; }
 #settings .settings-sidebar-compact button.settings-nav { padding: 4px 10px; }
 window#panel.panel-top { border-top: none; border-bottom: 1px solid @dv_line1; }
+window#panel.panel-translucent { background: alpha(@dv_s1, 0.72); }
+window#panel.panel-opaque { background: @dv_s1; }
 #panel .clock-single-line .clock-time { font-size: 12px; }
 #settings .panel-settings-stage { padding: 18px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); border: 1px solid @dv_line1; border-radius: 16px; }
 #settings .panel-preview-desktop { background: linear-gradient(135deg, @dv_accent_t3, @dv_s4 70%, @dv_s5); border: 1px solid @dv_line2; border-radius: 10px; }
@@ -333,6 +335,10 @@ window#settings { background: @dv_s1; color: @dv_fg_strong; }
 #settings .power-charge-bar progress { background: @dv_accent; border-radius: 5px; }
 #settings .touchpad-device { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 13px; padding: 20px; }
 #settings .touchpad-device-icon { background: @dv_accent_t3; border-radius: 13px; color: @dv_accent_fg; }
+#settings .tp-pad { background: @dv_s1; border: 1px solid @dv_line1; border-radius: 6px; }
+#settings .tp-zone { background: @dv_accent_t1; }
+#settings .tp-zone-on { background: @dv_accent_t3; }
+#settings .tp-zone-corner { border-radius: 0 5px 0 12px; }
 #settings .touchpad-option { padding: 17px 20px; }
 #settings .wifi-refresh { background: transparent; border-color: @dv_line1; padding: 9px 12px; }
 #settings .wifi-refresh label { font-size: 11px; }
@@ -420,6 +426,7 @@ window#settings { background: @dv_s1; color: @dv_fg_strong; }
 #settings .settings-saved { color: @dv_accent_fg; }
 #settings .settings-pending { color: @dv_warning; }
 #settings .error { color: @dv_error; font-size: 11px; }
+#settings .settings-notice { color: @dv_error; font-size: 11px; }
 #settings .settings-error-banner { color: @dv_error; background: @dv_s4; border: 1px solid @dv_error_t2; padding: 12px; border-radius: 8px; }
 #settings .settings-empty image { color: @dv_fg_muted; }
 #settings scrollbar { background: transparent; }

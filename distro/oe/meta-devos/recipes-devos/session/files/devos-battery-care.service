@@ -1,0 +1,11 @@
+[Unit]
+Description=DevOs battery charge limit (Battery Care Mode)
+After=local-fs.target
+ConditionPathExists=/usr/libexec/devos-battery-care
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/devos-battery-care apply
+
+[Install]
+WantedBy=multi-user.target

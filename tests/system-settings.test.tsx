@@ -24,7 +24,7 @@ async function verify() {
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(900, 900); const root = createRoot(window);
     const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()))); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
-    const show = async (page: SystemPage) => {root.render(<SystemSettings page={page} controls={controls} monitors={monitors} navigate={page => {routed = page;}} openFiles={() => {files++;}} />); window.show_all(); await wait();};
+    const show = async (page: SystemPage) => {root.render(<SystemSettings page={page} controls={controls} battery={{async request() {return {supported: false, battery: '', reason: '', care: false, full: false, fullUntil: 0, remaining: 0, threshold: null, limit: 80, quick: true};}, destroy() {}}} monitors={monitors} navigate={page => {routed = page;}} openFiles={() => {files++;}} />); window.show_all(); await wait();};
     try {
         await show('system');
         for (const page of systemPages) {find<Gtk.Button>(`system-category-${page.id}`).emit('clicked'); assert(routed === page.id, `System routes ${page.title}`);}

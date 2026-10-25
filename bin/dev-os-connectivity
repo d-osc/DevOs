@@ -1,0 +1,22 @@
+#!/bin/sh
+# Settings front end for Connectivity: TaskFirst (local egress prioritization) and WiFi SmartConnect.
+# Usage: dev-os-connectivity get | taskfirst off|productivity|streaming|games | smartconnect on|off      (JSON on stdout, exit 1 on failure)
+# `get` runs as the user; changes go through pkexec to /usr/libexec/devos-connectivity (polkit action org.devos.connectivity).
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+here=$(dirname "$0")
+core=${DEVOS_CONNECTIVITY_CORE:-/usr/libexec/devos-connectivity}
+[ -x "$core" ] || core="$here/../native/devos-connectivity"
+[ -f "$core" ] || { echo '{"ok":false,"error":"Connectivity settings are not installed."}'; exit 1; }
+privileged() {
+    if [ "$(id -u)" = 0 ] || [ -n "$DEVOS_CONN_ALLOW_USER" ]; then sh "$core" "$@"; else pkexec "$core" "$@"; fi
+}
+case "$1" in
+    get) sh "$core" get || exit 1 ;;
+    taskfirst|smartconnect)
+        if ! out=$(privileged "$@"); then
+            [ -n "$out" ] && echo "$out" || echo '{"ok":false,"error":"The connectivity setting was not changed. Administrator access was denied or failed."}'
+            exit 1
+        fi
+        sh "$core" get ;;
+    *) echo '{"ok":false,"error":"Unsupported connectivity action."}'; exit 1 ;;
+esac

@@ -1,0 +1,18 @@
+[Unit]
+Description=DevOs microphone noise canceling (PipeWire echo-cancel with WebRTC processing)
+After=pipewire.service wireplumber.service
+Wants=pipewire.socket
+ConditionPathExists=/usr/bin/dev-os-microphone
+
+[Service]
+Type=simple
+# `serve` exits at once (service inactive) in Authentic Recording mode or when the WebRTC plugin is missing.
+Environment=DEVOS_MIC_WAIT=45
+ExecStart=/usr/bin/dev-os-microphone serve
+# Wait for the virtual source and make it the default input (WirePlumber starts later than this unit on a slow boot).
+ExecStartPost=-/usr/bin/dev-os-microphone finish
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

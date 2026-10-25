@@ -1,0 +1,175 @@
+#!/bin/sh
+# Battery Care Mode / Instant Full-Charge Mode: limit battery charging through the kernel power_supply class.
+# Usage: devos-battery-care get | apply | care on|off | full on|off          (JSON on stdout)
+# Writes /sys/class/power_supply/<battery>/charge_control_end_threshold and nothing else. Only real batteries
+# (type=Battery, not a peripheral scope=Device) that expose the attribute are touched; no device is ever invented.
+# State (root-owned): care=0|1, full_until=<epoch seconds or 0>. With no state file the firmware setting is left alone.
+# Installed as /usr/libexec/devos-battery-care (polkit action org.devos.battery.care); run at boot and when a battery
+# appears by devos-battery-care.service, and every few minutes by devos-battery-care.timer to expire a full charge.
+# Test hooks: DEVOS_BATTERY_SYS (path prefix), DEVOS_BATTERY_STATE, DEVOS_BATTERY_NOW, DEVOS_BATTERY_ALLOW_USER=1,
+# DEVOS_BATTERY_SYSTEMD_RUN, DEVOS_BATTERY_SYSTEMCTL.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+LIMIT=80
+FULL=100
+FULL_SECONDS=86400
+PS="${DEVOS_BATTERY_SYS:-}/sys/class/power_supply"
+STATE=${DEVOS_BATTERY_STATE:-/var/lib/devos/battery-care.conf}
+TIMER_UNIT=devos-battery-care-expire
+
+now() { if [ -n "$DEVOS_BATTERY_NOW" ]; then echo "$DEVOS_BATTERY_NOW"; else date +%s; fi; }
+isnum() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+clean() { printf '%s' "$1" | tr -d '"\\\r' | tr '\n\t' '  ' | cut -c1-200; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$(clean "$1")"; exit 1; }
+rd() { [ -r "$1" ] && head -c 64 "$1" 2>/dev/null | tr -d '\n'; }
+
+# batteries: names of real laptop batteries that expose a writable-looking end threshold.
+all_batteries() {
+    for d in "$PS"/*; do
+        [ -e "$d/type" ] || continue
+        n=${d##*/}
+        case "$n" in ''|*[!A-Za-z0-9_.:-]*) continue ;; esac
+        [ "$(rd "$d/type")" = Battery ] || continue
+        [ "$(rd "$d/scope")" = Device ] && continue
+        [ "$(rd "$d/present")" = 0 ] && continue
+        echo "$n"
+    done
+}
+supported_batteries() {
+    for n in $(all_batteries); do [ -e "$PS/$n/charge_control_end_threshold" ] && echo "$n"; done
+}
+
+state_value() { # key
+    [ -r "$STATE" ] || return 1
+    v=$(sed -n "s/^$1=\\([0-9][0-9]*\\)\$/\\1/p" "$STATE" | head -n 1)
+    [ -n "$v" ] || return 1
+    printf '%s' "$v"
+}
+save_state() { # care full_until
+    dir=$(dirname "$STATE")
+    [ -d "$dir" ] || mkdir -p "$dir" || return 1
+    tmp="$STATE.$$"
+    printf 'care=%s\nfull_until=%s\n' "$1" "$2" >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
+}
+
+require_root() {
+    [ "$(id -u)" = 0 ] || [ "$DEVOS_BATTERY_ALLOW_USER" = 1 ] || fail "Changing the charge limit needs administrator access."
+}
+
+write_threshold() { # battery value
+    base="$PS/$1"
+    case "$2" in 80|100) ;; *) fail "Unsupported charge limit." ;; esac
+    # Some drivers require start < end; lower the start threshold only if the new end would not exceed it.
+    if [ -e "$base/charge_control_start_threshold" ]; then
+        start=$(rd "$base/charge_control_start_threshold")
+        if isnum "$start" && [ "$start" -ge "$2" ]; then
+            low=$(($2 - 5)); [ "$low" -ge 0 ] || low=0
+            err=$( { printf '%s\n' "$low" >"$base/charge_control_start_threshold"; } 2>&1 ) || fail "$1 rejected the start threshold: $err"
+        fi
+    fi
+    err=$( { printf '%s\n' "$2" >"$base/charge_control_end_threshold"; } 2>&1 ) || fail "$1 rejected a charge limit of $2%: ${err##*: }"
+    back=$(rd "$base/charge_control_end_threshold")
+    [ "$back" = "$2" ] || fail "$1 did not keep the charge limit (asked $2%, reads back ${back:-nothing})."
+}
+
+systemd_run() { if [ -n "$DEVOS_BATTERY_SYSTEMD_RUN" ]; then "$DEVOS_BATTERY_SYSTEMD_RUN" "$@"; else systemd-run "$@"; fi; }
+systemctl_() { if [ -n "$DEVOS_BATTERY_SYSTEMCTL" ]; then "$DEVOS_BATTERY_SYSTEMCTL" "$@"; else systemctl "$@"; fi; }
+cancel_expiry() {
+    [ -n "$DEVOS_BATTERY_SYSTEMCTL" ] || command -v systemctl >/dev/null 2>&1 || return 0
+    # Only the timer: when the timer itself runs apply, its service must not stop the script that is running.
+    systemctl_ stop "$TIMER_UNIT.timer" >/dev/null 2>&1
+    systemctl_ reset-failed "$TIMER_UNIT.service" >/dev/null 2>&1
+    return 0
+}
+# A transient timer ends the full charge on time; after a reboot or suspend the boot service and the periodic timer catch up.
+arm_expiry() { # seconds
+    [ -n "$DEVOS_BATTERY_SYSTEMD_RUN" ] || command -v systemd-run >/dev/null 2>&1 || return 0
+    cancel_expiry
+    systemd_run --quiet --unit="$TIMER_UNIT" --on-active="$1" /usr/libexec/devos-battery-care apply >/dev/null 2>&1
+    return 0
+}
+
+# Resolve the saved preference into the threshold that should be active right now; expire a finished full charge.
+resolve() { # prints "<care> <full_until>" after expiry
+    care=$(state_value care) || care=0
+    until=$(state_value full_until) || until=0
+    t=$(now)
+    if [ "$until" -gt 0 ]; then
+        # Expired, or the clock moved back by more than a full-charge window (never extend a limit holiday).
+        if [ "$t" -ge "$until" ] || [ $((until - t)) -gt $((FULL_SECONDS + 60)) ]; then until=0; fi
+    fi
+    echo "$care $until"
+}
+enforce() { # care full_until
+    target=$LIMIT
+    [ "$1" = 1 ] || target=$FULL
+    [ "$2" -gt 0 ] && target=$FULL
+    for n in $(supported_batteries); do write_threshold "$n" "$target"; done
+}
+
+json_get() {
+    set -- $(resolve)
+    care=$1; until=$2; t=$(now)
+    supported=false; battery=; threshold=; reason=; start=false; behaviour=false
+    sup=$(supported_batteries | head -n 1)
+    any=$(all_batteries | head -n 1)
+    if [ -n "$sup" ]; then
+        supported=true; battery=$sup
+        threshold=$(rd "$PS/$sup/charge_control_end_threshold")
+        isnum "$threshold" || threshold=
+        [ -e "$PS/$sup/charge_control_start_threshold" ] && start=true
+        [ -e "$PS/$sup/charge_behaviour" ] && behaviour=true
+    elif [ -n "$any" ]; then
+        battery=$any
+        reason="The battery driver on this device does not provide a charge limit (no charge_control_end_threshold)."
+    else
+        reason="No battery was detected."
+    fi
+    full=false; remaining=0
+    if [ "$until" -gt 0 ]; then full=true; remaining=$((until - t)); fi
+    careb=false; [ "$care" = 1 ] && careb=true
+    printf '{"ok":true,"supported":%s,"battery":"%s","reason":"%s","care":%s,"full":%s,"fullUntil":%s,"remaining":%s,"threshold":%s,"limit":%s,"hasStart":%s,"hasBehaviour":%s}\n' \
+        "$supported" "$(clean "$battery")" "$(clean "$reason")" "$careb" "$full" "$until" "$remaining" "${threshold:-null}" "$LIMIT" "$start" "$behaviour"
+}
+
+need_support() { [ -n "$(supported_batteries | head -n 1)" ] || fail "This device does not support a battery charge limit."; }
+
+case "$1" in
+    get) json_get ;;
+    apply)
+        require_root
+        # Without saved preferences the firmware/user setting is left untouched.
+        if [ ! -r "$STATE" ]; then echo '{"ok":true,"applied":false}'; exit 0; fi
+        set -- $(resolve); care=$1; until=$2
+        if [ "$until" != "$(state_value full_until)" ]; then save_state "$care" "$until" || fail "Could not save the battery care state."; cancel_expiry; fi
+        enforce "$care" "$until"
+        [ "$until" -gt 0 ] && arm_expiry $((until - $(now)))
+        echo '{"ok":true,"applied":true}' ;;
+    care)
+        require_root
+        case "$2" in on) c=1 ;; off) c=0 ;; *) fail "Expected on or off." ;; esac
+        need_support
+        # Changing Battery Care Mode ends any Instant Full-Charge; turning it on limits charging immediately.
+        save_state "$c" 0 || fail "Could not save the battery care state."
+        cancel_expiry
+        enforce "$c" 0
+        echo '{"ok":true}' ;;
+    full)
+        require_root
+        need_support
+        care=$(state_value care) || care=0
+        case "$2" in
+            on)
+                [ "$care" = 1 ] || fail "Turn on Battery Care Mode first; without it the battery already charges to 100%."
+                until=$(($(now) + FULL_SECONDS))
+                save_state "$care" "$until" || fail "Could not save the battery care state."
+                enforce "$care" "$until"
+                arm_expiry "$FULL_SECONDS" ;;
+            off)
+                save_state "$care" 0 || fail "Could not save the battery care state."
+                cancel_expiry
+                enforce "$care" 0 ;;
+            *) fail "Expected on or off." ;;
+        esac
+        echo '{"ok":true}' ;;
+    *) fail "Usage: devos-battery-care get|apply|care on|off|full on|off" ;;
+esac

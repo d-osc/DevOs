@@ -25,6 +25,8 @@ fi
 if ! systemctl --user start --no-block pipewire.socket pipewire-pulse.socket wireplumber.service; then
     printf '%s\n' 'DevOs: user audio services could not start; check the user journal.' >&2
 fi
+# Re-apply the saved microphone noise canceling mode (no-op in Authentic Recording).
+systemctl --user start --no-block devos-microphone.service devos-speaker.service devos-touchpad-gestures.service devos-keyboard-backlight.service || true
 polkit-gnome-authentication-agent-1 &
 agent=$!
 export DEV_OS_POLKIT_AGENT_STARTED=1

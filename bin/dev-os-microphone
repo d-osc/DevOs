@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Microphone input device and noise canceling for Dev OS Settings (the MyASUS "AI Noise-Canceling Microphone" card).
+
+Usage: dev-os-microphone get | mode <authentic|general|conference> | device <node.name> | apply | serve | finish
+JSON on stdout, exit 1 on failure. Everything runs as the user; no root and no polkit action is needed.
+
+Backend (PipeWire + WirePlumber, nothing else is invented):
+  authentic    no processing, the chosen real microphone is the default input.
+  general      PipeWire's echo-cancel module with the WebRTC audio-processing plugin (noise suppression, high-pass filter,
+               transient suppression) as a virtual source "devos-mic-clean" that becomes the default input.
+  conference   the same plus the WebRTC adaptive gain control (levels of near and far talkers are evened out).
+Real speaker separation or identification is NOT provided by this backend and is never claimed. The modes need
+libpipewire-module-echo-cancel.so and libspa-aec-webrtc.so; without them the helper reports them as unavailable.
+
+The filter runs as the user service devos-microphone.service (`serve` writes a PipeWire client config and execs
+`pipewire -c`), so switching modes never restarts the audio daemon. `finish` waits for the virtual source and sets the
+default input with wpctl (WirePlumber remembers it by node name). State: $XDG_CONFIG_HOME/devos/microphone.json.
+Test hooks: DEVOS_MIC_PW_DUMP, DEVOS_MIC_WPCTL, DEVOS_MIC_SYSTEMCTL, DEVOS_MIC_PIPEWIRE, DEVOS_MIC_LIBDIRS, DEVOS_MIC_WAIT (seconds).
+"""
+import glob
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+MODES = ('authentic', 'general', 'conference')
+PREFIX = 'devos-mic-'
+CLEAN = PREFIX + 'clean'
+UNIT = 'devos-microphone.service'
+TRANSIENT = 'devos-microphone-session.service'
+# webrtc.* switches per mode; the "-2" audio-processing library has no beamformer, so none is offered.
+WEBRTC = {
+    'general': {'webrtc.noise_suppression': True, 'webrtc.high_pass_filter': True, 'webrtc.transient_suppression': True, 'webrtc.voice_detection': False, 'webrtc.gain_control': False},
+    'conference': {'webrtc.noise_suppression': True, 'webrtc.high_pass_filter': True, 'webrtc.transient_suppression': True, 'webrtc.voice_detection': False, 'webrtc.gain_control': True},
+}
+
+
+class Failure(Exception):
+    pass
+
+
+def config_dir():
+    base = os.environ.get('XDG_CONFIG_HOME') or os.path.join(os.path.expanduser('~'), '.config')
+    return os.path.join(base, 'devos')
+
+
+STATE = lambda: os.path.join(config_dir(), 'microphone.json')
+CONF = lambda: os.path.join(config_dir(), 'microphone-filter.conf')
+tool = lambda env, name: shlex.split(os.environ.get(env) or name)
+wait_seconds = lambda: float(os.environ.get('DEVOS_MIC_WAIT') or 12)
+
+
+def run(command, timeout=15):
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as reason:
+        return 127, str(reason)
+    return done.returncode, done.stdout
+
+
+def clean(text):
+    return ' '.join(str(text).replace('"', "'").replace('\\', '/').split())[:240]
+
+
+# ---- state ----------------------------------------------------------------------------------------------------------
+def load_state():
+    try:
+        with open(STATE(), encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    mode = data.get('mode') if data.get('mode') in MODES else 'authentic'
+    device = data.get('device') if isinstance(data.get('device'), str) else ''
+    return {'mode': mode, 'device': device}
+
+
+def save_state(state):
+    os.makedirs(config_dir(), exist_ok=True)
+    temporary = STATE() + '.new'
+    with open(temporary, 'w', encoding='utf-8') as handle:
+        json.dump(state, handle)
+    os.replace(temporary, STATE())
+
+
+# ---- PipeWire graph ------------------------------------------------------------------------------------------------
+def snapshot():
+    """Return None when PipeWire cannot be queried, else {sources, default, default_sink, clean}."""
+    code, out = run(tool('DEVOS_MIC_PW_DUMP', 'pw-dump'))
+    if code != 0:
+        return None
+    try:
+        objects = json.loads(out)
+    except ValueError:
+        return None
+    sources, sinks, defaults, clean_node = [], {}, {}, None
+    speakers, fx_node, recorders = [], None, 0
+    for item in objects if isinstance(objects, list) else []:
+        kind = item.get('type', '')
+        props = (item.get('info') or {}).get('props') or {}
+        if kind.endswith('Interface:Node'):
+            name, klass = props.get('node.name', ''), props.get('media.class', '')
+            if name == CLEAN:
+                clean_node = {'id': item.get('id'), 'name': name, 'mode': props.get('devos.mic.mode', '')}
+            if klass == 'Audio/Source' and name and not name.startswith(PREFIX):
+                sources.append({'id': item.get('id'), 'name': name, 'title': props.get('node.description') or props.get('node.nick') or name})
+            if klass == 'Audio/Sink' and name:
+                sinks[name] = item.get('id')
+                if name == 'devos-spk-fx':
+                    fx_node = {'id': item.get('id'), 'name': name}
+                elif not name.startswith('devos-'):
+                    speakers.append({'id': item.get('id'), 'name': name, 'title': props.get('node.description') or props.get('node.nick') or name})
+            # Applications capturing audio (calls, recorders); our own filters and level meters do not count.
+            if klass == 'Stream/Input/Audio' and not name.startswith('devos-') and str(props.get('stream.monitor', '')).lower() != 'true':
+                recorders += 1
+        elif kind.endswith('Interface:Metadata'):
+            for entry in item.get('metadata') or []:
+                if entry.get('key') in ('default.audio.source', 'default.audio.sink') and entry.get('subject') == 0:
+                    value = entry.get('value')
+                    if isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except ValueError:
+                            value = {}
+                    if isinstance(value, dict) and value.get('name'):
+                        defaults[entry['key']] = value['name']
+    sources.sort(key=lambda source: source['id'] or 0)
+    speakers.sort(key=lambda speaker: speaker['id'] or 0)
+    return {'speakers': speakers, 'fx': fx_node, 'recorders': recorders, 'sources': sources, 'sinks': sinks, 'default': defaults.get('default.audio.source', ''), 'default_sink': defaults.get('default.audio.sink', ''), 'clean': clean_node}
+
+
+def libdirs():
+    configured = os.environ.get('DEVOS_MIC_LIBDIRS')
+    if configured:
+        return [path for path in configured.split(':') if path]
+    return ['/usr/lib', '/usr/lib64'] + sorted(glob.glob('/usr/lib/*-linux-gnu'))
+
+
+def noise_plugins():
+    """(available, reason): the PipeWire module, the WebRTC SPA plugin and the pipewire binary must all exist."""
+    def found(*parts):
+        return any(os.path.isfile(os.path.join(base, *parts)) for base in libdirs())
+    missing = []
+    if not found('pipewire-0.3', 'libpipewire-module-echo-cancel.so'):
+        missing.append('the PipeWire echo-cancel module (pipewire-modules-echo-cancel)')
+    if not found('spa-0.2', 'aec', 'libspa-aec-webrtc.so'):
+        missing.append('the WebRTC audio-processing plugin (pipewire-spa-plugins-aec-webrtc)')
+    if shutil.which(tool('DEVOS_MIC_PIPEWIRE', 'pipewire')[0]) is None:
+        missing.append('the pipewire program')
+    if missing:
+        return False, 'Noise canceling needs ' + ' and '.join(missing) + ', which ' + ('is' if len(missing) == 1 else 'are') + ' not installed in this system.'
+    return True, ''
+
+
+def pick_device(state, graph):
+    """The real microphone to use: the saved one if present, else the current default if real, else the first."""
+    names = [source['name'] for source in graph['sources']]
+    for candidate in (state['device'], graph['default']):
+        if candidate in names:
+            return candidate
+    return names[0] if names else ''
+
+
+def set_default(name, graph):
+    for source in graph['sources'] + ([graph['clean']] if graph.get('clean') else []):
+        if source['name'] == name:
+            code, out = run(tool('DEVOS_MIC_WPCTL', 'wpctl') + ['set-default', str(source['id'])])
+            if code != 0:
+                raise Failure('WirePlumber could not select the microphone: ' + clean(out or 'wpctl failed'))
+            return
+    raise Failure('That microphone is not connected.')
+
+
+def wait_for(predicate, seconds=None):
+    deadline = time.time() + (wait_seconds() if seconds is None else seconds)
+    while True:
+        graph = snapshot()
+        if graph is not None and predicate(graph):
+            return graph
+        if time.time() >= deadline:
+            return graph
+        time.sleep(0.3)
+
+
+# ---- reporting -----------------------------------------------------------------------------------------------------
+def report():
+    state, graph = load_state(), snapshot()
+    available, reason = noise_plugins()
+    out = {'ok': True, 'supported': graph is not None, 'reason': '', 'mode': state['mode'], 'sources': [], 'device': '',
+           'running': False, 'active': 'authentic', 'noise': {'available': available, 'reason': reason}, 'warning': ''}
+    if graph is None:
+        out['reason'] = 'The audio server (PipeWire) is not running or pw-dump is not installed.'
+        return out
+    out['sources'] = [{'name': source['name'], 'title': source['title']} for source in graph['sources']]
+    out['device'] = pick_device(state, graph)
+    node = graph['clean']
+    out['running'] = node is not None
+    if node is not None and graph['default'] == CLEAN:
+        out['active'] = node['mode'] if node['mode'] in MODES else 'general'
+    if state['mode'] != 'authentic' and not available:
+        out['warning'] = reason + ' The microphone is used without processing.'
+    elif state['mode'] != 'authentic' and out['active'] != state['mode']:
+        out['warning'] = ('Noise canceling is running, but another input is the default right now. Choose a mode again to use it.' if node is not None
+                          else 'Noise canceling is not running yet. It starts with your session; the microphone is used without processing until then.')
+    if not graph['sources']:
+        out['warning'] = 'No microphone is connected.'
+    return out
+
+
+# ---- switching ----------------------------------------------------------------------------------------------------
+def systemctl(*args):
+    return run(tool('DEVOS_MIC_SYSTEMCTL', 'systemctl') + ['--user', *args], 30)
+
+
+def finish(sink=''):
+    """Make the default input match the saved mode. Waits for the virtual source when the mode needs it.
+    `sink` is the default output from before the filter loaded; it is restored if the virtual sink took over."""
+    state = load_state()
+    available, _ = noise_plugins()
+    filtered = state['mode'] != 'authentic' and available
+    graph = wait_for(lambda g: g['clean'] is not None) if filtered else snapshot()
+    if graph is None:
+        raise Failure('The audio server (PipeWire) is not running.')
+    sink = sink or graph['default_sink']
+    if filtered and graph['clean'] is not None:
+        set_default(CLEAN, graph)
+    else:
+        device = pick_device(state, graph)
+        if device and graph['default'] != device:
+            set_default(device, graph)
+    # The virtual reference sink is never meant to play anything; keep the speakers as the default output.
+    after = snapshot()
+    if after is not None and sink and not sink.startswith(PREFIX) and after['default_sink'] != sink and sink in after['sinks']:
+        run(tool('DEVOS_MIC_WPCTL', 'wpctl') + ['set-default', str(after['sinks'][sink])])
+    if filtered and graph['clean'] is None:
+        raise Failure('The noise canceling filter did not start. See `journalctl --user -u ' + UNIT + '`.')
+
+
+def start_filter(restart):
+    """Start the filter through the user unit; images without the unit (the Live USB) get a transient one."""
+    code, out = systemctl('restart' if restart else 'start', UNIT)
+    if code == 0:
+        return
+    if 'not found' not in out.lower() and 'not-found' not in out.lower():
+        raise Failure('The noise canceling service could not start: ' + clean(out or 'systemctl failed'))
+    if restart:
+        systemctl('stop', TRANSIENT)
+    code, out = run(tool('DEVOS_MIC_SYSTEMD_RUN', 'systemd-run') + ['--user', '--collect', '--quiet', '--unit=' + TRANSIENT, '--setenv=DEVOS_MIC_WAIT=45',
+                    sys.executable, os.path.abspath(sys.argv[0]), 'serve'], 30)
+    if code != 0 and 'already' not in out.lower():
+        raise Failure('The noise canceling service could not start: ' + clean(out or 'systemd-run failed'))
+
+
+def switch(restart):
+    state = load_state()
+    available, _ = noise_plugins()
+    before = snapshot()
+    sink = before['default_sink'] if before else ''
+    if state['mode'] != 'authentic' and available:
+        start_filter(restart)
+    else:
+        systemctl('stop', UNIT)
+        systemctl('stop', TRANSIENT)
+    finish(sink)
+
+
+# ---- service ------------------------------------------------------------------------------------------------------
+def render(mode, device):
+    args = ''.join('        %s = %s\n' % (key, 'true' if value else 'false') for key, value in WEBRTC[mode].items())
+    q = json.dumps
+    return '''# Generated by dev-os-microphone; changes are overwritten.
+context.properties = {
+    log.level = 0
+}
+context.spa-libs = {
+    audio.convert.* = audioconvert/libspa-audioconvert
+    support.*       = support/libspa-support
+}
+context.modules = [
+    { name = libpipewire-module-rt flags = [ ifexists nofail ] }
+    { name = libpipewire-module-protocol-native }
+    { name = libpipewire-module-client-node }
+    { name = libpipewire-module-adapter }
+    { name = libpipewire-module-echo-cancel
+        args = {
+            library.name = aec/libspa-aec-webrtc
+            aec.args = {
+%s            }
+            capture.props = {
+                node.name = %s
+                node.description = "Noise canceling input"
+                target.object = %s
+                node.dont-fallback = true
+                node.passive = true
+            }
+            source.props = {
+                node.name = %s
+                node.description = %s
+                devos.mic.mode = %s
+            }
+            sink.props = {
+                node.name = %s
+                node.description = "Noise canceling reference (not for playback)"
+                priority.session = 1
+            }
+            playback.props = {
+                node.name = %s
+                node.passive = true
+            }
+        }
+    }
+]
+''' % (args, q(PREFIX + 'capture'), q(device), q(CLEAN), q('Noise-canceled microphone' if mode == 'general' else 'Multi-presenter microphone'), q(mode), q(PREFIX + 'reference'), q(PREFIX + 'playback'))
+
+
+def serve():
+    state = load_state()
+    available, reason = noise_plugins()
+    if state['mode'] == 'authentic' or not available:
+        print('dev-os-microphone: noise canceling is off' + ('' if available else ' (' + reason + ')'))
+        return
+    graph = wait_for(lambda g: bool(g['sources']), wait_seconds() * 2.5)
+    device = pick_device(state, graph) if graph else ''
+    if not device:
+        print('dev-os-microphone: no microphone found; noise canceling not started', file=sys.stderr)
+        return
+    os.makedirs(config_dir(), exist_ok=True)
+    with open(CONF(), 'w', encoding='utf-8') as handle:
+        handle.write(render(state['mode'], device))
+    command = tool('DEVOS_MIC_PIPEWIRE', 'pipewire') + ['-c', CONF()]
+    os.execvp(command[0], command)
+
+
+# ---- command line -------------------------------------------------------------------------------------------------
+def main(argv):
+    action, rest = (argv[1] if len(argv) > 1 else ''), argv[2:]
+    try:
+        if action == 'get':
+            pass
+        elif action == 'mode' and len(rest) == 1 and rest[0] in MODES:
+            state = load_state()
+            if rest[0] != 'authentic' and not noise_plugins()[0]:
+                raise Failure(noise_plugins()[1])
+            state['mode'] = rest[0]
+            save_state(state)
+            switch(True)
+        elif action == 'device' and len(rest) == 1 and rest[0] and not rest[0].startswith(PREFIX):
+            graph = snapshot()
+            if graph is None:
+                raise Failure('The audio server (PipeWire) is not running.')
+            if rest[0] not in [source['name'] for source in graph['sources']]:
+                raise Failure('That microphone is not connected.')
+            state = load_state()
+            state['device'] = rest[0]
+            save_state(state)
+            switch(True)
+        elif action == 'apply':
+            switch(False)
+        elif action == 'finish':
+            finish()
+            return 0
+        elif action == 'serve':
+            serve()
+            return 0
+        else:
+            raise Failure('Unsupported microphone action.')
+    except Failure as reason:
+        print(json.dumps({'ok': False, 'error': clean(reason)}))
+        return 1
+    print(json.dumps(report()))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

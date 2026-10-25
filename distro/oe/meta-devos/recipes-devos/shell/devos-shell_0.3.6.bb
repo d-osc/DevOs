@@ -33,6 +33,14 @@ do_install() {
     install -m0644 ${S}/native/*.dev ${D}${datadir}/dev-os/native/
     install -d ${D}${libexecdir} ${D}${datadir}/polkit-1/actions ${D}${localstatedir}/lib/devos
     install -m0755 ${S}/native/devos-radio-admin ${D}${libexecdir}/devos-radio-admin
+    install -m0755 ${S}/native/devos-battery-care ${D}${libexecdir}/devos-battery-care
+    install -m0644 ${S}/data/polkit-1/actions/org.devos.battery.policy ${D}${datadir}/polkit-1/actions/
+    install -m0755 ${S}/native/devos-fan-profile ${D}${libexecdir}/devos-fan-profile
+    install -m0644 ${S}/data/polkit-1/actions/org.devos.fan.policy ${D}${datadir}/polkit-1/actions/
+    install -m0755 ${S}/native/devos-keyboard ${D}${libexecdir}/devos-keyboard
+    install -m0644 ${S}/data/polkit-1/actions/org.devos.keyboard.policy ${D}${datadir}/polkit-1/actions/
+    install -m0755 ${S}/native/devos-connectivity ${D}${libexecdir}/devos-connectivity
+    install -m0644 ${S}/data/polkit-1/actions/org.devos.connectivity.policy ${D}${datadir}/polkit-1/actions/
     install -m0644 ${S}/data/polkit-1/actions/org.devos.radio.policy ${D}${datadir}/polkit-1/actions/
     install -m0755 ${S}/native/devos-account-admin ${D}${libexecdir}/devos-account-admin
     install -m0755 ${S}/native/devos-account-admin ${D}${libexecdir}/devos-account-setup

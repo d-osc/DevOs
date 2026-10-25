@@ -1,0 +1,52 @@
+#!/bin/sh
+# Function key mode (Locked Fn key / Normal Fn key) through the one kernel interface this laptop may have.
+# Usage: devos-keyboard get | set fn locked|normal | apply            (JSON on stdout, exit 1 on failure)
+# Backend: /sys/devices/platform/asus-nb-wmi/fn_lock (asus-wmi: 1 = Fn lock on = the hotkey function is the default and
+# F1-F12 need Fn; 0 = F1-F12 are plain function keys). Nothing else is guessed: when the node is missing (the Snapdragon
+# Zenbook A14 EC driver does not provide one) the mode is reported as unsupported and nothing is written.
+# State (root-owned): fn=locked|normal. With no state file the firmware setting is left alone.
+# Installed as /usr/libexec/devos-keyboard (polkit org.devos.keyboard.fn); `apply` runs at boot from devos-keyboard.service.
+# Test hooks: DEVOS_KBD_SYS (path prefix), DEVOS_KBD_STATE, DEVOS_KBD_ALLOW_USER=1.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+SYSFS="${DEVOS_KBD_SYS:-}/sys"
+NODE="$SYSFS/devices/platform/asus-nb-wmi/fn_lock"
+STATE=${DEVOS_KBD_STATE:-/var/lib/devos/keyboard.conf}
+
+clean() { printf '%s' "$1" | tr -d '"\134\015' | tr '\n\t' '  ' | cut -c1-240; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$(clean "$1")"; exit 1; }
+saved() { [ -r "$STATE" ] && sed -n 's/^fn=\(locked\|normal\)$/\1/p' "$STATE" | head -n 1; }
+current() {
+    [ -r "$NODE" ] || return 1
+    case $(head -c 8 "$NODE" 2>/dev/null | tr -d '\n') in 1) echo locked ;; 0) echo normal ;; *) return 1 ;; esac
+}
+write_mode() {
+    case "$1" in locked) v=1 ;; normal) v=0 ;; *) return 1 ;; esac
+    [ -w "$NODE" ] || return 1
+    printf '%s\n' "$v" > "$NODE" 2>/dev/null
+}
+report() {
+    if mode=$(current); then
+        printf '{"ok":true,"supported":true,"reason":"","mode":"%s","saved":"%s"}\n' "$mode" "$(saved)"
+    else
+        printf '{"ok":true,"supported":false,"reason":"This keyboard has no Fn lock control in the kernel (asus-nb-wmi fn_lock is missing).","mode":"","saved":""}\n'
+    fi
+}
+case "$1" in
+    get) report ;;
+    set)
+        [ "$2" = fn ] || fail "Unsupported keyboard setting."
+        case "$3" in locked|normal) ;; *) fail "Unknown Fn key mode." ;; esac
+        [ "$(id -u)" = 0 ] || [ "$DEVOS_KBD_ALLOW_USER" = 1 ] || fail "Changing the Fn key mode needs administrator access."
+        current >/dev/null || fail "This keyboard has no Fn lock control."
+        write_mode "$3" || fail "The kernel refused the Fn key mode."
+        [ "$(current)" = "$3" ] || fail "The Fn key mode did not change."
+        mkdir -p "$(dirname "$STATE")" 2>/dev/null
+        printf 'fn=%s\n' "$3" > "$STATE.tmp" 2>/dev/null && mv "$STATE.tmp" "$STATE" || fail "The Fn key mode could not be saved."
+        report ;;
+    apply)
+        want=$(saved); [ -n "$want" ] || { report; exit 0; }
+        current >/dev/null || { report; exit 0; }
+        [ "$(current)" = "$want" ] || write_mode "$want" || fail "The saved Fn key mode could not be applied."
+        report ;;
+    *) fail "Unsupported keyboard action." ;;
+esac

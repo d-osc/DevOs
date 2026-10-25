@@ -54,7 +54,7 @@ fn buildRuntimeArchive(root: str, archive: str): bool {
     let find = "cd " + root + " && find bin lib dist config data extensions -type f ! -path \"*__pycache__*\" ! -path \"*/types/*\" ! -name \"*.pyc\" ! -name \"*.ps1\" ! -name \"*-test.js\" 2>/dev/null | sort"
     let extras = Vec<str>("native/window-tracker.c", "native/protocols/wlr-foreign-toplevel-management-unstable-v1.xml",
         "native/protocols/devos-workspaces-v1.xml", "native/devos_accounts_system.dev", "native/privileged.dev", "native/devos-account-admin",
-        "native/devos-pam-auth", "native/devos-account-askpass", "native/devos-account-askpass.dev", "native/devos_app_store.dev", "native/devos-app-store-admin", "native/devos-radio-admin", "native/radio-system.dev")
+        "native/devos-pam-auth", "native/devos-account-askpass", "native/devos-account-askpass.dev", "native/devos_app_store.dev", "native/devos-app-store-admin", "native/devos-radio-admin", "native/radio-system.dev", "native/devos-battery-care", "native/devos-fan-profile", "native/devos-keyboard", "native/devos-connectivity")
     let listing = posix.shell(find + " > " + listPath) == 0
     if !listing { return false }
     let append = ""

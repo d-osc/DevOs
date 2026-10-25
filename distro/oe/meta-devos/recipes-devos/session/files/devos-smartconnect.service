@@ -1,0 +1,13 @@
+[Unit]
+Description=DevOs WiFi SmartConnect (roam to a clearly better access point)
+After=NetworkManager.service
+ConditionPathExists=/usr/libexec/devos-connectivity
+
+[Service]
+ExecStart=/usr/libexec/devos-connectivity daemon
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

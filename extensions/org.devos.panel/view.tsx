@@ -7,7 +7,8 @@ import {
 import {ROOT} from '@dev-os/config';
 import {clockFormat} from '@dev-os/extensions';
 import type {DeviceControls, DeviceState} from './devices.js';
-import {PanelBattery} from './battery-view.js';
+import {PanelBattery, PanelFullCharge} from './battery-view.js';
+import type {BatteryCareControls} from '../org.devos.settings/battery-care.js';
 import {batteryPresentation} from './battery.js';
 import {windowGroup, type WindowControls, type DesktopWindow, type KeyboardLayout} from '@dev-os/services/windows';
 import {findDesktopApp, desktopApps as installedDesktopApps} from '@dev-os/services/apps';
@@ -44,6 +45,8 @@ export interface PanelApplication {
     showSettings?(): void;
     showWifi?(): void;
     showLanguage?(): void;
+    /** Charge-limit controls for the quick Instant Full-Charge switch; defaults to the real helper. */
+    batteryCare?: BatteryCareControls;
     showTime?(): void;
     switchUser?(username?: string): void;
     showAccounts?(): void;
@@ -176,6 +179,7 @@ function QuickSettings({application, device}: {application: PanelApplication; de
         </Box>
         {device.brightness == null && <Label className="popup-muted" wrap xalign={0}>Brightness unavailable: no kernel backlight device.</Label>}
         {(device.batteryFound || device.acFound) && <Label className="popup-muted" xalign={0}>{batteryPresentation(device.battery, device.batteryStatus, {found: device.batteryFound, acOnline: device.acOnline}).tooltip}</Label>}
+        {device.batteryFound && <PanelFullCharge controls={application.batteryCare} />}
         {device.error && <Label className="error" wrap xalign={0}>{device.error}</Label>}
     </Box>;
 }

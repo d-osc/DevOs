@@ -1,0 +1,9 @@
+[Unit]
+Description=Expire Instant Full-Charge Mode and re-apply the battery charge limit
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

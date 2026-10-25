@@ -48,6 +48,23 @@ class TouchpadTests(unittest.TestCase):
         repeated=self.bridge.value(f'bridge.xml({json.dumps(xml)},json.parse({json.dumps(json.dumps(values))}))')
         self.assertEqual(xml,repeated)
 
+    def test_touchpad_lock_adds_send_events_mode_only_when_saved_as_locked(self):
+        original='<labwc_config><libinput/></labwc_config>'
+        values=json.dumps(json.dumps(self.settings))
+        env={'XDG_CONFIG_HOME':str(self.bridge.root/'config')}
+        free=self.bridge.value(f'bridge.xml({json.dumps(original)},json.parse({values}))',env)
+        self.assertNotIn('sendEventsMode',free)
+        gestures=self.bridge.root/'config/dev-os/touchpad-gestures.json'; gestures.parent.mkdir(parents=True)
+        for content,locked in (('{"locked":true,"enabled":false}',True),('{"locked":"yes"}',False),('not json',False),('{"locked":false}',False)):
+            gestures.write_text(content)
+            xml=self.bridge.value(f'bridge.xml({json.dumps(original)},json.parse({values}))',env)
+            self.assertEqual('<sendEventsMode>no</sendEventsMode>' in xml,locked,content)
+            self.assertEqual(xml.count('category="touchpad"'),1)
+        gestures.write_text('{"locked":true}')
+        locked=self.bridge.value(f'bridge.xml({json.dumps(original)},json.parse({values}))',env)
+        again=self.bridge.value(f'bridge.xml({json.dumps(locked)},json.parse({values}))',env)
+        self.assertEqual(locked,again)
+
     def test_live_apply_uses_only_verified_compositor_and_preserves_xml(self):
         runtime=self.bridge.root/'runtime'; runtime.mkdir()
         (runtime/'.devos-base').write_text('/fixture')

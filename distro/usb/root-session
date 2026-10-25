@@ -17,4 +17,8 @@ fi
 if ! systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service; then
     echo 'DevOs Live: audio services failed; check the user journal.' >&2
 fi
+# Re-apply the saved microphone noise canceling mode in the background (no-op in Authentic Recording).
+(dev-os-microphone apply >/dev/null 2>&1 &)
+(dev-os-speaker apply >/dev/null 2>&1 &)
+(dev-os-touchpad-gestures apply >/dev/null 2>&1 &)
 exec /usr/bin/dev-os-session

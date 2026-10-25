@@ -1,0 +1,3 @@
+# Let the logged-in seat user read (not write) touchpad event nodes so Smart Gestures can observe edge touches.
+# The compositor keeps using the device; nothing here grabs it.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event[0-9]*", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess"

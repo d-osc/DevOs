@@ -1,0 +1,187 @@
+#!/bin/sh
+# Fan Profile (Performance / Standard / Whisper) through the kernel interface this laptop really has.
+# Usage: devos-fan-profile get | apply | set ac|battery|both <mode> | sync on|off          (JSON on stdout)
+# Backends, first match wins; no path is ever invented and every written value comes from a fixed table that is
+# checked against what the kernel advertises:
+#   platform_profile  /sys/firmware/acpi/platform_profile (or /sys/class/platform-profile/*/profile) + choices
+#   asus_wmi          /sys/devices/platform/asus-nb-wmi/throttle_thermal_policy (0 standard, 1 performance, 2 whisper)
+#   cpufreq           scaling_governor of every cpufreq policy. This only emulates the profile with the CPU policy
+#                     (the fan itself keeps following the temperature) and is reported as "emulated".
+# State (root-owned): ac=<mode>, battery=<mode>, sync=0|1. With no state file the firmware setting is left alone.
+# Power Mode Synchronization sets power-profiles-daemon to performance / balanced / power-saver with the fan profile
+# when the daemon offers those profiles. Installed as /usr/libexec/devos-fan-profile (polkit org.devos.fan.profile) and
+# applied at boot and on power-source changes by devos-fan-profile.service.
+# Test hooks: DEVOS_FAN_SYS (path prefix), DEVOS_FAN_STATE, DEVOS_FAN_ALLOW_USER=1, DEVOS_FAN_PPD (powerprofilesctl).
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+SYSFS="${DEVOS_FAN_SYS:-}/sys"
+PS="$SYSFS/class/power_supply"
+STATE=${DEVOS_FAN_STATE:-/var/lib/devos/fan-profile.conf}
+PPD=${DEVOS_FAN_PPD:-powerprofilesctl}
+MODES="performance standard whisper"
+
+isnum() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+clean() { printf '%s' "$1" | tr -d '"\\\r' | tr '\n\t' '  ' | cut -c1-240; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$(clean "$1")"; exit 1; }
+rd() { [ -r "$1" ] && head -c 256 "$1" 2>/dev/null | tr -d '\n'; }
+valid_mode() { case "$1" in performance|standard|whisper) return 0 ;; *) return 1 ;; esac; }
+has_word() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; } # word list
+
+require_root() { [ "$(id -u)" = 0 ] || [ "$DEVOS_FAN_ALLOW_USER" = 1 ] || fail "Changing the fan profile needs administrator access."; }
+
+# ---- backend detection -------------------------------------------------------------------------------------------
+BACKEND=; PP_FILE=; PP_CHOICES=; ASUS_FILE=; GOVS=; GOV_FILES=
+detect() {
+    if [ -r "$SYSFS/firmware/acpi/platform_profile" ] && [ -r "$SYSFS/firmware/acpi/platform_profile_choices" ]; then
+        BACKEND=platform_profile; PP_FILE="$SYSFS/firmware/acpi/platform_profile"; PP_CHOICES=$(rd "$SYSFS/firmware/acpi/platform_profile_choices"); return
+    fi
+    for d in "$SYSFS"/class/platform-profile/platform-profile-*; do
+        [ -r "$d/profile" ] && [ -r "$d/choices" ] || continue
+        BACKEND=platform_profile; PP_FILE="$d/profile"; PP_CHOICES=$(rd "$d/choices"); return
+    done
+    asus="$SYSFS/devices/platform/asus-nb-wmi/throttle_thermal_policy"
+    if [ -r "$asus" ]; then BACKEND=asus_wmi; ASUS_FILE=$asus; return; fi
+    common=
+    for f in "$SYSFS"/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+        [ -r "$f" ] && [ -r "${f%/*}/scaling_available_governors" ] || continue
+        avail=$(rd "${f%/*}/scaling_available_governors")
+        if [ -z "$GOV_FILES" ]; then common=$avail
+        else
+            keep=; for g in $common; do has_word "$g" "$avail" && keep="$keep $g"; done; common=$keep
+        fi
+        GOV_FILES="$GOV_FILES $f"
+    done
+    if [ -n "$GOV_FILES" ] && [ -n "$common" ]; then BACKEND=cpufreq; GOVS=$common; fi
+}
+# raw value for a mode on the active backend; fails when the kernel does not offer it.
+raw_for() {
+    case "$BACKEND:$1" in
+        platform_profile:performance) has_word performance "$PP_CHOICES" && echo performance ;;
+        platform_profile:standard) has_word balanced "$PP_CHOICES" && echo balanced ;;
+        platform_profile:whisper) if has_word quiet "$PP_CHOICES"; then echo quiet; elif has_word low-power "$PP_CHOICES"; then echo low-power; else return 1; fi ;;
+        asus_wmi:performance) echo 1 ;; asus_wmi:standard) echo 0 ;; asus_wmi:whisper) echo 2 ;;
+        cpufreq:performance) has_word performance "$GOVS" && echo performance ;;
+        cpufreq:standard) if has_word schedutil "$GOVS"; then echo schedutil; elif has_word ondemand "$GOVS"; then echo ondemand; else return 1; fi ;;
+        cpufreq:whisper) has_word powersave "$GOVS" && echo powersave ;;
+        *) return 1 ;;
+    esac
+}
+available_modes() { for m in $MODES; do raw_for "$m" >/dev/null && echo "$m"; done; }
+# A profile switch needs at least Standard and one other mode, otherwise there is nothing to choose.
+usable() { [ -n "$BACKEND" ] || return 1; n=$(available_modes | wc -l); [ "$n" -ge 2 ] && raw_for standard >/dev/null; }
+current_raw() {
+    case "$BACKEND" in
+        platform_profile) rd "$PP_FILE" ;;
+        asus_wmi) rd "$ASUS_FILE" ;;
+        cpufreq) first=; for f in $GOV_FILES; do v=$(rd "$f"); [ -z "$first" ] && first=$v; [ "$v" = "$first" ] || { echo mixed; return; }; done; echo "$first" ;;
+    esac
+}
+current_mode() {
+    raw=$(current_raw); [ -n "$raw" ] || return 0
+    for m in $MODES; do [ "$(raw_for "$m")" = "$raw" ] && { echo "$m"; return; }; done
+}
+write_mode() { # mode
+    raw=$(raw_for "$1") || fail "This device does not offer the $1 fan profile."
+    case "$BACKEND" in
+        platform_profile) targets=$PP_FILE ;; asus_wmi) targets=$ASUS_FILE ;; cpufreq) targets=$GOV_FILES ;;
+    esac
+    for f in $targets; do
+        err=$( { printf '%s\n' "$raw" >"$f"; } 2>&1 ) || fail "The kernel rejected the $1 fan profile: ${err##*: }"
+        back=$(rd "$f")
+        [ "$back" = "$raw" ] || fail "The $1 fan profile was not kept (asked $raw, reads back ${back:-nothing})."
+    done
+}
+
+# ---- power source, state, power-profiles-daemon -----------------------------------------------------------------
+power_source() { # ac | battery
+    bat=; for d in "$PS"/*; do
+        [ -e "$d/type" ] || continue
+        t=$(rd "$d/type")
+        if [ "$t" = Battery ]; then [ "$(rd "$d/scope")" = Device ] || bat=$d; continue; fi
+        [ "$(rd "$d/online")" = 1 ] && { echo ac; return; }
+    done
+    if [ -n "$bat" ]; then
+        case "$(rd "$bat/status")" in Charging|Full|"Not charging") echo ac ;; *) echo battery ;; esac
+    else echo ac; fi
+}
+state_value() { [ -r "$STATE" ] || return 1; v=$(sed -n "s/^$1=\\([a-z0-9]*\\)\$/\\1/p" "$STATE" | head -n 1); [ -n "$v" ] || return 1; printf '%s' "$v"; }
+save_state() { # ac battery sync
+    dir=$(dirname "$STATE"); [ -d "$dir" ] || mkdir -p "$dir" || return 1
+    tmp="$STATE.$$"
+    { [ -z "$1" ] || printf 'ac=%s\n' "$1"; [ -z "$2" ] || printf 'battery=%s\n' "$2"; printf 'sync=%s\n' "$3"; } >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
+}
+sync_flag() { v=$(state_value sync) || v=1; [ "$v" = 0 ] && echo 0 || echo 1; }
+ppd_run() { if command -v timeout >/dev/null 2>&1; then timeout 8 "$PPD" "$@"; else "$PPD" "$@"; fi; }
+ppd_list() { command -v "$PPD" >/dev/null 2>&1 || return 1; ppd_run list 2>/dev/null | sed -n 's/^[* ] *\([a-z-]*\):.*/\1/p'; }
+ppd_for() { case "$1" in performance) echo performance ;; standard) echo balanced ;; whisper) echo power-saver ;; esac; }
+sync_available() { n=$(ppd_list | wc -l); [ "$n" -ge 2 ]; }
+sync_ppd() { # mode: best effort, the fan profile is the primary setting
+    want=$(ppd_for "$1"); has_word "$want" "$(ppd_list | tr '\n' ' ')" || return 0
+    ppd_run set "$want" >/dev/null 2>&1; return 0
+}
+apply_mode() { # mode
+    # power-profiles-daemon first: it may touch platform_profile itself, the explicit fan profile wins afterwards.
+    [ "$(sync_flag)" = 1 ] && sync_ppd "$1"
+    write_mode "$1"
+}
+
+# ---- commands ---------------------------------------------------------------------------------------------------
+fan_rpm() {
+    for f in "$SYSFS"/class/hwmon/hwmon*/fan*_input; do
+        [ -r "$f" ] || continue; v=$(rd "$f"); isnum "$v" && { echo "$v"; return; }
+    done
+}
+json_get() {
+    detect
+    src=$(power_source); supported=false; emulated=false; reason=; modes=; cur=
+    if usable; then
+        supported=true; cur=$(current_mode)
+        [ "$BACKEND" = cpufreq ] && emulated=true
+        for m in $(available_modes); do modes="$modes${modes:+,}\"$m\""; done
+    elif [ -n "$BACKEND" ]; then
+        reason="The kernel interface ($BACKEND) offers fewer than two fan profiles."; BACKEND=
+    else
+        reason="This device exposes no fan or thermal policy (no platform_profile, asus-wmi throttle policy or cpufreq governors). The embedded controller only reports fan speed."
+    fi
+    ac=$(state_value ac) || ac=; bat=$(state_value battery) || bat=
+    syncav=false; [ "$supported" = true ] && sync_available && syncav=true
+    sync=false; [ "$(sync_flag)" = 1 ] && sync=true
+    hotkey=false; [ "$BACKEND" = asus_wmi ] || { [ "$BACKEND" = platform_profile ] && [ -d "$SYSFS/devices/platform/asus-nb-wmi" ]; } && hotkey=true
+    rpm=$(fan_rpm)
+    printf '{"ok":true,"supported":%s,"backend":"%s","emulated":%s,"reason":"%s","modes":[%s],"current":"%s","source":"%s","ac":"%s","battery":"%s","sync":%s,"syncAvailable":%s,"hotkey":%s,"rpm":%s}\n' \
+        "$supported" "$BACKEND" "$emulated" "$(clean "$reason")" "$modes" "$cur" "$src" "$ac" "$bat" "$sync" "$syncav" "$hotkey" "${rpm:-null}"
+}
+need_support() { detect; usable || fail "This device does not support fan profiles."; }
+
+case "$1" in
+    get) json_get ;;
+    apply)
+        require_root
+        # Without saved preferences the firmware setting is left untouched.
+        if [ ! -r "$STATE" ]; then echo '{"ok":true,"applied":false}'; exit 0; fi
+        detect; usable || { echo '{"ok":true,"applied":false}'; exit 0; }
+        mode=$(state_value "$(power_source)") || { echo '{"ok":true,"applied":false}'; exit 0; }
+        valid_mode "$mode" || { echo '{"ok":true,"applied":false}'; exit 0; }
+        apply_mode "$mode"
+        echo '{"ok":true,"applied":true}' ;;
+    set)
+        require_root
+        case "$2" in ac|battery|both) ;; *) fail "Expected ac, battery or both." ;; esac
+        valid_mode "$3" || fail "Unknown fan profile."
+        need_support
+        raw_for "$3" >/dev/null || fail "This device does not offer the $3 fan profile."
+        ac=$(state_value ac) || ac=; bat=$(state_value battery) || bat=; s=$(sync_flag)
+        case "$2" in ac) ac=$3 ;; battery) bat=$3 ;; both) ac=$3; bat=$3 ;; esac
+        save_state "$ac" "$bat" "$s" || fail "Could not save the fan profile."
+        [ "$2" = both ] || [ "$2" = "$(power_source)" ] && apply_mode "$3"
+        echo '{"ok":true}' ;;
+    sync)
+        require_root
+        case "$2" in on) s=1 ;; off) s=0 ;; *) fail "Expected on or off." ;; esac
+        need_support
+        sync_available || [ "$s" = 0 ] || fail "Power modes are not available on this device, so there is nothing to synchronize."
+        ac=$(state_value ac) || ac=; bat=$(state_value battery) || bat=
+        save_state "$ac" "$bat" "$s" || fail "Could not save the fan profile."
+        if [ "$s" = 1 ]; then mode=$(state_value "$(power_source)") || mode=$(current_mode); valid_mode "$mode" && sync_ppd "$mode"; fi
+        echo '{"ok":true}' ;;
+    *) fail "Usage: devos-fan-profile get|apply|set ac|battery|both <mode>|sync on|off" ;;
+esac
