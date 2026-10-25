@@ -8,6 +8,7 @@ import {wallpaperConfig} from './wallpaper.js';
 import {tabDetachTarget} from '@dev-os/services/window-tabs';
 import {createBackgroundMenu} from './context-menu.js';
 import {runCustomMenuItem} from '../org.devos.files/custom-menu.js';
+import {monitorCovered} from './pace.js';
 import {activeWidgetDesktop, desktopWidgetValues, updateDesktopWidgets, initializeDesktopWidgets} from './widget-desktops.js';
 
 export class Background {
@@ -37,9 +38,15 @@ export class Background {
                     if (!this.disposed && desktop) context.preferences.update('org.devos.background', true, updateDesktopWidgets(widgetValues(), desktop, patch));
                 }, desktopKey: desktop?.key ?? 'pending'};
         };
+        // A maximized or fullscreen window over this monitor hides the animation, so it stops drawing until the window moves away.
+        const covered = () => {
+            const area = monitor.get_geometry(), controls = context.windows;
+            return !!controls && monitorCovered(controls.state, controls.desktops ?? [], area, context.monitors().length <= 1);
+        };
+        let paused = covered();
         const initial = viewProps();
-        this.root = mountBackground(this.window, initial.config, initial.widgets, initial.changed, initial.desktopKey);
-        const render = () => this.root.render(React.createElement(BackgroundView, viewProps()));
+        this.root = mountBackground(this.window, initial.config, initial.widgets, initial.changed, initial.desktopKey, paused);
+        const render = () => this.root.render(React.createElement(BackgroundView, {...viewProps(), paused}));
         this.preferencesCleanup = context.preferences.subscribe(() => {
             this.menu?.destroy(); this.menu = undefined;
             render();
@@ -49,8 +56,8 @@ export class Background {
         this.preferencesCleanup = () => { baseCleanup(); themeCleanup(); };
         let previousDesktop = initial.desktopKey;
         this.windowsCleanup = context.windows?.subscribe(() => {
-            const desktop = activeWidgetDesktop(context.windows)?.key ?? 'pending';
-            if (desktop !== previousDesktop) { previousDesktop = desktop; render(); }
+            const desktop = activeWidgetDesktop(context.windows)?.key ?? 'pending', hidden = covered();
+            if (desktop !== previousDesktop || hidden !== paused) { previousDesktop = desktop; paused = hidden; render(); }
         });
         const detach = tabDetachTarget(this.window);
         const updateInput = () => {

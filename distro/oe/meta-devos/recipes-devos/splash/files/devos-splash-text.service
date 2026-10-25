@@ -1,0 +1,11 @@
+[Unit]
+Description=Show the text console when the system enters rescue or emergency mode
+DefaultDependencies=no
+Before=rescue.service emergency.service
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/devos-splash --quit --text
+
+[Install]
+WantedBy=rescue.target emergency.target

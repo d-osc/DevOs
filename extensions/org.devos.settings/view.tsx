@@ -277,5 +277,9 @@ export function mountSettings(window: Gtk.ApplicationWindow, services: SettingsS
         root.render(<SettingsView key={++generation} services={services} initialPage={target} onPageChanged={value => {lastPage = value;}} />); window.show(); window.present();
     };
     show();
-    return {show, destroy: () => { root.unmount(); header.destroy(); }};
+    // Closing Settings only hides the window. Unmount the pages then: every card polls its helper (battery, fan, swap, audio, ...)
+    // and holds its widgets, and none of that should run or stay in memory while nobody can see it. show() mounts a fresh view.
+    let alive = true;
+    window.connect('hide', () => { if (alive) { generation++; root.render(<></>); } });
+    return {show, destroy: () => { alive = false; root.unmount(); header.destroy(); }};
 }

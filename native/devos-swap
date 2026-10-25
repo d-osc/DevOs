@@ -1,0 +1,270 @@
+#!/bin/sh
+# Swap: compressed RAM swap (zram), a swap file on disk, or none. Default: zram as large as RAM.
+# Usage: devos-swap get | apply | set key=value ...                                        (JSON on stdout, exit 1 on failure)
+#   set keys: type=zram|file|off   percent=<25..200>  or  mib=<n>   algorithm=zstd|lz4   swappiness=<1..200>
+# `apply` (devos-zram.service, every boot) applies /etc/devos/swap.conf; with no file it uses the defaults
+# (zram, 100% of RAM, zstd, swappiness 100). `set` validates, builds the new swap first, removes the old one, applies the
+# swappiness and only then saves the configuration, so a failed change never leaves a broken setup behind.
+# Limits: zram 256 MiB .. 2x RAM (physical use is capped at 60% of RAM with the zram mem_limit); swap file 256 MiB .. 2x RAM,
+# which must leave max(2 GiB, 10%) of the file system free, on ext2/3/4 or xfs only (no copy-on-write file systems).
+# The file is created with fallocate, mode 0600, owned by root, and is never created on the Live session (its root is a RAM
+# overlay) or on tmpfs. Installed as /usr/libexec/devos-swap (polkit org.devos.swap) and used by dev-os-swap.
+# Test hooks: DEVOS_SWAP_PROC (replaces /proc), DEVOS_SWAP_SYS (replaces /sys), DEVOS_SWAP_CONF, DEVOS_SWAP_FILE,
+# DEVOS_SWAP_ALLOW_USER=1, DEVOS_SWAP_LIVE=0|1, DEVOS_SWAP_FSTYPE, DEVOS_SWAP_FREE_MIB, DEVOS_SWAP_FSTOTAL_MIB,
+# DEVOS_SWAP_ZRAMCTL / _MKSWAP / _SWAPON / _SWAPOFF / _FALLOCATE / _MODPROBE (commands).
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+PROC=${DEVOS_SWAP_PROC:-/proc}
+SYS=${DEVOS_SWAP_SYS:-/sys}
+CONF=${DEVOS_SWAP_CONF:-/etc/devos/swap.conf}
+SWAPFILE=${DEVOS_SWAP_FILE:-/var/swap/devos.swap}
+ZRAMCTL=${DEVOS_SWAP_ZRAMCTL:-zramctl}
+MKSWAP=${DEVOS_SWAP_MKSWAP:-mkswap}
+SWAPON=${DEVOS_SWAP_SWAPON:-swapon}
+SWAPOFF=${DEVOS_SWAP_SWAPOFF:-swapoff}
+FALLOCATE=${DEVOS_SWAP_FALLOCATE:-fallocate}
+LOCK=${DEVOS_SWAP_LOCK:-/run/devos-swap.lock}
+MODPROBE=${DEVOS_SWAP_MODPROBE:-modprobe}
+MIN_MIB=256
+ZRAM_PRIORITY=100
+FILE_PRIORITY=10
+DEFAULT_PERCENT=100 DEFAULT_ALGORITHM=zstd DEFAULT_SWAPPINESS=100
+
+isnum() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+clean() { printf '%s' "$1" | tr -d '"\\\r' | tr '\n\t' '  ' | cut -c1-240; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$(clean "$1")"; exit 1; }
+require_root() { [ "$(id -u)" = 0 ] || [ "$DEVOS_SWAP_ALLOW_USER" = 1 ] || fail "Changing swap needs administrator access."; }
+
+# One change at a time (boot apply, Settings, a second Settings window). A lock left by a dead process is taken over.
+lock() {
+    waited=0
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        holder=$(cat "$LOCK/pid" 2>/dev/null)
+        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+        waited=$((waited + 1)); [ "$waited" -gt "${DEVOS_SWAP_LOCK_WAIT:-120}" ] && fail "Another swap change is in progress."
+        sleep 1
+    done
+    echo $$ >"$LOCK/pid"
+    trap 'rm -rf "$LOCK"' EXIT
+}
+
+mem_mib() { awk '/^MemTotal:/ {print int($2 / 1024); exit}' "$PROC/meminfo" 2>/dev/null; }
+MEM=$(mem_mib); isnum "$MEM" || MEM=0
+MAX_MIB=$((MEM * 2))
+
+is_live() {
+    case "$DEVOS_SWAP_LIVE" in 1) return 0 ;; 0) return 1 ;; esac
+    [ -d /run/devos-live ] && return 0
+    cmd=$(cat "$PROC/cmdline" 2>/dev/null)
+    case " $cmd " in *" devos.root="*) ;; *" devos.live.uuid="*) return 0 ;; esac
+    awk '$2 == "/" && $3 == "overlay" {found = 1} END {exit !found}' "$PROC/mounts" 2>/dev/null
+}
+
+# ---- configuration ----------------------------------------------------------------------------------------------
+conf_value() { [ -r "$CONF" ] || return 1; v=$(sed -n "s/^$1=\\([A-Za-z0-9]*\\)\$/\\1/p" "$CONF" | head -n 1); [ -n "$v" ] || return 1; printf '%s' "$v"; }
+valid_algorithm() { case "$1" in zstd|lz4) return 0 ;; *) return 1 ;; esac; }
+valid_swappiness() { isnum "$1" && [ "$1" -ge 1 ] && [ "$1" -le 200 ]; }
+valid_type() { case "$1" in zram|file|off) return 0 ;; *) return 1 ;; esac; }
+# size in MiB for a percent or an explicit value; checked against the limits
+size_for() { # percent mib
+    if [ -n "$2" ]; then echo "$2"; else echo $((MEM * $1 / 100)); fi
+}
+valid_size() { isnum "$1" && [ "$1" -ge "$MIN_MIB" ] && [ "$1" -le "$MAX_MIB" ]; }
+CFG_TYPE= CFG_PERCENT= CFG_MIB= CFG_ALGORITHM= CFG_SWAPPINESS= CONFIGURED=false
+load_config() {
+    CFG_TYPE=zram CFG_PERCENT=$DEFAULT_PERCENT CFG_MIB= CFG_ALGORITHM=$DEFAULT_ALGORITHM CFG_SWAPPINESS=$DEFAULT_SWAPPINESS CONFIGURED=false
+    [ -r "$CONF" ] || return 0
+    t=$(conf_value type) && valid_type "$t" && { CFG_TYPE=$t; CONFIGURED=true; }
+    p=$(conf_value percent) && isnum "$p" && [ "$p" -ge 1 ] && [ "$p" -le 200 ] && { CFG_PERCENT=$p; CFG_MIB=; }
+    m=$(conf_value mib) && isnum "$m" && { CFG_MIB=$m; CFG_PERCENT=; }
+    a=$(conf_value algorithm) && valid_algorithm "$a" && CFG_ALGORITHM=$a
+    s=$(conf_value swappiness) && valid_swappiness "$s" && CFG_SWAPPINESS=$s
+    return 0
+}
+save_config() {
+    dir=$(dirname "$CONF"); [ -d "$dir" ] || mkdir -p "$dir" || return 1
+    tmp="$CONF.$$"
+    { printf 'type=%s\n' "$CFG_TYPE"; if [ -n "$CFG_MIB" ]; then printf 'mib=%s\n' "$CFG_MIB"; else printf 'percent=%s\n' "$CFG_PERCENT"; fi
+      printf 'algorithm=%s\nswappiness=%s\n' "$CFG_ALGORITHM" "$CFG_SWAPPINESS"; } >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$CONF" || { rm -f "$tmp"; return 1; }
+}
+
+# ---- what is active ---------------------------------------------------------------------------------------------
+zram_devices() { awk 'NR > 1 && $1 ~ "^/dev/zram" {print $1}' "$PROC/swaps" 2>/dev/null; }
+file_active() { awk -v f="$SWAPFILE" 'NR > 1 && $1 == f {found = 1} END {exit !found}' "$PROC/swaps" 2>/dev/null; }
+other_swap() { awk -v f="$SWAPFILE" 'NR > 1 && $1 !~ "^/dev/zram" && $1 != f {print $1}' "$PROC/swaps" 2>/dev/null | head -n 1; }
+current_swappiness() { head -c 16 "$PROC/sys/vm/swappiness" 2>/dev/null | tr -d '\n'; }
+zram_size_for() { # device -> bytes (nominal size)
+    $ZRAMCTL --bytes --noheadings --raw -o NAME,DISKSIZE 2>/dev/null | awk -v d="$1" '$1 == d {print $2; exit}'
+}
+
+zram_algorithm_for() { # device -> current algorithm
+    $ZRAMCTL --noheadings --raw -o NAME,ALGORITHM 2>/dev/null | awk -v d="$1" '$1 == d {print $2; exit}' | tr -d '[]'
+}
+
+# ---- disk swap file checks --------------------------------------------------------------------------------------
+fs_type() { if [ -n "$DEVOS_SWAP_FSTYPE" ]; then echo "$DEVOS_SWAP_FSTYPE"; else stat -f -c %T "$1" 2>/dev/null; fi; }
+fs_free_mib() { if [ -n "$DEVOS_SWAP_FREE_MIB" ]; then echo "$DEVOS_SWAP_FREE_MIB"; else stat -f -c '%a %S' "$1" 2>/dev/null | awk '{print int($1 * $2 / 1048576)}'; fi; }
+fs_total_mib() { if [ -n "$DEVOS_SWAP_FSTOTAL_MIB" ]; then echo "$DEVOS_SWAP_FSTOTAL_MIB"; else stat -f -c '%b %S' "$1" 2>/dev/null | awk '{print int($1 * $2 / 1048576)}'; fi; }
+nearest_dir() { d=$(dirname "$SWAPFILE"); while [ ! -d "$d" ] && [ "$d" != / ]; do d=$(dirname "$d"); done; echo "$d"; }
+# Why a swap file cannot be used here, or nothing.
+file_problem() {
+    if is_live; then echo "Disk swap is not available on the Live session: its system lives in a RAM overlay, so a file would only take memory."; return; fi
+    d=$(nearest_dir); t=$(fs_type "$d")
+    case "$t" in
+        ext2/ext3|ext4|ext3|ext2|xfs) ;;
+        tmpfs|ramfs|overlay|overlayfs) echo "The system disk is not a regular disk ($t); a swap file there would use memory."; return ;;
+        btrfs|zfs|f2fs|bcachefs) echo "A swap file on $t is not supported (copy-on-write file system)."; return ;;
+        *) echo "A swap file is only offered on ext4 or xfs (this system disk is ${t:-unknown})."; return ;;
+    esac
+}
+max_file_mib() { # largest file this disk can take
+    d=$(nearest_dir); free=$(fs_free_mib "$d"); total=$(fs_total_mib "$d"); isnum "$free" || free=0; isnum "$total" || total=0
+    # an existing swap file is replaced, so its space counts as free
+    if [ -f "$SWAPFILE" ]; then have=$(( $(stat -c %s "$SWAPFILE" 2>/dev/null || echo 0) / 1048576 )); free=$((free + have)); fi
+    reserve=$((total / 10)); [ "$reserve" -lt 2048 ] && reserve=2048
+    room=$((free - reserve)); [ "$room" -lt 0 ] && room=0
+    [ "$room" -gt "$MAX_MIB" ] && room=$MAX_MIB
+    echo "$room"
+}
+
+# ---- building and removing --------------------------------------------------------------------------------------
+NEW_DEVICE=
+make_zram() { # mib algorithm
+    $MODPROBE zram >/dev/null 2>&1
+    bytes=$(($1 * 1048576)); algo=$2
+    dev=$($ZRAMCTL --find --size "$bytes" --algorithm "$algo" 2>/dev/null)
+    if [ -z "$dev" ] && [ "$algo" != lz4 ]; then algo=lz4; dev=$($ZRAMCTL --find --size "$bytes" --algorithm lz4 2>/dev/null); fi
+    case "$dev" in /dev/zram*) ;; *) fail "Compressed RAM swap could not be created (is the zram module available?)." ;; esac
+    name=${dev#/dev/}
+    # never let compressed pages take more than 60% of RAM
+    [ -w "$SYS/block/$name/mem_limit" ] && printf '%s\n' $((MEM * 1048576 * 60 / 100)) >"$SYS/block/$name/mem_limit" 2>/dev/null
+    if ! $MKSWAP "$dev" >/dev/null 2>&1 || ! $SWAPON --priority "$ZRAM_PRIORITY" "$dev" >/dev/null 2>&1; then
+        $ZRAMCTL --reset "$dev" >/dev/null 2>&1; fail "Compressed RAM swap could not be turned on."
+    fi
+    NEW_DEVICE=$dev
+}
+drop_zram() { # device
+    $SWAPOFF "$1" >/dev/null 2>&1 || return 1
+    $ZRAMCTL --reset "$1" >/dev/null 2>&1; return 0
+}
+make_file() { # mib
+    problem=$(file_problem); [ -z "$problem" ] || fail "$problem"
+    room=$(max_file_mib); [ "$1" -le "$room" ] || fail "There is not enough free disk space for a swap file of $1 MiB (at most $room MiB, keeping a reserve free)."
+    dir=$(dirname "$SWAPFILE"); [ -d "$dir" ] || mkdir -p "$dir" || fail "Could not create $dir."
+    chmod 0700 "$dir" 2>/dev/null
+    new="$SWAPFILE.new"; rm -f "$new"
+    ( umask 077; : >"$new" ) || fail "Could not create the swap file."
+    chmod 0600 "$new"; chown 0:0 "$new" 2>/dev/null
+    if ! $FALLOCATE -l "${1}M" "$new" >/dev/null 2>&1; then rm -f "$new"; fail "The swap file could not be allocated (not enough disk space or the file system does not support it)."; fi
+    if ! $MKSWAP "$new" >/dev/null 2>&1; then rm -f "$new"; fail "mkswap failed on the swap file."; fi
+    # Same name as before so /proc/swaps and the service find it; the old file is turned off first.
+    if file_active; then $SWAPOFF "$SWAPFILE" >/dev/null 2>&1 || { rm -f "$new"; fail "Not enough free memory to turn the old swap file off."; }; fi
+    mv -f "$new" "$SWAPFILE"
+    if ! $SWAPON --priority "$FILE_PRIORITY" "$SWAPFILE" >/dev/null 2>&1; then rm -f "$SWAPFILE"; fail "The swap file could not be turned on."; fi
+    NEW_DEVICE=$SWAPFILE
+}
+drop_file() {
+    if file_active; then $SWAPOFF "$SWAPFILE" >/dev/null 2>&1 || return 1; fi
+    rm -f "$SWAPFILE" "$SWAPFILE.new"; return 0
+}
+drop_all_zram() { for d in $(zram_devices); do drop_zram "$d" || return 1; done; return 0; }
+
+tune() { # swappiness page-cluster
+    [ -w "$PROC/sys/vm/swappiness" ] && printf '%s\n' "$1" >"$PROC/sys/vm/swappiness"
+    [ -w "$PROC/sys/vm/page-cluster" ] && printf '%s\n' "$2" >"$PROC/sys/vm/page-cluster"
+    return 0
+}
+
+# Build the configured swap. Mode "boot" keeps a matching setup and falls back to defaults instead of failing.
+build() { # size_mib
+    case "$CFG_TYPE" in
+        off)
+            drop_all_zram || fail "Not enough free memory to turn the compressed swap off."
+            drop_file || fail "Not enough free memory to turn the swap file off."
+            tune "$CFG_SWAPPINESS" 3 ;;
+        zram)
+            old=$(zram_devices)
+            keep=
+            # A single device of the wanted size and algorithm is kept (and its data with it).
+            for d in $old; do [ "$(zram_size_for "$d")" = $(($1 * 1048576)) ] && [ "$(zram_algorithm_for "$d")" = "$CFG_ALGORITHM" ] && [ "$(echo "$old" | wc -l)" = 1 ] && keep=$d; done
+            if [ -z "$keep" ]; then
+                make_zram "$1" "$CFG_ALGORITHM"; new=$NEW_DEVICE
+                for d in $old; do [ "$d" = "$new" ] && continue; drop_zram "$d" || { drop_zram "$new"; fail "Not enough free memory to replace the current compressed swap."; }; done
+            fi
+            drop_file || fail "Not enough free memory to turn the swap file off."
+            tune "$CFG_SWAPPINESS" 0 ;;
+        file)
+            make_file "$1"
+            drop_all_zram || fail "The swap file is on, but the compressed RAM swap could not be turned off (not enough free memory)."
+            tune "$CFG_SWAPPINESS" 3 ;;
+    esac
+}
+
+# ---- commands ---------------------------------------------------------------------------------------------------
+json_get() {
+    load_config
+    live=false; is_live && live=true
+    problem=$(file_problem); fileok=true; [ -z "$problem" ] || fileok=false
+    maxfile=0; [ "$fileok" = true ] && maxfile=$(max_file_mib)
+    size=$(size_for "$CFG_PERCENT" "$CFG_MIB")
+    # what is running
+    type=none; sizeb=0 usedb=0 datab=0 comprb=0 totalb=0 algo=
+    zd=$(zram_devices | head -n 1)
+    if [ -n "$zd" ]; then
+        type=zram
+        sizeb=$(awk -v d="$zd" 'NR > 1 && $1 == d {print $3 * 1024; exit}' "$PROC/swaps")
+        usedb=$(awk -v d="$zd" 'NR > 1 && $1 == d {print $4 * 1024; exit}' "$PROC/swaps")
+        stats=$($ZRAMCTL --bytes --noheadings --raw -o NAME,DATA,COMPR,TOTAL,ALGORITHM 2>/dev/null | awk -v d="$zd" '$1 == d {print $2, $3, $4, $5; exit}')
+        set -- $stats; datab=${1:-0}; comprb=${2:-0}; totalb=${3:-0}; algo=${4:-}
+        algo=$(printf '%s' "$algo" | tr -d '[]')
+    elif file_active; then
+        type=file
+        sizeb=$(awk -v f="$SWAPFILE" 'NR > 1 && $1 == f {print $3 * 1024; exit}' "$PROC/swaps")
+        usedb=$(awk -v f="$SWAPFILE" 'NR > 1 && $1 == f {print $4 * 1024; exit}' "$PROC/swaps")
+    elif [ -n "$(other_swap)" ]; then type=other
+    fi
+    printf '{"ok":true,"live":%s,"fileAllowed":%s,"fileReason":"%s","memTotalMiB":%s,"minMiB":%s,"maxMiB":%s,"maxFileMiB":%s,' "$live" "$fileok" "$(clean "$problem")" "$MEM" "$MIN_MIB" "$MAX_MIB" "$maxfile"
+    printf '"configured":%s,"type":"%s","percent":%s,"sizeMiB":%s,"algorithm":"%s","swappiness":%s,"currentSwappiness":%s,' "$CONFIGURED" "$CFG_TYPE" "${CFG_PERCENT:-null}" "$size" "$CFG_ALGORITHM" "$CFG_SWAPPINESS" "$(isnum "$(current_swappiness)" && current_swappiness || echo null)"
+    printf '"active":{"type":"%s","sizeBytes":%s,"usedBytes":%s,"dataBytes":%s,"compressedBytes":%s,"memoryBytes":%s,"algorithm":"%s"}}\n' "$type" "${sizeb:-0}" "${usedb:-0}" "${datab:-0}" "${comprb:-0}" "${totalb:-0}" "$(clean "$algo")"
+}
+
+case "$1" in
+    get) json_get ;;
+    apply)
+        require_root; lock
+        load_config
+        # A saved setting that can no longer be honoured (disk swap on a Live boot, shrunk disk) falls back to zram.
+        if [ "$CFG_TYPE" = file ] && { [ -n "$(file_problem)" ] || [ "$(size_for "$CFG_PERCENT" "$CFG_MIB")" -gt "$(max_file_mib)" ]; }; then CFG_TYPE=zram; CFG_PERCENT=$DEFAULT_PERCENT; CFG_MIB=; fi
+        size=$(size_for "$CFG_PERCENT" "$CFG_MIB"); valid_size "$size" || { CFG_PERCENT=$DEFAULT_PERCENT; CFG_MIB=; size=$(size_for "$CFG_PERCENT" "$CFG_MIB"); }
+        [ "$MEM" -gt 0 ] || fail "Could not read the amount of memory."
+        build "$size"
+        echo '{"ok":true,"applied":true}' ;;
+    set)
+        require_root; lock
+        shift
+        load_config
+        t=$CFG_TYPE p=$CFG_PERCENT m=$CFG_MIB a=$CFG_ALGORITHM s=$CFG_SWAPPINESS
+        for arg in "$@"; do
+            case "$arg" in
+                type=*) t=${arg#*=}; valid_type "$t" || fail "Unknown swap type." ;;
+                percent=*) p=${arg#*=}; m=; isnum "$p" && [ "$p" -ge 1 ] && [ "$p" -le 200 ] || fail "The size must be between 1% and 200% of RAM." ;;
+                mib=*) m=${arg#*=}; p=; isnum "$m" || fail "The size must be a whole number of MiB." ;;
+                algorithm=*) a=${arg#*=}; valid_algorithm "$a" || fail "Unknown compression algorithm." ;;
+                swappiness=*) s=${arg#*=}; valid_swappiness "$s" || fail "Swappiness must be between 1 and 200." ;;
+                *) fail "Unknown setting." ;;
+            esac
+        done
+        CFG_TYPE=$t CFG_PERCENT=$p CFG_MIB=$m CFG_ALGORITHM=$a CFG_SWAPPINESS=$s
+        [ "$MEM" -gt 0 ] || fail "Could not read the amount of memory."
+        size=$(size_for "$p" "$m")
+        if [ "$t" != off ]; then
+            valid_size "$size" || fail "The size must be between $MIN_MIB MiB and twice the RAM ($MAX_MIB MiB)."
+        fi
+        if [ "$t" = file ]; then
+            problem=$(file_problem); [ -z "$problem" ] || fail "$problem"
+            room=$(max_file_mib); [ "$size" -le "$room" ] || fail "There is not enough free disk space for $size MiB of swap (at most $room MiB, keeping a reserve free)."
+        fi
+        build "$size"
+        save_config || fail "The swap was changed but the setting could not be saved."
+        json_get ;;
+    *) fail "Usage: devos-swap get|apply|set key=value ..." ;;
+esac

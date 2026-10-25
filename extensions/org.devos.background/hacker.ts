@@ -1,5 +1,6 @@
 import Cairo from 'cairo';
 import type {MotionPalette, Rgb} from './motion.js';
+import {spriteGlow} from './scene.js';
 
 export const hackerStyles = ['matrix', 'terminal', 'circuit', 'radar', 'network'] as const;
 export type HackerStyle = typeof hackerStyles[number];
@@ -20,16 +21,28 @@ function phosphor(p: MotionPalette): Rgb {
     return p.dark ? mix([.25, .95, .5], p.accent, .25) : mix([.04, .42, .24], p.accent, .2);
 }
 function glowDot(context: Cairo.Context, x: number, y: number, radius: number, color: Rgb, alpha: number) {
-    const dot = new Cairo.RadialGradient(x, y, 0, x, y, radius);
-    dot.addColorStopRGBA(0, ...color, alpha); dot.addColorStopRGBA(.35, ...color, alpha * .35); dot.addColorStopRGBA(1, ...color, 0);
-    context.setSource(dot); context.arc(x, y, radius, 0, TAU); context.fill();
+    spriteGlow(context, 'dot', x, y, radius, color, alpha);
 }
 function haze(context: Cairo.Context, x: number, y: number, radius: number, color: Rgb, alpha: number) {
-    const gradient = new Cairo.RadialGradient(x, y, 0, x, y, radius);
-    for (const [stop, weight] of [[0, 1], [.25, .75], [.5, .4], [.75, .12], [1, 0]] as const) gradient.addColorStopRGBA(stop, ...color, alpha * weight);
-    context.setSource(gradient); context.paint();
+    spriteGlow(context, 'haze', x, y, radius, color, alpha);
 }
 const glyphs = '01ABCDEF789<>/{}[]$#%=+*:;'.split('');
+/** Each glyph is rendered once per size into an alpha mask; a falling column then only composites masks instead of shaping text thousands of times a frame. */
+const glyphMasks = new Map<number, Cairo.ImageSurface[]>();
+function masksFor(size: number): Cairo.ImageSurface[] {
+    let masks = glyphMasks.get(size);
+    if (masks) return masks;
+    if (glyphMasks.size > 3) glyphMasks.clear();
+    const cell = Math.ceil(size * 1.3);
+    masks = glyphs.map(glyph => {
+        const surface = new Cairo.ImageSurface(Cairo.Format.A8, cell, cell), pen = new Cairo.Context(surface);
+        pen.selectFontFace('Monospace', Cairo.FontSlant.NORMAL, Cairo.FontWeight.NORMAL); pen.setFontSize(size);
+        pen.setSourceRGBA(1, 1, 1, 1); pen.moveTo(0, size); pen.showText(glyph); pen.$dispose();
+        return surface;
+    });
+    glyphMasks.set(size, masks);
+    return masks;
+}
 const snippets = [
     '$ ssh -i ~/.ssh/devos root@10.0.0.7', '$ nmap -sV -p 22,80,443 10.0.0.0/24', '[ ok ] handshake complete', '0x7ffd3a90  48 89 e5 48 83 ec 20 e8',
     'fn main() -> Result<()> {', '  let key = derive(&seed, 4096);', '  socket.send(&frame)?;', '  Ok(())', '}', '$ tcpdump -ni wlan0 port 443',
@@ -43,7 +56,7 @@ export function drawHacker(context: Cairo.Context, style: HackerStyle, width: nu
     if (style === 'matrix') {
         haze(context, width * .5, height * 1.05, reach * .6, green, dark ? .10 : .14);
         const size = Math.max(7, Math.round(height / 90)), columns = Math.ceil(width / (size * .95)), trail = 16;
-        context.selectFontFace('Monospace', Cairo.FontSlant.NORMAL, Cairo.FontWeight.NORMAL); context.setFontSize(size);
+        const masks = masksFor(size);
         for (let column = 0; column < columns; column++) {
             const speed = 4 + hash(column, 1) * 9, length = trail + Math.floor(hash(column, 2) * 12), span = height / size + length;
             const head = (time * speed * (.6 + hash(column, 3) * .6) + hash(column, 4) * span) % span, x = column * size * .95;
@@ -51,10 +64,10 @@ export function drawHacker(context: Cairo.Context, style: HackerStyle, width: nu
             for (let step = 0; step < length; step++) {
                 const row = Math.floor(head) - step;
                 if (row < 0 || row * size > height + size) continue;
-                const age = step / length, glyph = glyphs[Math.floor(hash(column * 977 + row, Math.floor(time * (step ? .35 : 6) + hash(row, column) * 5)) * glyphs.length)]!;
+                const age = step / length, glyph = masks[Math.floor(hash(column * 977 + row, Math.floor(time * (step ? .35 : 6) + hash(row, column) * 5)) * glyphs.length)]!;
                 const alpha = (step ? (1 - age) ** 1.8 * (dark ? .42 : .34) : (dark ? .85 : .5)) * fade;
                 context.setSourceRGBA(...(step ? green : mix(green, [1, 1, 1], dark ? .55 : 0)), alpha);
-                context.moveTo(x, row * size); context.showText(glyph);
+                context.maskSurface(glyph, x, row * size - size);
             }
         }
     } else if (style === 'terminal') {

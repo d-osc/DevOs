@@ -30,40 +30,12 @@ class PolicyTests(unittest.TestCase):
         for rank, available, expected in [(6,4*GIB,True),(6,GIB,False),(7,4*GIB,False)]:
             self.assertEqual(self.bridge.value(f'bridge.planWarm({rank},{8*GIB},{available})'),expected)
 
-    def test_existing_zram_never_reformatted(self):
-        file=self.bridge.root/'swaps'; file.write_text('Filename Type Size Used Priority\n/dev/zram0 partition 100 0 100\n')
-        self.bridge.replace_text('/proc/swaps',str(file))
-        self.bridge.replace('capture','fn capture(command: str): str { return "" }')
-        self.assertEqual(self.bridge.value('bridge.setupSwap()'),0)
-
-    def test_systemd_entries_include_devlang_argument_separator(self):
+    def test_memory_service_entry_includes_devlang_argument_separator(self):
         import shlex
-        for name, argument in [('devos-zram','--setup-swap'),('devos-memory','--daemon')]:
-            file=ROOT/'distro/oe/meta-devos/recipes-devos/session/files'/f'{name}.service'
-            command=next(line.split('=',1)[1] for line in file.read_text().splitlines() if line.startswith('ExecStart='))
-            self.assertEqual(shlex.split(command),['/usr/bin/d','/usr/bin/dev-os-memory','--',argument])
-        file=self.bridge.root/'swaps'; file.write_text('Filename Type Size Used Priority\n/dev/zram0 partition 100 0 100\n')
-        self.bridge.replace_text('/proc/swaps',str(file))
-        result=self.bridge.cli({},args=('--setup-swap',))
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('existing zram swap preserved',result.stdout)
-
-    def test_zram_setup_formats_commands_without_touching_host_devices(self):
-        swaps=self.bridge.root/'swaps'; swaps.write_text('Filename Type Size Used Priority\n')
-        self.bridge.replace_text('/proc/swaps',str(swaps))
-        for name in ('swappiness','page-cluster'):
-            self.bridge.replace_text('/proc/sys/vm/'+name,str(self.bridge.root/name))
-        self.bridge.replace('memoryInfo',f'fn memoryInfo(): json.Value {{ return {{MemTotal: {8*GIB}}} }}')
-        log=self.bridge.root/'shell.log'; capture=self.bridge.root/'capture.log'
-        self.bridge.replace('capture',f'fn capture(command: str): str {{ fs.writeFileSync({json.dumps(str(capture))},command); return "/dev/zram-fixture" }}')
-        file=self.bridge.root/'lib/posix.dev'
-        source=file.read_text()
-        source=re.sub(r'^fn shell\([^\n]*[\s\S]*?(?=^fn )',lambda _:f'fn shell(command: str): i32 {{ fs.appendFileSync({json.dumps(str(log))},command+"\\n"); return 0 }}\n',source,count=1,flags=re.M)
-        file.write_text('use "std/fs"\n'+source)
-        self.assertEqual(self.bridge.value('bridge.setupSwap()'),0)
-        self.assertEqual(capture.read_text(),'zramctl --find --size 4294967296 --algorithm lz4')
-        self.assertEqual(log.read_text().splitlines(),['modprobe zram','mkswap /dev/zram-fixture','swapon --priority 100 /dev/zram-fixture'])
-        self.assertEqual((self.bridge.root/'swappiness').read_text(),'80')
+        file=ROOT/'distro/oe/meta-devos/recipes-devos/session/files/devos-memory.service'
+        command=next(line.split('=',1)[1] for line in file.read_text().splitlines() if line.startswith('ExecStart='))
+        self.assertEqual(shlex.split(command),['/usr/bin/d','/usr/bin/dev-os-memory','--','--daemon'])
+        self.assertNotIn('setupSwap',(ROOT/'bin/dev-os-memory').read_text(), 'swap is set up by native/devos-swap')
 
     def test_missing_rankings_builds_numeric_uid_path(self):
         self.assertEqual(self.bridge.value('bridge.rankings(123456789)'),{})

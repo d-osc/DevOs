@@ -144,6 +144,44 @@ kernel exposes, the pkexec path with a real polkit agent, the udev/systemd units
 behaviour on ARM, and that Whisper/Performance audibly change the fan (only the emulated CPU policy would be observable).
 The `weather-windy` / `radio` icons are not in the Font Awesome mapping, so they use the GTK theme icons. The Live USB must be rebuilt.
 
+## Memory & swap (2026-10-25)
+
+Settings > System > Power & battery has a "Memory & swap" card. **The default is compressed RAM swap (zram) as large as the installed
+RAM**, zstd compression, swappiness 100; nothing has to be configured. The card shows the swap in use ("1.0 GB used of 8.0 GB",
+and "Compressed 3.0:1, taking 1.1 GB of RAM" from `zramctl`), and lets you choose:
+
+| Setting | Values | Rules (checked in the UI and again by the root helper) |
+| --- | --- | --- |
+| Type | Compressed RAM (zram), Swap file on disk, Off | The file is refused on the Live session (its root is a RAM overlay), on tmpfs/overlay, and on copy-on-write file systems (btrfs, zfs, f2fs, bcachefs, anything not ext2/3/4 or xfs). |
+| Size | 25 %, 50 %, 100 %, 150 %, 200 % of RAM, or Custom in GB (two decimals) | 256 MiB up to twice the RAM for zram. A file must also leave `max(2 GiB, 10 %)` of the file system free; presets that do not fit are disabled. |
+| Compression (zram) | zstd, lz4 | Anything else is rejected. If the kernel has no zstd backend the helper falls back to lz4 and reports the algorithm in use. |
+| Swappiness | 1 - 200 slider | 100 suits compressed RAM, use less for a disk file. |
+
+Apply creates the new swap first, then turns the old one off (a failure leaves the old swap and the saved setting untouched, and a
+`swapoff` that cannot be done because the pages do not fit in free memory is reported as such), applies swappiness and
+`vm.page-cluster` (0 for zram, 3 for a file), and only then saves `/etc/devos/swap.conf`.
+zram devices have a `mem_limit` of 60 % of RAM. The swap file is `/var/swap/devos.swap`, created with `fallocate`, mode 0600 in a
+0700 directory, owned by root, `mkswap`ed and `swapon`ed with priority 10 (zram uses 100, so zram is always preferred). It is
+removed when you switch to zram or Off.
+
+| Piece | Role |
+| --- | --- |
+| `native/devos-swap` → `/usr/libexec/devos-swap` | POSIX sh, root. `get` (JSON: limits, saved setting, usage), `apply` (boot), `set type=... percent=\|mib=... algorithm=... swappiness=...`. |
+| `bin/dev-os-swap` | User front end for Settings: `get`, `set`; runs the root part through `pkexec`. |
+| `data/polkit-1/actions/org.devos.swap.policy` | `org.devos.swap`, same pattern as Battery Care and Fan Profile (active local sessions, no password). |
+| `/etc/devos/swap.conf` | `type=`, `percent=` or `mib=`, `algorithm=`, `swappiness=`. Missing file = defaults; invalid values are ignored, a saved file swap that cannot be honoured at boot (Live session, full disk) falls back to zram. |
+| `devos-zram.service` | `devos-swap apply` at boot (kept its old name). |
+| `/etc/sysctl.d/90-devos-memory.conf` | `vm.swappiness`, `page-cluster`, `vfs_cache_pressure`, watermark and dirty-page limits (see `docs/memory-policy.md`). |
+
+Validation: `python3 tests/swap.test.py` (helper against a fake `/proc`, `/sys` and fake `zramctl`/`swapon`/`swapoff`/`mkswap`/`fallocate`:
+defaults, boot, resize order, every invalid value, zstd fallback, failing zramctl/swapoff/fallocate/mkswap, Live refusal, file mode and
+limits, unsuitable file systems, boot fallback, front end, units and sysctl wired), `node tools/build/build.ts` then
+`gjs -m dist/swap-ui-test.js` (card text, presets, custom size validation, apply arguments, Live and small-disk states, errors, Power page),
+`python3 tests/oe-shell-packaging.test.py`. **Not verified on real hardware:** `zramctl`/`swapon` against the real UX3407NA kernel
+(the image needs `CONFIG_ZRAM_BACKEND_ZSTD`, added to `devos-desktop.cfg`, and `util-linux-fallocate`, added to `devos-session`),
+the pkexec path with a real polkit agent, behaviour when `swapoff` has to move gigabytes back into RAM, and a swap file on an installed
+system (needs the installer, not the Live USB). The Live USB and kernel must be rebuilt.
+
 ## Display care: OLED Care, Flicker-Free Dimming, Splendid, Target Mode (2026-10-25)
 
 Settings > System > Display shows five cards under the monitor settings, modelled on the MyASUS display pages. There is

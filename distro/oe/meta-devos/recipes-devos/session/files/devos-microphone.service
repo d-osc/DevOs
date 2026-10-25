@@ -6,6 +6,13 @@ ConditionPathExists=/usr/bin/dev-os-microphone
 
 [Service]
 Type=simple
+# Background helper: never compete with the desktop for CPU or disk, and be the first to go when memory runs out.
+Nice=10
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=300
+MemoryHigh=96M
+MemoryMax=192M
 # `serve` exits at once (service inactive) in Authentic Recording mode or when the WebRTC plugin is missing.
 Environment=DEVOS_MIC_WAIT=45
 ExecStart=/usr/bin/dev-os-microphone serve

@@ -287,7 +287,10 @@ def serve():
     while not stop:
         state = load_state()
         available, reason = filters_available()
-        graph = snapshot() if available else None
+        # With Smart Switch off, no filter wanted and no filter running there is nothing to watch: skip the pw-dump (a whole graph dump
+        # parsed in Python every few seconds) and only look at the state file again.
+        idle = child is None and not state['smart'] and not wants_filter(state, state['mode'])
+        graph = snapshot() if available and not idle else None
         if graph is not None:
             # Debounce the call detection: two polls to switch on, three to switch off.
             seen, quiet = (seen + 1, 0) if graph['recorders'] > 0 else (0, quiet + 1)

@@ -5,7 +5,8 @@ import Cairo from 'cairo';
 import {loadPicture, pictureLayout, type WallpaperConfig} from './wallpaper.js';
 import {DesktopWidgets} from './desktop-widgets.js';
 import {designStyle, drawDesign} from './design.js';
-import {isMotion, MOTION_INTERVAL_MS} from './motion.js';
+import {isMotion} from './motion.js';
+import {motionInterval, readOnBattery} from './pace.js';
 
 export interface BackgroundConfig {name: string; background: string; accent: string; foreground?: string; muted?: string; style?: string;}
 function rgb(color: string): [number, number, number] {
@@ -19,7 +20,7 @@ export function drawBackground(canvas: Gtk.DrawingArea, context: Cairo.Context, 
     return false;
 }
 
-export function WallpaperCanvas({config, preview = false, onError}: {config: WallpaperConfig; preview?: boolean; onError?(message: string): void}) {
+export function WallpaperCanvas({config, preview = false, paused = false, onError}: {config: WallpaperConfig; preview?: boolean; paused?: boolean; onError?(message: string): void}) {
     const [picture, setPicture] = useState<{path: string; pixels: GdkPixbufTypes.Pixbuf} | null>(null);
     const canvasRef = useRef<Gtk.DrawingArea | null>(null);
     useEffect(() => {
@@ -32,11 +33,21 @@ export function WallpaperCanvas({config, preview = false, onError}: {config: Wal
         return () => canvas.disconnect(signal);
     }, [preview]);
     useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas || config.mode !== 'design' || !isMotion(designStyle(config.style))) return;
-        const source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, MOTION_INTERVAL_MS, () => { if (canvas.get_mapped()) canvas.queue_draw(); return GLib.SOURCE_CONTINUE; });
-        return () => { GLib.source_remove(source); };
-    }, [config.mode, config.style]);
+        const canvas = canvasRef.current, style = designStyle(config.style);
+        if (!canvas || paused || config.mode !== 'design' || !isMotion(style)) return;
+        // One timer at a time, re-armed after each frame so the pace follows the power source (checked every 30 s). Frames are drawn at
+        // a low priority: input and the panel always go first.
+        let source = 0, battery = readOnBattery(), checked = GLib.get_monotonic_time();
+        const frame = () => {
+            source = 0;
+            if (canvas.get_mapped()) canvas.queue_draw();
+            if (GLib.get_monotonic_time() - checked > 30e6) { battery = readOnBattery(); checked = GLib.get_monotonic_time(); }
+            source = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, motionInterval(style, battery), frame);
+            return GLib.SOURCE_REMOVE;
+        };
+        source = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, motionInterval(style, battery), frame);
+        return () => { if (source) GLib.source_remove(source); };
+    }, [config.mode, config.style, paused]);
     useEffect(() => {
         const cancel = new Gio.Cancellable();
         setPicture(null); onError?.('');
@@ -51,8 +62,9 @@ export function WallpaperCanvas({config, preview = false, onError}: {config: Wal
         const width = canvas.get_allocated_width(), height = canvas.get_allocated_height();
         if (config.mode === 'design') {
             if (preview) {
-                context.save(); context.scale(width / 1920, height / 1080);
-                drawBackground(canvas, context, config, {width: 1920, height: 1080});
+                // The preview is a few hundred pixels wide: draw it at 720p, not full HD.
+                context.save(); context.scale(width / 1280, height / 720);
+                drawBackground(canvas, context, config, {width: 1280, height: 720});
                 context.restore(); return false;
             }
             return drawBackground(canvas, context, config);
@@ -67,11 +79,11 @@ export function WallpaperCanvas({config, preview = false, onError}: {config: Wal
         return false;
     }} />;
 }
-export function BackgroundView({config, widgets = {}, changed, desktopKey = 'default'}: {config: BackgroundConfig | WallpaperConfig; widgets?: SettingsValues; changed?(values: SettingsValues): void; desktopKey?: string}) {
-    return <EventBox expand fill hexpand vexpand><Overlay id="desktop-widgets" expand fill hexpand vexpand><WallpaperCanvas config={{mode: 'design', imagePath: '', fit: 'cover', ...config}} /><DesktopWidgets key={desktopKey} values={widgets} changed={changed} /></Overlay></EventBox>;
+export function BackgroundView({config, widgets = {}, changed, desktopKey = 'default', paused = false}: {config: BackgroundConfig | WallpaperConfig; widgets?: SettingsValues; changed?(values: SettingsValues): void; desktopKey?: string; paused?: boolean}) {
+    return <EventBox expand fill hexpand vexpand><Overlay id="desktop-widgets" expand fill hexpand vexpand><WallpaperCanvas paused={paused} config={{mode: 'design', imagePath: '', fit: 'cover', ...config}} /><DesktopWidgets key={desktopKey} values={widgets} changed={changed} /></Overlay></EventBox>;
 }
-export function mountBackground(window: Gtk.ApplicationWindow, config: BackgroundConfig, widgets: SettingsValues = {}, changed?: (values: SettingsValues) => void, desktopKey = 'default') {
+export function mountBackground(window: Gtk.ApplicationWindow, config: BackgroundConfig, widgets: SettingsValues = {}, changed?: (values: SettingsValues) => void, desktopKey = 'default', paused = false) {
     const root = createRoot(window);
-    root.render(<BackgroundView config={config} widgets={widgets} changed={changed} desktopKey={desktopKey} />);
+    root.render(<BackgroundView config={config} widgets={widgets} changed={changed} desktopKey={desktopKey} paused={paused} />);
     return root;
 }

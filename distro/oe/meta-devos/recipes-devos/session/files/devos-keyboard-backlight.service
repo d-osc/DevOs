@@ -4,6 +4,13 @@ ConditionPathExists=/usr/bin/dev-os-keyboard
 
 [Service]
 Type=simple
+# Background helper: never compete with the desktop for CPU or disk, and be the first to go when memory runs out.
+Nice=10
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=300
+MemoryHigh=48M
+MemoryMax=96M
 # `serve` exits at once (service inactive) when there is no keyboard backlight LED or nothing is enabled, and waits for
 # the compositor and ambient light sensor otherwise.
 ExecStart=/usr/bin/dev-os-keyboard serve

@@ -195,8 +195,8 @@ function grainTile(): GdkPixbuf.Pixbuf | null {
     return grain;
 }
 
-/** Dither grain and the discreet mark, drawn at full resolution over either kind of scene. */
-function finish(context: Cairo.Context, config: BackgroundConfig, width: number, height: number, dark: boolean): void {
+/** Dither grain, drawn at full resolution over either kind of scene. There is deliberately no logo: the panel would cover it. */
+function finish(context: Cairo.Context): void {
     const tile = grainTile();
     if (tile) {
         context.save();
@@ -204,13 +204,6 @@ function finish(context: Cairo.Context, config: BackgroundConfig, width: number,
         try { (context.getSource() as Cairo.SurfacePattern).setExtend(Cairo.Extend.REPEAT); context.paint(); } catch { /* Banding dither is optional. */ }
         context.restore();
     }
-    // A discreet mark, low contrast and away from the center so it never burns in.
-    const scale = Math.min(1.4, Math.max(.7, width / 1600));
-    context.selectFontFace('Sans', Cairo.FontSlant.NORMAL, Cairo.FontWeight.BOLD);
-    context.setFontSize(11 * scale);
-    context.setSourceRGBA(...channels(config.foreground ?? (dark ? '#e6f2f5' : '#1b2a33')), dark ? .16 : .26);
-    let x = width - 24 * scale - 70 * scale;
-    for (const letter of 'DEV OS') { context.moveTo(x, height - 22 * scale); context.showText(letter); x += (letter === ' ' ? 9 : 11) * scale; }
 }
 
 /** Layered mesh gradient: soft accent glows, two flowing dunes, a vignette and grain. Everything scales with the canvas, so any aspect ratio crops gracefully. */
@@ -266,7 +259,7 @@ function drawStatic(context: Cairo.Context, config: BackgroundConfig, width: num
     vignette.addColorStopRGBA(0, ...base, 0);
     vignette.addColorStopRGBA(1, ...(dark ? [0, 0, 0] as Rgb : base), dark ? .42 : .22);
     context.setSource(vignette); context.paint();
-    finish(context, config, width, height, dark);
+    finish(context);
 }
 
 /** `time` (seconds) only matters for animated styles; it defaults to the monotonic clock. */
@@ -280,10 +273,13 @@ export function drawDesign(context: Cairo.Context, config: BackgroundConfig, wid
     let surface = scenes.get(key);
     if (!surface) {
         if (scenes.size > 4) scenes.clear();
+        // Keep ARGB32 like the window surface: scaling an RGB24 source onto an ARGB32 target falls off pixman's fast path (4x slower).
         surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, lowWidth, lowHeight); scenes.set(key, surface);
     }
     const scene = new Cairo.Context(surface);
     drawMotion(scene, style, lowWidth, lowHeight, time, palette);
+    // The dither grain goes onto the small scene: laying it over every pixel of the panel costs a second full-screen pass per frame.
+    finish(scene);
     scene.$dispose();
     context.save();
     context.scale(width / lowWidth, height / lowHeight);
@@ -291,6 +287,5 @@ export function drawDesign(context: Cairo.Context, config: BackgroundConfig, wid
     try { (context.getSource() as Cairo.SurfacePattern).setExtend(Cairo.Extend.PAD); } catch { /* Edges stay transparent. */ }
     context.paint();
     context.restore();
-    finish(context, config, width, height, dark);
 }
 const scenes = new Map<string, Cairo.ImageSurface>();

@@ -11,6 +11,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import platform
 import tempfile
 import uuid
 from board_audio import validate_proof as validate_audio_proof
@@ -20,6 +21,10 @@ PROFILES=HERE.parents[1]/'profiles'
 BOARD_PROFILE='asus/ux3407na'
 DEFAULT_IMAGES=Path('/var/tmp/devos-oe/build/tmp/deploy/images/qemuarm64')
 WIFI_BOARD='ath12k/QCC2072/hw1.0/board.bin'
+# Quiet boot behind the animated splash (distro/oe/meta-devos/recipes-devos/splash). `splash` is read by the initramfs;
+# devos.splash=0, debug or systemd.show_status=1 on the command line bring the plain text boot back.
+SPLASH_SOURCE=HERE.parents[1]/'distro/oe/meta-devos/recipes-devos/splash/files/devos-splash.c'
+SPLASH_ARGS='quiet splash loglevel=3 systemd.show_status=false vt.global_cursor_default=0'
 REQUIRED_APPLETS={'mount','modprobe','switch_root','sh','find','findfs','seq','cat','mkdir','sleep',
     'cp','chmod','ln','readlink','dmesg','timeout','kill','umount','sync','mv','tail','echo','true','false','test','['}
 # Used by the hardware profile tool when this BusyBox provides them.
@@ -200,6 +205,20 @@ def install_boot_tools(tree,busybox):
     if profiles.exists(): shutil.rmtree(profiles)
     shutil.copytree(PROFILES,profiles,ignore=shutil.ignore_patterns('kernel','devos-hwprofile','__pycache__'))
 
+def build_splash(destination):
+    """Compile the static ARM64 boot splash (a single C file) for the initramfs."""
+    compiler=os.environ.get('CC') or ('gcc' if platform.machine() in ('aarch64','arm64') else 'aarch64-linux-gnu-gcc')
+    run(compiler,'-static','-O2','-Wall','-o',destination,regular(SPLASH_SOURCE),'-lm')
+    header=regular(destination).read_bytes()[:20]
+    if header[:4]!=b'ELF' or int.from_bytes(header[18:20],'little')!=183: raise ValueError('The boot splash must be an ARM64 binary')
+    if 'INTERP' in run('readelf','-l',destination): raise ValueError('The boot splash must be statically linked')
+    destination.chmod(0o755)
+
+def install_splash(tree):
+    destination=tree/'bin/devos-splash'
+    if destination.exists() or destination.is_symlink(): destination.unlink()  # copied trees may use hardlinks
+    build_splash(destination)
+
 def profile_kernel_args(profile=BOARD_PROFILE):
     """Kernel arguments of a model profile merged over its form factor and the generic layer."""
     with tempfile.TemporaryDirectory(prefix='devos-profile-') as tmp:
@@ -213,6 +232,7 @@ def diagnose(args):
     for name in record['files']: os.link(args.output/name,destination/name)
     shutil.copytree(args.output/'initramfs',destination/'initramfs',symlinks=True,copy_function=os.link)
     install_boot_tools(destination/'initramfs',regular(args.busybox))
+    install_splash(destination/'initramfs')
     # Replace the linked old initrd without changing the original candidate.
     (destination/'initramfs.cpio.gz').unlink()
     cpio(destination/'initramfs',destination/'initramfs.cpio.gz')
@@ -326,6 +346,7 @@ def prepare(args):
     tree=output/'initramfs'
     for path in ('bin','sbin','dev','proc','sys','run','lib/modules'): (tree/path).mkdir(parents=True,exist_ok=True)
     install_boot_tools(tree,busybox)
+    install_splash(tree)
     # Extract modules from the exact image, not from the WSL/build-host kernel.
     if bundle_modules:
         shutil.copytree(bundle_modules,tree/'lib/modules'/release,symlinks=True,
@@ -449,10 +470,10 @@ def build(output):
     # All writes are to newly created regular files, never /dev devices.
     with tempfile.TemporaryDirectory(prefix='usb-pack-',dir=output) as tmp:
         tmp=Path(tmp); efi=tmp/'BOOTAA64.EFI'; esp=tmp/'esp.fat'
-        cmdline=f'console=tty0 rdinit=/init {profile_kernel_args()} devos.live.uuid={record["filesystemUuid"]} devos.renderer=pixman'
+        cmdline=f'console=tty0 rdinit=/init {profile_kernel_args()} devos.live.uuid={record["filesystemUuid"]} devos.renderer=pixman {SPLASH_ARGS}'
         if record.get('bootDiagnostics'):
             esp_id=record['espVolumeId'];esp_uuid=esp_id[:4]+'-'+esp_id[4:]
-            cmdline+=f' devos.live.esp_uuid={esp_uuid} loglevel=3 panic=0 systemd.show_status=false systemd.log_target=journal vt.global_cursor_default=0'
+            cmdline+=f' devos.live.esp_uuid={esp_uuid} panic=0 systemd.log_target=journal'
         if record.get('kernelInitcallDebug'):
             cmdline+=' initcall_debug log_buf_len=4M'
         run('ukify','build','--efi-arch=aa64',f'--stub={stub}',
@@ -464,7 +485,7 @@ def build(output):
         # The same kernel, initramfs and DTB with a cmdline that boots an installed system from its own root
         # (LABEL=devos-root, no Live overlay). `dev-os-install` copies this to the internal disk's ESP.
         installed=tmp/'INSTALLED.EFI'
-        installed_cmdline=f'console=tty0 rdinit=/init {profile_kernel_args()} devos.root=LABEL=devos-root devos.renderer=pixman loglevel=3'
+        installed_cmdline=f'console=tty0 rdinit=/init {profile_kernel_args()} devos.root=LABEL=devos-root devos.renderer=pixman {SPLASH_ARGS}'
         run('ukify','build','--efi-arch=aa64',f'--stub={stub}',
             f'--linux={output}/Image',f'--initrd={output}/initramfs.cpio.gz',
             f'--devicetree={output}/board.dtb',f'--os-release=@{output}/os-release',

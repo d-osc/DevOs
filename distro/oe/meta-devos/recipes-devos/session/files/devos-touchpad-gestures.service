@@ -5,6 +5,13 @@ ConditionPathExists=/usr/bin/dev-os-touchpad-gestures
 
 [Service]
 Type=simple
+# Background helper: never compete with the desktop for CPU or disk, and be the first to go when memory runs out.
+Nice=10
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=300
+MemoryHigh=48M
+MemoryMax=96M
 # Read-only observer of the touchpad's evdev node. It stays idle (no device opened) while Smart Gestures are off
 # or the touchpad is locked, and picks up changes from the saved settings within a second.
 ExecStart=/usr/bin/dev-os-touchpad-gestures serve

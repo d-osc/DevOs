@@ -8,8 +8,13 @@ ExecStart=/usr/bin/d /usr/bin/dev-os-memory -- --daemon
 Restart=on-failure
 RestartSec=5
 Nice=10
+CPUWeight=20
+IOWeight=20
 CPUQuota=5%
+MemoryHigh=48M
 MemoryMax=64M
+# Losing this helper only costs the app priorities, never the desktop; but it must not be the first victim of a memory shortage either.
+OOMScoreAdjust=0
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes

@@ -39,7 +39,7 @@ fn main(): i32 {
     let busArg = strings.len(sessionBus) > 0 ? sessionBus : ""
     let scopeId = strings.substring(strings.replaceAll(uuid.v4(), "-", ""), 0, 12)
     let command = ("exec systemd-run --user --scope --quiet --collect --slice=app.slice" +
-        " --unit=devos-system-" + scopeId + ".scope --property=MemoryAccounting=yes --property=MemorySwapMax=0" +
+        " --unit=devos-system-" + scopeId + ".scope --property=MemoryAccounting=yes --property=MemorySwapMax=0 --property=CPUWeight=200 --property=IOWeight=200" +
         " --property=MemoryLow=256M -- /usr/bin/env")
     if !strings.equal(busArg, "") {
         command = command + " " + quote("DBUS_SESSION_BUS_ADDRESS=" + busArg) + joined

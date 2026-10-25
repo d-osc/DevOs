@@ -11,9 +11,10 @@ function call(method: string, parameters: GLib.Variant | null): Promise<GLib.Var
             });
     });
 }
-export async function powerCapabilities(): Promise<Record<PowerAction, boolean>> {
-    const result = {sleep: !!GLib.find_program_in_path('dev-os-shell') && !!GLib.find_program_in_path('swaylock'), restart: false, shutdown: false};
-    await Promise.all((['restart', 'shutdown'] as const).map(async action => {
+/** `direct` is for the login screen, where there is no desktop to lock: Sleep is logind's Suspend itself. */
+export async function powerCapabilities(direct = false): Promise<Record<PowerAction, boolean>> {
+    const result = {sleep: !direct && !!GLib.find_program_in_path('dev-os-shell') && !!GLib.find_program_in_path('swaylock'), restart: false, shutdown: false};
+    await Promise.all((direct ? ['sleep', 'restart', 'shutdown'] as const : ['restart', 'shutdown'] as const).map(async action => {
         try {
             const [status] = (await call(`Can${methods[action]}`, null)).deep_unpack() as [string];
             result[action] = status === 'yes' || status === 'challenge';
@@ -21,8 +22,8 @@ export async function powerCapabilities(): Promise<Record<PowerAction, boolean>>
     }));
     return result;
 }
-export async function requestPower(action: PowerAction): Promise<void> {
-    if (action === 'sleep') {
+export async function requestPower(action: PowerAction, direct = false): Promise<void> {
+    if (action === 'sleep' && !direct) {
         const process = Gio.Subprocess.new(['dev-os-shell', 'lock'], Gio.SubprocessFlags.STDERR_PIPE);
         await new Promise<void>((resolve, reject) => process.communicate_utf8_async(null, null, (source, result) => {
             try {

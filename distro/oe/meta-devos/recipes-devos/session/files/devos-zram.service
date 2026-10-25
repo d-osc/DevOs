@@ -1,12 +1,15 @@
 [Unit]
-Description=DevOs compressed swap
-After=systemd-modules-load.service
+Description=DevOs swap (compressed RAM swap as large as RAM unless changed in Settings)
+After=systemd-modules-load.service local-fs.target
 Before=devos-memory.service
+ConditionPathExists=/usr/libexec/devos-swap
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/d /usr/bin/dev-os-memory -- --setup-swap
+ExecStart=/usr/libexec/devos-swap apply
 RemainAfterExit=yes
+Nice=-5
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target

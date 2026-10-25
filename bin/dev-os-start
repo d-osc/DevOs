@@ -17,7 +17,7 @@ run_supervisor() {
         scope=$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')
         if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then set -- "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
         else set -- -u DBUS_SESSION_BUS_ADDRESS; fi
-        DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" systemd-run --user --scope --quiet --collect --slice=app.slice             --unit="devos-system-$scope.scope" --property=MemoryAccounting=yes --property=MemorySwapMax=0             --property=MemoryLow=256M -- /usr/bin/env "$@" gjs -m "$root/dist/supervisor.js"
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" systemd-run --user --scope --quiet --collect --slice=app.slice             --unit="devos-system-$scope.scope" --property=MemoryAccounting=yes --property=MemorySwapMax=0             --property=MemoryLow=256M --property=CPUWeight=200 --property=IOWeight=200 -- /usr/bin/env "$@" gjs -m "$root/dist/supervisor.js"
     else
         d "$base/bin/dev-os-system-run" -- gjs -m "$root/dist/supervisor.js"
     fi

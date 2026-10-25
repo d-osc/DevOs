@@ -29,6 +29,7 @@ class ShellPackagingTests(unittest.TestCase):
                 'data/polkit-1/actions/org.devos.radio.policy': '<policyconfig/>',
                 'data/polkit-1/actions/org.devos.battery.policy': '<policyconfig/>',
                 'data/polkit-1/actions/org.devos.fan.policy': '<policyconfig/>',
+                'data/polkit-1/actions/org.devos.swap.policy': '<policyconfig/>',
                 'data/polkit-1/actions/org.devos.connectivity.policy': '<policyconfig/>',
                 'data/polkit-1/actions/org.devos.keyboard.policy': '<policyconfig/>',
                 'bin/dev-os-network-settings': (ROOT/'bin/dev-os-network-settings').read_text(),
@@ -36,7 +37,7 @@ class ShellPackagingTests(unittest.TestCase):
                 'lib/network-settings.dev': (ROOT/'lib/network-settings.dev').read_text(),
                 'native/radio-system.dev': (ROOT/'native/radio-system.dev').read_text(),
             }
-            for name in ('devos-account-admin', 'devos-pam-auth', 'devos-account-askpass', 'devos-app-store-admin', 'devos-radio-admin', 'devos-battery-care', 'devos-fan-profile', 'devos-keyboard', 'devos-connectivity'):
+            for name in ('devos-account-admin', 'devos-pam-auth', 'devos-account-askpass', 'devos-app-store-admin', 'devos-radio-admin', 'devos-battery-care', 'devos-fan-profile', 'devos-swap', 'devos-keyboard', 'devos-connectivity'):
                 files['native/' + name] = '#!/bin/sh\nexit 0\n'
             for name, content in files.items():
                 (source / name).write_text(content)
@@ -56,6 +57,8 @@ class ShellPackagingTests(unittest.TestCase):
             self.assertTrue((dest/'usr/libexec/devos-radio-admin').stat().st_mode & 0o111)
             self.assertTrue((dest/'usr/libexec/devos-battery-care').stat().st_mode & 0o111)
             self.assertTrue((dest/'usr/libexec/devos-fan-profile').stat().st_mode & 0o111)
+            self.assertTrue((dest/'usr/libexec/devos-swap').stat().st_mode & 0o111)
+            self.assertTrue((dest/'usr/share/polkit-1/actions/org.devos.swap.policy').exists())
             self.assertTrue((dest/'usr/libexec/devos-connectivity').stat().st_mode & 0o111)
             self.assertTrue((dest/'usr/share/polkit-1/actions/org.devos.connectivity.policy').exists())
             self.assertTrue((dest/'usr/libexec/devos-keyboard').stat().st_mode & 0o111)

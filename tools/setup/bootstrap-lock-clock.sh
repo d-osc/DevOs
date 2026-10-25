@@ -19,6 +19,9 @@ fi
 if ! grep -q 'devos_dismiss_cover' "$source_dir/main.c"; then
     patch -d "$source_dir" -p1 < "$project_root/distro/oe/meta-devos/recipes-support/swaylock/files/0002-devos-lock-cover.patch"
 fi
+if ! grep -q 'devos_power_click' "$source_dir/seat.c"; then
+    patch -d "$source_dir" -p1 < "$project_root/distro/oe/meta-devos/recipes-support/swaylock/files/0003-devos-lock-power.patch"
+fi
 set --
 if [ -f "$build_dir/build.ninja" ]; then set -- --reconfigure; fi
 meson setup "$@" "$build_dir" "$source_dir" -Dpam=enabled -Dman-pages=disabled

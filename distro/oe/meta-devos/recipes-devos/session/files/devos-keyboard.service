@@ -5,6 +5,7 @@ ConditionPathExists=/usr/libexec/devos-keyboard
 
 [Service]
 Type=oneshot
+Nice=10
 ExecStart=/usr/libexec/devos-keyboard apply
 
 [Install]

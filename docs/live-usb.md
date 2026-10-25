@@ -392,6 +392,28 @@ The Live greeter lists **Root (Live USB)** in the user selector. Sign in with
 username `root` and password `root`. The initramfs installs a SHA-512 password
 hash into the RAM overlay only; the underlying root filesystem password remains
 locked. Reboot resets the Live password. Initial root autologin is preserved.
+Selecting root on the Live greeter shows this password as a hint; the greeter
+rejects `root` unless `/run/devos-live/root-session-enabled` exists, so installed
+systems (where the installer locks root) never offer it.
+
+#### Greeter power buttons
+
+The login screen has Sleep, Restart and Shutdown buttons at the bottom right.
+Restart and Shutdown ask for confirmation (as the panel's power menu does); Sleep
+suspends at once, since there is no desktop to lock. They call logind
+(`Suspend`/`Reboot`/`PowerOff`) as `devos-greeter`; polkit rule
+`50-devos-greeter-power.rules` lets only that user do so, including the
+`-multiple-sessions` variants needed while a Live root session is still open.
+A button is disabled when logind reports the action unavailable.
+
+Verified in WSL: `tests/os-login.test.tsx` (buttons, confirmation, disabled
+state, Live hint) and `tests/greeter-power-polkit.test.py`. Not verified on the
+UX3407NA or in a booted image: that the polkit rule loads, that logind accepts the
+calls from the greeter session, that Sleep resumes back to the greeter, and the
+real-keyboard root login (the previous hardware log from an older image shows the
+greeter root login succeeding through `pam_unix`, so the cause of the reported
+failure is not reproduced from the code; most likely the password `root` was not
+known, which the hint now addresses).
 
 ### Applications and wireless diagnostics
 

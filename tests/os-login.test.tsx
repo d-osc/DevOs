@@ -24,6 +24,23 @@ async function verify() {
         if (find<Gtk.Entry>('os-login-password').get_visibility()) throw new Error('Password must stay hidden');
         find<Gtk.Button>('os-login-local').emit('clicked'); await wait();
         if (completed !== 1 || selected !== 'alice' || credential !== 'private-password') throw new Error('OS sign-in must use selected username and credential');
+        // Power buttons: Sleep runs at once, Restart/Shutdown ask first; unavailable actions stay disabled.
+        const powered: string[] = [];
+        const power = {async capabilities() {return {sleep: true, restart: true, shutdown: false};}, async request(action: string) {powered.push(action);}};
+        root.render(<OSLogin controls={controls} power={power as never} onContinue={() => {}} />); await wait(); await wait();
+        if (!find('login-power-sleep') || !find('login-power-restart') || !find('login-power-shutdown')) throw new Error('Login screen must offer Sleep, Restart and Shutdown');
+        if (find<Gtk.Button>('login-power-shutdown').get_sensitive()) throw new Error('Unavailable power action must be disabled');
+        find<Gtk.Button>('login-power-restart').emit('clicked'); await wait();
+        if (powered.length || !find('login-power-confirm')) throw new Error('Restart must wait for confirmation');
+        find<Gtk.Button>('login-power-cancel').emit('clicked'); await wait();
+        if (find('login-power-confirm')) throw new Error('Cancel must close the confirmation');
+        find<Gtk.Button>('login-power-restart').emit('clicked'); await wait();
+        find<Gtk.Button>('login-power-confirm').emit('clicked'); await wait();
+        find<Gtk.Button>('login-power-sleep').emit('clicked'); await wait();
+        if (powered.join() !== 'restart,sleep') throw new Error('Power actions must be requested once confirmed: ' + powered.join());
+        if (find('os-login-live-hint')) throw new Error('Live root hint only shows for root');
+        root.render(<OSLogin key="live" controls={{async request() {return {users: [{username: 'root', name: 'Root (Live USB)', uid: 0, home: '/root'}], liveRoot: true};}, destroy() {}}} power={power as never} onContinue={() => {}} />); await wait(); await wait();
+        if (!find<Gtk.Label>('os-login-live-hint')?.get_text().includes('"root"')) throw new Error('Live root sign-in must state the Live password');
         root.render(<UsersSettings createEnrollmentControls={() => enrollment} system={{available: true, currentUser: 'alice', users, firstSetup: false}} busy={false} perform={async () => {}} />); await wait();
         find<Gtk.Button>('accounts-add-user').emit('clicked'); await wait();
         find<Gtk.Button>('new-user-guest').emit('clicked'); await wait();

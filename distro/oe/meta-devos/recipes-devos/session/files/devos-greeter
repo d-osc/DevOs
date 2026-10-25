@@ -5,6 +5,8 @@ logdir=${XDG_STATE_HOME:-$HOME/.local/state}/devos
 mkdir -p "$logdir"
 # Clear text left on the login VT before Wayland takes over.
 if [ -w /dev/tty ]; then printf '\033[2J\033[H' >/dev/tty 2>/dev/null || true; fi
+# Fade the boot animation out (a no-op when it is not running) just before the compositor takes the display.
+command -v devos-splash >/dev/null 2>&1 && devos-splash --quit || true
 exec >>"$logdir/devos-greeter.log" 2>&1
 # The QEMU TCG runner exposes a 2D virtio GPU without accelerated EGL.
 case " $(cat /proc/cmdline) " in

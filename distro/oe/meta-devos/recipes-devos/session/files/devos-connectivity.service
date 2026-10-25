@@ -5,6 +5,7 @@ ConditionPathExists=/usr/libexec/devos-connectivity
 
 [Service]
 Type=oneshot
+Nice=10
 ExecStart=/usr/libexec/devos-connectivity apply
 
 [Install]

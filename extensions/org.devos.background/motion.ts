@@ -1,5 +1,6 @@
 import Cairo from 'cairo';
 import {drawHacker, hackerStyles, type HackerStyle} from './hacker.js';
+import {DotBatch, paintShade, spriteGlow} from './scene.js';
 
 export type Rgb = [number, number, number];
 export interface MotionPalette {dark: boolean; base: Rgb; accent: Rgb; cool: Rgb; warm: Rgb}
@@ -7,40 +8,32 @@ export const spaceStyles = ['starfield', 'nebula', 'galaxy', 'meteors', 'eclipse
 export const motionStyles = ['flow', 'ripples', 'fireflies', 'tide', 'planets', ...spaceStyles, ...hackerStyles] as const;
 export type MotionStyle = typeof motionStyles[number];
 export const isMotion = (style: string): style is MotionStyle => (motionStyles as readonly string[]).includes(style);
-/** The animated scene is drawn at a third of the screen size and scaled up, which keeps 20 fps cheap on a high-resolution panel. */
+/** The animated scene is drawn at a third of the screen size and scaled up, which keeps the frame cheap on a high-resolution panel. */
 export const MOTION_SCALE = 3;
 /** Space scenes keep single stars crisp, so they are drawn at half size instead. */
 export const motionScale = (style: string) => ([...spaceStyles, ...hackerStyles] as readonly string[]).includes(style) ? 2 : MOTION_SCALE;
-export const MOTION_INTERVAL_MS = 50;
 
 const TAU = Math.PI * 2;
 function sequence(seed: number): () => number {
     return () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
 }
 function glow(context: Cairo.Context, x: number, y: number, radius: number, color: Rgb, alpha: number) {
-    const gradient = new Cairo.RadialGradient(x, y, 0, x, y, radius);
-    for (const [stop, weight] of [[0, 1], [.2, .8], [.4, .5], [.6, .26], [.8, .08], [1, 0]] as const) gradient.addColorStopRGBA(stop, ...color, alpha * weight);
-    context.setSource(gradient);
-    context.paint();
+    spriteGlow(context, 'glow', x, y, radius, color, alpha);
 }
 const mix = (a: Rgb, b: Rgb, amount: number): Rgb => [a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount, a[2] + (b[2] - a[2]) * amount];
 /** Stars in parallax layers: nearer ones are bigger, brighter and drift faster. On Light they become faint accent-colored specks. */
 function stars(context: Cairo.Context, width: number, height: number, time: number, p: MotionPalette, count: number, seed: number, drift: number) {
-    const random = sequence(seed);
+    const random = sequence(seed), batch = new DotBatch(p.dark ? [mix([.92, .95, 1], p.cool, .22), mix([.92, .95, 1], p.warm, .22)] : [p.accent]);
     for (let index = 0; index < count; index++) {
         const x0 = random(), y0 = random(), depth = .25 + random() * .75, rate = .4 + random() * 1.4, offset = random() * TAU;
         const x = ((x0 - time * drift * depth) % 1 + 1) % 1 * width, size = .3 + depth * .75 + (random() > .97 ? .6 : 0);
         const twinkle = .65 + .35 * Math.sin(time * rate + offset);
-        const color = p.dark ? mix([.92, .95, 1], index % 3 ? p.cool : p.warm, .22) : p.accent;
-        context.setSourceRGBA(...color, (p.dark ? .3 + depth * .55 : .16 + depth * .3) * twinkle);
-        context.arc(x, y0 * height, size, 0, TAU); context.fill();
+        batch.add(p.dark && !(index % 3) ? 1 : 0, (p.dark ? .3 + depth * .55 : .16 + depth * .3) * twinkle, x, y0 * height, size);
     }
+    batch.paint(context);
 }
 function vignette(context: Cairo.Context, width: number, height: number, p: MotionPalette) {
-    const gradient = new Cairo.RadialGradient(width / 2, height / 2, Math.min(width, height) * .45, width / 2, height / 2, Math.hypot(width, height) * .62);
-    gradient.addColorStopRGBA(0, ...p.base, 0);
-    gradient.addColorStopRGBA(1, ...(p.dark ? [0, 0, 0] as Rgb : p.base), p.dark ? .42 : .22);
-    context.setSource(gradient); context.paint();
+    paintShade(context, width, height, p.dark ? [0, 0, 0] : p.base, p.dark ? .42 : .22);
 }
 
 /** Every motion is slow and periodic, so a frame depends only on `time` in seconds. */
@@ -72,9 +65,7 @@ export function drawMotion(context: Cairo.Context, style: MotionStyle, width: nu
             const x0 = random(), y0 = random(), speed = 1 / (140 + random() * 160), sway = .01 + random() * .03, rate = .2 + random() * .5, offset = random() * TAU, size = (.5 + random() * 1.6) * Math.min(width, height) / 160;
             const x = (x0 + Math.sin(time * rate + offset) * sway) * width, y = (((y0 - time * speed) % 1) + 1) % 1 * height;
             const twinkle = .45 + .55 * Math.sin(time * (.6 + rate) + offset), color = index % 3 ? accent : index % 2 ? warm : cool;
-            const dot = new Cairo.RadialGradient(x, y, 0, x, y, size * 4);
-            dot.addColorStopRGBA(0, ...color, .55 * twinkle); dot.addColorStopRGBA(.3, ...color, .2 * twinkle); dot.addColorStopRGBA(1, ...color, 0);
-            context.setSource(dot); context.arc(x, y, size * 4, 0, TAU); context.fill();
+            spriteGlow(context, 'spark', x, y, size * 4, color, .55 * twinkle);
         }
     } else if (style === 'tide') {
         glow(context, width * .78, height * .2, reach * .6, accent, dark ? .2 : .26);
@@ -110,15 +101,15 @@ export function drawMotion(context: Cairo.Context, style: MotionStyle, width: nu
         glow(context, cx, cy, unit * .5, accent, dark ? .30 : .36);
         glow(context, cx, cy, unit * .12, warm, dark ? .35 : .3);
         glow(context, width * .1, height * .9, reach * .5, cool, dark ? .10 : .18);
-        const random = sequence(2026);
+        const random = sequence(2026), batch = new DotBatch(dark ? [mix([.92, .95, 1], cool, .35), mix([.92, .95, 1], warm, .35)] : [accent]);
         for (let index = 0; index < 1200; index++) {
             const arm = index % 2, along = Math.pow(random(), 1.05), theta = along * 4.4 + arm * Math.PI + spin + (random() - .5) * .55 * (1 - along * .5);
             const radius = unit * (.03 + along * .55), px = Math.cos(theta) * radius, py = Math.sin(theta) * radius * .46;
             const x = cx + px * Math.cos(-.5) - py * Math.sin(-.5), y = cy + px * Math.sin(-.5) + py * Math.cos(-.5);
-            const color = dark ? mix([.92, .95, 1], index % 3 ? cool : warm, .35) : accent, twinkle = .7 + .3 * Math.sin(time * (.5 + random()) + index);
-            context.setSourceRGBA(...color, (dark ? .5 : .3) * (1 - along * .6) * twinkle);
-            context.arc(x, y, .35 + random() * .7, 0, TAU); context.fill();
+            const twinkle = .7 + .3 * Math.sin(time * (.5 + random()) + index);
+            batch.add(dark && !(index % 3) ? 1 : 0, (dark ? .5 : .3) * (1 - along * .6) * twinkle, x, y, .35 + random() * .7);
         }
+        batch.paint(context);
         stars(context, width, height, time, p, 110, 9, 1 / 2400);
     } else if (style === 'meteors') {
         glow(context, width * .25, height * .2, reach * .55, cool, dark ? .13 : .2);

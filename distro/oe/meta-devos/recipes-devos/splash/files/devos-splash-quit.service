@@ -1,0 +1,13 @@
+[Unit]
+Description=Hand the screen over from the Dev OS boot animation
+After=greetd.service
+# Safety net: the greeter/desktop scripts normally fade the animation out themselves. If they did not (slow or
+# broken session), quit it here: a normal fade when the login is running, the text console when it is not.
+
+[Service]
+Type=exec
+ExecStart=/bin/sh -c 'sleep 25; if systemctl is-active --quiet greetd.service; then exec /usr/bin/devos-splash --quit; else exec /usr/bin/devos-splash --quit --text; fi'
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

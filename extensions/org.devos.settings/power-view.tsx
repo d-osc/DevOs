@@ -4,13 +4,15 @@ import {BatteryCareSettings} from './battery-care-view.js';
 import type {BatteryCareControls} from './battery-care.js';
 import {FanProfileSettings} from './fan-profile-view.js';
 import type {FanProfileControls} from './fan-profile.js';
+import {SwapSettings} from './swap-view.js';
+import type {SwapControls} from './swap.js';
 
 const modes: Record<string, {title: string; description: string; icon: string}> = {
     'power-saver': {title: 'Power saver', description: 'Use less energy and extend battery life.', icon: 'power-profile-power-saver-symbolic'},
     balanced: {title: 'Balanced', description: 'Everyday performance with efficient power use.', icon: 'power-profile-balanced-symbolic'},
     performance: {title: 'Performance', description: 'Prioritize speed for demanding tasks.', icon: 'power-profile-performance-symbolic'},
 };
-export function PowerSettings({state, busy, selected, select, apply, openHost, battery, fan}: {state: SystemState; busy: boolean; selected: string; select(id: string): void; apply(): void; openHost(): void; battery?: BatteryCareControls; fan?: FanProfileControls}) {
+export function PowerSettings({state, busy, selected, select, apply, openHost, battery, fan, swap}: {state: SystemState; busy: boolean; selected: string; select(id: string): void; apply(): void; openHost(): void; battery?: BatteryCareControls; fan?: FanProfileControls; swap?: SwapControls}) {
     const supported = state.power.profiles.filter(id => modes[id]);
     return <Box orientation="vertical" spacing={20}>
         {state.batteries.length ? state.batteries.map((battery, index) => <Box key={index} className={`power-battery-hero ${battery.percent !== null && battery.percent <= 20 ? 'power-battery-low' : ''}`} orientation="vertical" spacing={18}>
@@ -20,6 +22,7 @@ export function PowerSettings({state, busy, selected, select, apply, openHost, b
         </Box>) : <Box className="power-empty" spacing={20}><Box className="power-empty-icon" widthRequest={64} heightRequest={64}><Image expand iconName="battery-missing-symbolic" pixelSize={34} /></Box><Box orientation="vertical" spacing={7} expand><Label id="power-no-battery" className="section-heading" xalign={0}>No battery detected</Label><Label className="settings-description" xalign={0} wrap>{state.hostManaged ? 'Battery information is managed by Windows in this session.' : 'This session does not expose a battery. Battery details will appear on supported hardware.'}</Label></Box></Box>}
         {state.batteries.length > 0 && !state.hostManaged && <BatteryCareSettings controls={battery} />}
         {!state.hostManaged && <FanProfileSettings controls={fan} />}
+        {!state.hostManaged && <SwapSettings controls={swap} />}
         <Box className="settings-card system-card" orientation="vertical" spacing={16}>
             <Box spacing={12}><Image iconName="battery-good-symbolic" pixelSize={23} /><Box orientation="vertical" spacing={4} expand><Label className="section-heading" xalign={0}>Power mode</Label><Label className="settings-description" xalign={0} wrap>Choose the balance between energy use and performance.</Label></Box></Box>
             {state.hostManaged ? <><Label className="settings-description" xalign={0} wrap>Windows controls power management for this session.</Label><Button id="system-power-host" sensitive={!busy && state.hostSettings} onClicked={openHost}>Open Windows power settings</Button></> : state.power.available && supported.length ? <>

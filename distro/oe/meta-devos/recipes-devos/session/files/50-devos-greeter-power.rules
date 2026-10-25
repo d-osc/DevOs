@@ -1,0 +1,8 @@
+// The login screen runs as devos-greeter, and on the Live USB a root session may still be open behind it,
+// which makes logind ask for administrator authentication ("-multiple-sessions"). Nobody can have signed in
+// yet, so let the greeter, and only the greeter, restart, power off or suspend this device.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "devos-greeter" || !subject.local) return polkit.Result.NOT_HANDLED;
+    if (/^org\.freedesktop\.login1\.(reboot|power-off|suspend)(-multiple-sessions)?$/.test(action.id)) return polkit.Result.YES;
+    return polkit.Result.NOT_HANDLED;
+});
