@@ -35,8 +35,10 @@ fn runLong(argv: Vec<str>): Done {
 fn runLongAt(argv: Vec<str>, stamp: str): Done {
     let quoted = Vec<str>()
     for i in 0..(argv.len() as i64) { quoted.push(quote(argv[i])) }
-    let script = strings.join(quoted, " ") + " > " + quote(stamp + ".out") + " 2> " + quote(stamp + ".err") + "; echo $? > " + quote(stamp + ".code")
-    hw.run(Vec<str>("rm", "-f", stamp + ".out", stamp + ".err", stamp + ".code"), 10000)
+    # Publish the exit status atomically: redirection creates an empty file before echo writes its contents.
+    # Polling that empty file could otherwise turn a successful command into exit code 1.
+    let script = strings.join(quoted, " ") + " > " + quote(stamp + ".out") + " 2> " + quote(stamp + ".err") + "; echo $? > " + quote(stamp + ".code.tmp") + " && mv -- " + quote(stamp + ".code.tmp") + " " + quote(stamp + ".code")
+    hw.run(Vec<str>("rm", "-f", stamp + ".out", stamp + ".err", stamp + ".code", stamp + ".code.tmp"), 10000)
     let pid = hw.spawnDetached(Vec<str>("sh", "-c", script))
     require(pid > 0, "Could not start " + argv[0])
     let started = hw.nowSeconds()

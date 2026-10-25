@@ -6,6 +6,7 @@ use "std/result"
 use "../../lib/hw.dev" as hw
 use "../../distro/usb/usbimage.dev" as img
 use "../../distro/usb/usbstage.dev" as st
+use "../../distro/usb/hostio.dev" as io
 
 fn arg(args: json.Value, i: i64): str {
     if i >= (json.len(args) as i64) { return "" }
@@ -13,6 +14,10 @@ fn arg(args: json.Value, i: i64): str {
 }
 
 fn dispatch(name: str, args: json.Value): json.Value {
+    if strings.equal(name, "runLongAt") {
+        let done = io.runLongAt(Vec<str>(arg(args, 0), arg(args, 1)), arg(args, 2))
+        return json.set(json.set(json.object(), "code", done.code), "out", done.out)
+    }
     if strings.equal(name, "firmwareBundle") { return img.firmwareBundle(arg(args, 0)) }
     if strings.equal(name, "check") { return img.check(arg(args, 0)) }
     if strings.equal(name, "kernelBundle") {

@@ -31,6 +31,26 @@ exit 0
 '''
 
 class LiveUsbTests(unittest.TestCase):
+    def test_command_status_waits_for_a_complete_write(self):
+        # Delay echo after the shell opens its redirected status file. Publishing
+        # that empty file used to make a successful command look like exit 1.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tools = root / 'tools'; tools.mkdir()
+            fake_tool(tools, 'sh', '''if [ "$1" = -c ]; then
+    script=$2; shift 2
+    exec /bin/sh -c 'echo() { sleep 0.2; /bin/echo "$@"; }; '"$script" "$@"
+fi
+exec /bin/sh "$@"
+''')
+            for code in (0, 7):
+                command = fake_tool(root, 'command', f'printf output; printf error >&2; exit {code}\n')
+                status = root / 'status'
+                result = usb.call('runLongAt', command, 'unused', status, tools=tools)
+                self.assertEqual(result, {'code': code, 'out': 'output' + ('error' if code else '')})
+                for suffix in ('.out', '.err', '.code', '.code.tmp'):
+                    self.assertFalse(Path(str(status) + suffix).exists())
+
     def test_camera_modules_are_read_back_from_image_and_hashed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);bundle=root/'bundle';bundle.mkdir();output=root/'stage';output.mkdir();tools=root/'tools';tools.mkdir()
