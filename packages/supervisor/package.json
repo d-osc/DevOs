@@ -1,6 +1,6 @@
 {
   "name": "@dev-os/supervisor",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "exports": {
     ".": {
@@ -13,9 +13,9 @@
     "README.md"
   ],
   "dependencies": {
-    "@dev-os/config": "0.3.6",
-    "@dev-os/core": "0.3.6",
-    "@dev-os/runtime": "0.3.6",
-    "@dev-os/services": "0.3.6"
+    "@dev-os/config": "0.3.7",
+    "@dev-os/core": "0.3.7",
+    "@dev-os/runtime": "0.3.7",
+    "@dev-os/services": "0.3.7"
   }
 }

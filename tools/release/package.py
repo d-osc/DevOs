@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Validate a DevOs release and build its GitHub release archives.
 
-  package.py check --version v0.3.6      version format, package.json match, release notes present
-  package.py build --version v0.3.6 --output dist/releases/v0.3.6
+  package.py check --version v0.3.7      version format, package.json match, release notes present
+  package.py build --version v0.3.7 --output dist/releases/v0.3.7
 
 `build` writes, next to a SHA256SUMS file:
   devos-<version>-runtime.tar.gz  the desktop payload that distro/oe/prepare.dev builds (same file list as its
@@ -59,7 +59,7 @@ def check(version, root=ROOT, notes_dir=None):
     """Raise SystemExit with a clear message unless `version` can be released from this checkout."""
     notes_dir = notes_dir or NOTES_DIR
     if not VERSION.fullmatch(version or ''):
-        fail(f'release version {version!r} is not vMAJOR.MINOR.PATCH (for example v0.3.6)')
+        fail(f'release version {version!r} is not vMAJOR.MINOR.PATCH (for example v0.3.7)')
     declared = package_version(root)
     if version != 'v' + declared:
         fail(f'release version {version} does not match package.json version {declared}; bump package.json '
@@ -180,7 +180,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('check', 'build'):
         sub = commands.add_parser(name)
-        sub.add_argument('--version', required=True, help='release tag such as v0.3.6')
+        sub.add_argument('--version', required=True, help='release tag such as v0.3.7')
         sub.add_argument('--notes-dir', default=None, help=f'default: $RELEASE_NOTES_DIR or {NOTES_DIR}')
         if name == 'build':
             sub.add_argument('--output', required=True, type=Path)

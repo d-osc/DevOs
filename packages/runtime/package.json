@@ -1,6 +1,6 @@
 {
   "name": "@dev-os/runtime",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "exports": {
     "./lid": {
@@ -37,8 +37,8 @@
     "README.md"
   ],
   "dependencies": {
-    "@dev-os/config": "0.3.6",
-    "@dev-os/core": "0.3.6",
-    "@dev-os/updates": "0.3.6"
+    "@dev-os/config": "0.3.7",
+    "@dev-os/core": "0.3.7",
+    "@dev-os/updates": "0.3.7"
   }
 }

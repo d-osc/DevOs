@@ -6,12 +6,12 @@ description. The directory name is set in one place, `RELEASE_NOTES_DIR` in `.gi
 
 ## Cutting a release
 
-1. Set the new version everywhere `0.3.6` appears in the version files: `package.json`, `package-lock.json`,
-   `packages/*/package.json` and the fallback in `packages/config/index.ts` (`git grep 0.3.6`). The tag must be `v` plus
+1. Set the new version everywhere the current one appears in the version files: `package.json`, `package-lock.json`,
+   `packages/*/package.json`, the fallback in `packages/config/index.ts` and the recipe file name
+   `distro/oe/meta-devos/recipes-devos/shell/devos-shell_<version>.bb` (`git grep 0.3.7`). The tag must be `v` plus
    the `package.json` version: the shell's build info and the updater take the version from there.
 2. Write `docs/releases/v0.3.7.md` in English: what changed, what is untested on the UX3407NA (be honest), assets.
-   `v0.3.6.md` is a draft for the first release from `ux3407na-dev`. The tag `v0.3.6` already exists (2026-10-05, commit
-   `6561453`), so that draft must be renamed to the next version before use.
+   `v0.3.7.md` is the first release from `ux3407na-dev` and can serve as a template. The tag `v0.3.6` already exists.
 3. Commit and push to `ux3407na-dev` (or `main`).
 4. In GitHub, open Actions > "Build and publish DevOs release" > Run workflow on that branch and enter `v0.3.7`.
 

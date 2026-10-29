@@ -178,7 +178,7 @@ The same package exports `UIRuntime`, `UIExtension`, `UIContext`, `Cleanup`, set
 
 ## Pack a standalone library
 
-Run `npm run core:pack` from the repository root. The archive is written to `build/core-package/dev-os-core-0.3.6.tgz`. Install it in another project with `npm install /path/to/dev-os-core-0.3.6.tgz`.
+Run `npm run core:pack` from the repository root. The archive is written to `build/core-package/dev-os-core-0.3.7.tgz`. Install it in another project with `npm install /path/to/dev-os-core-0.3.7.tgz`.
 
 The package includes a single ESM bundle containing React, React Reconciler, Scheduler, the GTK renderer, timers, and UIRuntime, plus all referenced declarations and third-party licenses. Type dependencies are declared in the package manifest and installed by npm. Native GTK 3, GJS and required GI libraries must be available on the Linux host. The library is intended for GJS, not Node.js or browsers.
 

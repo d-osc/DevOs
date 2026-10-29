@@ -124,7 +124,7 @@ class IntegrationTests(unittest.TestCase):
     """The installer is useless unless the image ships its tools and the Live USB carries a bootable installed-system image."""
 
     def test_image_ships_the_installer_tools(self):
-        recipe = (ROOT / 'distro/oe/meta-devos/recipes-devos/shell/devos-shell_0.3.6.bb').read_text()
+        recipe = (ROOT / 'distro/oe/meta-devos/recipes-devos/shell/devos-shell_0.3.7.bb').read_text()
         depends = recipe.split('RDEPENDS:${PN} = "', 1)[1].split('"', 1)[0].split()
         for package in ('util-linux-sfdisk', 'util-linux-blkid', 'util-linux-lsblk', 'util-linux-findmnt', 'util-linux-findfs',
                         'dosfstools', 'e2fsprogs-mke2fs', 'tar', 'shadow', 'efibootmgr'):

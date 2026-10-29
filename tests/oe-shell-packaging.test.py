@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-RECIPE = ROOT / 'distro/oe/meta-devos/recipes-devos/shell/devos-shell_0.3.6.bb'
+RECIPE = ROOT / 'distro/oe/meta-devos/recipes-devos/shell/devos-shell_0.3.7.bb'
 
 
 class ShellPackagingTests(unittest.TestCase):
