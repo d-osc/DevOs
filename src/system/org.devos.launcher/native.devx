@@ -163,7 +163,7 @@ fn App(context:*ui.Context):ui.Node {
         ui.Button(list,"List",fn() { asked.set(0); sp.send(l,request("save",Vec<ui.Text>(pair("appView",plain("list"))))) }),
         ui.Button(tiles,"Grid",fn() { asked.set(0); sp.send(l,request("save",Vec<ui.Text>(pair("appView",plain("grid"))))) }))))
     let cards = Vec<ui.Node>()
-    let perLine: usize = 4
+    let perLine: usize = 6
     let line = Vec<ui.Node>()
     for n in 0..(shownApps.len() as i64) {
         let app = apps[shownApps[n]]
@@ -174,13 +174,27 @@ fn App(context:*ui.Context):ui.Node {
         if editing.value != 0 { let pinOptions = ui.named("launcher-pin-${n}"); inside.push(ui.Button(pinOptions,pinned(appKey(app)) ? "−" : "+",fn() { pin(appKey(app)) })) }
         let content = ext.row(12,Vec<ui.Node>(picture,ext.expand(ext.row(8,inside))))
         let options = ui.named("launcher-app-${n}")
-        let button = ui.WidgetButton(options,content,fn() { launch(app) })
-        if grid { line.push(button); if line.len() >= perLine { cards.push(ext.row(8,line)); line = Vec<ui.Node>() } } else { cards.push(button) }
+        if grid {
+            # A tile: a large icon over the name and a one-line description, all centered; `rd-tile` is styled in gtk.c (card, hover and press states).
+            let big = ui.props(); big.iconSize = (iconSize + 24) as i32; big.halign = 3
+            let glyph = ui.element(11,big,has(app.icon) ? app.icon : plain("application-x-executable"),Vec<ui.Node>())
+            let nameProps = ui.props(); nameProps.className = ui.text("rd-tile-name"); nameProps.xalign = 0.5; nameProps.ellipsize = true; nameProps.widthChars = 14; nameProps.halign = 3
+            let rows = Vec<ui.Node>(glyph,ui.withProps(ui.TextLabel(app.name),nameProps))
+            if showDescriptions {
+                let descProps = ui.props(); descProps.className = ui.text("rd-tile-desc"); descProps.xalign = 0.5; descProps.ellipsize = true; descProps.widthChars = 18; descProps.halign = 3
+                rows.push(ui.withProps(ui.TextLabel(has(app.description) ? app.description : plain("Application")),descProps))
+            }
+            if editing.value != 0 { let pinOptions = ui.named("launcher-pin-${n}"); pinOptions.halign = 3; rows.push(ui.Button(pinOptions,pinned(appKey(app)) ? "Remove" : "Add",fn() { pin(appKey(app)) })) }
+            let tile = ui.props(); tile.id = options.id; tile.className = ui.text("rd-tile"); tile.width = 176; tile.height = 150
+            let column = ui.props(); column.spacing = 8; column.valign = 3
+            line.push(ui.WidgetButton(tile,ui.Box(column,rows),fn() { launch(app) }))
+            if line.len() >= perLine { let rowProps = ui.props(); rowProps.vertical = false; rowProps.spacing = 14; rowProps.halign = 3; cards.push(ui.Box(rowProps,line)); line = Vec<ui.Node>() }
+        } else { cards.push(ui.WidgetButton(options,content,fn() { launch(app) })) }
     }
-    if grid && line.len() > 0 { cards.push(ext.row(8,line)) }
+    if grid && line.len() > 0 { let rowProps = ui.props(); rowProps.vertical = false; rowProps.spacing = 14; rowProps.halign = 3; cards.push(ui.Box(rowProps,line)) }
     if shownApps.len() == 0 { cards.push(k.note("No applications found. Try another name or keyword.","launcher-app-description")) }
     let scroller = ui.props(); scroller.expand = true
-    nodes.push(ui.Scroll(scroller,ext.column(compact ? 2 : 6,cards)))
+    nodes.push(ui.Scroll(scroller,ext.column(grid ? 14 : (compact ? 2 : 6),cards)))
     # --- confirmations, message, footer ---
     if has(confirm.value) {
         let isLogout = k.isText(confirm.value,"logout")

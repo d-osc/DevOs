@@ -5,7 +5,7 @@
 void *rd_find_name(void *data,const char *name);
 
 typedef void (*RdDispatch)(int32_t, void *, const unsigned char *, int64_t, void *);
-typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; } RdRoot;
+typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; gboolean layer, closing; gint64 fade_start; double fade_from; } RdRoot;
 static int64_t rd_live_widgets = 0;
 static void rd_widget_destroyed(GtkWidget *widget, void *data) { (void)widget; (void)data; rd_live_widgets--; }
 int64_t rd_widget_live_count(void) { return rd_live_widgets; }
@@ -64,6 +64,23 @@ void rd_close(void *data);
 static gboolean rd_layer_key(GtkWidget *widget, GdkEventKey *event, void *data) {
     (void)widget; if (event->keyval == GDK_KEY_Escape) { rd_close(data); return TRUE; } return FALSE;
 }
+/* Open: the overlay fades in and slides up 28 px over 260 ms (ease-out); close: it fades out over 160 ms (ease-in) before the window is destroyed. */
+static gboolean rd_fade_in(GtkWidget *widget, GdkFrameClock *clock, void *data) {
+    (void)widget; RdRoot *root = data; if (root->closed || root->closing) return G_SOURCE_REMOVE;
+    gint64 now = gdk_frame_clock_get_frame_time(clock); if (!root->fade_start) root->fade_start = now;
+    double t = (double)(now - root->fade_start) / 260000.0; if (t > 1) t = 1;
+    double p = 1 - (1 - t) * (1 - t) * (1 - t);
+    gtk_widget_set_opacity(root->window, p); gtk_widget_set_margin_top(root->host, (int)((1 - p) * 28));
+    return t >= 1 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+}
+static gboolean rd_fade_out(GtkWidget *widget, GdkFrameClock *clock, void *data) {
+    (void)widget; RdRoot *root = data; if (root->closed) return G_SOURCE_REMOVE;
+    gint64 now = gdk_frame_clock_get_frame_time(clock); if (!root->fade_start) root->fade_start = now;
+    double t = (double)(now - root->fade_start) / 160000.0; if (t > 1) t = 1;
+    gtk_widget_set_opacity(root->window, root->fade_from * (1 - t * t));
+    if (t >= 1) { root->layer = FALSE; gtk_widget_destroy(root->window); return G_SOURCE_REMOVE; }
+    return G_SOURCE_CONTINUE;
+}
 static void rd_layer_overlay(RdRoot *root) {
     const char *mode = g_getenv("RD_LAYER"); if (!mode || !*mode) return;
     void *library = dlopen("libgtk-layer-shell.so.0", RTLD_LAZY | RTLD_GLOBAL); if (!library) return;
@@ -82,12 +99,13 @@ static void rd_layer_overlay(RdRoot *root) {
     for (int edge = 0; edge < 4; edge++) anchor(window, edge, TRUE);
     gtk_window_set_decorated(window, FALSE);
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css, "window.background.rd-layer-scrim {background-color: rgba(10, 12, 16, 0.88); background-image: none;} .rd-layer-panel {background-color: transparent; padding: 36px 64px;}", -1, NULL);
+    gtk_css_provider_load_from_data(css, "window.background.rd-layer-scrim {background-color: #121314; background-color: @dv_s0; background-image: none;} .rd-layer-panel {background-color: transparent; padding: 36px 64px;} .rd-tile {padding: 20px 12px; border-radius: 18px; border: 1px solid transparent; background-color: #1b1c1e; background-color: @dv_s2; transition: background-color 140ms ease, border-color 140ms ease;} .rd-tile:hover {border-color: #297aa0; border-color: @dv_accent; background-color: #242526; background-color: @dv_s3;} .rd-tile:active {background-color: #121314; background-color: @dv_s0;} .rd-tile-name {font-weight: 600; color: #ededed; color: @dv_fg_strong;} .rd-tile-desc {font-size: 11px; color: #8c8c8c; color: @dv_fg_muted;}", -1, NULL);
     gtk_style_context_add_provider_for_screen(root->screen, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
     g_object_unref(css);
     gtk_style_context_add_class(gtk_widget_get_style_context(root->window), "rd-layer-scrim");
     g_object_set_data(G_OBJECT(root->window), "rd-layer", GINT_TO_POINTER(1));
     g_signal_connect(root->window, "key-press-event", G_CALLBACK(rd_layer_key), root);
+    root->layer = TRUE; gtk_widget_set_opacity(root->window, 0); gtk_widget_add_tick_callback(root->window, rd_fade_in, root, NULL);
 }
 void *rd_new(const char *title, int32_t width, int32_t height) {
     if (!gtk_init_check(NULL, NULL)) return NULL;
@@ -109,7 +127,11 @@ void rd_callback(void *data, RdDispatch dispatch, void *context) { RdRoot *root 
 void rd_schedule(void *data) { RdRoot *root = data; if (!root->closed && !root->idle) root->idle = g_idle_add(rd_idle, root); }
 void rd_applying(void *data, int32_t applying) { ((RdRoot *)data)->applying = applying != 0; }
 void rd_run(void *data) { RdRoot *root = data; if (!root->closed) {gtk_widget_show(root->window); gtk_widget_show(root->host); gtk_main();} }
-void rd_close(void *data) { RdRoot *root = data; if (!root->closed) gtk_widget_destroy(root->window); }
+void rd_close(void *data) {
+    RdRoot *root = data; if (root->closed) return;
+    if (root->layer && !root->closing && gtk_widget_get_mapped(root->window)) { root->closing = TRUE; root->fade_start = 0; root->fade_from = gtk_widget_get_opacity(root->window); gtk_widget_add_tick_callback(root->window, rd_fade_out, root, NULL); return; }
+    if (!root->closing) gtk_widget_destroy(root->window);
+}
 int32_t rd_css(void *data, const char *text) {
     RdRoot *root = data;
     GtkCssProvider *next=NULL;
@@ -126,7 +148,7 @@ int32_t rd_css(void *data, const char *text) {
 }
 int64_t rd_css_revision(void *data){return ((RdRoot *)data)->css_revision;}
 double rd_named_color(void *data,const char *name,int32_t channel){RdRoot *root=data;GdkRGBA color;if(!gtk_style_context_lookup_color(gtk_widget_get_style_context(root->window),name,&color))return -1;return channel==0?color.red:channel==1?color.green:channel==2?color.blue:color.alpha;}
-void rd_free(void *data) { RdRoot *root = data; rd_close(root); root->dispatch = NULL; rd_css(root, "");
+void rd_free(void *data) { RdRoot *root = data; root->layer = FALSE; root->closing = FALSE; rd_close(root); root->dispatch = NULL; rd_css(root, "");
     if(root->popovers){for(guint i=0;i<root->popovers->len;i++)gtk_widget_destroy(g_ptr_array_index(root->popovers,i));g_ptr_array_unref(root->popovers);}
     if (root->bus_object) g_dbus_connection_unregister_object(root->bus, root->bus_object);
     if (root->bus_name) g_bus_unown_name(root->bus_name);
