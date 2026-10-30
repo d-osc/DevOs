@@ -1,7 +1,7 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {TaskViewLive} from '../src/apps/org.devos.launcher/task-view.js';
+import {TaskViewLive} from '../src/system/org.devos.launcher/task-view.js';
 import type {DesktopWindow, DesktopWorkspace, WindowControls} from '@dev-os/services/windows';
 import {gestureWindowTarget} from '@dev-os/services/windows';
 Gtk.init(null);

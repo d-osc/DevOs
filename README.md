@@ -16,7 +16,7 @@
 
 รองรับ **React + TypeScript / TSX → native GTK widgets** ผ่าน lib ใน `packages/core/`
 UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, เมนู session และพื้นหลัง
-เริ่มแก้ได้ที่ `src/system/org.devos.panel/view.tsx`, `src/apps/org.devos.launcher/view.tsx` และ `src/apps/org.devos.files/view.tsx`
+เริ่มแก้ได้ที่ `src/system/org.devos.panel/view.tsx`, `src/system/org.devos.launcher/view.tsx` และ `src/apps/org.devos.files/view.tsx`
 
 ## สิ่งที่มีแล้ว
 

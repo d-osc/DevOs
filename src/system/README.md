@@ -5,6 +5,7 @@ Desktop infrastructure lives here and is displayed under **System**, separately 
 - `org.devos.panel`: desktop panel and its menus.
 - `org.devos.displaycare`: display care and OLED protection effects.
 - `org.devos.background`: desktop background and animations.
+- `org.devos.launcher`: application launcher, task view and snap layouts.
 
 `supervisor.dev` manages session process lifetimes and restarts through
 `lib/session-supervisor.dev`. The session entry uses this DevLang implementation;

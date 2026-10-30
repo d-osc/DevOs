@@ -406,7 +406,7 @@ Verified: `tests/bluetooth-native.test.dev` (4/4) with a fake `dev-os-devices-li
 
 ## Launcher: data rules in DevLang (first step)
 
-`src/apps/org.devos.launcher/model.dev` holds the pure rules of the launcher: option clamping (`options.ts`), the workspace app list and app view (`customization.ts`), which entries may offer Uninstall (`userPackageCommand` of `uninstall.ts`: only `dev-<command>.desktop` files in the user directory, regular files and not symlinks, whose Exec is `… --root <store> run <command>` for the same command; `dev-os-*` base apps never qualify) and the lines of the Info menu item. `tests/launcher-model.test.dev` (4/4) mirrors the cases of `tests/launcher-uninstall.test.ts`.
+`src/system/org.devos.launcher/model.dev` holds the pure rules of the launcher: option clamping (`options.ts`), the workspace app list and app view (`customization.ts`), which entries may offer Uninstall (`userPackageCommand` of `uninstall.ts`: only `dev-<command>.desktop` files in the user directory, regular files and not symlinks, whose Exec is `… --root <store> run <command>` for the same command; `dev-os-*` base apps never qualify) and the lines of the Info menu item. `tests/launcher-model.test.dev` (4/4) mirrors the cases of `tests/launcher-uninstall.test.ts`.
 
 Not ported: the launcher window itself (`view.tsx`, `task-view.tsx`, `snap-view.tsx`, `snap-sashes.ts`, `overlay-motion.ts`, `index.ts`, `settings-view.tsx`), which depends on the shell overlay and the window tracker and needs a real Wayland session to verify. No TS file was deleted, because the JS launcher is still the production route and `tests/launcher-*.test.ts` import the TS modules.
 

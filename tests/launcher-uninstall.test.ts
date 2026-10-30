@@ -1,5 +1,5 @@
 import {Gtk, GLib, removeTree} from '@dev-os/core';
-import {userPackageCommand, createAppContextMenu, appInfoLines} from '../src/apps/org.devos.launcher/uninstall.js';
+import {userPackageCommand, createAppContextMenu, appInfoLines} from '../src/system/org.devos.launcher/uninstall.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 const directory = GLib.dir_make_tmp('devos-launcher-uninstall-XXXXXX');

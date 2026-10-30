@@ -5,7 +5,7 @@ import {sendCommand, processApplicationId, missingProcess} from '@dev-os/runtime
 import {UpdatesView} from './apps/org.devos.updates/view.js';
 import {FilesSettings} from './apps/org.devos.files/settings-view.js';
 import {TerminalSettings} from './apps/org.devos.terminal/settings-view.js';
-import {LauncherSettings} from './apps/org.devos.launcher/settings-view.js';
+import {LauncherSettings} from './system/org.devos.launcher/settings-view.js';
 import {CameraSettings} from './apps/org.devos.camera/settings-view.js';
 import {MicrophoneSettings} from './apps/org.devos.microphone/settings-view.js';
 import {TaskManagerSettings} from './apps/org.devos.taskmanager/settings.js';

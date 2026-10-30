@@ -6,7 +6,7 @@ import {mountLauncher} from './view.js';
 import {installedApps, searchApps} from '@dev-os/services/apps';
 import {launcherOptions, type LauncherOptions} from './options.js';
 import {OverlayMotion} from './overlay-motion.js';
-import {PackageManagerCli} from '../org.devos.appstore/package-backend.js';
+import {PackageManagerCli} from '../../apps/org.devos.appstore/package-backend.js';
 
 // Native adapter: React owns the contents and interaction state.
 export class Launcher {

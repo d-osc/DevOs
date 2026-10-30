@@ -3,7 +3,7 @@ import {Gtk, Gdk, GLib, React, createRoot} from '@dev-os/core';
 import {snapCells, resizeSnap, fitSnapGroup} from '@dev-os/services/snap-geometry';
 import {ROOT} from '@dev-os/config';
 import {snapLayouts, validSnapMembers, type DesktopWindow, type WindowControls, type SnapGroup} from '@dev-os/services/windows';
-import {SnapLayouts} from '../src/apps/org.devos.launcher/snap-view.js';
+import {SnapLayouts} from '../src/system/org.devos.launcher/snap-view.js';
 Gtk.init(null);
 function assert(value: unknown, message: string) {if (!value) throw new Error(message);}
 const state: DesktopWindow[] = [1, 2, 3, 4].map(id => ({id, title: `Window ${id}`, appId: 'test', active: id === 1, minimized: false, desktop: 1}));

@@ -3,7 +3,7 @@ use "std/test"
 use "std/json"
 use "std/strings"
 use "../tools/lib/tool.dev" as tool
-use "../src/apps/org.devos.launcher/model.dev" as m
+use "../src/system/org.devos.launcher/model.dev" as m
 use "./lib/react-devlang.dev" as t
 
 fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }

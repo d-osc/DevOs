@@ -2,10 +2,10 @@ import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, Gio, GLib, createRoot, type SettingsValues} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {LauncherSettings} from '../src/apps/org.devos.launcher/settings-view.js';
-import {launcherOptions} from '../src/apps/org.devos.launcher/options.js';
-import {mountLauncher} from '../src/apps/org.devos.launcher/view.js';
-import {launcherCustomization, workspaceAppKey} from '../src/apps/org.devos.launcher/customization.js';
+import {LauncherSettings} from '../src/system/org.devos.launcher/settings-view.js';
+import {launcherOptions} from '../src/system/org.devos.launcher/options.js';
+import {mountLauncher} from '../src/system/org.devos.launcher/view.js';
+import {launcherCustomization, workspaceAppKey} from '../src/system/org.devos.launcher/customization.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
