@@ -1,0 +1,32 @@
+use "std/test"
+use "std/strings"
+use "../src/apps/org.devos.appstore/package-rules.dev" as p
+use "./lib/react-devlang.dev" as t
+
+test.case("package files are recognised by their suffix, ignoring case and bare suffixes",fn() {
+    test.expect(strings.equal(p.packageKind("/a/b/App.DPK"),"dpk") && strings.equal(p.packageKind("x.dpkx"),"dpk") && strings.equal(p.packageKind("/d/pkg_1.0_amd64.deb"),"deb") && strings.equal(p.packageKind("a.rpm"),"rpm") && strings.equal(p.packageKind("/x/a.tar.gz"),"tar.gz"),"A package was not recognised")
+    test.expect(strings.equal(p.packageKind(".deb"),"") && strings.equal(p.packageKind("/d/.rpm"),"") && strings.equal(p.packageKind("notes.txt"),"") && strings.equal(p.packageKind("a.tar"),"") && strings.equal(p.packageKind("/a.deb/b"),""),"A non-package was recognised")
+    test.expect(p.isPackageFile("x.deb") && !p.isPackageFile("x.zip"),"isPackageFile wrong")
+})
+test.case("native package names match DevOsPM: lowercase word characters, other characters become a dash, 64 at most",fn() {
+    test.expect(strings.equal(p.nativePackageName("  My App! v2  "),"my-app--v2") && strings.equal(p.nativePackageName("Hello_World"),"hello_world") && strings.equal(p.nativePackageName("a.b"),"a-b"),"Name mapping wrong: " + p.nativePackageName("  My App! v2  "))
+    let long = strings.repeat("a",100)
+    test.expect(strings.charLength(p.nativePackageName(long)) == 64,"The name was not cut to 64 characters")
+})
+test.case("unsafe archive paths are named, safe ones pass",fn() {
+    test.expect(strings.equal(p.unsafeArchivePath("bin/tool"),"") && strings.equal(p.unsafeArchivePath("a/b.c/d"),"") && strings.equal(p.unsafeArchivePath("..x/y"),""),"A safe path was refused")
+    test.expect(strings.equal(p.unsafeArchivePath(""),"empty path") && strings.equal(p.unsafeArchivePath("/etc/passwd"),"absolute path") && strings.equal(p.unsafeArchivePath("a\\b"),"backslash in path") && strings.equal(p.unsafeArchivePath("c:x"),"colon in path"),"A bad path was accepted")
+    test.expect(strings.equal(p.unsafeArchivePath("a/../b"),"parent-directory (..) segment") && strings.equal(p.unsafeArchivePath(".."),"parent-directory (..) segment") && strings.equal(p.unsafeArchivePath("a\tb"),"control character in path"),"Traversal or control character accepted")
+    test.expect(strings.equal(p.unsafeArchivePath(strings.repeat("a",1025)),"path longer than 1024 bytes") && strings.equal(p.unsafeArchivePath(strings.repeat("a",1024)),""),"Length limit wrong")
+    test.expect(strings.equal(p.normalizeArchivePath("./././a/b//"),"a/b") && strings.equal(p.normalizeArchivePath("a"),"a"),"normalize wrong")
+})
+test.case("a tar entry makes an archive installable only as a root manifest or a shallow launcher",fn() {
+    test.expect(p.entryInstallable("package.json",false) && p.entryInstallable("./dev-package.json",false) && p.entryInstallable("share/applications/x.desktop",false) && p.entryInstallable("a/b/c/d/e.desktop",false),"An installable entry was refused")
+    test.expect(!p.entryInstallable("a/b/c/d/e/f.desktop",false) && !p.entryInstallable("sub/package.json",false) && !p.entryInstallable("package.json",true) && !p.entryInstallable("../package.json",false) && !p.entryInstallable("/x.desktop",false) && !p.entryInstallable("readme.md",false),"A non-installable entry was accepted")
+})
+test.case("Debian control text keeps fields and joins continuation lines",fn() {
+    let f = p.parseDebControl("Package: hello\nVersion: 1.0-2\nDescription: Says hello\n a longer text\n\t- bullet\nDepends: libc6, libx\nbad line\n: nameless\nInstalled-Size: 42\n")
+    test.expect(strings.equal(p.fieldValue(f,"Package"),"hello") && strings.equal(p.fieldValue(f,"Version"),"1.0-2") && strings.equal(p.fieldValue(f,"Depends"),"libc6, libx") && strings.equal(p.fieldValue(f,"Installed-Size"),"42"),"Fields wrong")
+    test.expect(strings.equal(p.fieldValue(f,"Description"),"Says hello\na longer text\n- bullet") && strings.equal(p.fieldValue(f,"Missing"),"") && f.len() == 5,"Continuation or noise wrong: " + p.fieldValue(f,"Description") + " / ${f.len()}")
+})
+return t.finish()

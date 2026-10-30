@@ -1,0 +1,83 @@
+# App Store package rules in DevLang (the text-only part of package-file.ts): which files are packages, how an archive path is judged,
+# when a .tar.gz looks installable and how Debian control text is read. The same rule dev (DevOsPM manager::safe_path) uses decides a path,
+# so a "safe" verdict here never contradicts the installer. Nothing here opens, extracts or executes a file.
+use "std/strings"
+use "std/encoding"
+
+# "dpk", "deb", "rpm", "tar.gz" or "" for a path that is not a package.
+fn packageKind(path:str):str {
+    let at = strings.lastIndexOf(path,"/")
+    let name = strings.toLowerCase(at < 0 ? path : strings.substring(path,at + 1,strings.charLength(path)))
+    let suffixes = Vec<str>(".dpk",".dpkx",".deb",".rpm",".tar.gz")
+    let kinds = Vec<str>("dpk","dpk","deb","rpm","tar.gz")
+    for i in 0..(suffixes.len() as i64) {
+        if strings.charLength(name) > strings.charLength(suffixes[i]) && strings.endsWith(name,suffixes[i]) { return kinds[i] }
+    }
+    return ""
+}
+fn isPackageFile(path:str):bool { return !strings.equal(packageKind(path),"") }
+fn isWord(c:str):bool { return strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",c) }
+# DevOsPM native::package_name: trimmed, letters digits and _ kept (lowercase), everything else "-", at most 64 characters.
+fn nativePackageName(name:str):str {
+    let text = strings.trim(name); let out = ""
+    for i in 0..(strings.charLength(text) as i64) {
+        if i >= 64 { break }
+        let c = strings.substring(text,i,i + 1)
+        out = out + (isWord(c) ? strings.toLowerCase(c) : "-")
+    }
+    return out
+}
+
+# "" when the path is acceptable, otherwise why not.
+fn unsafeArchivePath(name:str):str {
+    if strings.equal(name,"") { return "empty path" }
+    if strings.contains(name,"\0") { return "NUL byte in path" }
+    if strings.contains(name,"\\") { return "backslash in path" }
+    if strings.startsWith(name,"/") { return "absolute path" }
+    if strings.contains(name,":") { return "colon in path" }
+    if strings.charLength(name) > 1024 { return "path longer than 1024 bytes" }
+    for b in encoding.encode(name,"utf8") { if b < 32 || b == 127 { return "control character in path" } }
+    for part in strings.split(name,"/") { if strings.equal(part,"..") { return "parent-directory (..) segment" } }
+    return ""
+}
+# Leading "./" segments and trailing "/" removed.
+fn normalizeArchivePath(name:str):str {
+    let out = name
+    while strings.startsWith(out,"./") { out = strings.substring(out,2,strings.charLength(out)) }
+    while strings.endsWith(out,"/") { out = strings.substring(out,0,strings.charLength(out) - 1) }
+    return out
+}
+fn manifestName(name:str):bool { return strings.equal(name,"package.json") || strings.equal(name,"dev-package.json") }
+# An installable .tar.gz has a Dev OS manifest at its root or a launcher .desktop file at most five segments deep. `directory` marks tar type 5.
+fn entryInstallable(name:str, directory:bool):bool {
+    let normal = normalizeArchivePath(name)
+    if directory || !strings.equal(unsafeArchivePath(normal),"") { return false }
+    return manifestName(normal) || (strings.endsWith(normal,".desktop") && strings.split(normal,"/").len() <= 5)
+}
+
+# Debian control text: "Field: value" lines, continuation lines (leading space or tab) are joined to the field with a newline.
+struct Field { name: str, value: str }
+fn isFieldName(name:str):bool {
+    if strings.equal(name,"") { return false }
+    for i in 0..(strings.charLength(name) as i64) { if !strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",strings.substring(name,i,i + 1)) { return false } }
+    return true
+}
+fn parseDebControl(text:str):Vec<Field> {
+    let fields = Vec<Field>(); let last = -1
+    for line in strings.split(text,"\n") {
+        if (strings.startsWith(line," ") || strings.startsWith(line,"\t")) && last >= 0 {
+            let f = fields[last]; f.value = f.value + "\n" + strings.trim(line); fields[last] = f; continue
+        }
+        let at = strings.indexOf(line,":")
+        if at <= 0 { continue }
+        let name = strings.substring(line,0,at)
+        if !isFieldName(name) { continue }
+        fields.push(Field(name,strings.trim(strings.substring(line,at + 1,strings.charLength(line))))); last = (fields.len() as i64) - 1
+    }
+    return fields
+}
+fn fieldValue(fields:Vec<Field>, name:str):str {
+    let found = ""
+    for f in fields { if strings.equal(f.name,name) { found = f.value } }
+    return found
+}
