@@ -83,6 +83,10 @@ fn commandPage(line:ui.Text):i64 {
     let command = channel.split(line,31)[0]; let names = pageNames()
     if ui.equalText(command,ui.text("settings.network")) { return networkIndex() }
     if ui.equalText(command,ui.text("session.switch-user")) { return 21 }
+    # Names the JS Settings used for pages that are called differently here.
+    if ui.equalText(command,ui.text("settings.bluetooth-add")) { return 28 }
+    if ui.equalText(command,ui.text("settings.touchpad")) { return 3 }
+    if ui.equalText(command,ui.text("settings.system")) { return aboutIndex() }
     for i in 0..(names.len() as i64) { if ui.equalText(command,ui.text("settings." + names[i])) { return i } }
     return -1
 }
