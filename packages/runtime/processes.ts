@@ -31,3 +31,9 @@ export function missingProcess(error: unknown): boolean {
     return error instanceof GLib.Error && [Gio.DBusError.SERVICE_UNKNOWN, Gio.DBusError.NAME_HAS_NO_OWNER,
         Gio.DBusError.UNKNOWN_OBJECT, Gio.DBusError.UNKNOWN_INTERFACE].some(code => error.matches(Gio.DBusError, code));
 }
+
+/** A native window that can be tried before it becomes the default: DEVOS_NATIVE_<NAME>=1, or a file at ~/.config/devos/native-<name>. */
+export function optInNative(name: string): boolean {
+    if (GLib.getenv(`DEVOS_NATIVE_${name.toUpperCase()}`) === '1') return true;
+    return GLib.file_test(GLib.build_filenamev([GLib.get_user_config_dir(), 'devos', `native-${name}`]), GLib.FileTest.EXISTS);
+}

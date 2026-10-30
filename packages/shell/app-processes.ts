@@ -1,7 +1,7 @@
 import {Gio, GLib, activeTheme, activeFamily} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {shellApplicationId} from '@dev-os/runtime/remote';
-import {processApplicationId, sendCommand, missingProcess, type ProcessRole} from '@dev-os/runtime/processes';
+import {processApplicationId, sendCommand, missingProcess, optInNative, type ProcessRole} from '@dev-os/runtime/processes';
 
 /** Apps with a native GTK executable under dist/native; every other role runs through the JS app host. */
 const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskmanager', diskmanager: 'diskmanager', installer: 'installer'};
@@ -11,10 +11,7 @@ const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskman
  * The JS app stays the default until the native one has been checked on a real session; without dist/native/<app> the JS app is used as well.
  */
 const OPT_IN_APPS: readonly ProcessRole[] = ['settings', 'files', 'terminal', 'browser', 'camera', 'microphone', 'appstore', 'editor'];
-export function nativeEnabled(app: ProcessRole): boolean {
-    if (GLib.getenv(`DEVOS_NATIVE_${app.toUpperCase()}`) === '1') return true;
-    return GLib.file_test(GLib.build_filenamev([GLib.get_user_config_dir(), 'devos', `native-${app}`]), GLib.FileTest.EXISTS);
-}
+export const nativeEnabled = (app: ProcessRole): boolean => optInNative(app);
 export const nativeSettingsEnabled = () => nativeEnabled('settings');
 
 /** D-Bus owns singleton identity; app processes survive a shell crash and reconnect on its restart. */

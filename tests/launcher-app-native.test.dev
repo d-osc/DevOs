@@ -62,4 +62,12 @@ test.case("the native Launcher window searches, launches the result and switches
     test.expect(strings.contains(fs.readFileSync(d + "/prefs/org.devos.launcher.json","utf8"),"\"appView\":\"grid\""),"the view choice is stored")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("the commands the shell sends reach the running window: logout asks for the confirmation, launcher toggles it closed",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/launcher-native"
+    let done = tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a","sh",t.root() + "/tests/lib/launcher-route.sh",executable,t.root()),Map<str,str>(),"",120000)
+    let out = t.out(done)
+    test.expect(strings.contains(out,"ROUTE logout kept the window open"),"logout: " + out + t.err(done))
+    test.expect(strings.contains(out,"ROUTE unknown:") && strings.contains(out,"Unsupported app command"),"a command that is not the launcher's is refused: " + out)
+    test.expect(strings.contains(out,"ROUTE toggle closed the window"),"toggle: " + out)
+})
 return t.finish()

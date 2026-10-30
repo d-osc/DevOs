@@ -7,6 +7,10 @@
       "types": "./dist/processes.d.ts",
       "import": "./dist/processes.js"
     },
+    "./native-launcher": {
+      "types": "./dist/native-launcher.d.ts",
+      "import": "./dist/native-launcher.js"
+    },
     "./lid": {
       "types": "./dist/lid.d.ts",
       "import": "./dist/lid.js"

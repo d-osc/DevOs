@@ -105,7 +105,13 @@ fn App(context:*ui.Context):ui.Node {
             ticks.set(ticks.get() + 1)
             if smoke() && ticks.get() > 150 { print("FAIL native Launcher timed out at step ${step.get()}"); ui.close(context) }
         })
-        ui.onCommand(context,"launcher.",fn(line:ui.Text) { ui.close(context) })
+        # The shell sends `launcher` (a toggle: the window is open, so it closes), `launcher logout` (ask for the log-out confirmation) and
+        # `launcher hide`. DEVOS_LAUNCHER_LOGOUT=1 starts the window on that confirmation (the shell's `logout` command with no window open).
+        ui.onCommand(context,"launcher.",fn(line:ui.Text) {
+            let parts = channel.split(line,31)
+            if parts.len() > 1 && k.isText(parts[1],"logout") { confirm.set(plain("logout")) } else { ui.close(context) }
+        })
+        if has(plain(environment("DEVOS_LAUNCHER_LOGOUT"))) { confirm.set(plain("logout")) }
         return ui.noop
     },Vec<i64>())
     ui.useEffect(context,fn():fn():void {
