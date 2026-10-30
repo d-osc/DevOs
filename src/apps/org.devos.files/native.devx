@@ -1,0 +1,160 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+use "../org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+
+# Native Files window. The worker (service.dev) lists folders, creates a folder, renames and opens a file; the rules are in model.dev. A click on
+# a folder row's Open goes into it, on a file's Open starts the default application. Back and Forward walk the visited folders, Up goes to the
+# parent, the path field accepts "~", ".." and relative paths. A command `files <path>` from the shell opens that folder.
+# Frame V: path home parent message; F: name path folder hidden size stamp label tag color.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_FILES_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn flag(value:bool):str { return value ? "true" : "false" }
+fn listRequest(path:ui.Text, base:ui.Text, hidden:bool):ui.Text {
+    return join(Vec<ui.Text>(plain("{\"action\":\"list\",\"path\":"),channel.quote(path),plain(",\"base\":"),channel.quote(base),plain(",\"hidden\":" + flag(hidden) + "}")))
+}
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 10; options.className = ui.text("settings-card system-card"); return ui.Box(options,children) }
+fn places():Vec<str> { return Vec<str>("Home","Desktop","Documents","Downloads","Music","Pictures","Videos") }
+fn iconFor(folder:bool, tag:ui.Text):str {
+    if folder { return "folder-symbolic" }
+    if k.isText(tag,"IMG") || k.isText(tag,"SVG") { return "image-x-generic-symbolic" }
+    if k.isText(tag,"SH") { return "text-x-script-symbolic" }
+    return "text-x-generic-symbolic"
+}
+
+fn App(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"../org.devos.files/service.dev","{\"action\":\"list\"}")
+    # history: visited folders joined with ASCII 30; at: index of the current one; nav: 0 a new visit, 1 back or forward, 2 refresh
+    let history = ui.useText(context,ui.emptyText()); let at = ui.useRef(context,0 - 1); let nav = ui.useRef(context,0)
+    let pathDraft = ui.useText(context,ui.emptyText()); let hidden = ui.useState(context,0)
+    let mode = ui.useText(context,ui.emptyText()); let renaming = ui.useText(context,ui.emptyText()); let nameDraft = ui.useText(context,ui.emptyText())
+    let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Files","${root}/data/icons")
+        }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let id = environment("DEV_OS_NATIVE_ID")
+        unsafe { rd_control((*context).native,id,"files") }
+        # `files <path>` from the shell opens that folder.
+        ui.onCommand(context,"",fn(line:ui.Text) {
+            let parts = channel.split(line,31)
+            if parts.len() > 1 && has(parts[1]) { nav.set(0); sp.send(l,listRequest(parts[1],pathDraft.get(),hidden.get() != 0)) }
+        })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() > 0 {
+            let p = field(f,1); let known = channel.split(history.get(),30)
+            if nav.get() == 0 {
+                if at.get() < 0 || !ui.equalText(known[at.get()],p) {
+                    let out = Vec<u8>(); let count = at.get() + 1
+                    for i in 0..count { if i > 0 { out.push(30) }; for byte in known[i].bytes { out.push(byte) } }
+                    if count > 0 { out.push(30) }; for byte in p.bytes { out.push(byte) }
+                    history.set(ui.Text(out)); at.set(count)
+                }
+            }
+            nav.set(0); pathDraft.set(p)
+            if has(field(f,4)) { mode.set(ui.emptyText()); renaming.set(ui.emptyText()); nameDraft.set(ui.emptyText()) }
+        }
+        if smoke() && f.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"files-open-0") }
+            else if step.get() == 1 && k.isText(field(f,1),environment("DEVOS_FILES_EXPECT")) { step.set(2); ui.click(context,"files-new") }
+            else if step.get() == 4 && k.isText(field(f,4),"Folder created") { print("PASS native Files browsed into a folder and created one"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        if smoke() && step.get() == 2 && k.isText(mode.value,"mkdir") { step.set(3); ui.change(context,"files-name","Made") }
+        return ui.noop
+    },Vec<i64>(mode.revision))
+    ui.useEffect(context,fn():fn():void {
+        if smoke() && step.get() == 3 && k.isText(nameDraft.value,"Made") { step.set(4); ui.click(context,"files-name-confirm") }
+        return ui.noop
+    },Vec<i64>(nameDraft.revision))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let hiddenOn = hidden.value != 0; let f = l.frame.value; let busy = l.waiting.get() != 0; let current = field(f,1); let known = channel.split(history.get(),30)
+    let canBack = at.get() > 0; let canForward = at.get() + 1 < (known.len() as i64) && at.get() >= 0
+    let go = fn(path:ui.Text) { nav.set(0); sp.send(l,listRequest(path,current,hiddenOn)) }
+    let bar = Vec<ui.Node>()
+    let back = ui.named("files-back"); back.sensitive = canBack && !busy
+    bar.push(ui.Button(back,"Back",fn() { nav.set(1); at.set(at.get() - 1); sp.send(l,listRequest(known[at.get()],current,hiddenOn)) }))
+    let forward = ui.named("files-forward"); forward.sensitive = canForward && !busy
+    bar.push(ui.Button(forward,"Forward",fn() { nav.set(1); at.set(at.get() + 1); sp.send(l,listRequest(known[at.get()],current,hiddenOn)) }))
+    let up = ui.named("files-up"); up.sensitive = !busy && has(field(f,3)) && !ui.equalText(field(f,3),current)
+    bar.push(ui.Button(up,"Up",fn() { go(field(f,3)) }))
+    let refresh = ui.named("files-refresh"); refresh.sensitive = !busy
+    bar.push(ui.Button(refresh,"Refresh",fn() { nav.set(2); sp.send(l,listRequest(current,current,hiddenOn)) }))
+    let path = ui.named("files-path"); path.expand = true; path.placeholder = plain("Type a folder path")
+    bar.push(ui.Entry(path,pathDraft.value,fn(value:ui.Text) { pathDraft.set(value) }))
+    let goButton = ui.named("files-go"); goButton.sensitive = !busy
+    bar.push(ui.Button(goButton,"Go",fn() { go(pathDraft.get()) }))
+    let tools = Vec<ui.Node>()
+    let newFolder = ui.named("files-new"); newFolder.sensitive = !busy
+    tools.push(ui.Button(newFolder,"New folder",fn() { mode.set(plain("mkdir")); renaming.set(ui.emptyText()); nameDraft.set(ui.emptyText()) }))
+    let toggle = ui.named("files-hidden"); toggle.valign = 3
+    tools.push(ext.expand(k.note("Show hidden files","settings-description")))
+    tools.push(ui.Switch(toggle,hiddenOn,fn(next:bool) { if next != hiddenOn { hidden.set(next ? 1 : 0); nav.set(2); sp.send(l,listRequest(current,current,next)) } }))
+    let side = Vec<ui.Node>(k.note("Places","section-heading"))
+    let names = places()
+    for i in 0..(names.len() as i64) {
+        let place = ui.named("files-place-${i}"); place.sensitive = !busy
+        side.push(ui.Button(place,names[i],fn() { go(i == 0 ? plain("~") : plain("~/" + names[i])) }))
+    }
+    let main = Vec<ui.Node>(ext.row(8,bar),ext.row(12,tools))
+    if has(l.failure.value) { main.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"files-error")) }
+    if has(field(f,4)) { main.push(ext.named(k.caption(field(f,4),"settings-description"),"files-message")) }
+    if has(mode.value) {
+        let name = ui.named("files-name"); name.expand = true; name.placeholder = plain(k.isText(mode.value,"mkdir") ? "Folder name" : "New name")
+        let confirm = ui.named("files-name-confirm"); confirm.className = ui.text("settings-primary"); confirm.sensitive = !busy
+        let cancel = ui.named("files-name-cancel")
+        main.push(card(Vec<ui.Node>(k.caption(k.isText(mode.value,"mkdir") ? plain("New folder") : join(Vec<ui.Text>(plain("Rename "),renaming.value)),"section-heading"),
+            ext.row(8,Vec<ui.Node>(ui.Entry(name,nameDraft.value,fn(value:ui.Text) { nameDraft.set(value) }),
+                ui.Button(confirm,k.isText(mode.value,"mkdir") ? "Create" : "Rename",fn() {
+                    if k.isText(mode.get(),"mkdir") { nav.set(2); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"mkdir\",\"dir\":"),channel.quote(current),plain(",\"name\":"),channel.quote(nameDraft.get()),plain(",\"hidden\":" + flag(hiddenOn) + "}")))) }
+                    else { nav.set(2); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"rename\",\"dir\":"),channel.quote(current),plain(",\"from\":"),channel.quote(renaming.get()),plain(",\"name\":"),channel.quote(nameDraft.get()),plain(",\"hidden\":" + flag(hiddenOn) + "}")))) }
+                }),
+                ui.Button(cancel,"Cancel",fn() { mode.set(ui.emptyText()); renaming.set(ui.emptyText()); nameDraft.set(ui.emptyText()) }))))))
+    }
+    let rows = Vec<ui.Node>(); let shown = 0
+    for record in sp.records(f) {
+        if !sp.kindOf(record,70) { continue }
+        let e = sp.cells(record); let folder = sp.flag(sp.cell(e,3)); let index = shown; shown = shown + 1
+        let open = ui.named("files-open-${index}"); open.sensitive = !busy
+        let rename = ui.named("files-rename-${index}"); rename.sensitive = !busy
+        let detail = join(Vec<ui.Text>(sp.cell(e,7),has(sp.cell(e,5)) ? plain(" · ") : ui.emptyText(),sp.cell(e,5),plain(" · "),sp.cell(e,6)))
+        rows.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),iconFor(folder,sp.cell(e,8))),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(e,1),"settings-field-title"),k.caption(detail,"settings-description")))),
+            ui.Button(open,folder ? "Open" : "Open file",fn() {
+                if folder { go(sp.cell(e,2)) } else { nav.set(2); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"open\",\"path\":"),channel.quote(sp.cell(e,2)),plain(",\"dir\":"),channel.quote(current),plain(",\"hidden\":" + flag(hiddenOn) + "}")))) }
+            }),
+            ui.Button(rename,"Rename",fn() { mode.set(plain("rename")); renaming.set(sp.cell(e,1)); nameDraft.set(sp.cell(e,1)) }))))
+    }
+    if shown == 0 { rows.push(ext.named(k.note("This folder is empty.","settings-description"),"files-empty")) }
+    let listBox = ui.props(); listBox.spacing = 8
+    main.push(ui.Box(listBox,rows))
+    let window = ui.props(); window.vertical = false; window.spacing = 16; window.className = ui.text("settings-native")
+    return ui.Box(window,Vec<ui.Node>(ext.column(6,side),ext.expand(ext.column(12,main))))
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.files.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Files",960,640,App) ? 0 : 1
+}

@@ -1,7 +1,7 @@
 import {serviceClass} from '@dev-os/runtime/app-service';
 import {HelperClient} from './helper-client.js';
-import {defaultCare, type CareSettings} from '../../../packages/compat/display-care.js';
-export type {CareSettings, Splendid} from '../../../packages/compat/display-care.js';
+import {defaultCare, type CareSettings} from '../../legacy/display-care.js';
+export type {CareSettings, Splendid} from '../../legacy/display-care.js';
 export interface Capability {available: boolean; reason: string;}
 /** Result of `dev-os-display-care get`: the saved values and what this session's compositor can really do. */
 export interface DisplayCareState {

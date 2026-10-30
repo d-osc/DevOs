@@ -13,6 +13,8 @@ sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.insta
 install -m0755 "$root/build/react-devlang/apps/installer" "$root/dist/native/installer"
 sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.settings/native-main.devx" "$root/build/react-devlang/apps/settings"
 install -m0755 "$root/build/react-devlang/apps/settings" "$root/dist/native/settings"
+sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.files/native-main.devx" "$root/build/react-devlang/apps/files"
+install -m0755 "$root/build/react-devlang/apps/files" "$root/dist/native/files"
 "$driver" "$root/tools/build/native-theme.dev" -- "$root"
 sh "$root/tools/build/native-system.sh"
 sh "$root/tools/build/native-supervisor.sh"

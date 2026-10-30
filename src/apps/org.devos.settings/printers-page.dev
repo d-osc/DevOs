@@ -13,7 +13,7 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
-use "./worker-kit.dev" as kit
+use "../../../lib/worker-kit.dev" as kit
 
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 # 1-63 characters: letters, digits, hyphen and underscore, not starting with a hyphen (the helper's queue name rule).

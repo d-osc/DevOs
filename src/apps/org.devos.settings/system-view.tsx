@@ -11,7 +11,7 @@ import type {FanProfileControls} from './fan-profile.js';
 import type {SwapControls} from './swap.js';
 import {AboutSettings} from './about-view.js';
 import {VERSION} from '@dev-os/config';
-import {Devices, type DeviceControls} from '../../../packages/compat/panel-legacy/devices.js';
+import {Devices, type DeviceControls} from '../../legacy/devices.js';
 import {LinuxSystem, systemPages, formatBytes, type SystemControls, type SystemState, type SystemPage} from './system.js';
 
 export interface DisplayInfo {name: string; width: number; height: number; scale: number; refresh: number; primary: boolean;}

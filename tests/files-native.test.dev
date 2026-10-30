@@ -1,0 +1,87 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+# A home folder with known contents, and a stand-in for `gio open` that only logs the path it was given.
+fn rig():str {
+    let d = temporary()
+    fs.mkdirSync(d + "/home",false); fs.mkdirSync(d + "/home/Docs",false); fs.mkdirSync(d + "/home/.config",false)
+    fs.writeFileSync(d + "/home/notes.txt","hello"); fs.writeFileSync(d + "/home/file10.md","x"); fs.writeFileSync(d + "/home/file2.md","x"); fs.writeFileSync(d + "/home/.hidden","x")
+    fs.writeFileSync(d + "/open","#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$DEVOS_FILES_LOG\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/open"))
+    return d
+}
+fn worker(d:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.files/service.dev","--",t.root()),env,input,120000)))
+}
+fn names(frame:str):str {
+    let out = Vec<str>(); let all = records(frame)
+    for i in 1..(all.len() as i64) { out.push(cells(all[i])[1]) }
+    return strings.join(out,",")
+}
+
+test.case("a listing starts in the home folder, hides dot files and orders folders first, then names naturally",fn() {
+    let d = rig()
+    let frame = worker(d,"{\"action\":\"list\"}\n")
+    let h = cells(records(frame)[0])
+    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],d + "/home") && strings.equal(h[2],d + "/home") && strings.equal(h[3],d),"Header wrong: " + records(frame)[0])
+    test.expect(strings.equal(names(frame),"Docs,file2.md,file10.md,notes.txt"),"Order or hidden filter wrong: " + names(frame))
+    let shown = worker(d,"{\"action\":\"list\",\"hidden\":true}\n")
+    test.expect(strings.equal(names(shown),".config,Docs,.hidden,file2.md,file10.md,notes.txt"),"Hidden entries missing: " + names(shown))
+    let docs = cells(records(frame)[1]); let notes = cells(records(frame)[4])
+    # F: name path folder hidden size stamp label tag color
+    test.expect(strings.equal(docs[3],"1") && strings.equal(docs[5],"") && strings.equal(docs[7],"Folder") && strings.equal(docs[8],"DIR"),"Folder cells wrong: " + records(frame)[1])
+    test.expect(strings.equal(notes[3],"0") && strings.equal(notes[4],"0") && strings.equal(notes[5],"5 B") && strings.startsWith(notes[6],"20") && strings.equal(notes[7],"File") && strings.equal(notes[8],"TXT"),"File cells wrong: " + records(frame)[4])
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("paths are resolved from the base folder, ~ and ..; a missing or empty path is refused",fn() {
+    let d = rig()
+    test.expect(strings.equal(cells(records(worker(d,"{\"action\":\"list\",\"path\":\"Docs\",\"base\":\"" + d + "/home\"}\n"))[0])[1],d + "/home/Docs"),"A relative path was not resolved")
+    test.expect(strings.equal(cells(records(worker(d,"{\"action\":\"list\",\"path\":\"..\",\"base\":\"" + d + "/home/Docs\"}\n"))[0])[1],d + "/home"),".. was not resolved")
+    test.expect(strings.equal(cells(records(worker(d,"{\"action\":\"list\",\"path\":\"~/Docs\"}\n"))[0])[1],d + "/home/Docs"),"~ was not resolved")
+    test.expect(strings.startsWith(worker(d,"{\"action\":\"list\",\"path\":\"nowhere\"}\n"),"E\tNot a folder"),"A missing folder was listed")
+    test.expect(strings.startsWith(worker(d,"{\"action\":\"list\",\"path\":\"notes.txt\"}\n"),"E\tNot a folder"),"A file was listed")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("creating a folder and renaming refuse bad and duplicate names, and answer with the new listing",fn() {
+    let d = rig(); let home = d + "/home"
+    let made = worker(d,"{\"action\":\"mkdir\",\"dir\":\"" + home + "\",\"name\":\"Photos\"}\n")
+    test.expect(strings.equal(cells(records(made)[0])[4],"Folder created") && strings.contains(names(made),"Photos") && fs.is_dir(home + "/Photos"),"mkdir failed: " + made)
+    let renamed = worker(d,"{\"action\":\"rename\",\"dir\":\"" + home + "\",\"from\":\"notes.txt\",\"name\":\"todo.txt\"}\n")
+    test.expect(strings.equal(cells(records(renamed)[0])[4],"Name changed") && strings.contains(names(renamed),"todo.txt") && !fs.existsSync(home + "/notes.txt"),"rename failed: " + renamed)
+    let bad = strings.split(worker(d,"{\"action\":\"mkdir\",\"dir\":\"" + home + "\",\"name\":\"Photos\"}\n{\"action\":\"mkdir\",\"dir\":\"" + home + "\",\"name\":\"a/b\"}\n{\"action\":\"rename\",\"dir\":\"" + home + "\",\"from\":\"todo.txt\",\"name\":\"Docs\"}\n{\"action\":\"rename\",\"dir\":\"" + home + "\",\"from\":\"missing\",\"name\":\"x\"}\n{\"action\":\"bogus\"}\nnot json\n"),"\n")
+    test.expect(bad.len() == 6,"One answer per request expected: ${bad.len()}")
+    for i in 0..6 { test.expect(strings.startsWith(bad[i],"E\t"),"Request ${i} was accepted: " + bad[i]) }
+    test.expect(fs.existsSync(home + "/todo.txt") && fs.is_dir(home + "/Docs"),"A refused rename changed something")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a file is opened with the default application, quoted safely, and a missing file is refused",fn() {
+    let d = rig(); let home = d + "/home"
+    fs.writeFileSync(home + "/it's here.txt","x")
+    let out = worker(d,"{\"action\":\"open\",\"path\":\"" + home + "/it's here.txt\",\"dir\":\"" + home + "\"}\n{\"action\":\"open\",\"path\":\"" + home + "/gone.txt\",\"dir\":\"" + home + "\"}\n{\"action\":\"open\",\"path\":\"relative.txt\",\"dir\":\"" + home + "\"}\n")
+    let lines = strings.split(out,"\n")
+    test.expect(strings.startsWith(lines[0],"V\t") && strings.contains(lines[0],"Opening ") && strings.startsWith(lines[1],"E\tThat file is no longer there.") && strings.startsWith(lines[2],"E\t"),"Open answers wrong: " + out)
+    tool.exec(Vec<str>("sleep","1"))
+    test.expect(fs.existsSync(d + "/log") && strings.equal(strings.trim(fs.readFileSync(d + "/log","utf8")),home + "/it's here.txt"),"The opener got the wrong path")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native Files window browses into a folder and creates a folder there under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/files-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.files/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log"); env.set("DEVOS_FILES_SMOKE","1"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs")
+    env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","files-native","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Files browsed into a folder and created one"),"Files window: " + t.out(done) + " / " + t.err(done))
+    test.expect(fs.is_dir(d + "/home/Docs/Made"),"The folder was not created inside the folder that was opened")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

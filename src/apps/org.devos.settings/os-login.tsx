@@ -1,6 +1,6 @@
 import {React, Gtk, Gio, GLib, Box, Label, Button, Entry, Image, ComboBoxText, ScrolledWindow, useEffect, useState} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {powerCapabilities, requestPower, type PowerAction} from '../../../packages/compat/panel-legacy/power.js';
+import {powerCapabilities, requestPower, type PowerAction} from '../../legacy/power.js';
 import {brandIcon} from './login-view.js';
 import {AccountAvatar} from './avatar.js';
 import {NewUserWizard} from './new-user.js';

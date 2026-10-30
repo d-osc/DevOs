@@ -5,7 +5,7 @@ use "std/fs"
 use "std/strings"
 use "../../../lib/hw.dev" as hw
 
-struct Entry { name: str, path: str, directory: bool, hidden: bool, size: i64, modified: i64 }
+struct Entry { name: str, path: str, directory: bool, hidden: bool, size: i64, modified: i64, stamp: str }
 
 # "" when the name is usable, otherwise the message to show.
 fn nameProblem(name:str):str {
@@ -112,7 +112,7 @@ struct Listing { error: str, entries: Vec<Entry> }
 fn list(path:str):Listing {
     let none = Vec<Entry>()
     if !fs.is_dir(path) { return Listing("Not a folder: " + path,none) }
-    let ran = hw.run(Vec<str>("find",path,"-mindepth","1","-maxdepth","1","-printf","%f\t%y\t%s\t%T@\n"),20000)
+    let ran = hw.run(Vec<str>("find",path,"-mindepth","1","-maxdepth","1","-printf","%f\t%y\t%s\t%T@\t%TY-%Tm-%Td %TH:%TM\n"),20000)
     if ran.code != 0 && strings.equal(strings.trim(ran.out),"") { return Listing("Could not read the folder.",none) }
     let entries = Vec<Entry>(); let keys = Vec<str>()
     for line in strings.split(ran.out,"\n") {
@@ -120,7 +120,7 @@ fn list(path:str):Listing {
         if cells.len() < 4 { continue }
         let directory = strings.equal(cells[1],"d")
         let seconds = strings.split(cells[3],".")[0]
-        entries.push(Entry(cells[0],path == "/" ? "/" + cells[0] : path + "/" + cells[0],directory,strings.startsWith(cells[0],"."),parse(cells[2]),parse(seconds)))
+        entries.push(Entry(cells[0],path == "/" ? "/" + cells[0] : path + "/" + cells[0],directory,strings.startsWith(cells[0],"."),parse(cells[2]),parse(seconds),cells.len() > 4 ? cells[4] : ""))
         keys.push((directory ? "0" : "1") + naturalKey(cells[0]) + "\t" + cells[0] + "\t${entries.len() - 1}")
     }
     keys.sort()

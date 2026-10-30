@@ -7,13 +7,15 @@ import {processApplicationId, sendCommand, missingProcess, type ProcessRole} fro
 const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskmanager', diskmanager: 'diskmanager', installer: 'installer'};
 
 /**
- * Opt in to the native Settings window: DEVOS_NATIVE_SETTINGS=1, or a file at ~/.config/devos/native-settings. The JS Settings stays the
- * default until the native one has been checked on a real session; without dist/native/settings the JS Settings is used as well.
+ * Apps whose native window can be tried before it becomes the default: DEVOS_NATIVE_<APP>=1, or a file at ~/.config/devos/native-<app>.
+ * The JS app stays the default until the native one has been checked on a real session; without dist/native/<app> the JS app is used as well.
  */
-export function nativeSettingsEnabled(): boolean {
-    if (GLib.getenv('DEVOS_NATIVE_SETTINGS') === '1') return true;
-    return GLib.file_test(GLib.build_filenamev([GLib.get_user_config_dir(), 'devos', 'native-settings']), GLib.FileTest.EXISTS);
+const OPT_IN_APPS: readonly ProcessRole[] = ['settings', 'files'];
+export function nativeEnabled(app: ProcessRole): boolean {
+    if (GLib.getenv(`DEVOS_NATIVE_${app.toUpperCase()}`) === '1') return true;
+    return GLib.file_test(GLib.build_filenamev([GLib.get_user_config_dir(), 'devos', `native-${app}`]), GLib.FileTest.EXISTS);
 }
+export const nativeSettingsEnabled = () => nativeEnabled('settings');
 
 /** D-Bus owns singleton identity; app processes survive a shell crash and reconnect on its restart. */
 export class AppProcesses {
@@ -31,8 +33,8 @@ export class AppProcesses {
             try {
                 const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
                 launcher.setenv('DEV_OS_ROOT', ROOT, true);
-                const nativeSettings = role === 'settings' && !background && !panel && nativeSettingsEnabled() && GLib.file_test(`${ROOT}/dist/native/settings`, GLib.FileTest.IS_EXECUTABLE);
-                const executable = background ? 'background-settings' : panel ? 'panel-settings' : nativeSettings ? 'settings' : NATIVE_APPS[role];
+                const optIn = !background && !panel && OPT_IN_APPS.includes(role) && nativeEnabled(role) && GLib.file_test(`${ROOT}/dist/native/${role}`, GLib.FileTest.IS_EXECUTABLE);
+                const executable = background ? 'background-settings' : panel ? 'panel-settings' : optIn ? role : NATIVE_APPS[role];
                 const native = executable ? `${ROOT}/dist/native/${executable}` : undefined;
                 if (native) {
                     if (!GLib.file_test(native, GLib.FileTest.IS_EXECUTABLE)) throw new Error(`Native ${executable} is missing. Run sh tools/build/native-apps.sh.`);

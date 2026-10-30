@@ -21,7 +21,7 @@ use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
 use "../../../lib/posix.dev" as posix
-use "./worker-kit.dev" as kit
+use "../../../lib/worker-kit.dev" as kit
 
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }

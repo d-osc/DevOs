@@ -1,0 +1,89 @@
+#!/usr/bin/env d
+# Data worker of the native Files window. It lists folders, creates a folder, renames, and opens a file with the default application; the rules
+# (names, kinds, natural order, no overwrite) are in model.dev. One JSON request per line on stdin:
+#   {"action":"list","path":"~/Documents","base":"/home/u","hidden":false}      (path may be absolute, relative to base, or start with ~)
+#   {"action":"mkdir","dir":"/home/u","name":"New","hidden":false}              {"action":"rename","dir":"/home/u","from":"a","name":"b","hidden":false}
+#   {"action":"open","path":"/home/u/a.txt","dir":"/home/u","hidden":false}
+# Every answer is the listing of the folder it ended in (frame; records separated by ASCII 30, text never holds tabs or newlines):
+#   V path home parent message           F name path folder hidden size stamp label tag color        E message
+# Test hooks (only with DEVOS_FILES_TEST=1): DEVOS_FILES_HOME, DEVOS_FILES_OPEN (the program that opens a file).
+use "std/io"
+use "std/fs"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/posix.dev" as posix
+use "../../../lib/worker-kit.dev" as kit
+use "./model.dev" as model
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
+fn testing():bool { return process.hasEnv("DEVOS_FILES_TEST") }
+fn home():str {
+    if testing() && process.hasEnv("DEVOS_FILES_HOME") { return process.getenv("DEVOS_FILES_HOME") }
+    return process.hasEnv("HOME") ? process.getenv("HOME") : "/"
+}
+fn sizeLabel(bytes:i64):str {
+    if bytes < 1024 { return "${bytes} B" }
+    if bytes < 1048576 { return "${(bytes * 10 + 512) / 1024 / 10}.${(bytes * 10 + 512) / 1024 % 10} KB" }
+    if bytes < 1073741824 { return "${(bytes * 10 + 524288) / 1048576 / 10}.${(bytes * 10 + 524288) / 1048576 % 10} MB" }
+    return "${(bytes * 10 + 536870912) / 1073741824 / 10}.${(bytes * 10 + 536870912) / 1073741824 % 10} GB"
+}
+# The listing frame of `path`; `message` is shown by the window after a change.
+fn frame(path:str, hidden:bool, message:str):str {
+    let listing = model.list(path)
+    if !strings.equal(listing.error,"") { return kit.failure(listing.error) }
+    let out = "V\t" + kit.clean(path) + "\t" + kit.clean(home()) + "\t" + kit.clean(model.parent(path)) + "\t" + kit.clean(message)
+    for e in model.visible(listing.entries,hidden) {
+        let kind = model.fileKind(e.name,e.directory)
+        out = out + kit.rs() + "F\t" + kit.clean(e.name) + "\t" + kit.clean(e.path) + "\t" + (e.directory ? "1" : "0") + "\t" + (e.hidden ? "1" : "0") + "\t" + (e.directory ? "" : sizeLabel(e.size)) + "\t" + kit.clean(e.stamp) + "\t" + kit.clean(kind.label) + "\t" + kit.clean(kind.tag) + "\t" + kit.clean(kind.color)
+    }
+    return out
+}
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
+fn opener():str { return testing() && process.hasEnv("DEVOS_FILES_OPEN") ? process.getenv("DEVOS_FILES_OPEN") : "gio open" }
+fn folder(r:json.Value):str {
+    let resolved = model.resolve(text(r,"dir"),"/",home())
+    return strings.equal(resolved,"") ? home() : resolved
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action"); let hidden = bool(r,"hidden")
+    if strings.equal(action,"list") {
+        let base = strings.equal(text(r,"base"),"") ? home() : text(r,"base")
+        let path = model.resolve(strings.equal(text(r,"path"),"") ? "~" : text(r,"path"),base,home())
+        if strings.equal(path,"") { return kit.failure("Enter a local folder path.") }
+        return frame(path,hidden,"")
+    }
+    let dir = folder(r)
+    if strings.equal(action,"mkdir") {
+        let problem = model.createFolder(dir,text(r,"name"))
+        if !strings.equal(problem,"") { return kit.failure(problem) }
+        return frame(dir,hidden,"Folder created")
+    }
+    if strings.equal(action,"rename") {
+        let problem = model.rename(dir,text(r,"from"),text(r,"name"))
+        if !strings.equal(problem,"") { return kit.failure(problem) }
+        return frame(dir,hidden,"Name changed")
+    }
+    if strings.equal(action,"open") {
+        let path = text(r,"path")
+        if !strings.startsWith(path,"/") || strings.contains(path,"\0") || !fs.existsSync(path) { return kit.failure("That file is no longer there.") }
+        posix.shell(opener() + " " + quote(path) + " >/dev/null 2>&1 &")
+        return frame(dir,hidden,"Opening " + path)
+    }
+    return kit.failure("Unsupported action")
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()

@@ -18,7 +18,7 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
-use "./worker-kit.dev" as kit
+use "../../../lib/worker-kit.dev" as kit
 
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn number(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"number") ? json.stringify(json.get(value,key)) : "" }

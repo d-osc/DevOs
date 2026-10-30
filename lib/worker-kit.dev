@@ -1,6 +1,5 @@
-# What every Settings page worker needs for its answers: the record separator, text that is safe inside a tab-separated frame, and the
-# error frame "E<TAB>message". Used by wifi-page.dev, bluetooth-page.dev, sound-page.dev, display-page.dev, printers-page.dev,
-# accounts-page.dev, network-pages.dev and system-pages.dev.
+# What every page / app worker needs for its answers: the record separator, text that is safe inside a tab-separated frame, and the
+# error frame "E<TAB>message". Used by the Settings workers (wifi, bluetooth, sound, display, printers, accounts, network, system) and by the Files service.
 use "std/strings"
 use "std/encoding"
 
