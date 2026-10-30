@@ -365,6 +365,8 @@ static gboolean rd_terminal_key(GtkWidget *widget, GdkEventKey *event, void *dat
     return FALSE;
 }
 void rd_terminal_keys(void *widget) { g_signal_connect(widget, "key-press-event", G_CALLBACK(rd_terminal_key), NULL); }
+/* The pointer stored in an object property (for example the "widget" of a GStreamer gtksink); g_object_get is variadic, which DevLang cannot call. */
+void *rd_object_pointer(void *object, const char *property) { void *value = NULL; g_object_get(object, property, &value, NULL); return value; }
 /* A NULL-terminated string array for C libraries that take char ** (for example VTE's spawn); the caller keeps it for the life of the process. */
 void *rd_strv_new(int32_t count){ return g_new0(char *,(gsize)(count<0?0:count)+1); }
 void rd_strv_set(void *vector,int32_t index,const char *text){ ((char **)vector)[index]=g_strdup(text); }

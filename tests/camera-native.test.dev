@@ -1,0 +1,82 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+fn worker(d:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_CAMERA_TEST","1"); env.set("DEVOS_CAMERA_HOME",d + "/home"); env.set("DEVOS_CAMERA_RUNTIME",d + "/run"); env.set("DEVOS_CAMERA_VIDEO",d + "/video"); env.set("DEVOS_CAMERA_OPEN",d + "/open"); env.set("DEVOS_CAMERA_LOG",d + "/log")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.camera/service.dev","--",t.root()),env,input,120000)))
+}
+# A home, a runtime folder, two stand-in video devices with names, and an opener that only logs.
+fn rig():str {
+    let d = temporary()
+    fs.mkdirSync(d + "/home",false); fs.mkdirSync(d + "/run",false); fs.mkdirSync(d + "/video",false); fs.mkdirSync(d + "/video/dev",false); fs.mkdirSync(d + "/video/sys",false)
+    fs.writeFileSync(d + "/video/dev/video0","x"); fs.writeFileSync(d + "/video/dev/video2","x"); fs.writeFileSync(d + "/video/dev/notes","x")
+    fs.mkdirSync(d + "/video/sys/video0",false); fs.writeFileSync(d + "/video/sys/video0/name","Integrated Camera: Integrated C\n")
+    fs.writeFileSync(d + "/open","#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$DEVOS_CAMERA_LOG\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/open"))
+    return d
+}
+
+test.case("devices are listed with their names, other files are ignored and the test pattern is always last",fn() {
+    let d = rig()
+    let all = records(worker(d,"{\"action\":\"devices\"}\n"))
+    test.expect(all.len() == 4 && strings.equal(cells(all[0])[0],"V"),"Frame wrong: " + strings.join(all,"|"))
+    test.expect(strings.equal(cells(all[1])[1],d + "/video/dev/video0") && strings.equal(cells(all[1])[2],"Integrated Camera: Integrated C"),"Named device wrong: " + all[1])
+    test.expect(strings.equal(cells(all[2])[1],d + "/video/dev/video2") && strings.equal(cells(all[2])[2],"video2") && strings.equal(cells(all[3])[1],"test") && strings.equal(cells(all[3])[2],"Test pattern"),"Unnamed device or test pattern wrong")
+    tool.exec(Vec<str>("rm","-rf",d + "/video")); fs.mkdirSync(d + "/video",false)
+    let none = records(worker(d,"{\"action\":\"devices\"}\n"))
+    test.expect(none.len() == 2 && strings.equal(cells(none[1])[1],"test"),"Without devices only the test pattern remains: " + strings.join(none,"|"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a photo is the newest finished frame copied to a private Pictures/Camera folder under a name that never repeats",fn() {
+    let d = rig()
+    let made = worker(d,"{\"action\":\"prepare\"}\n")
+    let dir = cells(made)[1]
+    test.expect(strings.startsWith(made,"V\t" + d + "/run/devos-camera-") && fs.is_dir(dir),"prepare wrong: " + made)
+    fs.writeFileSync(dir + "/00001.jpg","first"); fs.writeFileSync(dir + "/00002.jpg","second"); fs.writeFileSync(dir + "/00003.jpg","third-still-written")
+    let saved = worker(d,"{\"action\":\"photo\",\"dir\":\"" + dir + "\"}\n{\"action\":\"photo\",\"dir\":\"" + dir + "\"}\n")
+    let lines = strings.split(saved,"\n")
+    test.expect(lines.len() == 2 && strings.startsWith(lines[0],"V\tSaved · " + d + "/home/Pictures/Camera/") && strings.startsWith(lines[1],"V\tSaved · "),"Photo answers wrong: " + saved)
+    let names = strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/home/Pictures/Camera | wc -l")))
+    test.expect(strings.equal(names,"2"),"Two photos should be two files, got " + names)
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","cat " + d + "/home/Pictures/Camera/*.jpg | head -c 6"))),"second"),"The photo is not the frame before the newest")
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("stat","-c","%a",d + "/home/Pictures/Camera"))),"700"),"The capture folder is not private")
+    test.expect(strings.equal(worker(d,"{\"action\":\"cleanup\",\"dir\":\"" + dir + "\"}\n"),"V") && !fs.existsSync(dir),"cleanup did not remove the frames")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad requests, a foreign frame folder and a missing frame are refused, and the folder opens",fn() {
+    let d = rig()
+    fs.mkdirSync(d + "/elsewhere",false)
+    let input = "{\"action\":\"photo\",\"dir\":\"" + d + "/elsewhere\"}\n{\"action\":\"photo\",\"dir\":\"" + d + "/run/devos-camera-../x\"}\n{\"action\":\"cleanup\",\"dir\":\"" + d + "/elsewhere\"}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,input),"\n")
+    test.expect(lines.len() == 5 && strings.startsWith(lines[0],"E\tThe camera is not running.") && strings.startsWith(lines[1],"E\t") && strings.equal(lines[2],"V\t") && strings.startsWith(lines[3],"E\t") && strings.startsWith(lines[4],"E\t"),"Answers wrong: " + strings.join(lines,"|"))
+    test.expect(fs.is_dir(d + "/elsewhere"),"cleanup removed a folder that is not a frame folder")
+    let made = cells(worker(d,"{\"action\":\"prepare\"}\n"))[1]
+    test.expect(strings.startsWith(worker(d,"{\"action\":\"photo\",\"dir\":\"" + made + "\"}\n"),"E\tNo photo was returned by the camera."),"An empty frame folder gave a photo")
+    let opened = worker(d,"{\"action\":\"folder\"}\n")
+    tool.exec(Vec<str>("sleep","1"))
+    test.expect(strings.startsWith(opened,"V\tOpening ") && strings.equal(strings.trim(fs.readFileSync(d + "/log","utf8")),d + "/home/Pictures/Camera") && fs.is_dir(d + "/home/Pictures/Camera"),"The folder was not opened: " + opened)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native Camera starts the test pattern in a GStreamer preview and saves a real JPEG photo under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/camera-native"
+    let gst = strings.trim(tool.exec(Vec<str>("sh","-c","cc -print-file-name=libgstreamer-1.0.so.0")))
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.camera/native-main.devx", executable, gst), Map<str,str>(), "", 240000)
+    let d = temporary()
+    fs.mkdirSync(d + "/home",false); fs.mkdirSync(d + "/run",false)
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("DEVOS_CAMERA_TEST","1"); env.set("DEVOS_CAMERA_HOME",d + "/home"); env.set("DEVOS_CAMERA_RUNTIME",d + "/run"); env.set("DEVOS_CAMERA_VIDEO",d + "/novideo"); env.set("DEVOS_CAMERA_SMOKE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","camera-native","xvfb-run","-a",executable),env,"",90000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Camera showed a preview and saved a photo"),"Camera: " + t.out(done) + " / " + t.err(done))
+    let photo = strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/home/Pictures/Camera/*.jpg | head -1")))
+    test.expect(!strings.equal(photo,"") && strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","head -c 3 " + photo + " | od -An -tx1"))),"ff d8 ff"),"The photo is not a JPEG: " + photo)
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("stat","-c","%a",d + "/home/Pictures/Camera"))),"700"),"The capture folder is not private")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

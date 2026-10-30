@@ -1,0 +1,126 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+use "../org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn rd_object_pointer(object:*void, property:str):*void
+# libgstreamer is linked by path (tools/build/native-apps.sh), so no GStreamer header is needed: only the calls below are declared.
+extern fn gst_init(argc:*void, argv:*void)
+extern fn gst_parse_launch(description:*u8, error:*void):*void
+extern fn gst_element_set_state(element:*void, state:i32):i32
+extern fn gst_bin_get_by_name(bin:*void, name:str):*void
+extern fn gst_object_unref(object:*void)
+extern fn gtk_box_pack_start(box:*void, child:*void, expand:i32, fill:i32, padding:u32)
+extern fn gtk_widget_show(widget:*void)
+extern fn gtk_widget_destroy(widget:*void)
+
+# Native Camera window. The preview is the widget of a GStreamer gtksink; the same stream also writes its newest frames (2 per second) to a private
+# folder, and "Take photo" copies the newest finished frame to ~/Pictures/Camera (service.dev). The device list ends with a test pattern, which is
+# also what the tests use. Start asks the service for a new frame folder, then builds the pipeline. Frame V: message; C: id label.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_CAMERA_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn request(action:str, dir:ui.Text):ui.Text { return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"dir\":"),channel.quote(dir),plain("}"))) }
+fn source(device:ui.Text):ui.Text {
+    if ui.equalText(device,plain("test")) { return plain("videotestsrc is-live=true pattern=ball") }
+    return join(Vec<ui.Text>(plain("v4l2src device="),device,plain(" ! decodebin")))
+}
+# the preview and a rolling set of JPEG frames from one source
+fn pipeline(device:ui.Text, dir:ui.Text):ui.Text {
+    return join(Vec<ui.Text>(source(device),plain(" ! videoconvert ! tee name=t t. ! queue ! gtksink name=sink t. ! queue leaky=downstream max-size-buffers=1 ! videorate drop-only=true ! video/x-raw,framerate=2/1 ! videoconvert ! jpegenc quality=85 ! multifilesink location="),dir,plain("/%05d.jpg max-files=3")))
+}
+
+fn App(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"../org.devos.camera/service.dev","{\"action\":\"devices\"}")
+    # asked: the kind of the last request (0 devices, 1 prepare, 2 photo, 3 cleanup); pipe and preview: pointers kept as numbers while the camera runs
+    let asked = ui.useRef(context,0); let devices = ui.useText(context,ui.emptyText()); let choice = ui.useState(context,0); let status = ui.useText(context,plain("Choose a device to get started"))
+    let running = ui.useState(context,0); let framesDir = ui.useText(context,ui.emptyText()); let pipe = ui.useRef(context,0); let preview = ui.useRef(context,0); let wantStart = ui.useRef(context,0)
+    let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let startedAt = ui.useRef(context,0); let lastDevice = ui.useRef(context,0)
+    let ids = Vec<ui.Text>(); let labels = Vec<ui.Text>()
+    for record in sp.records(devices.value) { if sp.kindOf(record,67) { let c = sp.cells(record); ids.push(sp.cell(c,1)); labels.push(sp.cell(c,2)) } }
+    let stop = fn() { unsafe {
+        if pipe.get() != 0 { gst_element_set_state(pipe.get() as *void,1); gst_object_unref(pipe.get() as *void) }
+        if preview.get() != 0 { gtk_widget_destroy(preview.get() as *void) }
+        pipe.set(0); preview.set(0); running.set(0); status.set(plain("Camera is off"))
+        if has(framesDir.get()) { asked.set(3); sp.send(l,request("cleanup",framesDir.get())); framesDir.set(ui.emptyText()) }
+    } }
+    let start = fn() { unsafe {
+        if choice.get() < 0 || choice.get() >= (ids.len() as i64) || !has(framesDir.get()) { return }
+        let description = ui.nativeText(pipeline(ids[choice.get()],framesDir.get()))
+        let made = gst_parse_launch(description,null)
+        ui.rd_buffer_free(description as *void)
+        if made == null { status.set(plain("Cannot open the camera. It may be busy, disconnected or access denied.")); return }
+        let sink = gst_bin_get_by_name(made,"sink"); let widget = rd_object_pointer(sink,"widget")
+        gst_object_unref(sink)
+        gtk_box_pack_start(ui.find(context,"camera-host"),widget,1,1,0); gtk_widget_show(widget)
+        gst_element_set_state(made,4)
+        pipe.set(made as i64); preview.set(widget as i64); running.set(1); status.set(plain("Camera is on")); startedAt.set(ticks.get())
+    } }
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Camera","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"camera")
+            gst_init(null,null)
+        }
+        ui.onCommand(context,"camera.",fn(line:ui.Text) {})
+        # DEVOS_CAMERA_SMOKE=1: after 1.5 s pick the test pattern and start, take a photo 2 s after the preview is up, finish when it is saved.
+        ui.onTick(context,500,fn() {
+            ticks.set(ticks.get() + 1)
+            if !smoke() { return }
+            if step.get() == 0 && ticks.get() >= 3 && lastDevice.get() > 0 { step.set(1); choice.set(lastDevice.get() - 1); ui.click(context,"camera-start") }
+            else if step.get() == 1 && running.get() != 0 && ticks.get() >= startedAt.get() + 4 { step.set(2); ui.click(context,"camera-photo") }
+        })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() == 0 { return ui.noop }
+        if asked.get() == 0 { devices.set(f); let count = 0; for record in sp.records(f) { if sp.kindOf(record,67) { count = count + 1 } }; lastDevice.set(count) }
+        else if asked.get() == 1 && has(field(f,1)) { framesDir.set(field(f,1)) }
+        else if asked.get() == 2 {
+            status.set(field(f,1))
+            if smoke() && step.get() == 2 && k.isText(sp.cell(sp.head(f),0),"V") { print("PASS native Camera showed a preview and saved a photo"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        if wantStart.get() == 1 && has(framesDir.value) { wantStart.set(0); start() }
+        return ui.noop
+    },Vec<i64>(framesDir.revision))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let busy = l.waiting.get() != 0; let on = running.value != 0
+    let select = ui.named("camera-device"); select.sensitive = !on && !busy
+    let startButton = ui.named("camera-start"); startButton.sensitive = !busy && ids.len() > 0
+    let photoButton = ui.named("camera-photo"); photoButton.sensitive = on && !busy
+    let folderButton = ui.named("camera-folder")
+    let refresh = ui.named("camera-refresh"); refresh.sensitive = !on && !busy
+    let host = ui.props(); host.expand = true; host.id = ui.text("camera-host")
+    let nodes = Vec<ui.Node>(ext.row(8,Vec<ui.Node>(ext.expand(ui.Select(select,labels,choice.value,fn(index:i64) { choice.set(index) })),ui.Button(refresh,"Refresh devices",fn() { asked.set(0); sp.send(l,plain("{\"action\":\"devices\"}")) }))))
+    nodes.push(ext.named(k.caption(has(l.failure.value) ? l.failure.value : status.value,has(l.failure.value) ? "settings-error-banner" : "settings-description"),"camera-status"))
+    nodes.push(ui.Box(host,Vec<ui.Node>()))
+    nodes.push(ext.row(8,Vec<ui.Node>(
+        ui.Button(startButton,on ? "Stop" : "Start camera",fn() {
+            if on { stop() } else { wantStart.set(1); asked.set(1); sp.send(l,plain("{\"action\":\"prepare\"}")) }
+        }),
+        ui.Button(photoButton,"Take photo",fn() { asked.set(2); status.set(plain("Taking photo…")); sp.send(l,request("photo",framesDir.get())) }),
+        ui.Button(folderButton,"Open photos",fn() { sp.send(l,plain("{\"action\":\"folder\"}")) }))))
+    return ext.column(10,nodes)
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.camera.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Camera",900,620,App) ? 0 : 1
+}

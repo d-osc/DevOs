@@ -1,0 +1,2 @@
+use "./native.devx" as camera
+return camera.run()

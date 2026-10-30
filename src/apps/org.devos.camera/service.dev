@@ -1,0 +1,101 @@
+#!/usr/bin/env d
+# Data worker of the native Camera window. It lists the capture devices, keeps the folder where the running pipeline writes its latest frames, and
+# saves a photo by copying the newest frame to ~/Pictures/Camera (the folder is created private, 0700). One JSON request per line on stdin:
+#   {"action":"devices"}                      -> V message, then C id label per device (the test pattern is always last)
+#   {"action":"prepare"}                      -> V dir (a new private folder for frames; frame folders older than a day are removed)
+#   {"action":"photo","dir":"..."}            -> V message ("Saved · path") or E
+#   {"action":"folder"}                       -> opens ~/Pictures/Camera with the default application
+#   {"action":"cleanup","dir":"..."}          -> V ""
+# Frames are text-safe cells separated by tabs, records by ASCII 30. Test hooks (only with DEVOS_CAMERA_TEST=1): DEVOS_CAMERA_HOME,
+# DEVOS_CAMERA_VIDEO (a folder that stands in for /dev and /sys/class/video4linux), DEVOS_CAMERA_OPEN (the opener), DEVOS_CAMERA_RUNTIME.
+use "std/io"
+use "std/fs"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/posix.dev" as posix
+use "../../../lib/worker-kit.dev" as kit
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn testing():bool { return process.hasEnv("DEVOS_CAMERA_TEST") }
+fn setting(name:str, fallback:str):str { return testing() && process.hasEnv(name) ? process.getenv(name) : fallback }
+fn home():str { return setting("DEVOS_CAMERA_HOME",process.hasEnv("HOME") ? process.getenv("HOME") : "/") }
+fn runtime():str { return setting("DEVOS_CAMERA_RUNTIME",process.hasEnv("XDG_RUNTIME_DIR") ? process.getenv("XDG_RUNTIME_DIR") : "/tmp") }
+fn videoRoot():str { return setting("DEVOS_CAMERA_VIDEO","") }
+fn photos():str { return home() + "/Pictures/Camera" }
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
+fn framesPrefix():str { return runtime() + "/devos-camera-" }
+
+# /dev/video<N> that can capture, named by /sys/class/video4linux/video<N>/name when it exists.
+fn devices():str {
+    let prefix = videoRoot()
+    let base = strings.equal(prefix,"") ? "/dev" : prefix + "/dev"
+    let sys = strings.equal(prefix,"") ? "/sys/class/video4linux" : prefix + "/sys"
+    let out = "V\t"
+    let names = Vec<str>()
+    if fs.is_dir(base) { for name in fs.readdirSync(base) { if strings.startsWith(name,"video") { names.push(name) } } }
+    names.sort()
+    for name in names {
+        let label = name
+        let file = sys + "/" + name + "/name"
+        if fs.existsSync(file) { let read = strings.trim(fs.readFileSync(file,"utf8")); if !strings.equal(read,"") { label = read } }
+        out = out + kit.rs() + "C\t" + kit.clean(base + "/" + name) + "\t" + kit.clean(label)
+    }
+    return out + kit.rs() + "C\ttest\tTest pattern"
+}
+fn prepare():str {
+    # Old frame folders (a crashed window never cleans up) go after a day.
+    hw.run(Vec<str>("find",runtime(),"-maxdepth","1","-name","devos-camera-*","-type","d","-mmin","+1440","-exec","rm","-rf","{}","+"),10000)
+    let made = hw.run(Vec<str>("mktemp","-d",framesPrefix() + "XXXXXX"),5000)
+    if made.code != 0 { return kit.failure("Could not create a folder for the camera frames.") }
+    return "V\t" + kit.clean(strings.trim(made.out))
+}
+fn ownFrames(dir:str):bool { return strings.startsWith(dir,framesPrefix()) && !strings.contains(dir,"..") && !strings.contains(dir,"'") && fs.is_dir(dir) }
+fn photo(dir:str):str {
+    if !ownFrames(dir) { return kit.failure("The camera is not running.") }
+    # The newest complete frame: multifilesink numbers them, and the highest number may still be written, so the one before it is the safest.
+    let ran = hw.run(Vec<str>("sh","-c","ls -1 " + quote(dir) + " | grep '[.]jpg$' | sort | tail -n 2 | head -n 1"),5000)
+    let frame = strings.trim(ran.out)
+    if strings.equal(frame,"") {
+        ran = hw.run(Vec<str>("sh","-c","ls -1 " + quote(dir) + " | grep '[.]jpg$' | sort | tail -n 1"),5000)
+        frame = strings.trim(ran.out)
+    }
+    if strings.equal(frame,"") { return kit.failure("No photo was returned by the camera.") }
+    let folder = photos()
+    hw.run(Vec<str>("mkdir","-p","-m","700",folder),5000)
+    if !fs.is_dir(folder) { return kit.failure("Could not create the capture folder.") }
+    let stamp = strings.trim(hw.run(Vec<str>("date","+%Y-%m-%d_%H-%M-%S"),5000).out)
+    let unique = strings.trim(hw.run(Vec<str>("sh","-c","od -An -N4 -tx1 /dev/urandom | tr -d ' \\n'"),5000).out)
+    let target = folder + "/" + stamp + "-" + unique + ".jpg"
+    let copied = hw.run(Vec<str>("cp","--",dir + "/" + frame,target),10000)
+    if copied.code != 0 { return kit.failure("Could not save the photo.") }
+    return "V\tSaved · " + kit.clean(target)
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action")
+    if strings.equal(action,"devices") { return devices() }
+    if strings.equal(action,"prepare") { return prepare() }
+    if strings.equal(action,"photo") { return photo(text(r,"dir")) }
+    if strings.equal(action,"cleanup") { if ownFrames(text(r,"dir")) { hw.run(Vec<str>("rm","-rf",text(r,"dir")),5000) }; return "V\t" }
+    if strings.equal(action,"folder") {
+        hw.run(Vec<str>("mkdir","-p","-m","700",photos()),5000)
+        let opener = setting("DEVOS_CAMERA_OPEN","gio open")
+        posix.shell(opener + " " + quote(photos()) + " >/dev/null 2>&1 &")
+        return "V\tOpening " + kit.clean(photos())
+    }
+    return kit.failure("Unsupported action")
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()
