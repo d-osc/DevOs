@@ -15,6 +15,7 @@ use "./native-wifi-page.devx" as wifiView
 use "./native-proxy-page.devx" as proxyView
 use "./native-bluetooth-page.devx" as bluetoothView
 use "./native-sound-page.devx" as soundView
+use "./native-display-page.devx" as displayView
 extern fn rc_env(name:str):str
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
@@ -27,9 +28,9 @@ extern fn rd_default_theme():str
 # this window renders its presentation frames (model.dev) and sends the user's changes back. Widgets the toolkit does not
 # have yet (scales, combo boxes with ids, tabs) are why the remaining Settings pages are still the JS views.
 fn environment(name:str):str { unsafe { return rc_env(name) } }
-fn pageNames():Vec<str> { return Vec<str>("battery-care","fan-profile","connectivity","touchpad-gestures","microphone","keyboard","swap","speaker","language","display-care","theme","icons","updates","extensions","desktop","about","storage","power","time","mouse","keyboard-input","accounts","wifi","vpn","hotspot","airplane","proxy","advanced","bluetooth","sound","printers","background","panel") }
-fn pageTitles():Vec<str> { return Vec<str>("Battery Care","Fan Profile","Connectivity","Touchpad","Microphone","Keyboard","Memory & Swap","Speaker","Language","Display Care","Theme","Theme icons","Updates","Apps & extensions","Desktop","About","Storage","Power & battery","Date & time","Mouse","Keyboard input","Accounts","Wi-Fi","VPN","Mobile hotspot","Airplane mode","Proxy","Advanced network settings","Bluetooth & devices","Sound","Printers & devices","Background","Panel") }
-fn pageDescriptions():Vec<str> { return Vec<str>("Keep the battery healthy and choose when it charges fully.","Choose how aggressively the device cools itself.","Prioritize the traffic that matters and connect to the best access point.","Lock the touchpad and use edge gestures.","Choose your microphone and noise canceling.","Function keys and keyboard backlight.","Compressed RAM swap, a swap file or no swap.","Noise-canceling speaker, volume booster and sound modes.","Choose your keyboard languages and how you switch between them.","OLED care, flicker-free dimming, Splendid and edge brightness.","Pick a color theme, then choose Dark, Light or Auto, which switches between them during the day.","Font Awesome shell icons, Material file icons and the GTK icon theme.","Check for Dev OS releases and see which versions are installed.","Settings of every app and extension, from its manifest.","Desktop name, panel height, clock format and the commands your session uses.","Dev OS version, device specifications and runtime information.","Disk usage and available space.","Battery status and the power mode.","Time zone, automatic time and the system clock.","Pointer speed, buttons and scrolling.","How keys repeat when you hold them down.","Your profile, GitHub sign-in and the people on this device.","Nearby networks, saved connections and signal strength.","Add and manage your VPN connections.","Share your internet connection with other devices.","Manage wireless radios and airplane mode.","PAC files, proxy servers and bypass rules.","Network adapters, IP addresses, DNS and connection status.","Connect, disconnect and manage Bluetooth accessories.","Output and input devices, volume and per-app audio.","Your network printers, together in one place.","Wallpaper, widgets and the desktop menu.","Taskbar, clock and panel behavior.") }
+fn pageNames():Vec<str> { return Vec<str>("battery-care","fan-profile","connectivity","touchpad-gestures","microphone","keyboard","swap","speaker","language","display-care","theme","icons","updates","extensions","desktop","about","storage","power","time","mouse","keyboard-input","accounts","wifi","vpn","hotspot","airplane","proxy","advanced","bluetooth","sound","display","printers","background","panel") }
+fn pageTitles():Vec<str> { return Vec<str>("Battery Care","Fan Profile","Connectivity","Touchpad","Microphone","Keyboard","Memory & Swap","Speaker","Language","Display Care","Theme","Theme icons","Updates","Apps & extensions","Desktop","About","Storage","Power & battery","Date & time","Mouse","Keyboard input","Accounts","Wi-Fi","VPN","Mobile hotspot","Airplane mode","Proxy","Advanced network settings","Bluetooth & devices","Sound","Displays","Printers & devices","Background","Panel") }
+fn pageDescriptions():Vec<str> { return Vec<str>("Keep the battery healthy and choose when it charges fully.","Choose how aggressively the device cools itself.","Prioritize the traffic that matters and connect to the best access point.","Lock the touchpad and use edge gestures.","Choose your microphone and noise canceling.","Function keys and keyboard backlight.","Compressed RAM swap, a swap file or no swap.","Noise-canceling speaker, volume booster and sound modes.","Choose your keyboard languages and how you switch between them.","OLED care, flicker-free dimming, Splendid and edge brightness.","Pick a color theme, then choose Dark, Light or Auto, which switches between them during the day.","Font Awesome shell icons, Material file icons and the GTK icon theme.","Check for Dev OS releases and see which versions are installed.","Settings of every app and extension, from its manifest.","Desktop name, panel height, clock format and the commands your session uses.","Dev OS version, device specifications and runtime information.","Disk usage and available space.","Battery status and the power mode.","Time zone, automatic time and the system clock.","Pointer speed, buttons and scrolling.","How keys repeat when you hold them down.","Your profile, GitHub sign-in and the people on this device.","Nearby networks, saved connections and signal strength.","Add and manage your VPN connections.","Share your internet connection with other devices.","Manage wireless radios and airplane mode.","PAC files, proxy servers and bypass rules.","Network adapters, IP addresses, DNS and connection status.","Connect, disconnect and manage Bluetooth accessories.","Output and input devices, volume and per-app audio.","Resolution, scale, orientation and position of your screens.","Your network printers, together in one place.","Wallpaper, widgets and the desktop menu.","Taskbar, clock and panel behavior.") }
 
 # Pages that open their own native window: the table index starts at nativePages().
 fn themeIndex():i64 { return 10 }
@@ -40,8 +41,8 @@ fn desktopIndex():i64 { return 14 }
 fn aboutIndex():i64 { return 15 }
 fn networkIndex():i64 { return 22 }
 fn printersIndex():i64 { return 28 }
-fn nativePages():i64 { return 31 }
-fn externalCommand(index:i64):str { return index == 31 ? "settings.background" : "settings.panel" }
+fn nativePages():i64 { return 32 }
+fn externalCommand(index:i64):str { return index == 32 ? "settings.background" : "settings.panel" }
 
 # The pages that are components with their own worker (flat checks: a long else-if chain exceeds the parser's nesting limit).
 fn componentPage(index:i64):ui.Node {
@@ -65,6 +66,7 @@ fn componentPage(index:i64):ui.Node {
     if index == 27 { return networkView.advanced() }
     if index == 28 { return bluetoothView.page() }
     if index == 29 { return soundView.page() }
+    if index == 30 { return displayView.page() }
     return printersView.page()
 }
 fn requestMany(pipe:i64,page:str,action:str,values:Vec<ui.Text>) {
@@ -192,6 +194,7 @@ fn App(context:*ui.Context):ui.Node {
         if ui.text(environment("DEVOS_PROXY_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-proxy") }
         if ui.text(environment("DEVOS_BLUETOOTH_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-bluetooth") }
         if ui.text(environment("DEVOS_SOUND_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-sound") }
+        if ui.text(environment("DEVOS_DISPLAY_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-display") }
         return ui.noop
     },Vec<i64>())
     ui.useEffect(context,fn():fn():void {

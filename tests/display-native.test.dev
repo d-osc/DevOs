@@ -1,0 +1,93 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+# A stand-in for wlr-randr: logs every call, answers --json from a file, can be made to reject a dry run or a change. It never touches a compositor.
+fn rig():str {
+    let d = temporary()
+    fs.writeFileSync(d + "/wlr-randr","#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DEVOS_FAKE_DIR/calls\"\ncase \"$1\" in --json) cat \"$DEVOS_FAKE_DIR/outputs\"; exit 0;; esac\ncase \"$*\" in *--dryrun*) if [ -f \"$DEVOS_FAKE_DIR/dryfail\" ]; then echo 'bad mode'; exit 1; fi; exit 0;; esac\ncase \"$*\" in *1280x720*) if [ -f \"$DEVOS_FAKE_DIR/applyfail\" ]; then echo 'rejected'; exit 1; fi;; esac\nexit 0\n")
+    tool.exec(Vec<str>("chmod","755",d + "/wlr-randr"))
+    fs.writeFileSync(d + "/outputs","[{\"name\":\"eDP-1\",\"description\":\"Built-in\\tpanel\",\"enabled\":true,\"modes\":[{\"width\":1920,\"height\":1080,\"refresh\":60.000000,\"current\":true,\"preferred\":true},{\"width\":1280,\"height\":720,\"refresh\":59.999001,\"current\":false,\"preferred\":false}],\"position\":{\"x\":0,\"y\":0},\"scale\":1.000000,\"transform\":\"normal\"},{\"name\":\"HDMI-A-1\",\"description\":\"Off\",\"enabled\":false,\"modes\":[],\"position\":{\"x\":0,\"y\":0},\"scale\":1.0,\"transform\":\"normal\"}]")
+    return d
+}
+fn worker(directory:str, countdown:str, safety:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_FAKE_DIR",directory); env.set("DEVOS_DISPLAY_RANDR",directory + "/wlr-randr"); env.set("DEVOS_DISPLAY_RUNTIME",directory); env.set("DEVOS_DISPLAY_COUNTDOWN",countdown); env.set("DEVOS_DISPLAY_SAFETY",safety)
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/display-page.dev","--",t.root()),env,input,120000)))
+}
+fn calls(directory:str):str { return fs.existsSync(directory + "/calls") ? fs.readFileSync(directory + "/calls","utf8") : "" }
+fn marker(directory:str):str { return directory + "/devos-display-preview" }
+fn change(mode:str):str { return "{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"" + mode + "\",\"scale\":1.5,\"transform\":\"90\",\"x\":10,\"y\":-20}\n" }
+fn back():str { return "--output eDP-1 --on --mode 1920x1080@60Hz --scale 1 --transform normal --pos 0,0 --output HDMI-A-1 --off\n" }
+
+test.case("the outputs become a frame with their modes, scale, rotation and position",fn() {
+    let d = rig()
+    let all = records(worker(d,"15","30","{\"action\":\"get\"}\n")); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],"0") && strings.equal(h[2],"0") && all.len() == 5,"Header or count wrong: " + strings.join(all,"|"))
+    let o = cells(all[1]); let first = cells(all[2]); let second = cells(all[3]); let off = cells(all[4])
+    test.expect(strings.equal(o[0],"D") && strings.equal(o[1],"eDP-1") && strings.equal(o[2],"Built-in panel") && strings.equal(o[3],"1") && strings.equal(o[4],"1") && strings.equal(o[5],"normal") && strings.equal(o[6],"0"),"Output wrong: " + all[1])
+    test.expect(strings.equal(first[1],"1920x1080@60Hz") && strings.equal(first[4],"60") && strings.equal(first[5],"1") && strings.equal(first[6],"1"),"Current mode wrong: " + all[2])
+    test.expect(strings.equal(second[1],"1280x720@59.999001Hz") && strings.equal(second[5],"0") && strings.equal(off[0],"D") && strings.equal(off[3],"0"),"Second mode or disabled output wrong: " + all[3])
+    fs.writeFileSync(d + "/outputs","garbage")
+    test.expect(strings.equal(worker(d,"15","30","{\"action\":\"get\"}\n"),"E\tInvalid display information from the compositor."),"A garbled answer was accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a preview is checked, applied, kept once and the saved layout is the one before the change",fn() {
+    let d = rig()
+    let lines = strings.split(worker(d,"15","30",change("1280x720@59.999001Hz") + change("1280x720@59.999001Hz") + "{\"action\":\"keep\"}\n{\"action\":\"keep\"}\n"),"\n")
+    test.expect(lines.len() == 4,"One frame per request expected: ${lines.len()}")
+    test.expect(strings.startsWith(lines[0],"V\t1\t") && strings.startsWith(lines[1],"E\tKeep or revert the current preview first.") && strings.startsWith(lines[2],"V\t0\t") && strings.startsWith(lines[3],"E\tThe preview expired and was reverted."),"Answers wrong: " + strings.join(lines,"|"))
+    let log = calls(d)
+    test.expect(strings.contains(log,"--dryrun --output eDP-1 --on --mode 1280x720@59.999001Hz --scale 1.5 --transform 90 --pos 10,-20\n") && strings.contains(log,"\n--output eDP-1 --on --mode 1280x720@59.999001Hz --scale 1.5 --transform 90 --pos 10,-20\n"),"Dry run or apply wrong: " + log)
+    test.expect(!fs.existsSync(marker(d)),"The marker stayed after keep")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("revert and an expired countdown put the previous layout back",fn() {
+    let d = rig()
+    let lines = strings.split(worker(d,"15","30",change("1280x720@59.999001Hz") + "{\"action\":\"revert\"}\n"),"\n")
+    test.expect(strings.startsWith(lines[1],"V\t0\t") && !fs.existsSync(marker(d)),"Revert failed: " + strings.join(lines,"|"))
+    test.expect(strings.endsWith(calls(d),back() + "--json\n") || strings.contains(calls(d),back()),"The old layout was not restored: " + calls(d))
+    let e = rig()
+    let out = strings.split(worker(e,"0","30",change("1280x720@59.999001Hz") + "{\"action\":\"status\"}\n"),"\n")
+    test.expect(strings.startsWith(out[1],"V\t0\t0") && !fs.existsSync(marker(e)) && strings.contains(calls(e),back()),"An expired countdown did not revert: " + strings.join(out,"|") + calls(e))
+    tool.exec(Vec<str>("rm","-rf",d,e))
+})
+test.case("the detached safety process restores the layout when nobody keeps or reverts",fn() {
+    let d = rig()
+    worker(d,"60","1",change("1280x720@59.999001Hz"))
+    test.expect(fs.existsSync(marker(d)),"No marker after the preview")
+    tool.exec(Vec<str>("sleep","3"))
+    test.expect(!fs.existsSync(marker(d)) && strings.contains(calls(d),back()),"The safety process did not restore the layout: " + calls(d))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad previews never reach the compositor and a rejected change is reverted",fn() {
+    let d = rig()
+    let input = "{\"action\":\"preview\",\"name\":\"HDMI-A-1\",\"mode\":\"1x1@1Hz\",\"scale\":1,\"transform\":\"normal\",\"x\":0,\"y\":0}\n{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"640x480@60Hz\",\"scale\":1,\"transform\":\"normal\",\"x\":0,\"y\":0}\n{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"1920x1080@60Hz\",\"scale\":9,\"transform\":\"normal\",\"x\":0,\"y\":0}\n{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"1920x1080@60Hz\",\"scale\":1,\"transform\":\"upside\",\"x\":0,\"y\":0}\n{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"1920x1080@60Hz\",\"scale\":1,\"transform\":\"normal\",\"x\":0.5,\"y\":0}\n{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"1920x1080@60Hz\",\"scale\":1,\"transform\":\"normal\",\"x\":99999,\"y\":0}\n{\"action\":\"preview\",\"name\":\"eDP-1\",\"mode\":\"1920x1080@60Hz\",\"transform\":\"normal\",\"x\":0,\"y\":0}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,"15","30",input),"\n")
+    test.expect(lines.len() == 9,"One frame per request expected: ${lines.len()}")
+    for i in 0..9 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(!strings.contains(calls(d),"--dryrun") && !strings.contains(calls(d),"--on") && !fs.existsSync(marker(d)),"A bad preview reached the compositor: " + calls(d))
+    fs.writeFileSync(d + "/dryfail","1")
+    test.expect(strings.equal(worker(d,"15","30",change("1280x720@59.999001Hz")),"E\tbad mode") && !fs.existsSync(marker(d)),"A rejected dry run left a marker")
+    tool.exec(Vec<str>("rm","-f",d + "/dryfail")); fs.writeFileSync(d + "/applyfail","1")
+    test.expect(strings.equal(worker(d,"15","30",change("1280x720@59.999001Hz")),"E\trejected") && !fs.existsSync(marker(d)) && strings.contains(calls(d),back()),"A rejected change was not reverted: " + calls(d))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("native Settings previews a scale change and keeps it under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/display-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_DISPLAY_RANDR",d + "/wlr-randr"); env.set("DEVOS_DISPLAY_RUNTIME",d); env.set("DEVOS_DISPLAY_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","display-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Display page previewed and kept a change"),"Display page: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.contains(calls(d),"--dryrun --output eDP-1 --on --mode 1920x1080@60Hz --scale 1.5 --transform normal --pos 0,0\n") && !fs.existsSync(marker(d)),"The page did not preview and keep: " + calls(d))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

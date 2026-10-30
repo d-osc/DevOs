@@ -1,0 +1,143 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+
+# Native Display page. The worker (display-page.dev) runs wlr-randr. A change is a preview: Apply asks the compositor for it and the page shows
+# "Keep these display settings?" with a countdown; Keep makes it permanent, Revert (or the countdown) puts the old layout back, and the worker's
+# own detached process does the same after 30 seconds even if this window is gone.
+# Frame V: pending remainingSeconds; D: name description enabled scale transform x y, followed by its M records: id width height refresh current preferred.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_DISPLAY_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 16; options.className = ui.text("settings-card system-card"); return ui.Box(options,children) }
+
+# An enabled output with its modes.
+struct Screen { d: Vec<ui.Text>, modes: Vec<Vec<ui.Text>> }
+fn screens(frame:ui.Text):Vec<Screen> {
+    let out = Vec<Screen>()
+    for record in sp.records(frame) {
+        if sp.kindOf(record,68) { out.push(Screen(sp.cells(record),Vec<Vec<ui.Text>>())) }
+        else if sp.kindOf(record,77) && out.len() > 0 { let last = out[(out.len() as i64) - 1]; last.modes.push(sp.cells(record)); out[(out.len() as i64) - 1] = last }
+    }
+    let enabled = Vec<Screen>(); for s in out { if sp.flag(sp.cell(s.d,3)) { enabled.push(s) } }
+    return enabled
+}
+# Draft values joined with ASCII 30: output name, mode id, scale, transform, x, y. Starts from what the output is doing now.
+fn draftFor(s:Screen):ui.Text {
+    let mode = ui.emptyText(); let preferred = ui.emptyText(); let first = ui.emptyText()
+    for m in s.modes {
+        if !has(first) { first = sp.cell(m,1) }
+        if sp.flag(sp.cell(m,6)) { preferred = sp.cell(m,1) }
+        if sp.flag(sp.cell(m,5)) { mode = sp.cell(m,1) }
+    }
+    if !has(mode) { mode = has(preferred) ? preferred : first }
+    let values = Vec<ui.Text>(sp.cell(s.d,1),mode,sp.cell(s.d,4),sp.cell(s.d,5),sp.cell(s.d,6),sp.cell(s.d,7))
+    let out = Vec<u8>()
+    for i in 0..(values.len() as i64) { if i > 0 { out.push(30) }; for byte in values[i].bytes { out.push(byte) } }
+    return ui.Text(out)
+}
+fn modeLabel(m:Vec<ui.Text>):ui.Text {
+    return join(Vec<ui.Text>(sp.cell(m,2),plain(" × "),sp.cell(m,3),plain(" · "),sp.cell(m,4),plain(" Hz"),sp.flag(sp.cell(m,6)) ? plain(" (Recommended)") : ui.emptyText()))
+}
+fn scaleChoices(current:ui.Text):Vec<ui.Text> {
+    let list = Vec<ui.Text>(plain("1"),plain("1.25"),plain("1.5"),plain("1.75"),plain("2"),plain("2.5"),plain("3"))
+    for item in list { if ui.equalText(item,current) { return list } }
+    list.push(current); return list
+}
+fn transformIds():Vec<str> { return Vec<str>("normal","90","180","270","flipped","flipped-90","flipped-180","flipped-270") }
+fn transformLabels():Vec<str> { return Vec<str>("Landscape","Portrait · 90°","Landscape · 180°","Portrait · 270°","Flipped","Flipped · 90°","Flipped · 180°","Flipped · 270°") }
+fn numberText(value:ui.Text):ui.Text { return ext.numeric(value) ? value : channel.quote(value) }
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"display-page.dev","{\"action\":\"get\"}")
+    let draft = ui.useText(context,ui.emptyText()); let polling = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() > 0 {
+            let pending = k.isText(field(f,1),"1")
+            # What the compositor is doing now becomes the draft again, except while a preview is waiting for its answer.
+            if !pending {
+                let all = screens(f); let wanted = ext.at(draft.get(),0); let chosen = -1
+                for i in 0..(all.len() as i64) { if ui.equalText(sp.cell(all[i].d,1),wanted) { chosen = i } }
+                if chosen < 0 && all.len() > 0 { chosen = 0 }
+                if chosen >= 0 { draft.set(draftFor(all[chosen])) } else { draft.set(ui.emptyText()) }
+            }
+            if pending && polling.get() == 0 { polling.set(1); channel.interval(l.pipe.get(),1000); channel.send(l.pipe.get(),plain("{\"action\":\"status\"}")); channel.pause(l.pipe.get(),false) }
+            else if !pending && polling.get() == 1 { polling.set(0); channel.pause(l.pipe.get(),true) }
+            if smoke() {
+                if step.get() == 2 && pending { step.set(3); ui.click(context,"display-keep") }
+                else if step.get() == 3 && !pending { print("PASS native Display page previewed and kept a change"); ui.close(context) }
+            }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        # Once the draft shows the current layout, pick scale 1.5 and apply it.
+        if smoke() && step.get() == 0 && has(ext.at(draft.value,0)) { step.set(1); ui.select(context,"display-scale",2) }
+        else if smoke() && step.get() == 1 && k.isText(ext.at(draft.value,2),"1.5") { step.set(2); ui.click(context,"display-apply") }
+        return ui.noop
+    },Vec<i64>(draft.revision))
+    ui.useEffect(context,fn():fn():void { if polling.get() == 1 { polling.set(0); channel.pause(l.pipe.get(),true) }; return ui.noop },Vec<i64>(l.failure.revision))
+    if l.frame.value.bytes.len() == 0 { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let pending = k.isText(field(f,1),"1"); let left = sp.number(field(f,2))
+    let all = screens(f); let locked = busy || pending
+    let refresh = ui.named("display-refresh"); refresh.sensitive = !locked
+    let nodes = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(5,Vec<ui.Node>(k.note("Your displays","section-heading"),k.note("Choose a screen to adjust its picture and workspace.","settings-description")))),
+        ui.Button(refresh,"Detect displays",fn() { sp.send(l,plain("{\"action\":\"get\"}")) }))))
+    if has(l.failure.value) { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"display-error")) }
+    let chosen = -1; let wanted = ext.at(draft.value,0)
+    for i in 0..(all.len() as i64) { if ui.equalText(sp.cell(all[i].d,1),wanted) { chosen = i } }
+    if all.len() == 0 { nodes.push(ext.named(k.note("No connected display was found.","settings-description"),"display-empty")) }
+    if chosen >= 0 {
+        let s = all[chosen]
+        if all.len() > 1 {
+            let names = Vec<ui.Text>(); for x in all { names.push(sp.cell(x.d,1)) }
+            let which = ui.named("display-select"); which.sensitive = !locked
+            nodes.push(ui.Select(which,names,chosen,fn(index:i64) { if index != chosen && index >= 0 && index < (all.len() as i64) { draft.set(draftFor(all[index])) } }))
+        }
+        let rows = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"video-display-symbolic"),ext.expand(ext.column(4,Vec<ui.Node>(k.caption(sp.cell(s.d,1),"section-heading"),k.caption(sp.cell(s.d,2),"settings-description")))),k.note("Connected","settings-badge"))))
+        let labels = Vec<ui.Text>(); let active = 0
+        for i in 0..(s.modes.len() as i64) { labels.push(modeLabel(s.modes[i])); if ui.equalText(sp.cell(s.modes[i],1),ext.at(draft.value,1)) { active = i } }
+        let mode = ui.named("display-mode"); mode.sensitive = !locked
+        rows.push(ext.row(16,Vec<ui.Node>(ext.expand(k.note("Resolution & refresh rate","settings-field-title")),ui.Select(mode,labels,active,fn(index:i64) { if index >= 0 && index < (s.modes.len() as i64) { draft.set(ext.with(draft.get(),1,sp.cell(s.modes[index],1))) } }))))
+        let scales = scaleChoices(ext.at(draft.value,2)); let scaleAt = 0
+        for i in 0..(scales.len() as i64) { if ui.equalText(scales[i],ext.at(draft.value,2)) { scaleAt = i } }
+        let scale = ui.named("display-scale"); scale.sensitive = !locked
+        rows.push(ext.row(16,Vec<ui.Node>(ext.expand(ext.column(4,Vec<ui.Node>(k.note("Scale","settings-field-title"),k.note("Size of text and interface elements","settings-description")))),
+            ui.Select(scale,scales,scaleAt,fn(index:i64) { if index >= 0 && index < (scales.len() as i64) { draft.set(ext.with(draft.get(),2,scales[index])) } }))))
+        let ids = transformIds(); let labelsT = transformLabels(); let turn = Vec<ui.Text>(); let turnAt = 0
+        for i in 0..(ids.len() as i64) { turn.push(plain(labelsT[i])); if k.isText(ext.at(draft.value,3),ids[i]) { turnAt = i } }
+        let transform = ui.named("display-transform"); transform.sensitive = !locked
+        rows.push(ext.row(16,Vec<ui.Node>(ext.expand(k.note("Orientation","settings-field-title")),ui.Select(transform,turn,turnAt,fn(index:i64) { if index >= 0 && index < (ids.len() as i64) { draft.set(ext.with(draft.get(),3,plain(ids[index]))) } }))))
+        if all.len() > 1 {
+            let x = ui.named("display-x"); x.sensitive = !locked; x.width = 90
+            let y = ui.named("display-y"); y.sensitive = !locked; y.width = 90
+            rows.push(ext.row(12,Vec<ui.Node>(ext.expand(k.note("Position (X / Y)","settings-field-title")),ui.Entry(x,ext.at(draft.value,4),fn(value:ui.Text) { draft.set(ext.with(draft.get(),4,value)) }),ui.Entry(y,ext.at(draft.value,5),fn(value:ui.Text) { draft.set(ext.with(draft.get(),5,value)) }))))
+        }
+        if !pending {
+            let apply = ui.named("display-apply"); apply.className = ui.text("settings-primary"); apply.sensitive = !busy
+            rows.push(ext.row(12,Vec<ui.Node>(ext.expand(k.note("Changes revert automatically unless you keep them.","settings-description")),
+                ui.Button(apply,busy ? "Applying…" : "Apply",fn() {
+                    let v = draft.get()
+                    sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"preview\",\"name\":"),channel.quote(ext.at(v,0)),plain(",\"mode\":"),channel.quote(ext.at(v,1)),plain(",\"scale\":"),numberText(ext.at(v,2)),
+                        plain(",\"transform\":"),channel.quote(ext.at(v,3)),plain(",\"x\":"),numberText(ext.at(v,4)),plain(",\"y\":"),numberText(ext.at(v,5)),plain("}"))))
+                }))))
+        }
+        nodes.push(card(rows))
+    }
+    if pending {
+        let keep = ui.named("display-keep"); keep.className = ui.text("settings-primary"); keep.sensitive = !busy
+        let revert = ui.named("display-revert"); revert.sensitive = !busy
+        nodes.push(card(Vec<ui.Node>(k.note("Keep these display settings?","section-heading"),ext.named(k.caption(join(Vec<ui.Text>(plain("Reverting in "),plain("${left}"),plain(" seconds."))),"settings-description"),"display-countdown"),
+            ext.row(10,Vec<ui.Node>(ui.Button(revert,"Revert",fn() { sp.send(l,plain("{\"action\":\"revert\"}")) }),ui.Button(keep,"Keep changes",fn() { sp.send(l,plain("{\"action\":\"keep\"}")) }))))))
+    }
+    nodes.push(k.note("Display changes apply to the current desktop session.","settings-description"))
+    return ext.column(18,nodes)
+}
+fn page():ui.Node { return ui.component(9398,ui.keyed(958),render) }
