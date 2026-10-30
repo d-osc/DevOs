@@ -1,0 +1,144 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../../apps/org.devos.settings/native-kit.devx" as k
+use "../../apps/org.devos.settings/native-extensions-page.devx" as ext
+use "../../apps/org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn g_file_test(path:str,test:i32):i32
+
+# Native Task View window: the open windows of the current desktop as cards (click to bring one forward, × to close it, a menu to move it to another
+# desktop) and the desktops (switch, add, remove). The window starts dev-os-window-tracker itself (DEVOS_TASKVIEW_TRACKER replaces it in tests), batches
+# its JSON event lines every 100 ms for task-service.dev, and forwards the commands that worker approves back to the tracker. Like the Launcher this is
+# an ordinary window: the layer-shell overlay, the open/close motion and the keyboard navigation of the JS Task View are not here yet.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn smoke():bool { return has(plain(environment("DEVOS_TASKVIEW_SMOKE"))) }
+fn action(name:str, id:ui.Text, extra:ui.Text):ui.Text { return join(Vec<ui.Text>(plain("{\"action\":\"" + name + "\",\"id\":"),has(id) ? id : plain("0"),extra,plain("}"))) }
+struct Win { id:ui.Text, title:ui.Text, app:ui.Text, icon:ui.Text, active:bool, minimized:bool, desktop:ui.Text, sticky:bool }
+struct Desk { id:ui.Text, name:ui.Text, active:bool }
+
+fn TaskView(context:*ui.Context):ui.Node {
+    let pipe = ui.useRef(context,0); let tracker = ui.useRef(context,0); let frame = ui.useText(context,ui.emptyText()); let queued = ui.useText(context,ui.emptyText())
+    let count = ui.useRef(context,0); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let failure = ui.useText(context,ui.emptyText())
+    let dismiss = fn() { ui.close(context) }
+    let flush = fn() {
+        let events = queued.get(); if events.bytes.len() == 0 || pipe.get() == 0 { return }
+        channel.command(pipe.get(),join(Vec<ui.Text>(plain("{\"events\":["),events,plain("]}")))); queued.set(ui.emptyText()); count.set(0)
+    }
+    let ask = fn(request:ui.Text) { flush(); if pipe.get() != 0 { channel.command(pipe.get(),request) } }
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Task View","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"task-view")
+        }
+        # `task-view` (a toggle: the window is open, so it closes) and `task-view hide`.
+        # `task-view show` keeps an open window open (it is already showing).
+        ui.onCommand(context,"task-view-",fn(line:ui.Text) {
+            let parts = channel.split(line,31)
+            if !(parts.len() > 1 && k.isText(parts[1],"show")) { ui.close(context) }
+        })
+        ui.onTick(context,100,fn() {
+            ticks.set(ticks.get() + 1); flush()
+            if smoke() && ticks.get() > 300 { print("FAIL native Task View timed out at step ${step.get()}"); ui.close(context) }
+        })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void { unsafe {
+        if !(*context).alive { return ui.noop }
+        let root = rc_env("DEV_OS_ROOT"); let runner = rc_env("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/system/org.devos.launcher/task-service.dev",root,fn(value:ui.Text) {
+            if value.bytes.len() > 0 && value.bytes[0] == 69 { failure.set(value); return }
+            failure.set(ui.emptyText()); frame.set(value)
+            for record in channel.split(value,30) {
+                let fields = channel.split(record,9)
+                if fields.len() == 2 && k.isText(fields[0],"T") {
+                    channel.command(tracker.get(),fields[1])
+                    if smoke() && step.get() == 1 { print("PASS native Task View listed the windows and sent the command to the tracker"); ui.close(context) }
+                    if k.isText(channel.split(fields[1],32)[0],"activate") { dismiss() }
+                }
+            }
+        },fn(value:i64) { pipe.set(value) })
+    } },Vec<i64>())
+    ui.useEffect(context,fn():fn():void { unsafe {
+        if !(*context).alive { return ui.noop }
+        let root = rc_env("DEV_OS_ROOT"); let helper = rc_env("DEVOS_TASKVIEW_TRACKER")
+        if ui.text(helper).bytes.len() == 0 { helper = "${root}/build/native/dev-os-window-tracker"; if g_file_test(helper,8) == 0 { helper = "${root}/native/dev-os-window-tracker" }; if g_file_test(helper,8) == 0 { helper = "dev-os-window-tracker" } }
+        return channel.connect(context,helper,"",root,fn(line:ui.Text) {
+            if line.bytes.len() == 0 || line.bytes[0] != 123 || line.bytes.len() > 58000 { return }
+            if queued.get().bytes.len() + line.bytes.len() > 58000 || count.get() >= 512 { flush() }
+            let previous = queued.get(); queued.set(join(Vec<ui.Text>(previous,previous.bytes.len() > 0 ? plain(",") : ui.emptyText(),line))); count.set(count.get() + 1)
+        },fn(value:i64) { tracker.set(value) })
+    } },Vec<i64>())
+    # --- the state frame ---
+    let windows = Vec<Win>(); let desks = Vec<Desk>(); let canCreate = false; let canRemove = false
+    for record in channel.split(frame.value,30) {
+        let c = channel.split(record,9)
+        if sp.kindOf(record,67) { canCreate = ext.flag(sp.cell(c,1)); canRemove = ext.flag(sp.cell(c,2)) }
+        else if sp.kindOf(record,68) { desks.push(Desk(sp.cell(c,1),sp.cell(c,2),ext.flag(sp.cell(c,3)))) }
+        else if sp.kindOf(record,87) { windows.push(Win(sp.cell(c,1),sp.cell(c,2),sp.cell(c,3),sp.cell(c,4),ext.flag(sp.cell(c,5)),ext.flag(sp.cell(c,6)),sp.cell(c,7),ext.flag(sp.cell(c,8)))) }
+    }
+    let currentDesktop = ui.emptyText(); for d in desks { if d.active { currentDesktop = d.id } }
+    let visible = Vec<Win>()
+    for w in windows { if !has(currentDesktop) || w.sticky || ui.equalText(w.desktop,currentDesktop) || ui.equalText(w.desktop,plain("0")) { visible.push(w) } }
+    ui.useEffect(context,fn():fn():void {
+        # DEVOS_TASKVIEW_SMOKE=1: once the windows are listed, bring the window named by DEVOS_TASKVIEW_ACTIVATE forward.
+        if smoke() && step.get() == 0 && visible.len() > 0 { step.set(1); ui.click(context,"task-view-activate-" + environment("DEVOS_TASKVIEW_ACTIVATE")) }
+        return ui.noop
+    },Vec<i64>(visible.len() as i64))
+    # --- the window ---
+    let close = ui.named("task-view-dismiss")
+    let summary = k.note("${desks.len() > 0 ? desks.len() : 1} desktop${desks.len() == 1 ? "" : "s"}  ·  ${visible.len()} open window${visible.len() == 1 ? "" : "s"}","settings-description")
+    let nodes = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(2,Vec<ui.Node>(k.note("WORKSPACE OVERVIEW","settings-description"),k.note("Task View","section-heading")))),summary,ui.Button(close,"Close",fn() { dismiss() }))))
+    if has(failure.value) { nodes.push(k.caption(failure.value,"settings-error-banner")) }
+    nodes.push(ext.row(8,Vec<ui.Node>(k.note("Open windows","section-heading"),k.note("${visible.len()}","settings-description"))))
+    let cards = Vec<ui.Node>()
+    for w in visible {
+        let picture = ui.element(11,ui.props(),has(w.icon) ? w.icon : plain("application-x-executable-symbolic"),Vec<ui.Node>())
+        let heading = Vec<ui.Node>(k.caption(w.app,"launcher-app-name"),k.caption(has(w.title) ? w.title : w.app,"launcher-app-description"))
+        if w.minimized { heading.push(k.note("Minimized","settings-description")) }
+        let content = ext.row(12,Vec<ui.Node>(picture,ext.expand(ext.column(2,heading))))
+        let activate = ui.props(); activate.id = join(Vec<ui.Text>(plain("task-view-activate-"),w.id)); activate.expand = true
+        let closer = ui.props(); closer.id = join(Vec<ui.Text>(plain("task-view-close-"),w.id))
+        let row = Vec<ui.Node>(ext.expand(ui.WidgetButton(activate,content,fn() { ask(action("activate",w.id,ui.emptyText())) })),ui.Button(closer,"×",fn() { ask(action("close",w.id,ui.emptyText())) }))
+        if desks.len() > 1 && !w.sticky {
+            let names = Vec<ui.Text>(plain("Move to…")); let ids = Vec<ui.Text>(ui.emptyText())
+            for d in desks { if !ui.equalText(d.id,w.desktop) { names.push(d.name); ids.push(d.id) } }
+            let mover = ui.props(); mover.id = join(Vec<ui.Text>(plain("task-view-move-"),w.id))
+            row.push(ui.Select(mover,names,0,fn(index:i64) { if index > 0 { ask(action("move",w.id,join(Vec<ui.Text>(plain(",\"desktop\":"),ids[index])))) } }))
+        }
+        cards.push(ext.row(8,row))
+    }
+    if visible.len() == 0 { cards.push(k.note("No open windows on this desktop. Open an app and it will show up here.","launcher-app-description")) }
+    let scroller = ui.props(); scroller.expand = true
+    nodes.push(ui.Scroll(scroller,ext.column(8,cards)))
+    if desks.len() > 0 {
+        let chips = Vec<ui.Node>()
+        for d in desks {
+            let switcher = ui.props(); switcher.id = join(Vec<ui.Text>(plain("task-view-desktop-"),d.id))
+            let members = 0; for w in windows { if ui.equalText(w.desktop,d.id) || w.sticky { members = members + 1 } }
+            chips.push(ui.TextButton(switcher,join(Vec<ui.Text>(d.name,plain(d.active ? " · current" : ""),plain("  (${members})"))),fn() { ask(action("desktop",d.id,ui.emptyText())) }))
+            if canRemove && desks.len() > 1 { let remover = ui.props(); remover.id = join(Vec<ui.Text>(plain("task-view-remove-"),d.id)); chips.push(ui.Button(remover,"Remove",fn() { ask(action("remove-desktop",d.id,ui.emptyText())) })) }
+        }
+        if canCreate { let add = ui.named("task-view-create"); chips.push(ui.Button(add,"New desktop",fn() { ask(plain("{\"action\":\"create-desktop\"}")) })) }
+        nodes.push(k.note("Your desktops","section-heading"))
+        nodes.push(ext.row(8,chips))
+    }
+    let body = ui.props(); body.spacing = 12; body.margin = 20
+    return ui.Box(body,nodes)
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.task-view.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Task View",980,720,TaskView) ? 0 : 1
+}

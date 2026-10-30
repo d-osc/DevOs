@@ -19,6 +19,8 @@ sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.appst
 install -m0755 "$root/build/react-devlang/apps/appstore" "$root/dist/native/appstore"
 sh "$root/packages/react-devlang/tools/build.sh" "$root/src/system/org.devos.launcher/native-main.devx" "$root/build/react-devlang/apps/launcher"
 install -m0755 "$root/build/react-devlang/apps/launcher" "$root/dist/native/launcher"
+sh "$root/packages/react-devlang/tools/build.sh" "$root/src/system/org.devos.launcher/task-view-main.devx" "$root/build/react-devlang/apps/task-view"
+install -m0755 "$root/build/react-devlang/apps/task-view" "$root/dist/native/task-view"
 vte=$(${CC:-cc} -print-file-name=libvte-2.91.so.0)
 if [ "$vte" != libvte-2.91.so.0 ]; then
     sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.terminal/native-main.devx" "$root/build/react-devlang/apps/terminal" "$vte"

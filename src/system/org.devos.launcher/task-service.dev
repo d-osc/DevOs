@@ -1,0 +1,110 @@
+#!/usr/bin/env d
+# Data worker of the native Task View. The window starts the window tracker (dev-os-window-tracker) itself and hands its JSON event lines to this
+# worker in batches; the worker keeps the window and desktop state (the same rules as the taskbar, src/services/window-state.dev) and answers with one frame.
+# One JSON request per line on stdin:
+#   {"events":[{...tracker event...},...]}                                  -> the state frame
+#   {"action":"activate|close","id":12} | {"action":"desktop","id":2} | {"action":"move","id":12,"desktop":2}
+#   {"action":"create-desktop"} | {"action":"remove-desktop","id":2}        -> the state frame, plus "T<TAB>command" for the tracker when the action is valid
+# Records of the state frame (cells separated by tabs, records by ASCII 30):
+#   C<TAB>canCreate<TAB>canRemove
+#   D<TAB>id<TAB>name<TAB>active                      one per desktop (nameless or numeric names read "Desktop <id>")
+#   W<TAB>id<TAB>title<TAB>app title<TAB>icon<TAB>active<TAB>minimized<TAB>desktop<TAB>sticky   one per window, in the order they appeared
+# Commands for the tracker are the ones the JS Windows service sent: activate/close <id>, desktop <id>, move <id> <desktop>, create-desktop, remove-desktop <id>.
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/worker-kit.dev" as kit
+use "../../services/window-state.dev" as tracking
+use "../org.devos.panel/taskbar.dev" as taskbar
+
+struct State { snapshot:tracking.Snapshot, order:Vec<str>, canCreate:bool, canRemove:bool }
+fn fresh():State { return State(tracking.empty(),Vec<str>(),false,false) }
+fn event(previous:State, value:json.Value):State {
+    let next = previous; let kind = hw.jstr(value,"type","")
+    if strings.equal(kind,"connecting") || strings.equal(kind,"disconnected") { next.order = Vec<str>(); next.canCreate = false; next.canRemove = false }
+    if strings.equal(kind,"desktop-begin") { next.canCreate = hw.jbool(value,"canCreate",false); next.canRemove = hw.jbool(value,"canRemove",false) }
+    let key = tracking.id(value)
+    if !strings.equal(key,"") {
+        let retained = Vec<str>(); let found = false
+        for old in next.order { if strings.equal(old,key) { found = true; if strings.equal(kind,"closed") { continue } }; retained.push(old) }
+        if !found && (strings.equal(kind,"window") || strings.equal(kind,"geometry")) { retained.push(key) }
+        next.order = retained
+    }
+    next.snapshot = tracking.consume(next.snapshot,value)
+    return next
+}
+fn flag(value:bool):str { return value ? "1" : "0" }
+fn windowOf(state:State, id:str):json.Value { return hw.jget(state.snapshot.windows,id) }
+fn desktopKnown(state:State, id:str):bool {
+    let list = state.snapshot.desktops
+    for i in 0..(json.len(list) as i64) { if strings.equal("${hw.jnum(json.at(list,i),"id",0.0) as i64}",id) { return true } }
+    return false
+}
+fn desktopName(item:json.Value):str {
+    let name = hw.jstr(item,"name",""); let id = "${hw.jnum(item,"id",0.0) as i64}"
+    # A blank name, "3" and "Workspace 3" are all shown as "Desktop 3".
+    let digits = strings.startsWith(name,"Workspace ") ? strings.trim(strings.substring(name,10,strings.charLength(name))) : name
+    let numeric = strings.charLength(digits) > 0
+    for i in 0..(strings.charLength(digits) as i64) { if !strings.contains("0123456789",strings.substring(digits,i,i + 1)) { numeric = false } }
+    return strings.equal(name,"") || numeric ? "Desktop " + id : name
+}
+fn frame(state:State):str {
+    let out = "C\t" + flag(state.canCreate) + "\t" + flag(state.canRemove)
+    let list = state.snapshot.desktops
+    for i in 0..(json.len(list) as i64) {
+        let item = json.at(list,i)
+        out = out + kit.rs() + "D\t${hw.jnum(item,"id",0.0) as i64}\t" + kit.clean(desktopName(item)) + "\t" + flag(hw.jbool(item,"active",false))
+    }
+    for key in state.order {
+        let window = windowOf(state,key)
+        if json.is_null(window) || !(json.has(window,"appId") || json.has(window,"title")) { continue }
+        let group = taskbar.group(window); let known = taskbar.builtin(group)
+        let appTitle = json.is_null(known) ? group : hw.jstr(known,"title",group)
+        let icon = json.is_null(known) ? "application-x-executable-symbolic" : hw.jstr(known,"icon","application-x-executable-symbolic")
+        let desktop = hw.jnum(window,"desktop",0.0) as i64
+        out = out + kit.rs() + "W\t" + key + "\t" + kit.clean(hw.jstr(window,"title","")) + "\t" + kit.clean(appTitle) + "\t" + kit.clean(icon) + "\t" + flag(hw.jbool(window,"active",false)) + "\t" + flag(hw.jbool(window,"minimized",false)) + "\t${desktop > 0 ? desktop : 0}\t" + flag(hw.jbool(window,"sticky",false))
+    }
+    return out
+}
+# The tracker command for an action, or "" when the action does not apply to the current state (an unknown window or desktop, a missing capability).
+fn plan(state:State, request:json.Value):str {
+    let action = hw.jstr(request,"action","")
+    let id = tracking.id(request)
+    if strings.equal(action,"activate") || strings.equal(action,"close") { return !strings.equal(id,"") && !json.is_null(windowOf(state,id)) ? action + " " + id : "" }
+    if strings.equal(action,"desktop") { return !strings.equal(id,"") && desktopKnown(state,id) ? "desktop " + id : "" }
+    if strings.equal(action,"move") {
+        let target = "${hw.jnum(request,"desktop",0.0) as i64}"
+        return !strings.equal(id,"") && !json.is_null(windowOf(state,id)) && desktopKnown(state,target) ? "move " + id + " " + target : ""
+    }
+    if strings.equal(action,"create-desktop") { return state.canCreate ? "create-desktop" : "" }
+    if strings.equal(action,"remove-desktop") { return state.canRemove && json.len(state.snapshot.desktops) > 1 && !strings.equal(id,"") && desktopKnown(state,id) ? "remove-desktop " + id : "" }
+    return ""
+}
+struct Reply { state:State, frame:str }
+fn handle(previous:State, line:str):Reply {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return Reply(previous,kit.failure("Invalid service request")) }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return Reply(previous,kit.failure("Expected an object request")) }
+    let done = result.attempt(fn():Reply {
+        let next = previous
+        let events = hw.jget(request,"events")
+        if !json.is_null(events) {
+            if !strings.equal(json.kind(events),"array") { result.raise("Expected a tracker event array") }
+            for i in 0..(json.len(events) as i64) { next = event(next,json.at(events,i)) }
+        }
+        let output = frame(next)
+        if json.has(request,"action") { let command = plan(next,request); if !strings.equal(command,"") { output = output + kit.rs() + "T	" + command } }
+        return Reply(next,output)
+    })
+    return result.isErr(done) ? Reply(previous,kit.failure(result.message(done))) : result.unwrap(done)
+}
+let current = fresh()
+while true {
+    let line = io.read_line(); if strings.equal(line,"") { break }
+    let reply = handle(current,line)
+    current = reply.state
+    print(reply.frame)
+}

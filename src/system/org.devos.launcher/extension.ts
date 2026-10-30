@@ -6,7 +6,7 @@ import {LauncherSettings} from './settings-view.js';
 import {TaskView} from './task-view.js';
 import {SnapPanel} from './snap-view.js';
 import {SnapSashes} from './snap-sashes.js';
-import {nativeLauncher, nativeLauncherEnabled} from '@dev-os/runtime/native-launcher';
+import {nativeLauncher, nativeLauncherEnabled, nativeTaskView, nativeTaskViewEnabled} from '@dev-os/runtime/native-launcher';
 
 export default {id: 'org.devos.launcher', activate(context) {
     context.registerSettingsPage?.('org.devos.launcher', () => React.createElement(LauncherSettings, {
@@ -23,11 +23,11 @@ export default {id: 'org.devos.launcher', activate(context) {
     context.registerCommand('launcher', monitor => {snap.hide(); if (nativeLauncherEnabled()) nativeLauncher(['launcher'], true, report); else launcher.toggle(monitor ?? primary());});
     context.registerCommand('logout', () => { snap.hide(); if (nativeLauncherEnabled()) nativeLauncher(['launcher', 'logout'], true, report); else { launcher.show(primary()); launcher.requestLogout(); } });
     context.registerCommand('launcher.hide', () => { if (nativeLauncherEnabled()) nativeLauncher(['launcher', 'hide'], false, report); launcher.hide(); });
-    context.registerCommand('snap-layouts', monitor => {launcher.hide(); taskView.hide(); snap.toggle(monitor);});
-    context.registerCommand('task-view', monitor => {snap.hide(); taskView.toggle(monitor);});
-    context.registerCommand('task-view-show', monitor => {snap.hide(); taskView.show(monitor);});
-    context.registerCommand('task-view-hide', () => taskView.hide());
-    context.registerCommand('overlays-hide', () => { if (nativeLauncherEnabled()) nativeLauncher(['launcher', 'hide'], false, report); launcher.hide(); taskView.hide(); snap.hide(); });
+    context.registerCommand('snap-layouts', monitor => {launcher.hide(); taskView.hide(); if (nativeTaskViewEnabled()) nativeTaskView(['task-view', 'hide'], false, report); snap.toggle(monitor);});
+    context.registerCommand('task-view', monitor => {snap.hide(); if (nativeTaskViewEnabled()) nativeTaskView(['task-view'], true, report); else taskView.toggle(monitor);});
+    context.registerCommand('task-view-show', monitor => {snap.hide(); if (nativeTaskViewEnabled()) nativeTaskView(['task-view', 'show'], true, report); else taskView.show(monitor);});
+    context.registerCommand('task-view-hide', () => { if (nativeTaskViewEnabled()) nativeTaskView(['task-view', 'hide'], false, report); else taskView.hide(); });
+    context.registerCommand('overlays-hide', () => { if (nativeLauncherEnabled()) nativeLauncher(['launcher', 'hide'], false, report); if (nativeTaskViewEnabled()) nativeTaskView(['task-view', 'hide'], false, report); launcher.hide(); taskView.hide(); snap.hide(); });
     context.onMessage(message => launcher.showMessage(message));
     context.onReload(() => { launcher.destroy(); launcher = new Launcher(context); taskView.destroy(); taskView = new TaskView(context); snap.destroy(); snap = new SnapPanel(context); sashes.destroy(); sashes = new SnapSashes(context); });
     context.onMonitors(() => { launcher.hide(); taskView.hide(); snap.hide(); });

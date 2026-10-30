@@ -70,4 +70,27 @@ test.case("the commands the shell sends reach the running window: logout asks fo
     test.expect(strings.contains(out,"ROUTE unknown:") && strings.contains(out,"Unsupported app command"),"a command that is not the launcher's is refused: " + out)
     test.expect(strings.contains(out,"ROUTE toggle closed the window"),"toggle: " + out)
 })
+fn taskServiceFrame(input:str):Vec<str> {
+    let e = Map<str,str>(); e.set("DEV_OS_ROOT",t.root())
+    let ran = tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.launcher/task-service.dev"),e,input,120000)
+    return strings.split(strings.trim(t.out(ran)),"\n")
+}
+test.case("the Task View worker keeps windows and desktops from tracker events and approves only valid commands",fn() {
+    let lines = taskServiceFrame("{\"events\":[{\"type\":\"desktop-begin\",\"canCreate\":true,\"canRemove\":true},{\"type\":\"desktop\",\"id\":1,\"name\":\"Workspace 1\",\"active\":true},{\"type\":\"desktop\",\"id\":2,\"name\":\"Mail\",\"active\":false},{\"type\":\"desktop-done\"},{\"type\":\"window\",\"id\":11,\"title\":\"Dev OS Terminal\",\"appId\":\"org.devos.App.terminal.s1\",\"active\":true,\"minimized\":false,\"desktop\":1},{\"type\":\"window\",\"id\":12,\"title\":\"Notes\",\"appId\":\"org.example.notes\",\"active\":false,\"minimized\":true,\"desktop\":2}]}\n{\"action\":\"activate\",\"id\":12}\n{\"action\":\"activate\",\"id\":99}\n{\"action\":\"move\",\"id\":11,\"desktop\":2}\n{\"action\":\"move\",\"id\":11,\"desktop\":7}\n{\"action\":\"remove-desktop\",\"id\":2}\n{\"events\":[{\"type\":\"closed\",\"id\":12}],\"action\":\"close\",\"id\":11}\n")
+    test.expect(strings.contains(lines[0],"D\t1\tDesktop 1\t1") && strings.contains(lines[0],"D\t2\tMail\t0"),"desktops: " + lines[0])
+    test.expect(strings.contains(lines[0],"W\t11\tDev OS Terminal\tTerminal\tdev-os-terminal-symbolic\t1\t0\t1\t0") && strings.contains(lines[0],"W\t12\tNotes\torg.example.notes"),"windows: " + lines[0])
+    test.expect(strings.contains(lines[1],"T\tactivate 12") && !strings.contains(lines[2],"T\t") && strings.contains(lines[3],"T\tmove 11 2") && !strings.contains(lines[4],"T\t"),"commands are checked against the state")
+    test.expect(strings.contains(lines[5],"T\tremove-desktop 2") && strings.contains(lines[6],"T\tclose 11") && !strings.contains(lines[6],"W\t12"),"remove, close and the closed event")
+})
+test.case("the native Task View lists the windows of the current desktop and sends the activate command to the tracker under real GTK",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let executable = t.root() + "/build/react-devlang/tests/task-view-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/system/org.devos.launcher/task-view-main.devx", executable), Map<str,str>(), "", 240000)
+    let e = Map<str,str>(); e.set("DEV_OS_ROOT",t.root()); e.set("NO_AT_BRIDGE","1"); e.set("PATH","/home/ondev/.local/bin:/usr/local/bin:/usr/bin:/bin")
+    e.set("DEVOS_TASKVIEW_SMOKE","1"); e.set("DEVOS_TASKVIEW_ACTIVATE","12"); e.set("DEVOS_TASKVIEW_TRACKER",t.root() + "/tests/lib/fake-tracker.sh"); e.set("DEVOS_TRACKER_LOG",d + "/log")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","task-view-native","xvfb-run","-a",executable),e,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Task View listed the windows and sent the command to the tracker"),"Task View: " + t.out(done) + " / " + t.err(done))
+    test.expect(fs.existsSync(d + "/log") && strings.contains(fs.readFileSync(d + "/log","utf8"),"activate 12"),"the tracker received the command")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 return t.finish()
