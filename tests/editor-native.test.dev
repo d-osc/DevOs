@@ -1,0 +1,30 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The native Editor is built against the libwebkit2gtk that is installed (linked by path) and run under Xvfb with the sandbox and GPU compositing off.
+# It needs dist/editor (npm run build): the window serves the Monaco bundle from a loopback server worker and edits a file through a file worker.
+fn library():str { return strings.trim(tool.exec(Vec<str>("sh","-c","cc -print-file-name=libwebkit2gtk-4.1.so.0"))) }
+fn build():str {
+    let executable = t.root() + "/build/react-devlang/tests/editor-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.editor/native-main.devx", executable, library()), Map<str,str>(), "", 240000)
+    return executable
+}
+
+test.case("the native Editor opens a file in Monaco, shows its exact text, and saves an edit back",fn() {
+    let executable = build()
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let file = d + "/sample.ts"
+    fs.writeFileSync(file,"const a = 1\n\tconst \"b\" = 'ü'\n")
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS","1"); env.set("WEBKIT_DISABLE_COMPOSITING_MODE","1"); env.set("LIBGL_ALWAYS_SOFTWARE","1")
+    env.set("DEVOS_EDITOR_SMOKE","1"); env.set("DEVOS_EDITOR_FILE",file); env.set("DEVOS_EDITOR_PORT","18771"); env.set("DEVOS_EDITOR_TOKEN","testtoken")
+    env.set("PATH","/home/ondev/.local/bin:/usr/local/bin:/usr/bin:/bin")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","editor-native","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Editor opened, edited and saved a file"),"Editor: " + t.out(done) + " / " + t.err(done) + " / exit " + (done.success ? "success" : "failed"))
+    test.expect(strings.equal(fs.readFileSync(file,"utf8"),"EDITED BY THE TEST"),"the saved file holds the edit: " + fs.readFileSync(file,"utf8"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

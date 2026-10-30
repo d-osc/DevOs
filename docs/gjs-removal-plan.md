@@ -26,7 +26,7 @@ Native but not yet the default: Settings (opt-in with `DEVOS_NATIVE_SETTINGS=1`)
    Launcher (overlay as a layer-shell window; `model.dev` exists), App Store (package rules in `package-rules.dev`; the `.deb`/`.rpm`/tar readers
    come from the update code), Icons, Theme, Updates, Camera settings page. ~4,800 lines.
 3. **Apps that need a toolkit bridge first** (each bridge is a C function plus a test in `packages/react-devlang`):
-   Terminal → VTE (a native window exists behind `DEVOS_NATIVE_TERMINAL=1`, linking libvte by path without headers); Browser → WebKit (a native window exists behind `DEVOS_NATIVE_BROWSER=1`: address, back, forward, reload; tabs, downloads and the inspector remain); Editor → GtkSourceView or WebKit; Camera (native window behind `DEVOS_NATIVE_CAMERA=1`: preview and photo; video recording remains) and Microphone (native window behind `DEVOS_NATIVE_MICROPHONE=1`: level meter and WAV recording) → GStreamer; Screenshot → layer-shell overlay and Cairo
+   Terminal → VTE (a native window exists behind `DEVOS_NATIVE_TERMINAL=1`, linking libvte by path without headers); Browser → WebKit (a native window exists behind `DEVOS_NATIVE_BROWSER=1`: address, back, forward, reload; tabs, downloads and the inspector remain); Editor → WebKit around the Monaco bundle (a native window exists behind `DEVOS_NATIVE_EDITOR=1`; one file per window); Camera (native window behind `DEVOS_NATIVE_CAMERA=1`: preview and photo; video recording remains) and Microphone (native window behind `DEVOS_NATIVE_MICROPHONE=1`: level meter and WAV recording) → GStreamer; Screenshot → layer-shell overlay and Cairo
    drawing. ~3,100 lines.
 4. **Native shell**: replace `src/main.ts` and `packages/shell` (command registry, `AppProcesses`, hotkeys, workspaces, tray) with a DevLang program
    that uses the D-Bus control interface the native apps already expose (`org.devos.Shell.Control`). The supervisor already restarts native parts independently.
@@ -81,3 +81,4 @@ A native Editor as a WebKit view over the existing `dist/editor` Monaco bundle w
 
 Open decision: the font. Either the editor build inlines the codicon font as a data URI (one esbuild loader change that the JS editor also gets), or `std/fs` gains a binary read and `std/http` a bytes body. The first needs no runtime work. The window, worker and tests are about the size of the Browser app.
 
+Result: the font was inlined (commit 2db018e) and the native Editor was built on the three points above; see `docs/devlang-app-migration.md`, "Editor: native window".

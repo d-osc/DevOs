@@ -10,7 +10,7 @@ const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskman
  * Apps whose native window can be tried before it becomes the default: DEVOS_NATIVE_<APP>=1, or a file at ~/.config/devos/native-<app>.
  * The JS app stays the default until the native one has been checked on a real session; without dist/native/<app> the JS app is used as well.
  */
-const OPT_IN_APPS: readonly ProcessRole[] = ['settings', 'files', 'terminal', 'browser', 'camera', 'microphone', 'appstore'];
+const OPT_IN_APPS: readonly ProcessRole[] = ['settings', 'files', 'terminal', 'browser', 'camera', 'microphone', 'appstore', 'editor'];
 export function nativeEnabled(app: ProcessRole): boolean {
     if (GLib.getenv(`DEVOS_NATIVE_${app.toUpperCase()}`) === '1') return true;
     return GLib.file_test(GLib.build_filenamev([GLib.get_user_config_dir(), 'devos', `native-${app}`]), GLib.FileTest.EXISTS);

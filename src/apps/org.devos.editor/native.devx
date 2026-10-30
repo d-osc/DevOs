@@ -1,0 +1,189 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+use "../org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn setenv(name:str,value:str,overwrite:i32):i32
+extern fn getpid():i32
+# libwebkit2gtk is linked by path (tools/build/native-apps.sh), so no WebKit header is needed: only the calls below are declared.
+extern fn webkit_web_view_new():*void
+extern fn webkit_web_view_load_uri(view:*void, uri:*u8)
+extern fn webkit_web_view_get_title(view:*void):*u8
+extern fn webkit_web_view_get_user_content_manager(view:*void):*void
+extern fn webkit_user_script_new(source:*u8, frames:i32, time:i32, allow:*void, block:*void):*void
+extern fn webkit_user_content_manager_add_script(manager:*void, script:*void)
+extern fn webkit_web_view_evaluate_javascript(view:*void, script:*u8, length:i64, world:*u8, uri:*u8, cancellable:*void, callback:*void, data:*void)
+extern fn gtk_box_pack_start(box:*void, child:*void, expand:i32, fill:i32, padding:u32)
+extern fn gtk_widget_show(widget:*void)
+
+# Native Editor window: Monaco (the bundle in dist/editor, the same one the JS Editor uses) inside a WebKit view. server.dev serves the bundle on a
+# loopback port (Monaco's workers need an HTTP origin), service.dev reads and writes the file. WebKit's signals cannot be handed DevLang callbacks,
+# so the page talks to the window through document.title: a user script defines window.webkit.messageHandlers.editor.postMessage (what the page
+# already calls) and keeps a queue of events, shown one at a time as the title "DOE<seq>|<kind>|<payload>". The window reads the title every 100 ms
+# (ui.onTick), handles the event and acknowledges it with __devosAck(seq). The window talks to the page with evaluate_javascript (no callback).
+# kinds: ready, change, cursor (line|column), action (save, saveAs, open, new, close, next, previous), error, content (the text, as a JSON string).
+fn shim():str { return "(function(){var q=[],seq=0,shown=0,show=function(){if(q.length){shown=++seq;document.title='DOE'+shown+'|'+q[0][0]+'|'+q[0][1]}else{shown=0;document.title='DOE0'}},push=function(t,p,merge){if(merge)for(var i=q.length-1;i>=0;i--)if(q[i][0]==t){q[i]=[t,p];if(i==0)show();return}q.push([t,p]);if(q.length==1)show()};window.webkit={messageHandlers:{editor:{postMessage:function(m){var o=JSON.parse(m);if(o.type=='ready')push('ready','',0);else if(o.type=='change')push('change','',1);else if(o.type=='cursor')push('cursor',o.line+'|'+o.column,1);else if(o.type=='action')push('action',o.action,0);else if(o.type=='error')push('error',String(o.message).replace(/\\s+/g,' '),0)}}}};window.__devosAck=function(n){if(q.length&&shown==n){q.shift();show()}};window.__devosDump=function(){push('content',JSON.stringify(window.devOsEditor.getValue()),0)}})();" }
+
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+# A C string that may be NULL, copied into text.
+fn owned(pointer:*u8):ui.Text { unsafe {
+    let present = false
+    present = pointer as bool
+    if !present { return ui.emptyText() }
+    let bytes = Vec<u8>(); let at = 0
+    while pointer[at] != 0 { bytes.push(pointer[at]); at = at + 1 }
+    return ui.Text(bytes)
+} }
+fn slice(text:ui.Text, from:i64, to:i64):ui.Text { let out = Vec<u8>(); for i in from..to { out.push(text.bytes[i]) }; return ui.Text(out) }
+# The index of the next '|' at or after `from`, or -1.
+fn bar(text:ui.Text, from:i64):i64 { let n = text.bytes.len() as i64; for i in from..n { if text.bytes[i] == 124 { return i } }; return -1 }
+# Run JavaScript in the page; the answer is not needed, so there is no callback.
+fn script(view:i64, code:ui.Text) { unsafe {
+    let native = ui.nativeText(code)
+    webkit_web_view_evaluate_javascript(view as *void,native,-1,null,null,null,null,null)
+    ui.rd_buffer_free(native as *void)
+} }
+fn digits(text:ui.Text):bool { if text.bytes.len() == 0 { return false }; for b in text.bytes { if b < 48 || b > 57 { return false } }; return true }
+fn request(action:str, path:ui.Text, content:ui.Text):ui.Text {
+    if has(content) { return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"path\":"),channel.quote(path),plain(",\"content\":"),content,plain("}"))) }
+    return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"path\":"),channel.quote(path),plain("}")))
+}
+fn smoke():bool { return has(plain(environment("DEVOS_EDITOR_SMOKE"))) }
+
+fn App(context:*ui.Context):ui.Node {
+    let server = sp.link(context,"../org.devos.editor/server.dev","{\"action\":\"ping\"}")
+    let l = sp.link(context,"../org.devos.editor/service.dev","{\"action\":\"ping\"}")
+    # asked: the kind of the last file request (0 ping, 1 read, 2 write); purpose: why the page was asked for its text (1 verify, 2 save)
+    let asked = ui.useRef(context,0); let purpose = ui.useRef(context,0); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0)
+    let view = ui.useRef(context,0); let ready = ui.useRef(context,0); let handled = ui.useText(context,ui.emptyText()); let lastQueued = ui.useText(context,ui.emptyText())
+    let path = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let status = ui.useText(context,plain("Starting the editor…"))
+    let dirty = ui.useState(context,0); let position = ui.useText(context,ui.emptyText()); let loaded = ui.useText(context,ui.emptyText()); let pending = ui.useText(context,ui.emptyText())
+    let mode = ui.useText(context,plain("dark")); let family = ui.useText(context,plain("vscode"))
+    let open = fn(target:ui.Text) { asked.set(1); lastQueued.set(target); status.set(plain("Opening…")); sp.send(l,request("read",target,ui.emptyText())) }
+    # The page applies a file (its text arrives as a JSON string literal).
+    let configure = fn(target:ui.Text, language:ui.Text, literal:ui.Text) { if view.get() == 0 { return }; unsafe {
+        let code = join(Vec<ui.Text>(plain("window.devOsEditor.configure({content:"),literal,plain(",language:"),channel.quote(language),plain(has(target) ? ",path:" : ""),has(target) ? channel.quote(target) : ui.emptyText(),plain(",fontSize:14,tabSize:4,minimap:true,readOnly:false})")))
+        script(view.get(),code)
+    } }
+    let save = fn() {
+        if !has(path.get()) && !has(draft.get()) { status.set(plain("Enter a path to save.")); return }
+        purpose.set(2); script(view.get(),plain("window.__devosDump()"))
+    }
+    let event = fn(title:ui.Text) {
+        let first = bar(title,0); if first < 0 { return }
+        let second = bar(title,first + 1); if second < 0 { return }
+        let number = slice(title,3,first); if !digits(number) { return }
+        let kind = slice(title,first + 1,second); let payload = slice(title,second + 1,title.bytes.len() as i64)
+        script(view.get(),join(Vec<ui.Text>(plain("window.__devosAck("),number,plain(")"))))
+        if k.isText(kind,"ready") {
+            ready.set(1)
+            script(view.get(),join(Vec<ui.Text>(plain("window.devOsEditor.setTheme("),channel.quote(mode.get()),plain(","),channel.quote(family.get()),plain(")"))))
+            if has(pending.get()) { open(pending.get()); pending.set(ui.emptyText()) } else { status.set(plain("Open a file to start")) }
+        } else if k.isText(kind,"change") { dirty.set(1)
+            if smoke() && step.get() == 2 && purpose.get() == 0 { purpose.set(2); script(view.get(),plain("window.__devosDump()")) }
+        } else if k.isText(kind,"cursor") { let parts = channel.split(payload,124); if parts.len() > 1 { position.set(join(Vec<ui.Text>(plain("Ln "),parts[0],plain(", Col "),parts[1]))) } }
+        else if k.isText(kind,"error") { status.set(payload) }
+        else if k.isText(kind,"action") {
+            if k.isText(payload,"save") || k.isText(payload,"saveAs") { save() }
+            else if k.isText(payload,"new") { path.set(ui.emptyText()); draft.set(ui.emptyText()); dirty.set(0); configure(ui.emptyText(),plain("plaintext"),plain("\"\"")); status.set(plain("New file")) }
+        } else if k.isText(kind,"content") {
+            if purpose.get() == 1 {
+                purpose.set(0)
+                # DEVOS_EDITOR_SMOKE: the text Monaco holds must be exactly the text read from the file.
+                if ui.equalText(payload,loaded.get()) { step.set(2); script(view.get(),plain("window.devOsEditor.replace(\"EDITED BY THE TEST\")")) }
+                else { print("FAIL native Editor shows different text than the file"); ui.close(context) }
+            } else if purpose.get() == 2 {
+                purpose.set(0); let target = has(draft.get()) ? draft.get() : path.get()
+                asked.set(2); status.set(plain("Saving…")); sp.send(l,request("write",target,payload))
+            }
+        }
+    }
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let theme = environment("DEV_OS_THEME"); let themeFamily = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(theme).bytes.len() == 0 { unsafe { theme = rd_default_theme() } }
+        if ui.text(themeFamily).bytes.len() == 0 { themeFamily = "vscode" }
+        mode.set(plain(theme)); family.set(plain(themeFamily))
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${themeFamily}.${theme}.css")
+            rd_app_header((*context).native,"Editor","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"editor")
+        }
+        # `editor <file>` from the shell opens that file in the running window.
+        ui.onCommand(context,"editor.",fn(line:ui.Text) {
+            let parts = channel.split(line,31)
+            if parts.len() > 1 && has(parts[1]) { draft.set(parts[1]); if ready.get() != 0 { open(parts[1]) } else { pending.set(parts[1]) } }
+        })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe {
+            let host = ui.find(context,"editor-host")
+            let web = webkit_web_view_new()
+            let injected = ui.nativeText(plain(shim()))
+            webkit_user_content_manager_add_script(webkit_web_view_get_user_content_manager(web),webkit_user_script_new(injected,0,0,null,null))
+            ui.rd_buffer_free(injected as *void)
+            gtk_box_pack_start(host,web,1,1,0)
+            gtk_widget_show(web)
+            view.set(web as i64)
+            let startup = environment("DEVOS_EDITOR_FILE"); if ui.text(startup).bytes.len() > 0 { pending.set(plain(startup)); draft.set(plain(startup)) }
+            ui.onTick(context,100,fn() { unsafe {
+                let w = view.get() as *void
+                ticks.set(ticks.get() + 1)
+                # The server needs a moment to listen; load again until the page reports ready.
+                if ready.get() == 0 && (ticks.get() == 5 || ticks.get() % 30 == 0) {
+                    let address = ui.nativeText(join(Vec<ui.Text>(plain("http://127.0.0.1:"),plain(environment("DEVOS_EDITOR_PORT")),plain("/"),plain(environment("DEVOS_EDITOR_TOKEN")),plain("/"))))
+                    webkit_web_view_load_uri(w,address)
+                    ui.rd_buffer_free(address as *void)
+                }
+                let title = owned(webkit_web_view_get_title(w))
+                if !ui.equalText(title,handled.get()) { handled.set(title); event(title) }
+                if smoke() && ticks.get() > 900 { print("FAIL native Editor timed out at step ${step.get()}"); ui.close(context) }
+            } })
+        }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        if l.failure.value.bytes.len() > 0 { status.set(l.failure.value); if smoke() { print("FAIL native Editor: the file worker reported an error"); ui.close(context) }; return ui.noop }
+        let f = l.frame.value
+        if f.bytes.len() == 0 { return ui.noop }
+        if asked.get() == 1 && has(field(f,2)) {
+            let target = lastQueued.get(); path.set(target); draft.set(target); dirty.set(0); loaded.set(field(f,2))
+            configure(target,field(f,1),field(f,2)); status.set(plain("Opened"))
+            if smoke() && step.get() == 0 { step.set(1); purpose.set(1); script(view.get(),plain("window.__devosDump()")) }
+        } else if asked.get() == 2 {
+            dirty.set(0); path.set(field(f,1)); status.set(join(Vec<ui.Text>(plain("Saved · "),field(f,1))))
+            if smoke() && step.get() == 2 { print("PASS native Editor opened, edited and saved a file"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    let openButton = ui.named("editor-open"); let saveButton = ui.named("editor-save")
+    let url = ui.named("editor-path"); url.expand = true; url.placeholder = plain("File path")
+    let bar = ext.row(8,Vec<ui.Node>(
+        ui.Entry(url,draft.value,fn(value:ui.Text) { draft.set(value) }),
+        ui.Button(openButton,"Open",fn() { if has(draft.get()) { open(draft.get()) } }),
+        ui.Button(saveButton,"Save",fn() { save() })))
+    let host = ui.props(); host.expand = true; host.id = ui.text("editor-host")
+    let line = join(Vec<ui.Text>(status.value,plain(dirty.value != 0 ? " · modified" : ""),has(position.value) ? plain(" · ") : ui.emptyText(),position.value))
+    return ext.column(8,Vec<ui.Node>(bar,ui.Box(host,Vec<ui.Node>()),ext.named(k.caption(line,"settings-description"),"editor-status")))
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.editor.Native" }
+    unsafe {
+        rd_identity(id)
+        # The loopback port and the secret path segment are shared with server.dev through the environment, which its process inherits.
+        setenv("DEVOS_EDITOR_OWNER","${getpid()}",1)
+        if ui.text(environment("DEVOS_EDITOR_PORT")).bytes.len() == 0 { setenv("DEVOS_EDITOR_PORT","${20000 + getpid() % 30000}",1) }
+        if ui.text(environment("DEVOS_EDITOR_TOKEN")).bytes.len() == 0 { setenv("DEVOS_EDITOR_TOKEN","e${getpid()}x${getpid() * 7919 % 100003}",1) }
+    }
+    return ui.run("Editor",1100,720,App) ? 0 : 1
+}

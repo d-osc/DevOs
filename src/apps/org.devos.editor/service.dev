@@ -1,0 +1,65 @@
+#!/usr/bin/env d
+# File worker of the native Editor window: reads and writes one UTF-8 text file per request. One JSON request per line on stdin:
+#   {"action":"read","path":"..."}                  -> V<TAB>language<TAB>"content" (the content as a JSON string literal, so it holds no tab or line break)
+#   {"action":"write","path":"...","content":"..."} -> V<TAB>path
+#   {"action":"ping"}                               -> V<TAB>
+# Files over 8 MB and binary files (a NUL byte) are refused.
+use "std/io"
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/worker-kit.dev" as kit
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn language(path:str):str {
+    let name = strings.toLowerCase(strings.contains(path,"/") ? strings.substring(path,strings.lastIndexOf(path,"/") + 1,strings.charLength(path)) : path)
+    if strings.equal(name,"dockerfile") { return "dockerfile" }
+    if strings.equal(name,"makefile") || strings.equal(name,"gnumakefile") { return "makefile" }
+    let extension = strings.contains(name,".") ? strings.substring(name,strings.lastIndexOf(name,".") + 1,strings.charLength(name)) : ""
+    let known = Map<str,str>()
+    known.set("ts","typescript"); known.set("tsx","typescript"); known.set("js","javascript"); known.set("jsx","javascript"); known.set("mjs","javascript")
+    known.set("json","json"); known.set("jsonc","json"); known.set("html","html"); known.set("htm","html"); known.set("css","css"); known.set("scss","scss")
+    known.set("md","markdown"); known.set("py","python"); known.set("rs","rust"); known.set("go","go"); known.set("c","c"); known.set("h","c")
+    known.set("cpp","cpp"); known.set("hpp","cpp"); known.set("sh","shell"); known.set("bash","shell"); known.set("yaml","yaml"); known.set("yml","yaml")
+    known.set("toml","ini"); known.set("ini","ini"); known.set("xml","xml"); known.set("svg","xml"); known.set("sql","sql"); known.set("lua","lua"); known.set("java","java")
+    return known.contains(extension) ? known.get(extension) : "plaintext"
+}
+fn read(path:str):str {
+    if strings.equal(path,"") { return kit.failure("Choose a file.") }
+    if !fs.existsSync(path) { return kit.failure("That file does not exist.") }
+    if fs.is_dir(path) { return kit.failure("Choose a regular text file.") }
+    let content = fs.readFileSync(path,"utf8")
+    if strings.charLength(content) > 8 * 1024 * 1024 { return kit.failure("This editor supports text files up to 8 MB.") }
+    if strings.contains(content,encoding.decode(Vec<u8>(0),"utf8")) { return kit.failure("Binary files cannot be opened as text.") }
+    return "V\t" + language(path) + "\t" + json.stringify(content)
+}
+fn write(path:str, content:str):str {
+    if strings.equal(path,"") { return kit.failure("Choose where to save.") }
+    if fs.is_dir(path) { return kit.failure("That path is a folder.") }
+    fs.writeFileSync(path,content)
+    return "V\t" + kit.clean(path)
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action")
+    let done = result.attempt(fn():str {
+        if strings.equal(action,"read") { return read(text(r,"path")) }
+        if strings.equal(action,"ping") { return "V\t" }
+        if strings.equal(action,"write") { return write(text(r,"path"),text(r,"content")) }
+        return kit.failure("Unsupported action")
+    })
+    return result.isErr(done) ? kit.failure(result.message(done)) : result.unwrap(done)
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()
