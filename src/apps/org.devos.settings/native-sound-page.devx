@@ -1,0 +1,95 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+
+# Native Sound page. The worker (sound-page.dev) runs pactl; this file shows its frames: the default output and input with a volume and a
+# mute button each, and every playing application with its own volume, mute and output. A slider reports 400 ms after the last movement,
+# so pactl is not run for every pixel. The page reads once and after each change (use Refresh to pick up changes made elsewhere).
+# Frame V: defaultOutput defaultInput; O / I: id name title volume muted; P: id name title volume muted device.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_SOUND_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn id(n:Vec<ui.Text>):ui.Text { return sp.cell(n,1) }
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 16; options.className = ui.text("settings-card system-card"); return ui.Box(options,children) }
+fn volumeRequest(kind:str, n:Vec<ui.Text>, value:i64):ui.Text { return join(Vec<ui.Text>(plain("{\"action\":\"volume\",\"kind\":\"" + kind + "\",\"id\":"),id(n),plain(",\"value\":${value}}"))) }
+fn muteRequest(kind:str, n:Vec<ui.Text>):ui.Text { return join(Vec<ui.Text>(plain("{\"action\":\"mute\",\"kind\":\"" + kind + "\",\"id\":"),id(n),plain(",\"muted\":" + (sp.flag(sp.cell(n,5)) ? "false" : "true") + "}"))) }
+fn mutedIcon(kind:str):str { return kind == "source" ? "microphone-sensitivity-muted-symbolic" : "audio-volume-muted-symbolic" }
+fn icon(kind:str, muted:bool):str { return muted ? mutedIcon(kind) : kind == "source" ? "audio-input-microphone-symbolic" : "audio-volume-high-symbolic" }
+
+# One volume line: a mute button, the slider and the percentage. `name` is the widget id prefix.
+fn level(l:sp.Link, kind:str, n:Vec<ui.Text>, name:str, busy:bool):ui.Node {
+    let muted = sp.flag(sp.cell(n,5)); let volume = sp.number(sp.cell(n,4))
+    let button = ui.named(name + "-mute"); button.sensitive = !busy
+    let slider = ui.named(name + "-volume"); slider.sensitive = !busy; slider.expand = true
+    let capped = volume > 100 ? 100 : volume
+    return ext.row(12,Vec<ui.Node>(ui.Button(button,muted ? "Unmute" : "Mute",fn() { sp.send(l,muteRequest(kind,n)) }),
+        ui.Scale(slider,0,100,capped,fn(next:i64) { if next != capped { sp.send(l,volumeRequest(kind,n,next)) } }),
+        k.note(muted ? "Muted" : "${capped}%","audio-volume-value")))
+}
+fn deviceCard(l:sp.Link, kind:str, items:Vec<Vec<ui.Text>>, selected:ui.Text, busy:bool):ui.Node {
+    let output = kind == "sink"
+    let nodes = Vec<ui.Node>(ext.row(14,Vec<ui.Node>(ui.Icon(ui.props(),output ? "audio-speakers-symbolic" : "audio-input-microphone-symbolic"),
+        ext.expand(ext.column(4,Vec<ui.Node>(k.note(output ? "Output" : "Input","section-heading"),k.note(output ? "Choose where your sound plays." : "Choose the microphone apps use.","settings-description")))))))
+    if items.len() == 0 {
+        nodes.push(ext.named(k.note(output ? "No audio output is available." : "No microphone is connected.","settings-description"),output ? "sound-output-empty" : "sound-input-empty"))
+        return card(nodes)
+    }
+    let active = 0; let titles = Vec<ui.Text>()
+    for i in 0..(items.len() as i64) { titles.push(sp.cell(items[i],3)); if ui.equalText(sp.cell(items[i],2),selected) { active = i } }
+    let select = ui.named(output ? "sound-output-select" : "sound-input-select"); select.sensitive = !busy
+    nodes.push(ui.Select(select,titles,active,fn(index:i64) {
+        if index != active && index >= 0 && index < (items.len() as i64) { sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"select\",\"kind\":\"" + kind + "\",\"name\":"),channel.quote(sp.cell(items[index],2)),plain("}")))) }
+    }))
+    nodes.push(level(l,kind,items[active],output ? "sound-output" : "sound-input",busy))
+    nodes.push(k.note(output ? "Default output for new playback. Route running apps below." : "Default microphone for new recordings.","settings-description"))
+    return card(nodes)
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"sound-page.dev","{\"action\":\"get\"}")
+    let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if smoke() && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"sound-output-mute") }
+            else if step.get() == 1 { print("PASS native Sound page muted the output"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let busy = l.waiting.get() != 0; let f = l.frame.value
+    let outputs = Vec<Vec<ui.Text>>(); let inputs = Vec<Vec<ui.Text>>(); let apps = Vec<Vec<ui.Text>>()
+    for record in sp.records(f) {
+        if sp.kindOf(record,79) { outputs.push(sp.cells(record)) }
+        else if sp.kindOf(record,73) { inputs.push(sp.cells(record)) }
+        else if sp.kindOf(record,80) { apps.push(sp.cells(record)) }
+    }
+    let refresh = ui.named("sound-refresh"); refresh.sensitive = !busy
+    let nodes = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(4,Vec<ui.Node>(k.note("Sound & volume","section-heading"),k.note("Your devices and application audio, in one place.","settings-description")))),
+        ui.Button(refresh,busy ? "Working…" : "Refresh",fn() { sp.send(l,plain("{\"action\":\"get\"}")) }))))
+    if has(l.failure.value) { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"sound-error")) }
+    if has(f) {
+        nodes.push(deviceCard(l,"sink",outputs,field(f,1),busy))
+        nodes.push(deviceCard(l,"source",inputs,field(f,2),busy))
+        let list = Vec<ui.Node>(k.note("Applications","section-heading"),k.note("Adjust each app while it is playing audio.","settings-description"))
+        let titles = Vec<ui.Text>(); for o in outputs { titles.push(sp.cell(o,3)) }
+        for i in 0..(apps.len() as i64) {
+            let a = apps[i]; let sinkId = sp.number(sp.cell(a,6)); let active = -1
+            for j in 0..(outputs.len() as i64) { if sp.number(id(outputs[j])) == sinkId { active = j } }
+            let route = ui.named("sound-app-${i}-route"); route.sensitive = !busy
+            list.push(ext.column(10,Vec<ui.Node>(k.caption(sp.cell(a,3),"settings-field-title"),level(l,"sink-input",a,"sound-app-${i}",busy),
+                ui.Select(route,titles,active < 0 ? 0 : active,fn(index:i64) {
+                    if index != active && index >= 0 && index < (outputs.len() as i64) { sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"route\",\"id\":"),id(a),plain(",\"output\":"),id(outputs[index]),plain("}")))) }
+                }))))
+        }
+        if apps.len() == 0 { list.push(ext.named(k.note("No apps are playing audio right now.","settings-description"),"sound-apps-empty")) }
+        nodes.push(card(list))
+    }
+    return ext.column(18,nodes)
+}
+fn page():ui.Node { return ui.component(9397,ui.keyed(957),render) }

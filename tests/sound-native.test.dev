@@ -1,0 +1,75 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+# A stand-in for pactl: logs every call and answers from files. It never touches an audio server.
+fn rig():str {
+    let d = temporary()
+    fs.writeFileSync(d + "/pactl","#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DEVOS_FAKE_DIR/calls\"\ncase \"$*\" in\n  \"--format=json list sinks\") cat \"$DEVOS_FAKE_DIR/sinks\";;\n  \"--format=json list sources\") cat \"$DEVOS_FAKE_DIR/sources\";;\n  \"--format=json list sink-inputs\") cat \"$DEVOS_FAKE_DIR/streams\";;\n  \"--format=json info\") cat \"$DEVOS_FAKE_DIR/info\";;\n  *) if [ -f \"$DEVOS_FAKE_DIR/fail\" ]; then echo 'Failure: no such entity'; exit 1; fi;;\nesac\n")
+    tool.exec(Vec<str>("chmod","755",d + "/pactl"))
+    fs.writeFileSync(d + "/sinks","[{\"index\":1,\"name\":\"sink.a\",\"description\":\"Speakers\",\"mute\":false,\"volume\":{\"front-left\":{\"value\":32768},\"front-right\":{\"value\":65536}}},{\"index\":2,\"name\":\"sink.b\",\"description\":\"Headphones\",\"mute\":true,\"volume\":{\"mono\":{\"value\":19661}}}]")
+    fs.writeFileSync(d + "/sources","[{\"index\":5,\"name\":\"mic.a\",\"description\":\"Built-in\\tMicrophone\",\"mute\":false,\"volume\":{\"mono\":{\"value\":65536}}},{\"index\":6,\"name\":\"sink.a.monitor\",\"description\":\"Monitor of Speakers\",\"mute\":false,\"volume\":{}}]")
+    fs.writeFileSync(d + "/streams","[{\"index\":12,\"sink\":2,\"mute\":false,\"volume\":{\"mono\":{\"value\":6554}},\"properties\":{\"application.name\":\"Player\",\"media.name\":\"Song\"}},{\"index\":13,\"sink\":1,\"mute\":true,\"volume\":{},\"properties\":{\"media.name\":\"Beep\"}}]")
+    fs.writeFileSync(d + "/info","{\"default_sink_name\":\"sink.a\",\"default_source_name\":\"mic.a\"}")
+    return d
+}
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory); env.set("DEVOS_SETTINGS_TEST","1")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/sound-page.dev","--",t.root()),env,input,120000)))
+}
+fn calls(directory:str):str { return fs.existsSync(directory + "/calls") ? fs.readFileSync(directory + "/calls","utf8") : "" }
+
+test.case("pactl state becomes a frame: volumes averaged, monitors dropped, applications with their output",fn() {
+    let d = rig()
+    let all = records(worker(d,"{\"action\":\"get\"}\n")); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],"sink.a") && strings.equal(h[2],"mic.a") && all.len() == 6,"Header or count wrong: " + strings.join(all,"|"))
+    let speakers = cells(all[1]); let headphones = cells(all[2]); let mic = cells(all[3])
+    test.expect(strings.equal(speakers[0],"O") && strings.equal(speakers[1],"1") && strings.equal(speakers[3],"Speakers") && strings.equal(speakers[4],"75") && strings.equal(speakers[5],"0"),"Speakers wrong: " + all[1])
+    test.expect(strings.equal(headphones[4],"30") && strings.equal(headphones[5],"1"),"Headphones wrong")
+    test.expect(strings.equal(mic[0],"I") && strings.equal(mic[2],"mic.a") && strings.equal(mic[3],"Built-in Microphone"),"Input wrong (tab in the title must become a space): " + all[3])
+    let player = cells(all[4]); let beep = cells(all[5])
+    test.expect(strings.equal(player[0],"P") && strings.equal(player[3],"Player") && strings.equal(player[4],"10") && strings.equal(player[6],"2") && strings.equal(beep[3],"Beep") && strings.equal(beep[4],"0") && strings.equal(beep[5],"1") && strings.equal(beep[6],"1"),"Applications wrong: " + all[4] + " / " + all[5])
+    test.expect(!strings.contains(strings.join(all,"|"),"monitor"),"A monitor source was listed")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("volume, mute, default device and routing are forwarded exactly and followed by a fresh read",fn() {
+    let d = rig()
+    let lines = strings.split(worker(d,"{\"action\":\"volume\",\"kind\":\"sink\",\"id\":1,\"value\":55.4}\n{\"action\":\"volume\",\"kind\":\"source\",\"id\":5,\"value\":250}\n{\"action\":\"mute\",\"kind\":\"sink-input\",\"id\":12,\"muted\":true}\n{\"action\":\"select\",\"kind\":\"sink\",\"name\":\"sink.b\"}\n{\"action\":\"route\",\"id\":12,\"output\":1}\n"),"\n")
+    test.expect(lines.len() == 5,"Expected one frame per request: ${lines.len()}")
+    for i in 0..5 { test.expect(strings.startsWith(lines[i],"V\t"),"Request ${i} answer wrong: " + lines[i]) }
+    let log = calls(d)
+    test.expect(strings.contains(log,"set-sink-volume 1 55%\n") && strings.contains(log,"set-source-volume 5 100%\n") && strings.contains(log,"set-sink-input-mute 12 1\n") && strings.contains(log,"set-default-sink sink.b\n") && strings.contains(log,"move-sink-input 12 1\n"),"pactl calls wrong: " + log)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad requests never reach pactl and pactl failures are reported",fn() {
+    let d = rig()
+    let input = "{\"action\":\"volume\",\"kind\":\"sink\",\"id\":-1,\"value\":5}\n{\"action\":\"volume\",\"kind\":\"sink\",\"id\":1.5,\"value\":5}\n{\"action\":\"volume\",\"kind\":\"card\",\"id\":1,\"value\":5}\n{\"action\":\"volume\",\"kind\":\"sink\",\"id\":1,\"value\":\"loud\"}\n{\"action\":\"mute\",\"kind\":\"sink\",\"id\":1,\"muted\":\"yes\"}\n{\"action\":\"select\",\"kind\":\"sink-input\",\"name\":\"x\"}\n{\"action\":\"select\",\"kind\":\"sink\",\"name\":\"--help\"}\n{\"action\":\"select\",\"kind\":\"sink\",\"name\":\"\"}\n{\"action\":\"route\",\"id\":12}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,input),"\n")
+    test.expect(lines.len() == 11,"Expected one frame per request: ${lines.len()}")
+    for i in 0..11 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(!strings.contains(calls(d),"set-") && !strings.contains(calls(d),"move-"),"A bad request reached pactl: " + calls(d))
+    fs.writeFileSync(d + "/fail","1")
+    test.expect(strings.equal(worker(d,"{\"action\":\"mute\",\"kind\":\"sink\",\"id\":1,\"muted\":true}\n"),"E\tFailure: no such entity"),"A pactl failure was not passed on")
+    fs.writeFileSync(d + "/sinks","garbage")
+    test.expect(strings.equal(worker(d,"{\"action\":\"get\"}\n"),"E\tThe audio service did not respond."),"A garbled answer was accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("native Settings mutes the default output from the Sound page under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/sound-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_SOUND_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","sound-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Sound page muted the output"),"Sound page: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.contains(calls(d),"set-sink-mute 1 1\n"),"The page did not mute sink 1: " + calls(d))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()
