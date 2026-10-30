@@ -1,0 +1,144 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+# libwebkit2gtk is linked by path (tools/build/native-apps.sh), so no WebKit header is needed: only the calls below are declared.
+extern fn webkit_web_view_new():*void
+extern fn webkit_web_view_load_uri(view:*void, uri:*u8)
+extern fn webkit_web_view_get_uri(view:*void):*u8
+extern fn webkit_web_view_get_title(view:*void):*u8
+extern fn webkit_web_view_go_back(view:*void)
+extern fn webkit_web_view_go_forward(view:*void)
+extern fn webkit_web_view_reload(view:*void)
+extern fn webkit_web_view_can_go_back(view:*void):i32
+extern fn webkit_web_view_can_go_forward(view:*void):i32
+extern fn webkit_web_view_is_loading(view:*void):i32
+extern fn gtk_box_pack_start(box:*void, child:*void, expand:i32, fill:i32, padding:u32)
+extern fn gtk_widget_show(widget:*void)
+
+# Native Browser window: a WebKit view with Back, Forward, Reload and an address field. The page's address, title and navigation state are read
+# every half second (ui.onTick), because the library's signals cannot be handed DevLang callbacks. An address without a scheme gets https://,
+# and text with spaces or no dot becomes a search.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+# A C string that may be NULL, copied into text.
+fn owned(pointer:*u8):ui.Text { unsafe {
+    let present = false
+    present = pointer as bool
+    if !present { return ui.emptyText() }
+    let bytes = Vec<u8>(); let at = 0
+    while pointer[at] != 0 { bytes.push(pointer[at]); at = at + 1 }
+    return ui.Text(bytes)
+} }
+fn contains(text:ui.Text, needle:str):bool {
+    let n = ui.text(needle).bytes; let h = text.bytes
+    if n.len() == 0 { return true }
+    if h.len() < n.len() { return false }
+    for i in 0..((h.len() - n.len() + 1) as i64) {
+        let same = true
+        for j in 0..(n.len() as i64) { if h[i + j] != n[j] { same = false; break } }
+        if same { return true }
+    }
+    return false
+}
+fn startsWith(text:ui.Text, prefix:str):bool {
+    let p = ui.text(prefix).bytes
+    if text.bytes.len() < p.len() { return false }
+    for i in 0..(p.len() as i64) { if text.bytes[i] != p[i] { return false } }
+    return true
+}
+fn trimmed(value:ui.Text):ui.Text {
+    let start = 0; let end = value.bytes.len() as i64
+    while start < end && (value.bytes[start] == 32 || value.bytes[start] == 9) { start = start + 1 }
+    while end > start && (value.bytes[end - 1] == 32 || value.bytes[end - 1] == 9) { end = end - 1 }
+    let out = Vec<u8>(); for i in start..end { out.push(value.bytes[i]) }; return ui.Text(out)
+}
+fn load(view:*void, entered:ui.Text) { unsafe {
+    let native = ui.nativeText(address(entered))
+    webkit_web_view_load_uri(view,native)
+    ui.rd_buffer_free(native as *void)
+} }
+fn address(entered:ui.Text):ui.Text {
+    let t = trimmed(entered)
+    if !has(t) { return plain("about:blank") }
+    if contains(t,"://") || startsWith(t,"about:") || startsWith(t,"file:") { return t }
+    if contains(t," ") || !contains(t,".") {
+        let query = Vec<u8>(); for b in t.bytes { query.push(b == 32 ? (43 as u8) : b) }
+        return ui.concatText(Vec<ui.Text>(plain("https://duckduckgo.com/?q="),ui.Text(query)))
+    }
+    return ui.concatText(Vec<ui.Text>(plain("https://"),t))
+}
+
+fn App(context:*ui.Context):ui.Node {
+    let step = ui.useRef(context,0); let view = ui.useRef(context,0); let current = ui.useText(context,ui.emptyText()); let title = ui.useText(context,ui.emptyText())
+    let back = ui.useState(context,0); let forward = ui.useState(context,0); let loading = ui.useState(context,0); let draft = ui.useText(context,ui.emptyText())
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Browser","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"browser")
+        }
+        # `browser <address>` from the shell loads that address in the running window.
+        ui.onCommand(context,"browser.",fn(line:ui.Text) {
+            let parts = channel.split(line,31)
+            if parts.len() > 1 && has(parts[1]) && view.get() != 0 { unsafe { load(view.get() as *void,parts[1]) } }
+        })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe {
+            let host = ui.find(context,"browser-host")
+            let web = webkit_web_view_new()
+            gtk_box_pack_start(host,web,1,1,0)
+            gtk_widget_show(web)
+            view.set(web as i64)
+            load(web,ui.text(environment("DEVOS_BROWSER_START")))
+            ui.onTick(context,500,fn() { unsafe {
+                let w = view.get() as *void
+                let uri = owned(webkit_web_view_get_uri(w)); let heading = owned(webkit_web_view_get_title(w))
+                if !ui.equalText(uri,current.get()) { current.set(uri); draft.set(uri) }
+                if !ui.equalText(heading,title.get()) { title.set(heading) }
+                let b = webkit_web_view_can_go_back(w); if b != back.get() as i32 { back.set(b as i64) }
+                let f = webkit_web_view_can_go_forward(w); if f != forward.get() as i32 { forward.set(f as i64) }
+                let l = webkit_web_view_is_loading(w); if l != loading.get() as i32 { loading.set(l as i64) }
+                # DEVOS_BROWSER_SMOKE=1: wait for the first title; with DEVOS_BROWSER_NEXT, type that address, press Go and wait for DEVOS_BROWSER_NEXT_TITLE.
+                if ui.text(environment("DEVOS_BROWSER_SMOKE")).bytes.len() > 0 {
+                    let next = environment("DEVOS_BROWSER_NEXT")
+                    if step.get() == 0 && ui.equalText(heading,ui.text(environment("DEVOS_BROWSER_EXPECT_TITLE"))) {
+                        if ui.text(next).bytes.len() == 0 { print("PASS native Browser loaded a page and read its title"); ui.close(context) }
+                        else { step.set(1); ui.change(context,"browser-url",next); ui.click(context,"browser-go") }
+                    } else if step.get() == 1 && ui.equalText(heading,ui.text(environment("DEVOS_BROWSER_NEXT_TITLE"))) { print("PASS native Browser followed the typed address"); ui.close(context) }
+                }
+            } })
+        }
+        return ui.noop
+    },Vec<i64>())
+    let backButton = ui.named("browser-back"); backButton.sensitive = back.value != 0
+    let forwardButton = ui.named("browser-forward"); forwardButton.sensitive = forward.value != 0
+    let reload = ui.named("browser-reload")
+    let url = ui.named("browser-url"); url.expand = true; url.placeholder = plain("Search or type an address")
+    let go = ui.named("browser-go")
+    let bar = ext.row(8,Vec<ui.Node>(
+        ui.Button(backButton,"Back",fn() { unsafe { webkit_web_view_go_back(view.get() as *void) } }),
+        ui.Button(forwardButton,"Forward",fn() { unsafe { webkit_web_view_go_forward(view.get() as *void) } }),
+        ui.Button(reload,"Reload",fn() { unsafe { webkit_web_view_reload(view.get() as *void) } }),
+        ui.Entry(url,draft.value,fn(value:ui.Text) { draft.set(value) }),
+        ui.Button(go,"Go",fn() { unsafe { load(view.get() as *void,draft.get()) } })))
+    let host = ui.props(); host.expand = true; host.id = ui.text("browser-host")
+    return ext.column(8,Vec<ui.Node>(bar,ext.named(k.caption(has(title.value) ? title.value : plain(loading.value != 0 ? "Loading…" : "New tab"),"settings-description"),"browser-title"),ui.Box(host,Vec<ui.Node>())))
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.browser.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Browser",1100,720,App) ? 0 : 1
+}

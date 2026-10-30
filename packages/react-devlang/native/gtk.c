@@ -347,6 +347,10 @@ int32_t rd_change_name(void *data, const char *name, const char *text) { GtkWidg
 int32_t rd_activate_name(void *data,const char *name) {GtkWidget *widget=rd_find_name(data,name);if(!widget || !GTK_IS_ENTRY(widget) || !gtk_widget_get_sensitive(widget))return 0;g_signal_emit_by_name(widget,"activate");return 1;}
 const char *rd_text_name(void *data, const char *name) { GtkWidget *widget = rd_find_name(data, name); if (!widget) return ""; if (GTK_IS_LABEL(widget)) return gtk_label_get_text(GTK_LABEL(widget)); if (GTK_IS_ENTRY(widget)) return gtk_entry_get_text(GTK_ENTRY(widget));if(GTK_IS_TEXT_VIEW(widget)){GtkTextBuffer *buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));GtkTextIter start,end;gtk_text_buffer_get_bounds(buffer,&start,&end);char *text=gtk_text_buffer_get_text(buffer,&start,&end,FALSE);g_object_set_data_full(G_OBJECT(widget),"rd-read-text",text,g_free);return text;}return ""; }
 
+/* A clock for the window: every `milliseconds` the app gets an event of kind 8 through the normal dispatch path (ui.onTick). Apps use it to read the
+ * state of a widget that a C library owns (a web view's address, a terminal's title) without handing a callback to GLib. Stops when the window closes. */
+static gboolean rd_tick_event(void *data) { RdRoot *root = data; if (root->closed) return G_SOURCE_REMOVE; rd_emit(root, 8, NULL, NULL); return G_SOURCE_CONTINUE; }
+void rd_tick(void *data, int32_t milliseconds) { g_timeout_add(milliseconds < 50 ? 50 : (guint)milliseconds, rd_tick_event, data); }
 /* Closes the window when `widget` emits `signal` (for example a terminal's "child-exited", whose handler takes an int status). The close runs from
  * an idle callback, after the signal has returned. The library that owns the widget needs no header here: the signal is connected by name. */
 static gboolean rd_close_idle(void *data) { rd_close(data); return G_SOURCE_REMOVE; }

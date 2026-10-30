@@ -20,6 +20,7 @@ extern fn rd_layout(widget: *void, kind: i32, vertical: i32, spacing: i32, expan
 extern fn rd_active(widget: *void, active: i32)
 extern fn rd_pointer(widget:*void,enabled:i32)
 extern fn rd_accept(root:*void,prefixes:str)
+extern fn rd_tick(root:*void,milliseconds:i32)
 extern fn rd_scale(widget: *void, range: *u8, value: f64)
 extern fn rd_fraction(widget: *void, value: f64)
 extern fn rd_attach(parent: *void, child: *void, index: i32)
@@ -41,7 +42,7 @@ struct Frame { id: i64, alive: bool, initialized: bool, cursor: i64, hooks: Vec<
 struct Mounted { widget: *void, node: Node, children: Vec<Mounted>, frame: i64 }
 struct Context {
     native: *void, frames: Vec<Frame>, sequence: i64, active: i64,
-    rendering: bool, alive: bool, tree: Vec<Mounted>, render: fn(*Context): Node, cleanups: Vec<fn(): void>, command: fn(Text): void
+    rendering: bool, alive: bool, tree: Vec<Mounted>, render: fn(*Context): Node, cleanups: Vec<fn(): void>, command: fn(Text): void, tick: fn(): void
 }
 struct State { value: i64, get: fn(): i64, set: fn(i64): void }
 struct TextState { value: Text, get: fn(): Text, set: fn(Text): void, revision: i64 }
@@ -51,6 +52,7 @@ struct Reducer { value: i64, dispatch: fn(i64): void }
 
 fn noop() {}
 fn ignoreCommand(value: Text) {}
+fn ignoreTick() {}
 fn emptyEffect(): fn(): void { return noop }
 fn emptyNode(context: *void): Ref<Node> { return ref(Label("")) }
 fn emptyText(): Text { return Text(Vec<u8>()) }
@@ -357,6 +359,8 @@ fn paint(nodes:Vec<Mounted>,widget:*void,cr:*void):bool {unsafe {
 }}
 /* Command lines the shell sends to the app (rd_control); `prefixes` are extra command prefixes it also answers, comma separated. */
 fn onCommand(context: *Context, prefixes: str, handler: fn(Text): void) { unsafe { rd_accept((*context).native, prefixes); (*context).command = handler } }
+/* Calls `handler` every `milliseconds` (at least 50) on the window's own thread; for reading the state of widgets that a C library owns. */
+fn onTick(context: *Context, milliseconds: i32, handler: fn(): void) { unsafe { (*context).tick = handler; rd_tick((*context).native, milliseconds) } }
 fn close(context: *Context) { unsafe { (*context).alive = false; rd_close((*context).native) } }
 fn find(context: *Context, name: str): *void { unsafe { return rd_find_name((*context).native, name) } }
 fn click(context: *Context, name: str): bool { unsafe { return rd_click_name((*context).native, name) != 0 } }
@@ -367,11 +371,12 @@ fn runStyled(title: str, width: i32, height: i32, css: str, render: fn(*Context)
     let native = rd_new(title, width, height)
     if native == null { return false }
     if rd_css(native, css) == 0 { rd_free(native); return false }
-    let context = Context(native, Vec<Frame>(), 0, -1, false, true, Vec<Mounted>(), render, Vec<fn(): void>(), ignoreCommand)
+    let context = Context(native, Vec<Frame>(), 0, -1, false, true, Vec<Mounted>(), render, Vec<fn(): void>(), ignoreCommand, ignoreTick)
     let pointer = &context
     let handler = callback_context(fn(kind: i32, widget: *void, bytes: *u8, length: i64) { unsafe {
         if kind == 0 { commit(pointer); return }
         if kind == 5 {paint((*pointer).tree,widget,bytes as *void);return}
+        if kind == 8 { (*pointer).tick(); return }
         let owned = Vec<u8>()
         for i in 0..length { owned.push(bytes[i]) }
         if kind == 7 { (*pointer).command(Text(owned)); return }
