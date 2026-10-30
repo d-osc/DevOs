@@ -67,3 +67,17 @@ So a native shell comes after, not before: the Launcher overlay (and snap, task 
 
 GJS goes away completely. The JS extension API (`packages/extensions/user.ts`, `UIExtension`, `registerSettingsPage`) ends with it; a native extension API (a DevLang program that speaks the control protocol and declares itself in a manifest) is a separate, later design, and existing JS extensions stop working when the shell does. Consequence for the order: nothing has to be kept for them, so `packages/core`, `extensions`, `runtime`, `services`, `shell`, `supervisor`, `updates` and `config` are all deleted in stage 5, in that dependency order, with their entries removed from `data/compat/npm-api.json`.
 Decisions 2 (Editor) and 3 (the npm packages, now answered by this one) remain; the Editor is still open.
+
+## Editor: probe results (2026-10-30)
+
+A native Editor as a WebKit view over the existing `dist/editor` Monaco bundle was probed with the DevLang runtime in WSL. Nothing was built; these are the facts that decide the design.
+
+| Need | Probe | Result |
+|---|---|---|
+| HTTP origin for Monaco workers | `std/http` `createServer(...).listen(port)` | Works. `req.url`, `req.method`, `res.statusCode = n`, `res.setHeader(k, v)`, `res.end(str)` all work. `listen` blocks, so the server lives in its own channel worker. |
+| Serve `codicon-*.ttf` | `fs.readFileSync(path, enc)` | Only `utf8` is accepted, and `res.end` takes a string, so a binary body cannot be sent. Every other file in `dist/editor` is text. |
+| Page to host messages | WebKit script message handler | Needs a callback, and DevLang callbacks into GLib crash (see the Camera notes). Use a user script that mirrors `messageHandlers.editor.postMessage` into `document.title`, polled with `ui.onTick`. |
+| Host to page calls | `webkit_web_view_evaluate_javascript` with a NULL callback | Possible through `extern fn`. |
+
+Open decision: the font. Either the editor build inlines the codicon font as a data URI (one esbuild loader change that the JS editor also gets), or `std/fs` gains a binary read and `std/http` a bytes body. The first needs no runtime work. The window, worker and tests are about the size of the Browser app.
+
