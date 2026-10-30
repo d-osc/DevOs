@@ -3,13 +3,13 @@ use "react_devlang/channel" as channel
 use "../../apps/org.devos.settings/native-kit.devx" as k
 use "../../apps/org.devos.settings/native-extensions-page.devx" as ext
 use "../../apps/org.devos.settings/native-system-pages.devx" as sp
+use "./shell-link.devx" as shell
 extern fn rc_env(name:str):str
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
 extern fn rd_app_header(root:*void,title:str,icons:str)
 extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
 extern fn rd_default_theme():str
-extern fn g_file_test(path:str,test:i32):i32
 
 # Native Task View window: the open windows of the current desktop as cards (click to bring one forward, × to close it, a menu to move it to another
 # desktop) and the desktops (switch, add, remove). The window starts dev-os-window-tracker itself (DEVOS_TASKVIEW_TRACKER replaces it in tests), batches
@@ -25,14 +25,13 @@ struct Win { id:ui.Text, title:ui.Text, app:ui.Text, icon:ui.Text, active:bool, 
 struct Desk { id:ui.Text, name:ui.Text, active:bool }
 
 fn TaskView(context:*ui.Context):ui.Node {
-    let pipe = ui.useRef(context,0); let tracker = ui.useRef(context,0); let frame = ui.useText(context,ui.emptyText()); let queued = ui.useText(context,ui.emptyText())
-    let count = ui.useRef(context,0); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let failure = ui.useText(context,ui.emptyText())
+    let step = ui.useRef(context,0); let ticks = ui.useRef(context,0)
     let dismiss = fn() { ui.close(context) }
-    let flush = fn() {
-        let events = queued.get(); if events.bytes.len() == 0 || pipe.get() == 0 { return }
-        channel.command(pipe.get(),join(Vec<ui.Text>(plain("{\"events\":["),events,plain("]}")))); queued.set(ui.emptyText()); count.set(0)
-    }
-    let ask = fn(request:ui.Text) { flush(); if pipe.get() != 0 { channel.command(pipe.get(),request) } }
+    let link = shell.useLink(context,fn(command:ui.Text) {
+        if smoke() && step.get() == 1 { print("PASS native Task View listed the windows and sent the command to the tracker"); ui.close(context) }
+        if k.isText(channel.split(command,32)[0],"activate") { dismiss() }
+    })
+    let frame = link.frame; let failure = link.failure; let ask = link.ask
     ui.useEffect(context,fn():fn():void {
         let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
         if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
@@ -42,44 +41,17 @@ fn TaskView(context:*ui.Context):ui.Node {
             rd_app_header((*context).native,"Task View","${root}/data/icons")
             rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"task-view")
         }
-        # `task-view` (a toggle: the window is open, so it closes) and `task-view hide`.
-        # `task-view show` keeps an open window open (it is already showing).
+        # `task-view` (a toggle: the window is open, so it closes) and `task-view hide`; `task-view show` keeps an open window open (it is already showing).
         ui.onCommand(context,"task-view-",fn(line:ui.Text) {
             let parts = channel.split(line,31)
             if !(parts.len() > 1 && k.isText(parts[1],"show")) { ui.close(context) }
         })
         ui.onTick(context,100,fn() {
-            ticks.set(ticks.get() + 1); flush()
+            ticks.set(ticks.get() + 1); link.flush()
             if smoke() && ticks.get() > 300 { print("FAIL native Task View timed out at step ${step.get()}"); ui.close(context) }
         })
         return ui.noop
     },Vec<i64>())
-    ui.useEffect(context,fn():fn():void { unsafe {
-        if !(*context).alive { return ui.noop }
-        let root = rc_env("DEV_OS_ROOT"); let runner = rc_env("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
-        return channel.connect(context,runner,"${root}/src/system/org.devos.launcher/task-service.dev",root,fn(value:ui.Text) {
-            if value.bytes.len() > 0 && value.bytes[0] == 69 { failure.set(value); return }
-            failure.set(ui.emptyText()); frame.set(value)
-            for record in channel.split(value,30) {
-                let fields = channel.split(record,9)
-                if fields.len() == 2 && k.isText(fields[0],"T") {
-                    channel.command(tracker.get(),fields[1])
-                    if smoke() && step.get() == 1 { print("PASS native Task View listed the windows and sent the command to the tracker"); ui.close(context) }
-                    if k.isText(channel.split(fields[1],32)[0],"activate") { dismiss() }
-                }
-            }
-        },fn(value:i64) { pipe.set(value) })
-    } },Vec<i64>())
-    ui.useEffect(context,fn():fn():void { unsafe {
-        if !(*context).alive { return ui.noop }
-        let root = rc_env("DEV_OS_ROOT"); let helper = rc_env("DEVOS_TASKVIEW_TRACKER")
-        if ui.text(helper).bytes.len() == 0 { helper = "${root}/build/native/dev-os-window-tracker"; if g_file_test(helper,8) == 0 { helper = "${root}/native/dev-os-window-tracker" }; if g_file_test(helper,8) == 0 { helper = "dev-os-window-tracker" } }
-        return channel.connect(context,helper,"",root,fn(line:ui.Text) {
-            if line.bytes.len() == 0 || line.bytes[0] != 123 || line.bytes.len() > 58000 { return }
-            if queued.get().bytes.len() + line.bytes.len() > 58000 || count.get() >= 512 { flush() }
-            let previous = queued.get(); queued.set(join(Vec<ui.Text>(previous,previous.bytes.len() > 0 ? plain(",") : ui.emptyText(),line))); count.set(count.get() + 1)
-        },fn(value:i64) { tracker.set(value) })
-    } },Vec<i64>())
     # --- the state frame ---
     let windows = Vec<Win>(); let desks = Vec<Desk>(); let canCreate = false; let canRemove = false
     for record in channel.split(frame.value,30) {

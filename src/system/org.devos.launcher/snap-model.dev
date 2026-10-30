@@ -1,0 +1,129 @@
+# Snap layouts and groups in DevLang: the geometry rules of packages/services/snap-geometry.ts and the layout table and member rules of
+# packages/services/windows.ts. Positions are in ten-thousandths of the work area (5000 is the middle).
+#   layoutRegions(layout)            -> the regions of a layout ("half-left", "half-right", ...), empty for an unknown layout
+#   cells(group)                     -> the rectangle of every member, as the tracker's `sash` command wants it
+#   resize(group, boxes, axis, i, v) -> the group with divider i moved to v, within what the members' minimum sizes allow
+#   fit(group, boxes)                -> the group with every divider pushed inside those limits (used before windows are snapped)
+#   sash(group)                      -> the "sash id,x,y,w,h ..." command line
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+
+struct Member { id:i64, region:str }
+struct Group { id:i64, layout:str, members:Vec<Member>, cuts:Vec<i64>, custom:bool, row:i64 }
+# What a divider needs to know about a member's window: its minimum size and the work area, and whether its geometry may be used at all.
+struct Box { id:i64, ok:bool, minWidth:i64, minHeight:i64, areaWidth:i64, areaHeight:i64, output:str, desktop:i64 }
+struct Cell { id:i64, x:i64, y:i64, width:i64, height:i64 }
+
+fn layouts():Vec<str> { return Vec<str>("halves","wide-left","wide-right","thirds","quarters") }
+fn layoutRegions(layout:str):Vec<str> {
+    if strings.equal(layout,"halves") { return Vec<str>("half-left","half-right") }
+    if strings.equal(layout,"wide-left") { return Vec<str>("wide-left","third-right") }
+    if strings.equal(layout,"wide-right") { return Vec<str>("third-left","wide-right") }
+    if strings.equal(layout,"thirds") { return Vec<str>("third-left","third-center","third-right") }
+    if strings.equal(layout,"quarters") { return Vec<str>("quarter-top-left","quarter-top-right","quarter-bottom-left","quarter-bottom-right") }
+    return Vec<str>()
+}
+fn layoutName(layout:str):str {
+    if strings.equal(layout,"halves") { return "Two columns" }
+    if strings.equal(layout,"wide-left") { return "Wide left" }
+    if strings.equal(layout,"wide-right") { return "Wide right" }
+    if strings.equal(layout,"thirds") { return "Three columns" }
+    if strings.equal(layout,"quarters") { return "Four quarters" }
+    return layout
+}
+fn defaultCuts(layout:str):Vec<i64> {
+    if strings.equal(layout,"thirds") { return Vec<i64>(3300,6700) }
+    if strings.equal(layout,"wide-left") { return Vec<i64>(6700) }
+    if strings.equal(layout,"wide-right") { return Vec<i64>(3300) }
+    return Vec<i64>(5000)
+}
+fn cutsOf(group:Group):Vec<i64> { return group.custom ? group.cuts : defaultCuts(group.layout) }
+fn quarters(group:Group):bool { return strings.equal(group.layout,"quarters") }
+
+fn cells(group:Group):Vec<Cell> {
+    let xs = Vec<i64>(0); for c in cutsOf(group) { xs.push(c) }; xs.push(10000)
+    let out = Vec<Cell>()
+    for member in group.members {
+        let name = strings.startsWith(member.region,"devos-") ? strings.substring(member.region,6,strings.charLength(member.region)) : member.region
+        let column = strings.endsWith(name,"left") ? 0 : strings.endsWith(name,"center") ? 1 : (xs.len() as i64) - 2
+        let bottom = strings.contains(name,"bottom")
+        out.push(Cell(member.id,xs[column],quarters(group) && bottom ? group.row : 0,xs[column + 1] - xs[column],quarters(group) ? bottom ? 10000 - group.row : group.row : 10000))
+    }
+    return out
+}
+fn sash(group:Group):str {
+    let parts = Vec<str>()
+    for cell in cells(group) { parts.push("${cell.id},${cell.x},${cell.y},${cell.width},${cell.height}") }
+    return "sash " + strings.join(parts," ")
+}
+fn boxOf(boxes:Vec<Box>, id:i64):Box {
+    for b in boxes { if b.id == id { return b } }
+    return Box(id,false,0,0,1,1,"",0)
+}
+fn ceilDiv(value:i64, by:i64):i64 { return (value + by - 1) / by }
+# The divider `index` of `axis` ("x": a vertical divider between columns, "y": the horizontal divider of four quarters) moved to `value`; the group
+# unchanged when a member has no usable geometry, the members are on different outputs or desktops, or the minimum sizes leave no room.
+fn resize(group:Group, boxes:Vec<Box>, axis:str, index:i64, value:i64):Group {
+    let first = boxOf(boxes,group.members[0].id)
+    for member in group.members {
+        let b = boxOf(boxes,member.id)
+        if !b.ok || !strings.equal(b.output,first.output) || b.desktop != first.desktop { return group }
+    }
+    let cuts = Vec<i64>(); for c in cutsOf(group) { cuts.push(c) }
+    let horizontal = strings.equal(axis,"y")
+    if horizontal ? !quarters(group) || index != 0 : index < 0 || index >= (cuts.len() as i64) { return group }
+    let start = horizontal ? 0 : index == 0 ? 0 : cuts[index - 1]
+    let end = horizontal ? 10000 : index + 1 < (cuts.len() as i64) ? cuts[index + 1] : 10000
+    let current = horizontal ? group.row : cuts[index]
+    let before = 0; let after = 0
+    for cell in cells(group) {
+        let b = boxOf(boxes,cell.id)
+        let minimum = horizontal ? (b.minHeight > 100 ? b.minHeight : 100) : (b.minWidth > 160 ? b.minWidth : 160)
+        let length = horizontal ? first.areaHeight : first.areaWidth
+        let required = ceilDiv((minimum + 10) * 10000,length > 0 ? length : 1)
+        let offset = horizontal ? cell.y : cell.x; let size = horizontal ? cell.height : cell.width
+        if offset + size == current && required > before { before = required }
+        if offset == current && required > after { after = required }
+    }
+    if start + before > end - after { return group }
+    let position = value < start + before ? start + before : value > end - after ? end - after : value
+    let next = group
+    if horizontal { next.row = position } else { cuts[index] = position; next.cuts = cuts; next.custom = true }
+    return next
+}
+fn dividers(group:Group):Vec<str> {
+    let out = Vec<str>(); for i in 0..(cutsOf(group).len() as i64) { out.push("x:${i}") }
+    if quarters(group) { out.push("y:0") }
+    return out
+}
+fn positionOf(group:Group, divider:str):i64 {
+    if strings.startsWith(divider,"y") { return group.row }
+    return cutsOf(group)[json.int(json.parse(strings.substring(divider,2,strings.charLength(divider))))]
+}
+fn fit(group:Group, boxes:Vec<Box>):Group {
+    let result = group
+    for pass in 0..2 {
+        for divider in dividers(result) {
+            let axis = strings.substring(divider,0,1)
+            let index = json.int(json.parse(strings.substring(divider,2,strings.charLength(divider))))
+            result = resize(result,boxes,axis,index,positionOf(result,divider))
+        }
+    }
+    return result
+}
+
+# --- persistence: the groups live in a JSON file so they outlive the short-lived window that edits them ------------------------------------
+fn toJson(group:Group):json.Value {
+    let members = json.array()
+    for m in group.members { members = json.push(members,{id:m.id,region:m.region}) }
+    let cuts = json.array(); for c in group.cuts { cuts = json.push(cuts,c) }
+    return {id:group.id,layout:group.layout,members:members,cuts:cuts,custom:group.custom,row:group.row}
+}
+fn fromJson(value:json.Value):Group {
+    let members = Vec<Member>(); let list = hw.jget(value,"members")
+    for i in 0..(json.len(list) as i64) { let m = json.at(list,i); members.push(Member(hw.jnum(m,"id",0.0) as i64,hw.jstr(m,"region",""))) }
+    let cuts = Vec<i64>(); let saved = hw.jget(value,"cuts")
+    for i in 0..(json.len(saved) as i64) { cuts.push(json.int(json.at(saved,i))) }
+    return Group(hw.jnum(value,"id",0.0) as i64,hw.jstr(value,"layout",""),members,cuts,hw.jbool(value,"custom",false),hw.jnum(value,"row",5000.0) as i64)
+}

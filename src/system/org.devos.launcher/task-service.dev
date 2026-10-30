@@ -1,16 +1,22 @@
 #!/usr/bin/env d
-# Data worker of the native Task View. The window starts the window tracker (dev-os-window-tracker) itself and hands its JSON event lines to this
-# worker in batches; the worker keeps the window and desktop state (the same rules as the taskbar, src/services/window-state.dev) and answers with one frame.
-# One JSON request per line on stdin:
+# Data worker of the native Task View and Snap windows. The window starts the window tracker (dev-os-window-tracker) itself and hands its JSON event
+# lines to this worker in batches; the worker keeps the window and desktop state (the same rules as the taskbar, src/services/window-state.dev), the snap
+# groups (snap-model.dev) and answers with one frame. One JSON request per line on stdin:
 #   {"events":[{...tracker event...},...]}                                  -> the state frame
 #   {"action":"activate|close","id":12} | {"action":"desktop","id":2} | {"action":"move","id":12,"desktop":2}
-#   {"action":"create-desktop"} | {"action":"remove-desktop","id":2}        -> the state frame, plus "T<TAB>command" for the tracker when the action is valid
+#   {"action":"create-desktop"} | {"action":"remove-desktop","id":2}
+#   {"action":"arrange","layout":"halves","ids":[11,12]} | {"action":"restore-group","id":1} | {"action":"remove-group","id":1}
+#   {"action":"resize-group","id":1,"axis":"x","index":0,"delta":500}      -> the state frame, plus one "T<TAB>command" record per tracker command when the action is valid
 # Records of the state frame (cells separated by tabs, records by ASCII 30):
-#   C<TAB>canCreate<TAB>canRemove
+#   C<TAB>canCreate<TAB>canRemove<TAB>canSnap<TAB>canResizeSnap
 #   D<TAB>id<TAB>name<TAB>active                      one per desktop (nameless or numeric names read "Desktop <id>")
 #   W<TAB>id<TAB>title<TAB>app title<TAB>icon<TAB>active<TAB>minimized<TAB>desktop<TAB>sticky   one per window, in the order they appeared
-# Commands for the tracker are the ones the JS Windows service sent: activate/close <id>, desktop <id>, move <id> <desktop>, create-desktop, remove-desktop <id>.
+#   G<TAB>id<TAB>layout<TAB>member ids and regions (id=region,...)<TAB>cuts (comma separated)<TAB>row   one per snap group
+# The snap groups are kept in $DEVOS_SNAP_STATE (default $XDG_RUNTIME_DIR/devos-snap-groups.json) so that they outlive the window and last until sign-out.
+# Commands for the tracker are the ones the JS Windows service sent: activate/close <id>, desktop <id>, move <id> <desktop>, create-desktop, remove-desktop <id>,
+# snap <id> devos-<region>, sash <id>,x,y,w,h ...
 use "std/io"
+use "std/fs"
 use "std/json"
 use "std/strings"
 use "std/result"
@@ -18,13 +24,32 @@ use "../../../lib/hw.dev" as hw
 use "../../../lib/worker-kit.dev" as kit
 use "../../services/window-state.dev" as tracking
 use "../org.devos.panel/taskbar.dev" as taskbar
+use "./snap-model.dev" as snap
 
-struct State { snapshot:tracking.Snapshot, order:Vec<str>, canCreate:bool, canRemove:bool }
-fn fresh():State { return State(tracking.empty(),Vec<str>(),false,false) }
+struct State { snapshot:tracking.Snapshot, order:Vec<str>, canCreate:bool, canRemove:bool, canSnap:bool, canResize:bool, groups:Vec<snap.Group>, nextGroup:i64 }
+fn statePath():str { return !strings.equal(hw.env("DEVOS_SNAP_STATE"),"") ? hw.env("DEVOS_SNAP_STATE") : hw.envOr("XDG_RUNTIME_DIR","/tmp") + "/devos-snap-groups.json" }
+fn loaded():State {
+    let state = State(tracking.empty(),Vec<str>(),false,false,false,false,Vec<snap.Group>(),1)
+    let path = statePath()
+    if !fs.existsSync(path) { return state }
+    let read = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(path,"utf8")) })
+    if result.isErr(read) { return state }
+    let saved = result.unwrap(read); let list = hw.jget(saved,"groups")
+    for i in 0..(json.len(list) as i64) { let g = snap.fromJson(json.at(list,i)); if g.id > 0 && g.members.len() >= 2 { state.groups.push(g) } }
+    state.nextGroup = hw.jnum(saved,"next",1.0) as i64
+    return state
+}
+fn save(state:State) {
+    let list = json.array(); for g in state.groups { list = json.push(list,snap.toJson(g)) }
+    let path = statePath(); let temporary = path + ".tmp"
+    fs.writeFileSync(temporary,json.stringify({next:state.nextGroup,groups:list}))
+    fs.renameSync(temporary,path)
+}
 fn event(previous:State, value:json.Value):State {
     let next = previous; let kind = hw.jstr(value,"type","")
-    if strings.equal(kind,"connecting") || strings.equal(kind,"disconnected") { next.order = Vec<str>(); next.canCreate = false; next.canRemove = false }
+    if strings.equal(kind,"connecting") || strings.equal(kind,"disconnected") { next.order = Vec<str>(); next.canCreate = false; next.canRemove = false; next.canSnap = false; next.canResize = false }
     if strings.equal(kind,"desktop-begin") { next.canCreate = hw.jbool(value,"canCreate",false); next.canRemove = hw.jbool(value,"canRemove",false) }
+    if strings.equal(kind,"snap-capability") { next.canSnap = hw.jbool(value,"supported",false); next.canResize = hw.jbool(value,"canResize",false) }
     let key = tracking.id(value)
     if !strings.equal(key,"") {
         let retained = Vec<str>(); let found = false
@@ -37,6 +62,13 @@ fn event(previous:State, value:json.Value):State {
 }
 fn flag(value:bool):str { return value ? "1" : "0" }
 fn windowOf(state:State, id:str):json.Value { return hw.jget(state.snapshot.windows,id) }
+fn windowNumber(state:State, id:i64):json.Value { return windowOf(state,"${id}") }
+fn desktopOf(window:json.Value):i64 { return hw.jnum(window,"desktop",0.0) as i64 }
+fn activeDesktop(state:State):i64 {
+    let list = state.snapshot.desktops
+    for i in 0..(json.len(list) as i64) { if hw.jbool(json.at(list,i),"active",false) { return hw.jnum(json.at(list,i),"id",0.0) as i64 } }
+    return 0
+}
 fn desktopKnown(state:State, id:str):bool {
     let list = state.snapshot.desktops
     for i in 0..(json.len(list) as i64) { if strings.equal("${hw.jnum(json.at(list,i),"id",0.0) as i64}",id) { return true } }
@@ -50,8 +82,38 @@ fn desktopName(item:json.Value):str {
     for i in 0..(strings.charLength(digits) as i64) { if !strings.contains("0123456789",strings.substring(digits,i,i + 1)) { numeric = false } }
     return strings.equal(name,"") || numeric ? "Desktop " + id : name
 }
+# What the group rules need from the tracker's window state; `restoring` treats minimized windows as shown (they are restored with the group).
+fn boxes(state:State, group:snap.Group, restoring:bool):Vec<snap.Box> {
+    let out = Vec<snap.Box>()
+    for member in group.members {
+        let w = windowNumber(state,member.id); let g = hw.jget(w,"geometry"); let area = hw.jget(g,"area")
+        let usable = !json.is_null(g) && (restoring || !hw.jbool(w,"minimized",false)) && !hw.jbool(w,"maximized",false) && !hw.jbool(w,"fullscreen",false)
+        out.push(snap.Box(member.id,usable,hw.jnum(g,"minWidth",0.0) as i64,hw.jnum(g,"minHeight",0.0) as i64,hw.jnum(area,"width",1.0) as i64,hw.jnum(area,"height",1.0) as i64,hw.jstr(g,"output",""),desktopOf(w)))
+    }
+    return out
+}
+# A group loses members that are gone and disappears below two, or when its members are not on one desktop (the JS Windows service did the same on every update).
+fn pruned(state:State):State {
+    if state.order.len() == 0 { return state }
+    let next = state; let groups = Vec<snap.Group>()
+    for g in state.groups {
+        let members = Vec<snap.Member>(); for m in g.members { if !json.is_null(windowNumber(state,m.id)) { members.push(m) } }
+        if members.len() < 2 { continue }
+        let same = true; let first = desktopOf(windowNumber(state,members[0].id))
+        for m in members { if desktopOf(windowNumber(state,m.id)) != first { same = false } }
+        if !same { continue }
+        let kept = g; kept.members = members; groups.push(kept)
+    }
+    next.groups = groups
+    return next
+}
+fn groupOf(state:State, id:i64):snap.Group {
+    for g in state.groups { if g.id == id { return g } }
+    return snap.Group(0,"",Vec<snap.Member>(),Vec<i64>(),false,5000)
+}
+fn csv(values:Vec<i64>):str { let parts = Vec<str>(); for v in values { parts.push("${v}") }; return strings.join(parts,",") }
 fn frame(state:State):str {
-    let out = "C\t" + flag(state.canCreate) + "\t" + flag(state.canRemove)
+    let out = "C\t" + flag(state.canCreate) + "\t" + flag(state.canRemove) + "\t" + flag(state.canSnap) + "\t" + flag(state.canResize)
     let list = state.snapshot.desktops
     for i in 0..(json.len(list) as i64) {
         let item = json.at(list,i)
@@ -63,24 +125,78 @@ fn frame(state:State):str {
         let group = taskbar.group(window); let known = taskbar.builtin(group)
         let appTitle = json.is_null(known) ? group : hw.jstr(known,"title",group)
         let icon = json.is_null(known) ? "application-x-executable-symbolic" : hw.jstr(known,"icon","application-x-executable-symbolic")
-        let desktop = hw.jnum(window,"desktop",0.0) as i64
-        out = out + kit.rs() + "W\t" + key + "\t" + kit.clean(hw.jstr(window,"title","")) + "\t" + kit.clean(appTitle) + "\t" + kit.clean(icon) + "\t" + flag(hw.jbool(window,"active",false)) + "\t" + flag(hw.jbool(window,"minimized",false)) + "\t${desktop > 0 ? desktop : 0}\t" + flag(hw.jbool(window,"sticky",false))
+        let desktop = desktopOf(window)
+        out = out + kit.rs() + "W\t" + key + "\t" + kit.clean(window_title(window)) + "\t" + kit.clean(appTitle) + "\t" + kit.clean(icon) + "\t" + flag(hw.jbool(window,"active",false)) + "\t" + flag(hw.jbool(window,"minimized",false)) + "\t${desktop > 0 ? desktop : 0}\t" + flag(hw.jbool(window,"sticky",false))
+    }
+    for g in state.groups {
+        let members = Vec<str>(); for m in g.members { members.push("${m.id}=${m.region}") }
+        out = out + kit.rs() + "G\t${g.id}\t" + g.layout + "\t" + strings.join(members,",") + "\t" + csv(snap.cutsOf(g)) + "\t${g.row}"
     }
     return out
 }
-# The tracker command for an action, or "" when the action does not apply to the current state (an unknown window or desktop, a missing capability).
-fn plan(state:State, request:json.Value):str {
-    let action = hw.jstr(request,"action","")
+fn window_title(window:json.Value):str { return hw.jstr(window,"title","") }
+
+struct Outcome { state:State, commands:Vec<str> }
+fn ids(request:json.Value):Vec<i64> {
+    let out = Vec<i64>(); let list = hw.jget(request,"ids")
+    for i in 0..(json.len(list) as i64) { out.push(json.int(json.at(list,i))) }
+    return out
+}
+# The new state and the tracker commands for an action; no commands when the action does not apply to the state (unknown window, desktop or layout,
+# members on different desktops or sticky, a missing capability).
+fn act(state:State, request:json.Value):Outcome {
+    let action = hw.jstr(request,"action",""); let none = Outcome(state,Vec<str>())
     let id = tracking.id(request)
-    if strings.equal(action,"activate") || strings.equal(action,"close") { return !strings.equal(id,"") && !json.is_null(windowOf(state,id)) ? action + " " + id : "" }
-    if strings.equal(action,"desktop") { return !strings.equal(id,"") && desktopKnown(state,id) ? "desktop " + id : "" }
+    if strings.equal(action,"activate") || strings.equal(action,"close") { return !strings.equal(id,"") && !json.is_null(windowOf(state,id)) ? Outcome(state,Vec<str>(action + " " + id)) : none }
+    if strings.equal(action,"desktop") { return !strings.equal(id,"") && desktopKnown(state,id) ? Outcome(state,Vec<str>("desktop " + id)) : none }
     if strings.equal(action,"move") {
         let target = "${hw.jnum(request,"desktop",0.0) as i64}"
-        return !strings.equal(id,"") && !json.is_null(windowOf(state,id)) && desktopKnown(state,target) ? "move " + id + " " + target : ""
+        return !strings.equal(id,"") && !json.is_null(windowOf(state,id)) && desktopKnown(state,target) ? Outcome(state,Vec<str>("move " + id + " " + target)) : none
     }
-    if strings.equal(action,"create-desktop") { return state.canCreate ? "create-desktop" : "" }
-    if strings.equal(action,"remove-desktop") { return state.canRemove && json.len(state.snapshot.desktops) > 1 && !strings.equal(id,"") && desktopKnown(state,id) ? "remove-desktop " + id : "" }
-    return ""
+    if strings.equal(action,"create-desktop") { return state.canCreate ? Outcome(state,Vec<str>("create-desktop")) : none }
+    if strings.equal(action,"remove-desktop") { return state.canRemove && json.len(state.snapshot.desktops) > 1 && !strings.equal(id,"") && desktopKnown(state,id) ? Outcome(state,Vec<str>("remove-desktop " + id)) : none }
+    if strings.equal(action,"arrange") {
+        let layout = hw.jstr(request,"layout",""); let regions = snap.layoutRegions(layout); let chosen = ids(request)
+        if !state.canSnap || regions.len() == 0 || chosen.len() != regions.len() { return none }
+        let members = Vec<snap.Member>(); let first = 0
+        for i in 0..(chosen.len() as i64) {
+            for j in 0..i { if chosen[j] == chosen[i] { return none } }
+            let w = windowNumber(state,chosen[i])
+            if json.is_null(w) || hw.jbool(w,"sticky",false) { return none }
+            if i == 0 { first = desktopOf(w) } else if desktopOf(w) != first { return none }
+            members.push(snap.Member(chosen[i],"devos-" + regions[i]))
+        }
+        let fresh = snap.Group(state.nextGroup,layout,members,Vec<i64>(),false,5000)
+        if state.canResize { fresh = snap.fit(fresh,boxes(state,fresh,true)) }
+        let next = state; let kept = Vec<snap.Group>()
+        for g in state.groups { let overlaps = false; for m in g.members { for c in chosen { if m.id == c { overlaps = true } } }; if !overlaps { kept.push(g) } }
+        kept.push(fresh); next.groups = kept; next.nextGroup = state.nextGroup + 1
+        let commands = Vec<str>(); for m in members { commands.push("snap ${m.id} " + m.region); commands.push("activate ${m.id}") }
+        if state.canResize { commands.push(snap.sash(fresh)) }
+        return Outcome(next,commands)
+    }
+    if strings.equal(action,"restore-group") || strings.equal(action,"remove-group") || strings.equal(action,"resize-group") {
+        let groupId = hw.jnum(request,"id",0.0) as i64; let g = groupOf(state,groupId)
+        if g.id == 0 { return none }
+        let next = state; let rest = Vec<snap.Group>(); for other in state.groups { if other.id != g.id { rest.push(other) } }
+        if strings.equal(action,"remove-group") { next.groups = rest; return Outcome(next,Vec<str>()) }
+        if !state.canSnap { return none }
+        let commands = Vec<str>(); let current = g
+        if strings.equal(action,"restore-group") {
+            if state.canResize { current = snap.fit(g,boxes(state,g,true)) }
+            let desktop = desktopOf(windowNumber(state,g.members[0].id)); if desktop > 0 { commands.push("desktop ${desktop}") }
+            for m in current.members { commands.push("snap ${m.id} " + m.region); commands.push("activate ${m.id}") }
+        } else {
+            if !state.canResize { return none }
+            let axis = hw.jstr(request,"axis","x"); let index = hw.jnum(request,"index",0.0) as i64
+            let position = strings.equal(axis,"y") ? g.row : (index >= 0 && index < (snap.cutsOf(g).len() as i64) ? snap.cutsOf(g)[index] : 0)
+            current = snap.resize(g,boxes(state,g,false),axis,index,position + (hw.jnum(request,"delta",0.0) as i64))
+        }
+        if state.canResize { commands.push(snap.sash(current)) }
+        rest.push(current); next.groups = rest
+        return Outcome(next,commands)
+    }
+    return none
 }
 struct Reply { state:State, frame:str }
 fn handle(previous:State, line:str):Reply {
@@ -94,14 +210,18 @@ fn handle(previous:State, line:str):Reply {
         if !json.is_null(events) {
             if !strings.equal(json.kind(events),"array") { result.raise("Expected a tracker event array") }
             for i in 0..(json.len(events) as i64) { next = event(next,json.at(events,i)) }
+            next = pruned(next)
         }
+        let commands = Vec<str>()
+        if json.has(request,"action") { let outcome = act(next,request); next = outcome.state; commands = outcome.commands }
         let output = frame(next)
-        if json.has(request,"action") { let command = plan(next,request); if !strings.equal(command,"") { output = output + kit.rs() + "T	" + command } }
+        for command in commands { output = output + kit.rs() + "T\t" + command }
+        if json.has(request,"action") || next.groups.len() != previous.groups.len() { save(next) }
         return Reply(next,output)
     })
     return result.isErr(done) ? Reply(previous,kit.failure(result.message(done))) : result.unwrap(done)
 }
-let current = fresh()
+let current = loaded()
 while true {
     let line = io.read_line(); if strings.equal(line,"") { break }
     let reply = handle(current,line)

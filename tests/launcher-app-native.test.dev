@@ -93,4 +93,31 @@ test.case("the native Task View lists the windows of the current desktop and sen
     test.expect(fs.existsSync(d + "/log") && strings.contains(fs.readFileSync(d + "/log","utf8"),"activate 12"),"the tracker received the command")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("the snap groups are validated, limited by the windows' minimum sizes, persisted, and pruned when a member closes",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let g = "\"geometry\":{\"x\":0,\"y\":0,\"width\":500,\"height\":600,\"output\":\"o1\",\"area\":{\"x\":0,\"y\":0,\"width\":1000,\"height\":800},\"region\":\"\",\"minWidth\":200,\"minHeight\":100}"
+    let setup = "{\"events\":[{\"type\":\"snap-capability\",\"supported\":true,\"canResize\":true},{\"type\":\"desktop-begin\",\"canCreate\":true,\"canRemove\":true},{\"type\":\"desktop\",\"id\":1,\"name\":\"W 1\",\"active\":true},{\"type\":\"desktop-done\"},{\"type\":\"window\",\"id\":11,\"title\":\"A\",\"appId\":\"a\",\"active\":true,\"minimized\":false,\"desktop\":1},{\"type\":\"window\",\"id\":12,\"title\":\"B\",\"appId\":\"b\",\"active\":false,\"minimized\":false,\"desktop\":1},{\"type\":\"geometry\",\"id\":11," + g + "},{\"type\":\"geometry\",\"id\":12," + g + "}]}\n"
+    let requests = setup + "{\"action\":\"arrange\",\"layout\":\"halves\",\"ids\":[11,12]}\n{\"action\":\"arrange\",\"layout\":\"halves\",\"ids\":[11,11]}\n{\"action\":\"arrange\",\"layout\":\"thirds\",\"ids\":[11,12]}\n{\"action\":\"resize-group\",\"id\":1,\"axis\":\"x\",\"index\":0,\"delta\":4000}\n{\"action\":\"resize-group\",\"id\":1,\"axis\":\"x\",\"index\":0,\"delta\":-9000}\n{\"action\":\"restore-group\",\"id\":1}\n"
+    let e = Map<str,str>(); e.set("DEV_OS_ROOT",t.root()); e.set("DEVOS_SNAP_STATE",d + "/snap.json")
+    let lines = strings.split(strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.launcher/task-service.dev"),e,requests,120000))),"\n")
+    test.expect(strings.contains(lines[1],"G	1	halves	11=devos-half-left,12=devos-half-right	5000	5000") && strings.contains(lines[1],"T	snap 11 devos-half-left") && strings.contains(lines[1],"T	sash 11,0,0,5000,10000 12,5000,0,5000,10000"),"arrange: " + lines[1])
+    test.expect(!strings.contains(lines[2],"T	") && !strings.contains(lines[3],"T	"),"the same window twice, or the wrong number of windows, is refused")
+    test.expect(strings.contains(lines[4],"G	1	halves	11=devos-half-left,12=devos-half-right	7900") && strings.contains(lines[5],"G	1	halves	11=devos-half-left,12=devos-half-right	2100"),"the divider stops where the 200 px minimum width (plus 10) allows: " + lines[4] + lines[5])
+    test.expect(strings.contains(lines[6],"T	desktop 1") && strings.contains(lines[6],"T	snap 12 devos-half-right") && strings.contains(lines[6],"T	sash 11,0,0,2100,10000 12,2100,0,7900,10000"),"restore uses the resized cuts: " + lines[6])
+    let again = strings.split(strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.launcher/task-service.dev"),e,"{\"events\":[{\"type\":\"window\",\"id\":11,\"title\":\"A\",\"appId\":\"a\",\"active\":true,\"minimized\":false,\"desktop\":1},{\"type\":\"window\",\"id\":12,\"title\":\"B\",\"appId\":\"b\",\"active\":false,\"minimized\":false,\"desktop\":1}]}\n{\"events\":[{\"type\":\"closed\",\"id\":12}]}\n",120000))),"\n")
+    test.expect(strings.contains(again[0],"G	1	halves") && !strings.contains(again[1],"G	"),"a new worker process still knows the group, and a closed member removes it: " + again[0] + again[1])
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native Snap window arranges two windows: the tracker is sent snap, activate and sash under real GTK",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let executable = t.root() + "/build/react-devlang/tests/snap-panel-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/system/org.devos.launcher/snap-panel-main.devx", executable), Map<str,str>(), "", 240000)
+    let e = Map<str,str>(); e.set("DEV_OS_ROOT",t.root()); e.set("NO_AT_BRIDGE","1"); e.set("PATH","/home/ondev/.local/bin:/usr/local/bin:/usr/bin:/bin")
+    e.set("DEVOS_SNAP_SMOKE","1"); e.set("DEVOS_SNAP_STATE",d + "/snap.json"); e.set("DEVOS_TASKVIEW_TRACKER",t.root() + "/tests/lib/fake-tracker.sh"); e.set("DEVOS_TRACKER_LOG",d + "/log")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","snap-native","xvfb-run","-a",executable),e,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Snap arranged two windows through the tracker"),"Snap: " + t.out(done) + " / " + t.err(done))
+    let log = fs.existsSync(d + "/log") ? fs.readFileSync(d + "/log","utf8") : ""
+    test.expect(strings.contains(log,"snap 11 devos-half-left") && strings.contains(log,"snap 12 devos-half-right") && strings.contains(log,"sash 11,0,0,5000,10000"),"the tracker received the commands: " + log)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 return t.finish()

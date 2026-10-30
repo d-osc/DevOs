@@ -1,0 +1,43 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn g_file_test(path:str,test:i32):i32
+
+# What the native Task View and Snap windows share: the window tracker (dev-os-window-tracker, or DEVOS_TASKVIEW_TRACKER in tests) started by the window,
+# its JSON event lines batched for task-service.dev, the worker's state frame, and the tracker commands the worker approves forwarded back.
+#   link.frame    the last state frame (see task-service.dev)      link.failure   the last error frame, or empty
+#   link.ask(r)   sends a request line to the worker after the pending events           link.flush()   sends the batched events (call it from the window's tick)
+struct Link { frame:ui.TextState, failure:ui.TextState, ask:fn(ui.Text):void, flush:fn():void }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn useLink(context:*ui.Context, sent:fn(ui.Text):void):Link {
+    let pipe = ui.useRef(context,0); let tracker = ui.useRef(context,0); let frame = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText())
+    let queued = ui.useText(context,ui.emptyText()); let count = ui.useRef(context,0)
+    let flush = fn() {
+        let events = queued.get(); if events.bytes.len() == 0 || pipe.get() == 0 { return }
+        channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(plain("{\"events\":["),events,plain("]}")))); queued.set(ui.emptyText()); count.set(0)
+    }
+    ui.useEffect(context,fn():fn():void { unsafe {
+        if !(*context).alive { return ui.noop }
+        let root = rc_env("DEV_OS_ROOT"); let runner = rc_env("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/system/org.devos.launcher/task-service.dev",root,fn(value:ui.Text) {
+            if value.bytes.len() > 0 && value.bytes[0] == 69 { failure.set(value); return }
+            failure.set(ui.emptyText()); frame.set(value)
+            for record in channel.split(value,30) {
+                let fields = channel.split(record,9)
+                if fields.len() == 2 && ui.equalText(fields[0],plain("T")) { channel.command(tracker.get(),fields[1]); sent(fields[1]) }
+            }
+        },fn(value:i64) { pipe.set(value) })
+    } },Vec<i64>())
+    ui.useEffect(context,fn():fn():void { unsafe {
+        if !(*context).alive { return ui.noop }
+        let root = rc_env("DEV_OS_ROOT"); let helper = rc_env("DEVOS_TASKVIEW_TRACKER")
+        if ui.text(helper).bytes.len() == 0 { helper = "${root}/build/native/dev-os-window-tracker"; if g_file_test(helper,8) == 0 { helper = "${root}/native/dev-os-window-tracker" }; if g_file_test(helper,8) == 0 { helper = "dev-os-window-tracker" } }
+        return channel.connect(context,helper,"",root,fn(line:ui.Text) {
+            if line.bytes.len() == 0 || line.bytes[0] != 123 || line.bytes.len() > 58000 { return }
+            if queued.get().bytes.len() + line.bytes.len() > 58000 || count.get() >= 512 { flush() }
+            let previous = queued.get(); queued.set(ui.concatText(Vec<ui.Text>(previous,previous.bytes.len() > 0 ? plain(",") : ui.emptyText(),line))); count.set(count.get() + 1)
+        },fn(value:i64) { tracker.set(value) })
+    } },Vec<i64>())
+    let ask = fn(request:ui.Text) { flush(); if pipe.get() != 0 { channel.command(pipe.get(),request) } }
+    return Link(frame,failure,ask,flush)
+}

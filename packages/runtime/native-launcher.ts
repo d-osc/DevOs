@@ -4,12 +4,12 @@ import {shellApplicationId} from './remote.js';
 import {optInNative, sendCommand, missingProcess} from './processes.js';
 
 /**
- * The native Launcher and Task View windows (dist/native/launcher and dist/native/task-view, DevLang) behind opt-in switches: DEVOS_NATIVE_LAUNCHER=1 or
- * ~/.config/devos/native-launcher, and the same with `task-view`. Each is one window per session on the D-Bus name org.devos.App.<name>.<shell id>.
+ * The native Launcher, Task View and Snap windows (dist/native/launcher, task-view and snap-panel, DevLang) behind opt-in switches: DEVOS_NATIVE_LAUNCHER=1 or
+ * ~/.config/devos/native-launcher, and the same with `task-view` and `snap-panel`. Each is one window per session on the D-Bus name org.devos.App.<name>.<shell id>.
  * Asking a running window for its own command closes it (a toggle), so a missing process means "open"; without the executable the JS code stays in use.
  */
 class NativeOverlay {
-    constructor(private name: 'launcher' | 'task-view') {}
+    constructor(private name: 'launcher' | 'task-view' | 'snap-panel') {}
     private executable() { return `${ROOT}/dist/native/${this.name}`; }
     private identity() { return shellApplicationId().replace('org.devos.Shell.', `org.devos.App.${this.name}.`); }
     enabled() { return optInNative(this.name) && GLib.file_test(this.executable(), GLib.FileTest.IS_EXECUTABLE); }
@@ -32,8 +32,10 @@ class NativeOverlay {
         });
     }
 }
-const launcher = new NativeOverlay('launcher'), taskView = new NativeOverlay('task-view');
+const launcher = new NativeOverlay('launcher'), taskView = new NativeOverlay('task-view'), snapPanel = new NativeOverlay('snap-panel');
 export const nativeLauncherEnabled = () => launcher.enabled();
 export const nativeLauncher = (args: string[], open: boolean, report: (message: string) => void) => launcher.send(args, open, report);
 export const nativeTaskViewEnabled = () => taskView.enabled();
 export const nativeTaskView = (args: string[], open: boolean, report: (message: string) => void) => taskView.send(args, open, report);
+export const nativeSnapEnabled = () => snapPanel.enabled();
+export const nativeSnap = (args: string[], open: boolean, report: (message: string) => void) => snapPanel.send(args, open, report);
