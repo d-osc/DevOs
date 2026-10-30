@@ -1,0 +1,204 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../../apps/org.devos.settings/native-kit.devx" as k
+use "../../apps/org.devos.settings/native-extensions-page.devx" as ext
+use "../../apps/org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+
+# Native Launcher window: search and launch the installed applications (list or grid), the Workspace shortcuts, and Settings, Lock, Restart, Sleep,
+# Shutdown and Log out. service.dev lists the desktop entries, launches, and talks to logind and the shell. This is an ordinary window; the
+# full-screen layer-shell overlay with its open/close motion, Task View and the snap panels of the JS launcher are not here yet.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn smoke():bool { return has(plain(environment("DEVOS_LAUNCHER_SMOKE"))) }
+fn lower(value:ui.Text):ui.Text { let out = Vec<u8>(); for b in value.bytes { out.push(b >= 65 && b <= 90 ? b + 32 : b) }; return ui.Text(out) }
+fn contains(text:ui.Text, needle:ui.Text):bool {
+    let n = needle.bytes; let h = text.bytes
+    if n.len() == 0 { return true }
+    if h.len() < n.len() { return false }
+    for i in 0..((h.len() - n.len() + 1) as i64) {
+        let same = true
+        for j in 0..(n.len() as i64) { if h[i + j] != n[j] { same = false; break } }
+        if same { return true }
+    }
+    return false
+}
+fn startsWith(text:ui.Text, prefix:ui.Text):bool {
+    if text.bytes.len() < prefix.bytes.len() { return false }
+    for i in 0..(prefix.bytes.len() as i64) { if text.bytes[i] != prefix.bytes[i] { return false } }
+    return true
+}
+fn words(value:ui.Text):Vec<ui.Text> { let out = Vec<ui.Text>(); for part in channel.split(value,32) { if has(part) { out.push(part) } }; return out }
+fn request(action:str, rest:Vec<ui.Text>):ui.Text {
+    let parts = Vec<ui.Text>(plain("{\"action\":\"" + action + "\""))
+    for r in rest { parts.push(r) }
+    parts.push(plain("}"))
+    return join(parts)
+}
+fn pair(key:str, value:ui.Text):ui.Text { return join(Vec<ui.Text>(plain(",\"" + key + "\":"),channel.quote(value))) }
+
+# An application record: id, name, description, icon, file, lower-case search text.
+struct Item { id:ui.Text, name:ui.Text, description:ui.Text, icon:ui.Text, file:ui.Text }
+fn itemOf(record:ui.Text):Item { let c = sp.cells(record); return Item(sp.cell(c,1),sp.cell(c,2),sp.cell(c,3),sp.cell(c,4),sp.cell(c,5)) }
+
+fn App(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"../../system/org.devos.launcher/service.dev","{\"action\":\"start\"}")
+    # asked: the kind of the last request (0 start or save, 1 launch, 2 power, 3 shell command)
+    let asked = ui.useRef(context,0); let query = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText())
+    let editing = ui.useState(context,0); let confirm = ui.useText(context,ui.emptyText()); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0)
+    let frame = l.frame.value
+    # --- the start frame ---
+    let menuWidth = 600; let iconSize = 28; let compact = false; let showWorkspace = true; let showDescriptions = true; let grid = false
+    let workspace = Vec<ui.Text>(); let apps = Vec<Item>(); let searchText = Vec<ui.Text>()
+    let canLock = false; let canRestart = false; let canShutdown = false
+    for record in sp.records(frame) {
+        let c = sp.cells(record)
+        if sp.kindOf(record,83) {
+            menuWidth = channel.integer(sp.cell(c,1)) as i64; iconSize = channel.integer(sp.cell(c,2)) as i64; compact = ext.flag(sp.cell(c,3)); showWorkspace = ext.flag(sp.cell(c,4))
+            showDescriptions = ext.flag(sp.cell(c,5)); grid = k.isText(sp.cell(c,7),"grid")
+        } else if sp.kindOf(record,87) { workspace.push(sp.cell(c,1)) }
+        else if sp.kindOf(record,80) { canLock = ext.flag(sp.cell(c,1)); canRestart = ext.flag(sp.cell(c,2)); canShutdown = ext.flag(sp.cell(c,3)) }
+        else if sp.kindOf(record,65) { apps.push(itemOf(record)); searchText.push(sp.cell(c,6)) }
+    }
+    # --- search: every word must be in the app's text; names that start with the query come first ---
+    let terms = words(lower(query.value)); let matches = Vec<i64>(); let first = Vec<i64>()
+    for i in 0..(apps.len() as i64) {
+        let all = true; for t in terms { if !contains(searchText[i],t) { all = false; break } }
+        if !all { continue }
+        if has(query.value) && startsWith(lower(apps[i].name),lower(query.value)) { first.push(i) } else { matches.push(i) }
+    }
+    let shownApps = Vec<i64>(); for i in first { shownApps.push(i) }; for i in matches { shownApps.push(i) }
+    let appKey = fn(app:Item):ui.Text { return join(Vec<ui.Text>(plain("app:"),app.id)) }
+    let pinned = fn(key:ui.Text):bool { for w in workspace { if ui.equalText(w,key) { return true } }; return false }
+    let saveWorkspace = fn(list:Vec<ui.Text>) {
+        let body = Vec<ui.Text>(); body.push(plain(",\"workspace\":["))
+        for i in 0..(list.len() as i64) { if i > 0 { body.push(plain(",")) }; body.push(channel.quote(list[i])) }
+        body.push(plain("]"))
+        asked.set(0); sp.send(l,request("save",body))
+    }
+    let pin = fn(key:ui.Text) {
+        let next = Vec<ui.Text>()
+        if pinned(key) { for w in workspace { if !ui.equalText(w,key) { next.push(w) } } } else { if workspace.len() >= 64 { message.set(plain("Workspace supports up to 64 apps. Remove one before adding another.")); return }; for w in workspace { next.push(w) }; next.push(key) }
+        saveWorkspace(next)
+    }
+    let launch = fn(app:Item) { asked.set(1); message.set(ui.emptyText()); sp.send(l,request("launch",Vec<ui.Text>(pair("id",app.id),pair("file",app.file)))) }
+    let command = fn(name:str) { asked.set(3); message.set(ui.emptyText()); sp.send(l,request("shell",Vec<ui.Text>(pair("command",plain(name))))) }
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Launcher","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"launcher")
+        }
+        # DEVOS_LAUNCHER_SMOKE=1: search for the first word of DEVOS_LAUNCHER_QUERY, launch the first result, then switch to the grid view.
+        ui.onTick(context,200,fn() {
+            ticks.set(ticks.get() + 1)
+            if smoke() && ticks.get() > 150 { print("FAIL native Launcher timed out at step ${step.get()}"); ui.close(context) }
+        })
+        ui.onCommand(context,"launcher.",fn(line:ui.Text) { ui.close(context) })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() == 0 { return ui.noop }
+        if l.failure.value.bytes.len() > 0 { message.set(l.failure.value); return ui.noop }
+        if asked.get() == 1 || asked.get() == 2 || asked.get() == 3 {
+            if asked.get() == 1 { message.set(field(f,1)); if smoke() && step.get() == 1 { step.set(2); ui.click(context,"launcher-view-grid") } }
+            return ui.noop
+        }
+        if smoke() && step.get() == 0 && apps.len() > 0 { step.set(1); ui.change(context,"launcher-search",environment("DEVOS_LAUNCHER_QUERY")) }
+        else if smoke() && step.get() == 2 && grid { print("PASS native Launcher listed, searched, launched and switched view"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        if smoke() && step.get() == 1 && shownApps.len() == 1 { ui.click(context,"launcher-app-0") }
+        return ui.noop
+    },Vec<i64>(shownApps.len() as i64))
+    if frame.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let width = menuWidth as i32
+    let search = ui.named("launcher-search"); search.width = width; search.placeholder = plain("Search apps by name or keyword…")
+    let close = ui.named("launcher-close")
+    let header = ext.row(12,Vec<ui.Node>(ext.expand(ext.column(2,Vec<ui.Node>(k.note("DEV OS","settings-description"),k.note("Applications","section-heading")))),ui.Button(close,"Close",fn() { ui.close(context) })))
+    let nodes = Vec<ui.Node>(header,ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value); message.set(ui.emptyText()) }))
+    # --- workspace shortcuts ---
+    if showWorkspace {
+        let edit = ui.named("launcher-workspace-edit")
+        let shortcuts = Vec<ui.Node>()
+        for key in workspace {
+            let builtin = startsWith(key,plain("builtin:")); let name = builtin ? sp.cell(channel.split(key,58),1) : ui.emptyText()
+            let target = Item(ui.emptyText(),plain("Unavailable app"),ui.emptyText(),ui.emptyText(),ui.emptyText()); let found = false
+            for a in apps { if ui.equalText(appKey(a),key) { target = a; found = true } }
+            let title = k.isText(name,"terminal") ? plain("Terminal") : k.isText(name,"files") ? plain("Files") : k.isText(name,"editor") ? plain("Editor") : target.name
+            let identifier = ui.concatText(Vec<ui.Text>(plain("launcher-workspace-"),key)); let options = ui.props(); options.id = identifier; options.sensitive = builtin || found
+            let which = k.isText(name,"files") ? "files" : k.isText(name,"editor") ? "editor" : "terminal"
+            shortcuts.push(ui.TextButton(options,title,fn() { if builtin { command(which) } else { launch(target) } }))
+            if editing.value != 0 { let removal = ui.props(); removal.id = ui.concatText(Vec<ui.Text>(plain("launcher-workspace-remove-"),key)); shortcuts.push(ui.Button(removal,"×",fn() { pin(key) })) }
+        }
+        if workspace.len() == 0 { shortcuts.push(k.note("No shortcuts yet. Choose Edit workspace, then + beside an app to pin it.","launcher-app-description")) }
+        nodes.push(ext.row(8,Vec<ui.Node>(ext.expand(k.note("WORKSPACE","settings-description")),ui.Button(edit,editing.value != 0 ? "Done" : "Edit workspace",fn() { editing.set(editing.value != 0 ? 0 : 1) }))))
+        nodes.push(ext.row(8,shortcuts))
+    }
+    # --- applications ---
+    let list = ui.named("launcher-view-list"); let tiles = ui.named("launcher-view-grid")
+    let count = shownApps.len()
+    nodes.push(ext.row(8,Vec<ui.Node>(ext.expand(k.note(has(query.value) ? "SEARCH RESULTS" : "ALL APPLICATIONS","settings-description")),k.note("${count} ${count == 1 ? "app" : "apps"}","settings-description"),
+        ui.Button(list,"List",fn() { asked.set(0); sp.send(l,request("save",Vec<ui.Text>(pair("appView",plain("list"))))) }),
+        ui.Button(tiles,"Grid",fn() { asked.set(0); sp.send(l,request("save",Vec<ui.Text>(pair("appView",plain("grid"))))) }))))
+    let cards = Vec<ui.Node>()
+    let perLine: usize = 4
+    let line = Vec<ui.Node>()
+    for n in 0..(shownApps.len() as i64) {
+        let app = apps[shownApps[n]]
+        let icon = ui.props(); icon.iconSize = iconSize as i32
+        let picture = ui.element(11,icon,has(app.icon) ? app.icon : plain("application-x-executable"),Vec<ui.Node>())
+        let titles = Vec<ui.Node>(k.caption(app.name,"launcher-app-name")); if showDescriptions && has(app.description) { titles.push(k.caption(app.description,"launcher-app-description")) }
+        let inside = Vec<ui.Node>(ext.expand(ext.column(compact ? 1 : 3,titles)))
+        if editing.value != 0 { let pinOptions = ui.named("launcher-pin-${n}"); inside.push(ui.Button(pinOptions,pinned(appKey(app)) ? "−" : "+",fn() { pin(appKey(app)) })) }
+        let content = ext.row(12,Vec<ui.Node>(picture,ext.expand(ext.row(8,inside))))
+        let options = ui.named("launcher-app-${n}")
+        let button = ui.WidgetButton(options,content,fn() { launch(app) })
+        if grid { line.push(button); if line.len() >= perLine { cards.push(ext.row(8,line)); line = Vec<ui.Node>() } } else { cards.push(button) }
+    }
+    if grid && line.len() > 0 { cards.push(ext.row(8,line)) }
+    if shownApps.len() == 0 { cards.push(k.note("No applications found. Try another name or keyword.","launcher-app-description")) }
+    let scroller = ui.props(); scroller.expand = true
+    nodes.push(ui.Scroll(scroller,ext.column(compact ? 2 : 6,cards)))
+    # --- confirmations, message, footer ---
+    if has(confirm.value) {
+        let isLogout = k.isText(confirm.value,"logout")
+        let sentence = isLogout ? plain("Log out? Save your work first.") : k.isText(confirm.value,"sleep") ? plain("Put this device to sleep?") : join(Vec<ui.Text>(plain(k.isText(confirm.value,"restart") ? "Restart" : "Shut down"),plain(" this device? Save your work before continuing.")))
+        let cancel = ui.named("launcher-confirm-cancel"); let yes = ui.named("launcher-confirm")
+        nodes.push(ext.row(8,Vec<ui.Node>(ext.expand(k.caption(sentence,"launcher-message")),ui.Button(cancel,"Cancel",fn() { confirm.set(ui.emptyText()) }),
+            ui.Button(yes,"Confirm",fn() {
+                let what = confirm.get(); confirm.set(ui.emptyText())
+                if k.isText(what,"logout") { command("logout") } else { asked.set(2); sp.send(l,request("request",Vec<ui.Text>(pair("what",what)))) }
+            }))))
+    }
+    nodes.push(k.caption(has(message.value) ? message.value : plain("Type to search · click an app to open it"),has(message.value) ? "launcher-message" : "launcher-hint"))
+    let settings = ui.named("launcher-settings"); let lock = ui.named("launcher-lock"); lock.sensitive = true
+    let restart = ui.named("launcher-power-restart"); restart.sensitive = canRestart
+    let sleep = ui.named("launcher-power-sleep"); sleep.sensitive = canLock
+    let shutdown = ui.named("launcher-power-shutdown"); shutdown.sensitive = canShutdown
+    let logout = ui.named("launcher-logout")
+    nodes.push(ext.row(8,Vec<ui.Node>(ui.Button(settings,"Settings",fn() { command("settings") }),ui.Button(lock,"Lock",fn() { command("lock") }),
+        ext.expand(ext.row(8,Vec<ui.Node>())),
+        ui.Button(restart,"Restart",fn() { confirm.set(plain("restart")) }),ui.Button(sleep,"Sleep",fn() { confirm.set(plain("sleep")) }),
+        ui.Button(shutdown,"Shutdown",fn() { confirm.set(plain("shutdown")) }),ui.Button(logout,"Log out",fn() { confirm.set(plain("logout")) }))))
+    let body = ui.props(); body.spacing = 12; body.margin = 20
+    return ui.Box(body,nodes)
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.launcher.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Launcher",760,780,App) ? 0 : 1
+}

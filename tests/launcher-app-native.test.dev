@@ -1,0 +1,65 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The native Launcher: its worker lists desktop entries with the same visibility rules as GIO and writes the preferences, and its window is run
+# under Xvfb against a private set of entries (searching, launching and the view switch). Nothing is launched and no shell command is sent (DEVOS_LAUNCHER_TEST).
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn rig():str {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    fs.mkdirSync(d + "/u",false); fs.mkdirSync(d + "/u/applications",false); fs.mkdirSync(d + "/s",false); fs.mkdirSync(d + "/s/applications",false); fs.mkdirSync(d + "/prefs",false)
+    fs.writeFileSync(d + "/s/applications/zed.desktop","[Desktop Entry]\nType=Application\nName=Zed Editor\nName[th]=ซี\nComment=Edit text\nExec=zed %F\nIcon=zed\nKeywords=code;ide;\n")
+    fs.writeFileSync(d + "/s/applications/alpha.desktop","[Desktop Entry]\nType=Application\nName=Alpha\nExec=alpha\n")
+    fs.writeFileSync(d + "/s/applications/hidden.desktop","[Desktop Entry]\nType=Application\nName=Hidden one\nExec=h\nNoDisplay=true\n")
+    fs.writeFileSync(d + "/s/applications/mask.desktop","[Desktop Entry]\nType=Application\nName=Masked\nExec=m\n")
+    fs.writeFileSync(d + "/u/applications/mask.desktop","[Desktop Entry]\nType=Application\nName=Masked\nExec=m\nHidden=true\n")
+    fs.writeFileSync(d + "/s/applications/tool.desktop","[Desktop Entry]\nType=Application\nName=Needs a tool\nExec=x\nTryExec=no-such-tool-xyz\n")
+    return d
+}
+fn env(d:str):Map<str,str> {
+    let e = Map<str,str>(); e.set("DEV_OS_ROOT",t.root()); e.set("DEVOS_LAUNCHER_TEST","1"); e.set("DEVOS_LAUNCHER_DATA_DIRS",d + "/u:" + d + "/s"); e.set("DEVOS_PREFERENCES_DIR",d + "/prefs")
+    e.set("PATH","/home/ondev/.local/bin:/usr/local/bin:/usr/bin:/bin"); e.set("XDG_CURRENT_DESKTOP","DevOS")
+    return e
+}
+fn worker(d:str, input:str):Vec<str> {
+    let ran = tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.launcher/service.dev"),env(d),input,120000)
+    return strings.split(strings.trim(t.out(ran)),"\n")
+}
+fn apps(frame:str):Vec<str> {
+    let names = Vec<str>()
+    for record in strings.split(frame,rs()) { if strings.startsWith(record,"A\t") { names.push(strings.split(record,"\t")[2]) } }
+    return names
+}
+test.case("the worker lists the entries GIO would show, sorted by name, with the user's hidden entry masking the system one",fn() {
+    let d = rig()
+    let lines = worker(d,"{\"action\":\"start\"}\n")
+    let shown = apps(lines[0])
+    test.expect(shown.len() == 2 && strings.equal(shown[0],"Alpha") && strings.equal(shown[1],"Zed Editor"),"shown apps: " + strings.join(shown,","))
+    test.expect(strings.contains(lines[0],"S\t600\t28\t0\t1\t1\t0\tlist") && strings.contains(lines[0],"W\tbuiltin:terminal"),"defaults: " + lines[0])
+    test.expect(strings.contains(lines[0],"code ide"),"keywords are searchable")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("saving writes the app view and the workspace and keeps every other value",fn() {
+    let d = rig()
+    let lines = worker(d,"{\"action\":\"save\",\"appView\":\"grid\",\"workspace\":[\"builtin:files\",\"app:zed.desktop\"]}\n{\"action\":\"shell\",\"command\":\"rm\"}\n{\"action\":\"launch\",\"id\":\"\",\"file\":\"\"}\n{\"action\":\"request\",\"what\":\"explode\"}\n")
+    test.expect(strings.contains(lines[0],"\tgrid") && strings.contains(lines[0],"W\tbuiltin:files" + rs() + "W\tapp:zed.desktop"),"saved: " + lines[0])
+    test.expect(strings.contains(fs.readFileSync(d + "/prefs/org.devos.launcher.json","utf8"),"\"menuWidth\":600"),"other values kept")
+    test.expect(strings.equal(lines[1],"E\tUnsupported command"),"only known shell commands: " + lines[1])
+    test.expect(strings.equal(lines[2],"E\tChoose an application."),"launch needs an app: " + lines[2])
+    test.expect(strings.startsWith(lines[3],"E\t"),"an unknown power action is refused: " + lines[3])
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native Launcher window searches, launches the result and switches to the grid under real GTK",fn() {
+    let d = rig()
+    let executable = t.root() + "/build/react-devlang/tests/launcher-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/system/org.devos.launcher/native-main.devx", executable), Map<str,str>(), "", 240000)
+    let e = env(d); e.set("DEVOS_LAUNCHER_SMOKE","1"); e.set("DEVOS_LAUNCHER_QUERY","zed"); e.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","launcher-native","xvfb-run","-a",executable),e,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Launcher listed, searched, launched and switched view"),"Launcher: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.contains(fs.readFileSync(d + "/prefs/org.devos.launcher.json","utf8"),"\"appView\":\"grid\""),"the view choice is stored")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

@@ -1,0 +1,186 @@
+#!/usr/bin/env d
+# Data worker of the native Launcher window. One JSON request per line on stdin; every answer is one frame (tab-separated cells, records separated
+# by ASCII 30) or the error frame "E<TAB>message":
+#   {"action":"start"}                                 -> the start frame (below)
+#   {"action":"save","appView":"list|grid","workspace":["builtin:terminal","app:x.desktop"]} -> the start frame after the preferences are written
+#   {"action":"launch","id":"x.desktop","file":"/usr/share/applications/x.desktop"} -> V<TAB>message
+#   {"action":"request","what":"sleep|restart|shutdown"} -> V<TAB>what (logind; sleep locks the session first)
+#   {"action":"shell","command":"terminal|files|editor|lock|logout|settings"} -> V<TAB>
+# Records of the start frame:
+#   S<TAB>menuWidth<TAB>iconSize<TAB>compactRows<TAB>showWorkspace<TAB>showDescriptions<TAB>rememberSearch<TAB>appView
+#   W<TAB>key                                   one per workspace entry
+#   P<TAB>sleep<TAB>restart<TAB>shutdown        1 when the action is available
+#   A<TAB>id<TAB>name<TAB>description<TAB>icon<TAB>file<TAB>search text (lower case: name, description, id, keywords)
+# The application list is the desktop entries of the user and system applications folders that GIO would show (the same rules as
+# Gio.AppInfo.should_show: Type, NoDisplay, Hidden, OnlyShowIn, NotShowIn, TryExec), sorted by name. With DEVOS_LAUNCHER_TEST=1,
+# DEVOS_LAUNCHER_DATA_DIRS replaces the data folders and DEVOS_PREFERENCES_DIR the preferences folder, and shell commands are not sent.
+use "std/io"
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/child_process"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/dbus.dev" as bus
+use "../../../lib/ext-prefs.dev" as prefs
+use "../../../lib/shell-command.dev" as shell
+use "../../../lib/worker-kit.dev" as kit
+use "../org.devos.panel/power-actions.dev" as power
+use "./model.dev" as model
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn testing():bool { return !strings.equal(hw.env("DEVOS_LAUNCHER_TEST"),"") }
+fn root():str { return hw.envOr("DEV_OS_ROOT",".") }
+fn manifest():json.Value { return json.parse(fs.readFileSync(root() + "/src/system/org.devos.launcher/extension.json","utf8")) }
+fn preferencesDirectory():str { return testing() && !strings.equal(hw.env("DEVOS_PREFERENCES_DIR"),"") ? hw.env("DEVOS_PREFERENCES_DIR") : hw.configHome() + "/dev-os/extensions" }
+
+# --- desktop entries ---------------------------------------------------------------------------------------------------------------
+fn dataDirectories():Vec<str> {
+    let out = Vec<str>()
+    if testing() && !strings.equal(hw.env("DEVOS_LAUNCHER_DATA_DIRS"),"") {
+        for d in strings.split(hw.env("DEVOS_LAUNCHER_DATA_DIRS"),":") { if !strings.equal(d,"") { out.push(d + "/applications") } }
+        return out
+    }
+    out.push(hw.envOr("XDG_DATA_HOME",hw.home() + "/.local/share") + "/applications")
+    for d in strings.split(hw.envOr("XDG_DATA_DIRS","/usr/local/share:/usr/share"),":") { if !strings.equal(d,"") { out.push(d + "/applications") } }
+    return out
+}
+# The [Desktop Entry] group as key -> value; localized keys (Name[th]) are ignored and the first occurrence of a key wins.
+fn parse(path:str):Map<str,str> {
+    let out = Map<str,str>(); let inEntry = false
+    for line in strings.split(fs.readFileSync(path,"utf8"),"\n") {
+        let t = strings.trim(line)
+        if strings.startsWith(t,"[") { inEntry = strings.equal(t,"[Desktop Entry]"); continue }
+        if !inEntry || strings.startsWith(t,"#") || !strings.contains(t,"=") { continue }
+        let at = strings.indexOf(t,"=")
+        let key = strings.trim(strings.substring(t,0,at))
+        if strings.contains(key,"[") || out.contains(key) { continue }
+        out.set(key,strings.trim(strings.substring(t,at + 1,strings.charLength(t))))
+    }
+    return out
+}
+fn field(entry:Map<str,str>, key:str):str { return entry.contains(key) ? entry.get(key) : "" }
+fn listed(value:str, item:str):bool { for part in strings.split(value,";") { if strings.equal(strings.trim(part),item) { return true } }; return false }
+fn anyListed(value:str, items:Vec<str>):bool { for item in items { if listed(value,item) { return true } }; return false }
+fn desktops():Vec<str> { return strings.split(hw.env("XDG_CURRENT_DESKTOP"),":") }
+fn shown(entry:Map<str,str>):bool {
+    let kind = field(entry,"Type"); if !strings.equal(kind,"") && !strings.equal(kind,"Application") { return false }
+    if strings.equal(field(entry,"Name"),"") || strings.equal(field(entry,"Exec"),"") { return false }
+    if strings.equal(field(entry,"NoDisplay"),"true") || strings.equal(field(entry,"Hidden"),"true") { return false }
+    let only = field(entry,"OnlyShowIn"); if !strings.equal(only,"") && !anyListed(only,desktops()) { return false }
+    let hiddenIn = field(entry,"NotShowIn"); if !strings.equal(hiddenIn,"") && anyListed(hiddenIn,desktops()) { return false }
+    let tryExec = field(entry,"TryExec")
+    if !strings.equal(tryExec,"") { return strings.startsWith(tryExec,"/") ? fs.existsSync(tryExec) : !strings.equal(hw.which(tryExec),"") }
+    return true
+}
+# One "A" record per shown entry, sorted by name. The first folder that has an id wins, even when its entry is hidden (a user entry can hide a system one).
+fn applications():Vec<str> {
+    let seen = Vec<str>(); let rows = Vec<str>()
+    for directory in dataDirectories() {
+        if !fs.is_dir(directory) { continue }
+        for name in fs.readdirSync(directory) {
+            if !strings.endsWith(name,".desktop") { continue }
+            let known = false; for s in seen { if strings.equal(s,name) { known = true } }
+            if known { continue }
+            seen.push(name)
+            let path = directory + "/" + name
+            let read = result.attempt(fn():Map<str,str> { return parse(path) })
+            if result.isErr(read) { continue }
+            let entry = result.unwrap(read)
+            if !shown(entry) { continue }
+            let title = kit.clean(field(entry,"Name")); let comment = kit.clean(field(entry,"Comment"))
+            let search = strings.toLowerCase(kit.clean(title + " " + comment + " " + name + " " + strings.replaceAll(field(entry,"Keywords"),";"," ")))
+            rows.push(strings.toLowerCase(title) + "\t" + "A\t" + kit.clean(name) + "\t" + title + "\t" + comment + "\t" + kit.clean(field(entry,"Icon")) + "\t" + kit.clean(path) + "\t" + search)
+        }
+    }
+    rows.sort()
+    let out = Vec<str>()
+    for row in rows { out.push(strings.substring(row,strings.indexOf(row,"\t") + 1,strings.charLength(row))) }
+    return out
+}
+
+# --- power -------------------------------------------------------------------------------------------------------------------------
+fn login(method:str, parameters:str):json.Value {
+    let connection = bus.open()
+    let reply = result.attempt(fn():json.Value { return bus.callService(connection,"org.freedesktop.login1","/org/freedesktop/login1","org.freedesktop.login1.Manager",method,parameters,60000) })
+    bus.close(connection)
+    return result.unwrap(reply)
+}
+fn status(action:str):str {
+    let reply = result.attempt(fn():str { return json.string(json.at(login("Can" + power.method(action),"()"),0)) })
+    return result.isOk(reply) ? result.unwrap(reply) : "no"
+}
+fn lockAvailable():bool { return !strings.equal(hw.which("dev-os-shell"),"") && !strings.equal(hw.which("swaylock"),"") }
+fn flag(value:bool):str { return value ? "1" : "0" }
+fn capabilities():str { return "P\t" + flag(lockAvailable()) + "\t" + flag(power.supported(status("restart"))) + "\t" + flag(power.supported(status("shutdown"))) }
+fn requestPower(what:str):str {
+    hw.stderr("devos-power: " + what + " requested")
+    if strings.equal(what,"sleep") {
+        let done = child_process.execFileSync("dev-os-shell",Vec<str>("lock"),child_process.Options("",60000,1048576,Vec<u8>()))
+        if !done.success { return kit.failure("Could not lock the session.") }
+    } else if strings.equal(what,"restart") || strings.equal(what,"shutdown") { login(power.method(what),"(true,)") }
+    else { return kit.failure("Unsupported power action") }
+    hw.stderr("devos-power: " + what + " accepted")
+    return "V\t" + what
+}
+
+# --- settings and the start frame --------------------------------------------------------------------------------------------------
+fn stored():json.Value { return hw.jget(prefs.read(preferencesDirectory(),"org.devos.launcher",manifest()),"values") }
+fn start():str {
+    let v = stored(); let o = model.options(v); let c = model.customization(v)
+    let out = "S\t${o.menuWidth}\t${o.iconSize}\t" + flag(o.compactRows) + "\t" + flag(o.showWorkspace) + "\t" + flag(o.showDescriptions) + "\t" + flag(o.rememberSearch) + "\t" + c.appView
+    for key in c.workspaceApps { out = out + kit.rs() + "W\t" + kit.clean(key) }
+    out = out + kit.rs() + capabilities()
+    for row in applications() { out = out + kit.rs() + row }
+    return out
+}
+# Writes the app view and the workspace list; every other stored value is carried over unchanged.
+fn save(request:json.Value):str {
+    let all = stored()
+    let view = text(request,"appView")
+    if !strings.equal(view,"") { all = json.set(all,"appView",view) }
+    if json.has(request,"workspace") { all = json.set(all,"workspaceApps",json.stringify(json.get(request,"workspace"))) }
+    let reason = prefs.write(preferencesDirectory(),"org.devos.launcher",manifest(),true,all)
+    return strings.equal(reason,"") ? start() : kit.failure(reason)
+}
+
+fn launch(id:str, file:str):str {
+    if strings.equal(id,"") || strings.equal(file,"") || strings.contains(file,"..") { return kit.failure("Choose an application.") }
+    if testing() { return "V	Opened " + kit.clean(id) }
+    let helper = root() + "/bin/dev-os-app-launch"
+    let ran = fs.existsSync(helper) ? hw.run(Vec<str>("d",helper,"--",id,file),30000) : hw.run(Vec<str>("gio","launch",file),30000)
+    if ran.code != 0 { return kit.failure(strings.equal(strings.trim(ran.out),"") ? "Application launch failed" : strings.trim(ran.out)) }
+    return "V\tOpened " + kit.clean(id)
+}
+fn shellCommand(command:str):str {
+    let ok = false
+    for a in Vec<str>("terminal","files","editor","lock","logout","settings") { if strings.equal(a,command) { ok = true } }
+    if !ok { return kit.failure("Unsupported command") }
+    if testing() { return "V\t" }
+    let sent = shell.remote(Vec<str>(command),hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),"/")
+    return sent == 0 ? "V\t" : kit.failure("Could not " + command + ".")
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action")
+    let done = result.attempt(fn():str {
+        if strings.equal(action,"start") { return start() }
+        if strings.equal(action,"save") { return save(r) }
+        if strings.equal(action,"launch") { return launch(text(r,"id"),text(r,"file")) }
+        if strings.equal(action,"request") { return requestPower(text(r,"what")) }
+        if strings.equal(action,"shell") { return shellCommand(text(r,"command")) }
+        return kit.failure("Unsupported action")
+    })
+    return result.isErr(done) ? kit.failure(result.message(done)) : result.unwrap(done)
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()
