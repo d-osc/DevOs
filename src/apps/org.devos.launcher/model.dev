@@ -1,0 +1,104 @@
+# Launcher data rules in DevLang (options.ts, customization.ts and userPackageCommand of uninstall.ts, with the same behavior).
+# Pure functions plus one file check, so the native launcher and its tests can use them without GTK:
+#   options(values)                 -> LauncherOptions with every number clamped
+#   customization(values)           -> app view and the validated workspace app list
+#   userPackageCommand(id, dir)     -> the package command of a user-installed app, or "" (base apps, symlinks and anything else never qualify)
+#   infoLines(...)                  -> the lines of the Info menu item
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+
+struct LauncherOptions { menuWidth: i64, iconSize: i64, compactRows: bool, showWorkspace: bool, showDescriptions: bool, rememberSearch: bool }
+fn clamp(value:i64, low:i64, high:i64):i64 { return value < low ? low : value > high ? high : value }
+fn numberOr(values:json.Value, key:str, low:i64, high:i64, fallback:i64):i64 {
+    if !json.has(values,key) || !strings.equal(json.kind(json.get(values,key)),"number") { return fallback }
+    # Math.round semantics on the clamped value (the bounds are positive, so truncating x + 0.5 rounds half up).
+    let x = json.float(json.get(values,key))
+    if x <= (low as f64) { return low }
+    if x >= (high as f64) { return high }
+    return clamp((x + 0.5) as i64,low,high)
+}
+fn flag(values:json.Value, key:str, fallback:bool):bool {
+    if !json.has(values,key) || !strings.equal(json.kind(json.get(values,key)),"bool") { return fallback }
+    return json.bool(json.get(values,key))
+}
+fn options(values:json.Value):LauncherOptions {
+    return LauncherOptions(numberOr(values,"menuWidth",420,900,600),numberOr(values,"iconSize",20,40,28),flag(values,"compactRows",false),
+        json.has(values,"showWorkspace") ? flag(values,"showWorkspace",true) : true,json.has(values,"showDescriptions") ? flag(values,"showDescriptions",true) : true,flag(values,"rememberSearch",false))
+}
+
+struct Customization { appView: str, workspaceApps: Vec<str> }
+fn defaultWorkspaceApps():Vec<str> { return Vec<str>("builtin:terminal","builtin:files","builtin:editor") }
+# workspaceApps arrives as a JSON string (a stored preference). Anything that is not a list of at most 64 non-empty strings of at most 512
+# characters falls back to the defaults; duplicates are dropped and the first occurrence wins.
+fn customization(values:json.Value):Customization {
+    let view = json.has(values,"appView") && strings.equal(json.kind(json.get(values,"appView")),"string") && strings.equal(json.string(json.get(values,"appView")),"grid") ? "grid" : "list"
+    let apps = defaultWorkspaceApps()
+    if json.has(values,"workspaceApps") && strings.equal(json.kind(json.get(values,"workspaceApps")),"string") {
+        let parsed = result.attempt(fn():json.Value { return json.parse(json.string(json.get(values,"workspaceApps"))) })
+        if !result.isErr(parsed) && strings.equal(json.kind(result.unwrap(parsed)),"array") {
+            let list = result.unwrap(parsed); let seen = Vec<str>(); let ok = json.len(list) <= 64
+            for i in 0..(json.len(list) as i64) {
+                if !ok { break }
+                let item = json.at(list,i)
+                if !strings.equal(json.kind(item),"string") || strings.charLength(json.string(item)) == 0 || strings.charLength(json.string(item)) > 512 { ok = false; break }
+                let known = false
+                for s in seen { if strings.equal(s,json.string(item)) { known = true } }
+                if !known { seen.push(json.string(item)) }
+            }
+            if ok { apps = seen }
+        }
+    }
+    return Customization(view,apps)
+}
+
+fn nameChars():str { return "abcdefghijklmnopqrstuvwxyz0123456789_-" }
+# dev-<command>.desktop where <command> is [a-z0-9][a-z0-9_-]{0,63}; "" when the id has another shape.
+fn commandOf(id:str):str {
+    if !strings.startsWith(id,"dev-") || !strings.endsWith(id,".desktop") || strings.startsWith(id,"dev-os-") { return "" }
+    let name = strings.substring(id,4,strings.charLength(id) - 8)
+    let length = strings.charLength(name) as i64
+    if length < 1 || length > 64 { return "" }
+    for i in 0..length {
+        let c = strings.substring(name,i,i + 1)
+        if !strings.contains(nameChars(),c) { return "" }
+        if i == 0 && (strings.equal(c,"_") || strings.equal(c,"-")) { return "" }
+    }
+    return name
+}
+# The command after "--root <store> run " in an Exec line, or "".
+fn runCommand(exec:str):str {
+    let marker = " --root "
+    let at = strings.indexOf(exec,marker)
+    if at < 0 { return "" }
+    let rest = strings.substring(exec,at + strings.charLength(marker),strings.charLength(exec))
+    let parts = strings.split(rest," ")
+    if parts.len() < 3 || strings.equal(parts[0],"") || !strings.equal(parts[1],"run") { return "" }
+    return parts[2]
+}
+fn execOf(path:str):str {
+    let inEntry = false
+    for line in strings.split(fs.readFileSync(path,"utf8"),"\n") {
+        let text = strings.trim(line)
+        if strings.startsWith(text,"[") { inEntry = strings.equal(text,"[Desktop Entry]"); continue }
+        if inEntry && strings.startsWith(text,"Exec=") { return strings.substring(text,5,strings.charLength(text)) }
+    }
+    return ""
+}
+fn userPackageCommand(id:str, directory:str):str {
+    let command = commandOf(id)
+    if strings.equal(command,"") { return "" }
+    let path = directory + "/" + id
+    if !fs.is_file(path) { return "" }
+    # A symbolic link is never a package launcher (fs.is_file follows it).
+    if hw.run(Vec<str>("test","-L",path),5000).code == 0 { return "" }
+    return strings.equal(runCommand(execOf(path)),command) ? command : ""
+}
+
+fn infoLines(name:str, id:str, description:str, command:str, file:str, packageCommand:str):Vec<str> {
+    return Vec<str>(name,strings.equal(description,"") ? "No description provided." : description,"ID: " + (strings.equal(id,"") ? "unknown" : id),
+        "Source: " + (strings.equal(packageCommand,"") ? "Base system app; cannot be uninstalled here" : "Installed for your user from a package (command " + packageCommand + "); can be uninstalled"),
+        "Launcher file: " + (strings.equal(file,"") ? "unknown" : file),"Command: " + (strings.equal(command,"") ? "unknown" : command))
+}

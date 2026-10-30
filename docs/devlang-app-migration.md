@@ -403,3 +403,9 @@ Verified: `tests/proxy-native.test.dev` (4/4) against an isolated keyfile GSetti
 Not ported: pairing a new device. It needs a BlueZ agent (`org.bluez.Agent1`) exported on the session bus, which needs a C bridge in `gtk.c`; the Pair… button is shown disabled and the page says so. The JS page keeps pairing, so `bluetooth-agent.ts`, `bluetooth-discovery.ts` and the other Bluetooth TS files stay.
 
 Verified: `tests/bluetooth-native.test.dev` (4/4) with a fake `dev-os-devices-linux` (frames, forwarded payloads, rejected requests, helper errors, malformed answers) and a real GTK smoke that connects a paired device. Not verified: real BlueZ hardware, a real scan, WSL passthrough, pixel parity. The JS Settings route stays the production route.
+
+## Launcher: data rules in DevLang (first step)
+
+`src/apps/org.devos.launcher/model.dev` holds the pure rules of the launcher: option clamping (`options.ts`), the workspace app list and app view (`customization.ts`), which entries may offer Uninstall (`userPackageCommand` of `uninstall.ts`: only `dev-<command>.desktop` files in the user directory, regular files and not symlinks, whose Exec is `… --root <store> run <command>` for the same command; `dev-os-*` base apps never qualify) and the lines of the Info menu item. `tests/launcher-model.test.dev` (4/4) mirrors the cases of `tests/launcher-uninstall.test.ts`.
+
+Not ported: the launcher window itself (`view.tsx`, `task-view.tsx`, `snap-view.tsx`, `snap-sashes.ts`, `overlay-motion.ts`, `index.ts`, `settings-view.tsx`), which depends on the shell overlay and the window tracker and needs a real Wayland session to verify. No TS file was deleted, because the JS launcher is still the production route and `tests/launcher-*.test.ts` import the TS modules.

@@ -1,0 +1,60 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.launcher/model.dev" as m
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn entry(directory:str, name:str, exec:str) { fs.writeFileSync(directory + "/" + name,"[Desktop Entry]\nType=Application\nName=X\nExec=" + exec + "\n") }
+
+test.case("launcher options clamp every number and keep the defaults for anything else",fn() {
+    let d = m.options(json.parse("{}"))
+    test.expect(d.menuWidth == 600 && d.iconSize == 28 && !d.compactRows && d.showWorkspace && d.showDescriptions && !d.rememberSearch,"Defaults wrong")
+    let low = m.options(json.parse("{\"menuWidth\":10,\"iconSize\":1,\"compactRows\":true,\"showWorkspace\":false,\"showDescriptions\":false,\"rememberSearch\":true}"))
+    test.expect(low.menuWidth == 420 && low.iconSize == 20 && low.compactRows && !low.showWorkspace && !low.showDescriptions && low.rememberSearch,"Low clamp or flags wrong")
+    let high = m.options(json.parse("{\"menuWidth\":5000,\"iconSize\":99.6}"))
+    test.expect(high.menuWidth == 900 && high.iconSize == 40,"High clamp wrong")
+    let odd = m.options(json.parse("{\"menuWidth\":\"wide\",\"compactRows\":\"yes\",\"showWorkspace\":0,\"rememberSearch\":1}"))
+    test.expect(odd.menuWidth == 600 && !odd.compactRows && odd.showWorkspace && !odd.rememberSearch,"Wrong types were accepted")
+})
+test.case("customization keeps a valid workspace list, drops duplicates and repairs anything else",fn() {
+    let d = m.customization(json.parse("{}"))
+    test.expect(strings.equal(d.appView,"list") && strings.equal(strings.join(d.workspaceApps,","),"builtin:terminal,builtin:files,builtin:editor"),"Defaults wrong")
+    let grid = m.customization(json.parse("{\"appView\":\"grid\",\"workspaceApps\":\"[\\\"app:a\\\",\\\"app:b\\\",\\\"app:a\\\"]\"}"))
+    test.expect(strings.equal(grid.appView,"grid") && strings.equal(strings.join(grid.workspaceApps,","),"app:a,app:b"),"Grid or duplicate handling wrong: " + strings.join(grid.workspaceApps,","))
+    for raw in Vec<str>("\"not json\"","\"{}\"","\"[1]\"","\"[\\\"\\\"]\"","7") {
+        let c = m.customization(json.parse("{\"appView\":\"table\",\"workspaceApps\":" + raw + "}"))
+        test.expect(strings.equal(c.appView,"list") && c.workspaceApps.len() == 3,"A bad list was accepted: " + raw)
+    }
+    let many = "["; for i in 0..65 { many = many + (i > 0 ? "," : "") + "\\\"a${i}\\\"" }
+    many = many + "]"
+    test.expect(m.customization(json.parse("{\"workspaceApps\":\"" + many + "\"}")).workspaceApps.len() == 3,"More than 64 apps were accepted")
+})
+test.case("only apps installed for this user by the package manager can be uninstalled",fn() {
+    let d = temporary()
+    entry(d,"dev-hello.desktop","/usr/bin/devospm --root /home/u/.local/share/devos run hello")
+    entry(d,"dev-other.desktop","/usr/bin/devospm --root /r run something-else")
+    entry(d,"dev-plain.desktop","foot")
+    entry(d,"dev-os-app-store.desktop","dev-os-shell app-store")
+    entry(d,"dev-os-terminal.desktop","/usr/bin/devospm --root /r run os-terminal")
+    entry(d,"firefox.desktop","/usr/bin/devospm --root /r run firefox")
+    entry(d,"real.desktop","/usr/bin/devospm --root /r run linked")
+    tool.exec(Vec<str>("ln","-s",d + "/real.desktop",d + "/dev-linked.desktop"))
+    test.expect(strings.equal(m.userPackageCommand("dev-hello.desktop",d),"hello"),"A user package is not uninstallable")
+    test.expect(strings.equal(m.userPackageCommand("dev-other.desktop",d),"") && strings.equal(m.userPackageCommand("dev-plain.desktop",d),""),"Exec must run the command named by the file")
+    test.expect(strings.equal(m.userPackageCommand("dev-os-app-store.desktop",d),"") && strings.equal(m.userPackageCommand("dev-os-terminal.desktop",d),""),"A base app can be uninstalled")
+    test.expect(strings.equal(m.userPackageCommand("firefox.desktop",d),"") && strings.equal(m.userPackageCommand("dev-missing.desktop",d),"") && strings.equal(m.userPackageCommand("",d),""),"Other or missing entries qualify")
+    test.expect(strings.equal(m.userPackageCommand("dev-linked.desktop",d),""),"A symlinked launcher was accepted")
+    test.expect(strings.equal(m.userPackageCommand("dev-hello.desktop",d + "/nowhere"),""),"An entry outside the user directory qualified")
+    test.expect(strings.equal(m.userPackageCommand("dev-Hello.desktop",d),"") && strings.equal(m.userPackageCommand("dev--x.desktop",d),"") && strings.equal(m.userPackageCommand("dev-../x.desktop",d),""),"A badly shaped id qualified")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the Info lines tell a package from a base app",fn() {
+    let pkg = m.infoLines("Hello","dev-hello.desktop","","devospm run hello","/x/dev-hello.desktop","hello")
+    test.expect(pkg.len() == 6 && strings.equal(pkg[1],"No description provided.") && strings.contains(pkg[3],"can be uninstalled") && !strings.contains(pkg[3],"cannot"),"Package info wrong")
+    let base = m.infoLines("Files","","Browse files","","","")
+    test.expect(strings.contains(base[3],"cannot be uninstalled") && strings.equal(base[2],"ID: unknown") && strings.equal(base[4],"Launcher file: unknown") && strings.equal(base[5],"Command: unknown"),"Base info wrong")
+})
+return t.finish()
