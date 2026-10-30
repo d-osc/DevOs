@@ -3,7 +3,7 @@ import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {SystemSettings, SystemSound} from '../src/apps/org.devos.settings/system-view.js';
 import {systemPages, formatBytes, type SystemControls, type SystemState, type SystemPage} from '../src/apps/org.devos.settings/system.js';
-import type {DeviceControls, DeviceState} from '../packages/compat/panel-legacy/devices.js';
+import type {DeviceControls, DeviceState} from '../src/legacy/devices.js';
 import {DisplaySettings} from '../src/apps/org.devos.settings/displays-view.js';
 import {AudioSettings} from '../src/apps/org.devos.settings/audio-view.js';
 import {InputSettings, type InputControls} from '../src/apps/org.devos.settings/input-view.js';

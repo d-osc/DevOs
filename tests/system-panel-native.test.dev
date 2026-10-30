@@ -9,8 +9,4 @@ test.case("system panel contains no JavaScript or TypeScript and declares a nati
     let folder=t.root()+"/src/system/org.devos.panel";inspect(folder);let manifest=json.parse(tool.read(folder+"/extension.json"));t.equal(json.string(json.get(manifest,"native")),"system-panel");test.expect(!json.has(manifest,"entry") && json.bool(json.get(manifest,"system")),"Panel still loads through the JS extension host")
     for file in Vec<str>("native.devx","runtime.dev","settings-service.dev","native-settings.devx") {test.expect(fs.is_file(folder+"/"+file),"Missing native panel source "+file)}
 })
-test.case("public npm panel entry points remain compatibility APIs",fn() {
-    t.contains(tool.read(t.root()+"/packages/compat/panel.ts"),"./panel-legacy/index.js");t.contains(tool.read(t.root()+"/packages/compat/panel-view.tsx"),"./panel-legacy/view.js")
-    let manifest=json.parse(tool.read(t.root()+"/packages/compat/package.json"));let exports=json.get(manifest,"exports");test.expect(json.has(exports,"./panel") && json.has(exports,"./panel-view"),"Existing npm panel exports were removed")
-})
 return t.finish()

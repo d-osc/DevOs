@@ -4,7 +4,7 @@ import {ROOT} from '@dev-os/config';
 import {SystemSettings} from '../src/apps/org.devos.settings/system-view.js';
 import {DisplayCareSettings} from '../src/apps/org.devos.settings/display-care-view.js';
 import {unsupportedDisplayCare, type CareSettings, type DisplayCareAction, type DisplayCareControls, type DisplayCareState} from '../src/apps/org.devos.settings/display-care.js';
-import {defaultCare, parseCare} from '../packages/compat/display-care.js';
+import {defaultCare, parseCare} from '../src/legacy/display-care.js';
 import type {SystemControls, SystemState} from '../src/apps/org.devos.settings/system.js';
 Gtk.init(null);
 const wait = (ms = 420) => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {resolve(); return GLib.SOURCE_REMOVE;}));

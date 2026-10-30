@@ -1,7 +1,7 @@
-import {subscribePanelDevices, refreshPanelDevices} from '../../../packages/compat/panel-devices.js';
+import {subscribePanelDevices, refreshPanelDevices} from './panel-devices.js';
 import type {BatteryStatus, batteryPresentation} from './battery.js';
-import {subscribePanelPower} from '../../../packages/compat/panel-power.js';
-import {NativeAction} from '../../../packages/compat/native-action.js';
+import {subscribePanelPower} from './panel-power.js';
+import {NativeAction} from './native-action.js';
 import {
     Listeners
 } from '@dev-os/core';

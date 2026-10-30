@@ -26,11 +26,11 @@ Background uses one native UI and separate DevLang data worker per monitor. Its
 calculates per-monitor coverage and selects the animation interval from the power
 source. The native manager tracks outputs and restarts failed UI processes.
 Background Settings also runs as a separate native window with its own data worker.
-Public JS/TS background APIs remain in `packages/compat/background-legacy`.
+The public JS/TS background API (`packages/compat/background-legacy`) was removed with `packages/compat`.
 Display Care contains only DevLang sources and its native manifest: no JS, TS,
 TSX or JSX. Settings parsing and panel Pixel Shift planning run in DevLang through
 `display-care-compat.dev`; dimming/geometry rules are in `geometry.dev`. Remaining
-JS Settings consumers use the transport-only `@dev-os/compat/display-care` adapter.
+JS Settings consumers use the transport-only adapter in `src/legacy/display-care.ts`.
 The current JS Panel owns its GTK adapter in `org.devos.panel/panel-care.ts` and
 receives settings/margins from DevLang. Shell-rule tests are now DevLang too.
 Panel is still JS and has not been declared migrated.
@@ -122,7 +122,7 @@ tooltips and active/minimized states. All monitors with the same window source
 and pin setting share one worker. GTK renders prepared rows and keeps its existing
 window picker/actions. Serialized GIcons use a bounded render-side cache.
 The synchronous JS grouping API remains available to compatibility clients.
-`packages/compat/native-model.ts` contains only the JS transport for such clients.
+`src/legacy/native-model.ts` contains only the JS transport for the remaining JS consumers.
 
 Build: `sh tools/build/native-system.sh`. Validation:
 `d tests/system-displaycare-native.test.dev` and `d tools/test/system-native-smoke.dev`.

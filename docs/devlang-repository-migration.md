@@ -54,7 +54,7 @@ manifest now selects the native manager. Background Settings navigation opens a
 separate native process. Widgets, menus, shell metadata, theme propagation and wallpaper
 preferences are also available in the diagnostic modes below. The system
 directory contains no JS/TS/TSX files. The SDK implementation remains isolated in
-`packages/compat/background-legacy` for public JS/TS clients.
+`packages/compat/background-legacy` for public JS/TS clients (that package was later removed; see "packages/compat removed" below).
 The wider shell and app migration remains incomplete. Public npm background
 exports keep their original names and behavior. `tests/background-cleanup.test.dev`
 prevents JS/TS/TSX files or stale SDK imports from returning to the system folder.
@@ -453,7 +453,7 @@ the JS shell (`main.ts`, `app-host.ts`, `services/*-host.ts`, the panel) is the 
 imports the remaining files. Display Care itself has no JS/TS/TSX/JSX remaining:
 settings parsing, geometry rules and Pixel Shift planning are DevLang. The legacy
 Panel's GTK adapter belongs to `org.devos.panel/panel-care.ts`; remaining Settings
-consumers use the transport-only `@dev-os/compat/display-care` adapter. The old
+consumers use the transport-only adapter now in `src/legacy/display-care.ts`. The old
 shell-rule TS test was replaced by DevLang and its generated JS is cleaned on
 build. `package-category.ts` remains shared with Settings and compatibility tests;
 `login.tsx` is still launched by `bin/dev-os-start` and
@@ -484,3 +484,9 @@ power APIs. A two-output Wayland fixture covers cancellation, confirmation,
 loading surfaces and cleanup. These controls still need mounting in the migrated
 account menu. Production panel migration remains incomplete: account/menu/settings
 parity and the native monitor manager must land before its JS files can be removed.
+
+## packages/compat removed
+
+`packages/compat` (`@dev-os/compat`) held the public JS/TS compatibility API: the legacy panel and background widgets, launcher and settings views, and thin wrappers. It is deleted with its 46 TS/TSX files, its `package.json` exports, the `@dev-os/compat` aliases in `tsconfig.json`, the `compat:pack` script, its entry in `data/compat/npm-api.json`, the 16 tests that only covered those widgets, and the two DevLang test cases that asserted its exports. This is a breaking change for external JS/TS extensions that imported `@dev-os/compat/*`; the system panel and background are native and do not use it.
+
+Nine modules that the JS Settings and the JS Launcher still import moved to `src/legacy/` (`power`, `power-loading`, `devices`, `battery`, `panel-devices`, `panel-power`, `native-model`, `native-action`, `display-care`) with their relative imports fixed, and the four tests that cover them were repointed. They are still TypeScript and go away with the JS Settings and JS Launcher when the native ones become the default.

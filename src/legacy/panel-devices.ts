@@ -1,6 +1,6 @@
 import {Gio, GLib} from '@dev-os/core';
 import {NativeModel} from './native-model.js';
-import type {DeviceState} from './panel-legacy/devices.js';
+import type {DeviceState} from './devices.js';
 type Snapshot = Partial<DeviceState> & {audio: 'wpctl' | 'pactl' | null};
 let model: NativeModel | undefined, timer = 0, signal = 0, current: Snapshot | undefined;
 const listeners = new Set<(value: Snapshot) => void>();

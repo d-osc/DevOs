@@ -12,12 +12,6 @@ fn checkDirectory(directory:str) {
     }
 }
 test.case("background system directory contains no JS, TS or TSX",fn() {checkDirectory(t.root()+"/src/system/org.devos.background")})
-test.case("npm background entry points preserve compatibility without old system imports",fn() {
-    for name in Vec<str>("background.ts","background-view.tsx") {
-        let text=fs.readFileSync(t.root()+"/packages/compat/"+name,"utf8")
-        t.contains(text,"./background-legacy/");t.lacks(text,"src/system/org.devos.background/")
-    }
-})
 test.case("production background selects the native manager",fn() {
     let manifest=json.parse(fs.readFileSync(t.root()+"/src/system/org.devos.background/extension.json","utf8"))
     t.equal(json.string(json.get(manifest,"native")),"system-background")

@@ -17,7 +17,7 @@ UI ทั้งหมดของ shell อยู่ใน system extension pack
 
 แต่ละ package มี `extension.json` เป็น manifest, `extension.ts` เป็น lifecycle source และ `index.ts` เป็น native window adapter
 และ `view.tsx` เป็น React UI (theme ใช้ `style.css`)
-ไฟล์ UI compatibility อยู่ใน `packages/compat/` และใช้ผ่าน `@dev-os/compat/*`
+ไฟล์ UI compatibility เดิมใน `packages/compat/` (`@dev-os/compat/*`) ถูกลบแล้ว ส่วนที่ JS Settings และ JS Launcher ยังต้องใช้ย้ายไป `src/legacy/`
 
 `packages/extensions/system.ts` อ่าน manifest และโหลด compiled entry ตามค่า `order`
 `packages/core/extension-runtime.ts` ให้ `UIExtension.activate(context)` และ cleanup
@@ -132,7 +132,7 @@ packages/extensions/
   runtime.ts                     UIContext และ activation/cleanup contract
   system.ts                      manifest discovery และ compiled UI loader
   monitor-ui.ts                  per-monitor surface lifecycle
-packages/compat/preferences.ts               atomic JSON writer
+src/services/preferences.backend.ts           atomic JSON writer
 packages/shell/index.ts                     base services และ runtime host
 packages/config/index.ts                    core desktop config และ validation
 ```

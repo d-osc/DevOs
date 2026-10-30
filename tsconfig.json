@@ -55,12 +55,6 @@
       "@dev-os/services/*": [
         "./packages/services/*"
       ],
-      "@dev-os/compat": [
-        "./packages/compat/index.ts"
-      ],
-      "@dev-os/compat/*": [
-        "./packages/compat/*"
-      ],
       "@dev-os/config": [
         "./packages/config/index.ts"
       ],

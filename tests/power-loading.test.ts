@@ -1,6 +1,6 @@
 import {Gtk, GLib, GtkLayerShell} from '@dev-os/core';
-import {PowerLoading} from '../packages/compat/panel-legacy/power-loading.js';
-import {requestPower} from '../packages/compat/panel-legacy/power.js';
+import {PowerLoading} from '../src/legacy/power-loading.js';
+import {requestPower} from '../src/legacy/power.js';
 Gtk.init(null);
 const application = new Gtk.Application({application_id: 'org.devos.PowerLoadingTest'});
 application.register(null);

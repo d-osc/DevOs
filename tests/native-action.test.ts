@@ -1,5 +1,5 @@
 import {Gio, GLib} from '@dev-os/core/base';
-import {NativeAction} from '../packages/compat/native-action.js';
+import {NativeAction} from '../src/legacy/native-action.js';
 function assert(value: unknown, message: string): asserts value {if (!value) throw new Error(message);}
 const wait = (ms: number) => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 async function verify() {

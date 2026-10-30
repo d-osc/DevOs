@@ -1,6 +1,6 @@
 import {GLib} from '@dev-os/core';
 import {NativeModel} from './native-model.js';
-import type {PowerReading, batteryPresentation} from './panel-legacy/battery.js';
+import type {PowerReading, batteryPresentation} from './battery.js';
 
 export type PanelPower = PowerReading & {batteryPresentation: ReturnType<typeof batteryPresentation>};
 let model: NativeModel | undefined, timer = 0, current: PanelPower | undefined, encoded = '';

@@ -479,4 +479,4 @@ UI อยู่ที่ `src/system/org.devos.panel/view.tsx`; backend ที�
 
 Extension services live in `packages/extensions` (`@dev-os/extensions`), and update services in `packages/updates` (`@dev-os/updates`). Build package archives with `npm run extensions:pack` and `npm run updates:pack`; the output is under `build/extensions-package` and `build/updates-package`.
 
-Desktop libraries are published separately as `@dev-os/runtime`, `@dev-os/services`, `@dev-os/compat`, `@dev-os/config`, `@dev-os/shell` and `@dev-os/supervisor`. Pack each library with `npm run <name>:pack`.
+Desktop libraries are published separately as `@dev-os/runtime`, `@dev-os/services`, `@dev-os/config`, `@dev-os/shell` and `@dev-os/supervisor`. Pack each library with `npm run <name>:pack`.

@@ -9,7 +9,7 @@ import {launcherCustomization, workspaceAppKey} from './customization.js';
 import type {OverlayMotion} from './overlay-motion.js';
 import {launchDesktopApp} from '@dev-os/services/apps';
 import {userPackageCommand, createAppContextMenu, appInfoLines} from './uninstall.js';
-import {powerCapabilities, requestPower, type PowerAction} from '../../../packages/compat/panel-legacy/power.js';
+import {powerCapabilities, requestPower, type PowerAction} from '../../legacy/power.js';
 
 export interface LauncherServices {
     power?: {capabilities(): Promise<Record<PowerAction, boolean>>; request(action: PowerAction): Promise<void>};
