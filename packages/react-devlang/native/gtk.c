@@ -94,7 +94,6 @@ static void rd_layer_overlay(RdRoot *root) {
     if (!supported || !init || !name || !layer || !anchor || !keyboard || !zone || !supported()) return;
     GtkWindow *window = GTK_WINDOW(root->window);
     GdkVisual *visual = gdk_screen_get_rgba_visual(root->screen); if (visual) gtk_widget_set_visual(root->window, visual);
-    gtk_widget_set_app_paintable(root->window, TRUE);
     init(window); name(window, "devos-overlay"); layer(window, 3 /* overlay */); keyboard(window, 1 /* exclusive */); zone(window, -1);
     for (int edge = 0; edge < 4; edge++) anchor(window, edge, TRUE);
     gtk_window_set_decorated(window, FALSE);
