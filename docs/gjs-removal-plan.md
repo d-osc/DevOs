@@ -46,3 +46,19 @@ Native but not yet the default: Settings (opt-in with `DEVOS_NATIVE_SETTINGS=1`)
 `tsc --noEmit`, `npm run build`, the native Settings test suites (16), the pairing agent against a stand-in BlueZ, and the DevLang audit
 (`d tools/maintenance/migration-audit.dev`: 383 TS/JS files left on 2026-10-30). Not verified: a real session with native Settings as the default,
 real Bluetooth hardware, a real wlroots compositor for the Display page.
+
+## What the GJS shell really holds (measured, for stage 4)
+
+`src/main.ts` (47 lines) starts `DesktopShell` (`packages/shell/index.ts`, 337 lines), a `Gtk.Application` that
+- runs a UI runtime for the *shell extensions* `theme`, `icons`, `launcher`, `panel`, `background` and `displaycare` (`SHELL_EXTENSIONS` in `packages/runtime/processes.ts`); the panel, background and display care are already native processes, so what is still JS inside the shell is the Launcher overlay (with the task view and snap layouts) and the theme and icons extensions;
+- owns the window manager gestures (`Windows`: next, previous, restore) fed by `native/window-tracker.c`, config reload, the toast messages, the screenshot overlay commands and the D-Bus control object (`org.devos.Shell.Control.Execute`) that every `dev-os-shell <command>` call reaches;
+- launches the JS apps through `AppProcesses` (native ones where one exists);
+- loads **user extensions**: third-party packages whose `dist/<entry>.js` is imported at start (`packages/extensions/user.ts`).
+
+So a native shell comes after, not before: the Launcher overlay (and snap, task view), the Screenshot overlay, the theme and icons extensions, and the window gestures must exist natively first.
+
+## Decisions that are the owner's
+
+1. **User extensions.** Third-party JS UI extensions cannot run without GJS. Either the extension API is replaced by a native one (a DevLang program that speaks the control protocol, with a manifest like today's) and existing JS extensions stop working, or GJS stays for them as an optional component. Nothing in the repo decides this yet.
+2. **Editor.** The JS Editor is Monaco in a WebKit view (`dist/editor`, a 6 MB TypeScript worker). A native Editor is either a WebKit view with the same bundle (DevLang for the window, JS inside the page) or a text widget with its own highlighting (GtkSourceView is not installed here).
+3. **npm packages.** `@dev-os/runtime`, `services`, `shell`, `extensions`, `updates`, `config` and `supervisor` are published API contracts (`data/compat/npm-api.json`); they go when their last TS file goes, as `@dev-os/compat` did.
