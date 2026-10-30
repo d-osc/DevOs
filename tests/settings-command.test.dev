@@ -1,0 +1,39 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The window is started on a private session bus under Xvfb; the commands are sent over D-Bus exactly as the shell sends them
+# (org.devos.Shell.Control.Execute with the command line). `expected` is the page DEVOS_COMMAND_SMOKE waits for.
+fn run(commands:str, expected:str):str {
+    let executable = t.root() + "/build/react-devlang/tests/settings-command"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let lines = Vec<str>("id=org.devos.App.settings.Native; path=/org/devos/App/settings/Native/control",
+        "DEV_OS_NATIVE_ID=$id DEV_OS_ROOT='" + t.root() + "' DEVOS_COMMAND_SMOKE=" + expected + " G_DEBUG=fatal-warnings NO_AT_BRIDGE=1 xvfb-run -a '" + executable + "' &",
+        "pid=$!",
+        "for i in $(seq 1 100); do gdbus call --session --dest $id --object-path $path --method org.devos.Shell.Control.Execute \"['settings']\" '' >/dev/null 2>&1 && break; sleep 0.2; done",
+        commands,
+        "wait $pid; echo \"exit=$?\"")
+    let script = strings.join(lines,"\n")
+    let done = tool.run(Vec<str>("dbus-run-session","--","sh","-c",script),Map<str,str>(),"",120000)
+    return t.out(done) + t.err(done)
+}
+
+test.case("a shell command opens the page it names in the running native Settings window",fn() {
+    let out = run("gdbus call --session --dest org.devos.App.settings.Native --object-path /org/devos/App/settings/Native/control --method org.devos.Shell.Control.Execute \"['settings.wifi']\" ''","wifi")
+    test.expect(strings.contains(out,"PASS native Settings opened wifi from a shell command") && strings.contains(out,"exit=0"),"settings.wifi did not open Wi-Fi: " + out)
+})
+test.case("settings.network, settings.accounts and session.switch-user reach their pages",fn() {
+    let send = fn(command:str):str { return "gdbus call --session --dest org.devos.App.settings.Native --object-path /org/devos/App/settings/Native/control --method org.devos.Shell.Control.Execute \"" + command + "\" ''" }
+    test.expect(strings.contains(run(send("['settings.network']"),"wifi"),"opened wifi"),"settings.network did not open the first network page")
+    test.expect(strings.contains(run(send("['settings.accounts']"),"accounts"),"opened accounts"),"settings.accounts did not open Accounts")
+    test.expect(strings.contains(run(send("['session.switch-user','alice']"),"accounts"),"opened accounts"),"session.switch-user did not open Accounts")
+    test.expect(strings.contains(run(send("['settings.bluetooth']"),"bluetooth"),"opened bluetooth"),"settings.bluetooth did not open Bluetooth")
+})
+test.case("unknown commands are refused and unknown settings pages leave the window alone",fn() {
+    let call = "gdbus call --session --dest org.devos.App.settings.Native --object-path /org/devos/App/settings/Native/control --method org.devos.Shell.Control.Execute "
+    let out = run("echo \"other: $(" + call + "\"['launcher.show']\" '')\"; echo \"unknown: $(" + call + "\"['settings.nothing']\" '')\"; " + call + "\"['settings.time']\" '' >/dev/null","time")
+    test.expect(strings.contains(out,"other: (1, 'Unsupported app command')"),"A foreign command was accepted: " + out)
+    test.expect(strings.contains(out,"unknown: (0, '')") && strings.contains(out,"PASS native Settings opened time from a shell command"),"An unknown settings page broke the window: " + out)
+})
+return t.finish()

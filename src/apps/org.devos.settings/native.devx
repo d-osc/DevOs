@@ -73,6 +73,16 @@ fn requestMany(pipe:i64,page:str,action:str,values:Vec<ui.Text>) {
 }
 fn request(pipe:i64,page:str,action:str,first:ui.Text,second:ui.Text) { requestMany(pipe,page,action,Vec<ui.Text>(first,second)) }
 
+# The page a shell command opens: settings.<page> by its name, settings.network on the first network page and session.switch-user on
+# Accounts. -1 for the plain `settings` command and for anything unknown (the window is only brought to the front).
+fn commandPage(line:ui.Text):i64 {
+    let command = channel.split(line,31)[0]; let names = pageNames()
+    if ui.equalText(command,ui.text("settings.network")) { return networkIndex() }
+    if ui.equalText(command,ui.text("session.switch-user")) { return 21 }
+    for i in 0..(names.len() as i64) { if ui.equalText(command,ui.text("settings." + names[i])) { return i } }
+    return -1
+}
+
 fn App(context:*ui.Context):ui.Node {
     let snapshot = ui.useText(context,ui.emptyText()); let error = ui.useText(context,ui.emptyText())
     let page = ui.useState(context,0); let editing = ui.useState(context,-1); let busy = ui.useState(context,0); let pipe = ui.useRef(context,0)
@@ -93,6 +103,13 @@ fn App(context:*ui.Context):ui.Node {
     },Vec<i64>())
     ui.useEffect(context,fn():fn():void {
         unsafe { if rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"settings") == 0 { error.set(ui.text("Could not register the application control service.")) } }
+        ui.onCommand(context,"settings.,session.",fn(line:ui.Text) {
+            let target = commandPage(line)
+            if target < 0 { return }
+            if target >= nativePages() { unsafe { rd_launch_shell(environment("DEV_OS_ROOT"),externalCommand(target)) }; return }
+            page.set(target); editing.set(-1); snapshot.set(ui.emptyText()); error.set(ui.emptyText())
+            if target < themeIndex() { request(pipe.get(),pageNames()[target],"get",ui.emptyText(),ui.emptyText()) }
+        })
         return ui.noop
     },Vec<i64>())
     ui.useEffect(context,fn():fn():void {
@@ -174,6 +191,12 @@ fn App(context:*ui.Context):ui.Node {
         if ui.text(environment("DEVOS_BLUETOOTH_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-bluetooth") }
         return ui.noop
     },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        # DEVOS_COMMAND_SMOKE=<page name>: finish as soon as a shell command has opened that page.
+        let wanted = environment("DEVOS_COMMAND_SMOKE")
+        if ui.text(wanted).bytes.len() > 0 && ui.equalText(ui.text(pageNames()[page.get()]),ui.text(wanted)) { print("PASS native Settings opened " + wanted + " from a shell command"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(page.value))
     ui.useEffect(context,fn():fn():void {
         if ui.text(environment("DEVOS_NATIVE_SMOKE")).bytes.len() > 0 && ready {
             if smoke.get() == 0 {

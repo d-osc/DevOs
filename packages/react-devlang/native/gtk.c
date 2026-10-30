@@ -4,7 +4,7 @@
 void *rd_find_name(void *data,const char *name);
 
 typedef void (*RdDispatch)(int32_t, void *, const unsigned char *, int64_t, void *);
-typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; } RdRoot;
+typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; } RdRoot;
 static int64_t rd_live_widgets = 0;
 static void rd_widget_destroyed(GtkWidget *widget, void *data) { (void)widget; (void)data; rd_live_widgets--; }
 int64_t rd_widget_live_count(void) { return rd_live_widgets; }
@@ -96,14 +96,26 @@ void rd_free(void *data) { RdRoot *root = data; rd_close(root); root->dispatch =
     if(root->popovers){for(guint i=0;i<root->popovers->len;i++)gtk_widget_destroy(g_ptr_array_index(root->popovers,i));g_ptr_array_unref(root->popovers);}
     if (root->bus_object) g_dbus_connection_unregister_object(root->bus, root->bus_object);
     if (root->bus_name) g_bus_unown_name(root->bus_name);
-    g_clear_object(&root->bus); g_free(root->command); g_object_unref(root->screen); g_free(root); }
+    g_clear_object(&root->bus); g_free(root->command); g_free(root->prefixes); g_object_unref(root->screen); g_free(root); }
+/* rd_accept lists extra command prefixes ("settings.,session.") the app also answers; its exact command is always accepted. */
+static gboolean rd_prefixed(RdRoot *root, const char *name) {
+    if (!root->prefixes) return FALSE;
+    gchar **parts = g_strsplit(root->prefixes, ",", -1); gboolean found = FALSE;
+    for (int i = 0; parts[i] && !found; i++) found = *parts[i] && g_str_has_prefix(name, parts[i]);
+    g_strfreev(parts); return found;
+}
+void rd_accept(void *data, const char *prefixes) { RdRoot *root = data; g_free(root->prefixes); root->prefixes = g_strdup(prefixes); }
 static void rd_execute(GDBusConnection *connection, const char *sender, const char *path, const char *interface,
                        const char *method, GVariant *parameters, GDBusMethodInvocation *invocation, void *data) {
     (void)connection; (void)sender; (void)path; (void)interface; (void)method;
     RdRoot *root = data; char **args = NULL; const char *cwd = NULL;
     g_variant_get(parameters, "(^as&s)", &args, &cwd); (void)cwd;
-    gboolean valid = args && args[0] && g_str_equal(args[0], root->command);
-    if (valid && !root->closed) gtk_window_present(GTK_WINDOW(root->window));
+    gboolean valid = args && args[0] && (g_str_equal(args[0], root->command) || rd_prefixed(root, args[0]));
+    if (valid && !root->closed) {
+        gtk_window_present(GTK_WINDOW(root->window));
+        /* The whole command line reaches the app as event kind 7, arguments separated by ASCII 31. */
+        char *line = g_strjoinv("\037", args); rd_emit(root, 7, NULL, line); g_free(line);
+    }
     g_dbus_method_invocation_return_value(invocation, g_variant_new("(is)", valid ? 0 : 1, valid ? "" : "Unsupported app command"));
     g_strfreev(args);
 }
