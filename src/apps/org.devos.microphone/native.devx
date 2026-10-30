@@ -1,0 +1,197 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+use "../org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+# libgstreamer is linked by path (tools/build/native-apps.sh), so no GStreamer header is needed: only the calls below are declared.
+extern fn gst_init(argc:*void, argv:*void)
+extern fn gst_parse_launch(description:*u8, error:*void):*void
+extern fn gst_element_set_state(element:*void, state:i32):i32
+extern fn gst_element_get_bus(element:*void):*void
+extern fn gst_bus_pop_filtered(bus:*void, types:u32):*void
+extern fn gst_mini_object_unref(object:*void)
+extern fn gst_message_get_structure(message:*void):*void
+extern fn gst_structure_to_string(structure:*void):*u8
+extern fn gst_event_new_eos():*void
+extern fn gst_element_send_event(element:*void, event:*void):i32
+extern fn gst_object_unref(object:*void)
+extern fn g_free(pointer:*void)
+
+# Native Microphone window: test the level of an input or record it to a WAV file in ~/Music/Recordings. The level comes from the GStreamer `level`
+# element: its messages are taken from the pipeline's bus on every clock tick (250 ms) and the text of the structure is parsed, because DevLang
+# callbacks cannot be handed to GLib. The meter is the loudest channel's peak on a -60..0 dB scale. Stopping a recording sends EOS and waits (up to 5 s)
+# for it, so the WAV header is finished. Frame V: message; M: name label.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_MICROPHONE_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn owned(pointer:*u8):ui.Text { unsafe {
+    let present = false
+    present = pointer as bool
+    if !present { return ui.emptyText() }
+    let bytes = Vec<u8>(); let at = 0
+    while pointer[at] != 0 { bytes.push(pointer[at]); at = at + 1 }
+    return ui.Text(bytes)
+} }
+fn indexOf(text:ui.Text, needle:str):i64 {
+    let n = ui.text(needle).bytes; let h = text.bytes
+    if h.len() < n.len() { return 0 - 1 }
+    for i in 0..((h.len() - n.len() + 1) as i64) {
+        let same = true
+        for j in 0..(n.len() as i64) { if h[i + j] != n[j] { same = false; break } }
+        if same { return i }
+    }
+    return 0 - 1
+}
+# The meter value 0..1000 of the loudest channel in "peak=(GValueArray)< -20.9, -19.8 >" (dB, -60 is silence, 0 is full scale); -1 when there is none.
+fn peakOf(structure:ui.Text):i64 {
+    let at = indexOf(structure,"peak=(GValueArray)<")
+    if at < 0 { return 0 - 1 }
+    let best = 0 - 1000000; let negative = false; let whole = 0; let tenth = 0; let seenDecimal = false; let digits = false; let found = false; let infinite = false
+    let flush = fn() { }
+    let i = at + 19
+    while i < (structure.bytes.len() as i64) {
+        let c = structure.bytes[i]
+        if c == 62 || c == 44 {
+            if digits || infinite {
+                let value = infinite ? (0 - 1000) : (negative ? 0 - (whole * 10 + tenth) : whole * 10 + tenth)
+                if value > best { best = value }; found = true
+            }
+            negative = false; whole = 0; tenth = 0; seenDecimal = false; digits = false; infinite = false
+            if c == 62 { break }
+        } else if c == 45 { negative = true }
+        else if c == 46 { seenDecimal = true }
+        else if c >= 48 && c <= 57 { digits = true; if seenDecimal { if tenth == 0 { tenth = (c - 48) as i64 } } else { whole = whole * 10 + ((c - 48) as i64) } }
+        else if c == 105 { infinite = true }
+        i = i + 1
+    }
+    if !found { return 0 - 1 }
+    let permille = (best + 600) * 1000 / 600
+    return permille < 0 ? 0 : permille > 1000 ? 1000 : permille
+}
+fn source(device:ui.Text):ui.Text {
+    if ui.equalText(device,plain("test")) { return plain("audiotestsrc is-live=true wave=sine freq=440") }
+    return join(Vec<ui.Text>(plain("pulsesrc device=\""),device,plain("\"")))
+}
+fn pipeline(device:ui.Text, record:bool, path:ui.Text):ui.Text {
+    let tail = record ? join(Vec<ui.Text>(plain(" ! wavenc ! filesink location=\""),path,plain("\""))) : plain(" ! fakesink sync=false")
+    return join(Vec<ui.Text>(source(device),plain(" ! audioconvert ! audioresample ! level name=meter interval=100000000 post-messages=true"),tail))
+}
+
+fn App(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"../org.devos.microphone/service.dev","{\"action\":\"devices\"}")
+    # asked: kind of the last request (0 devices, 1 prepare, 2 discard, 3 folder); mode: 0 off, 1 level test, 2 recording, 3 finishing a recording
+    let asked = ui.useRef(context,0); let devices = ui.useText(context,ui.emptyText()); let choice = ui.useState(context,0); let status = ui.useText(context,plain("Ready · recording starts only when you press a button"))
+    let mode = ui.useState(context,0); let pipe = ui.useRef(context,0); let path = ui.useText(context,ui.emptyText()); let want = ui.useRef(context,0); let level = ui.useState(context,0)
+    let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let startedAt = ui.useRef(context,0); let finishAt = ui.useRef(context,0); let lastDevice = ui.useRef(context,0); let peak = ui.useRef(context,0)
+    let ids = Vec<ui.Text>(); let labels = Vec<ui.Text>()
+    for record in sp.records(devices.value) { if sp.kindOf(record,77) { let c = sp.cells(record); ids.push(sp.cell(c,1)); labels.push(sp.cell(c,2)) } }
+    let release = fn() { unsafe {
+        if pipe.get() != 0 { gst_element_set_state(pipe.get() as *void,1); gst_object_unref(pipe.get() as *void) }
+        pipe.set(0); level.set(0)
+    } }
+    let begin = fn() { unsafe {
+        let record = want.get() == 2
+        if choice.get() < 0 || choice.get() >= (ids.len() as i64) { return }
+        let description = ui.nativeText(pipeline(ids[choice.get()],record,path.get()))
+        let made = gst_parse_launch(description,null)
+        ui.rd_buffer_free(description as *void)
+        if made == null { status.set(plain("Cannot open the microphone. It may be busy, disconnected or access denied.")); return }
+        gst_element_set_state(made,4)
+        pipe.set(made as i64); peak.set(0); mode.set(record ? 2 : 1); startedAt.set(ticks.get())
+        status.set(record ? plain("Recording microphone") : plain("Microphone is on · level test"))
+    } }
+    let finish = fn(message:ui.Text) { release(); mode.set(0); status.set(message) }
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let theme = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(theme).bytes.len() == 0 { unsafe { theme = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${theme}.css")
+            rd_app_header((*context).native,"Microphone","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"microphone")
+            gst_init(null,null)
+        }
+        ui.onCommand(context,"microphone.",fn(line:ui.Text) {})
+        ui.onTick(context,250,fn() { unsafe {
+            ticks.set(ticks.get() + 1)
+            if pipe.get() != 0 {
+                let bus = gst_element_get_bus(pipe.get() as *void)
+                let latest = 0 - 1; let count = 0
+                while count < 40 {
+                    count = count + 1
+                    let message = gst_bus_pop_filtered(bus,32768)
+                    if message == null { break }
+                    let structure = gst_message_get_structure(message)
+                    if structure != null {
+                        let raw = gst_structure_to_string(structure)
+                        let value = peakOf(owned(raw))
+                        g_free(raw as *void)
+                        if value >= 0 { latest = value }
+                    }
+                    gst_mini_object_unref(message)
+                }
+                if latest >= 0 { level.set(latest); if latest > peak.get() { peak.set(latest) } }
+                let failed = gst_bus_pop_filtered(bus,2)
+                if failed != null { gst_mini_object_unref(failed); gst_object_unref(bus); if has(path.get()) && mode.get() == 2 { asked.set(2); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"discard\",\"path\":"),channel.quote(path.get()),plain("}")))) }; finish(plain("Device error: capture failed")); return }
+                if mode.get() == 3 {
+                    let ended = gst_bus_pop_filtered(bus,1)
+                    if ended != null { gst_mini_object_unref(ended); gst_object_unref(bus); finish(join(Vec<ui.Text>(plain("Saved · "),path.get()))); return }
+                    if ticks.get() > finishAt.get() + 20 { gst_object_unref(bus); finish(plain("Recording could not be finalized. Check the audio device.")); return }
+                }
+                gst_object_unref(bus)
+            }
+            # DEVOS_MICROPHONE_SMOKE=1: after 1 s pick the test tone and record, stop 2 s later, finish when the recording is saved.
+            if !smoke() { return }
+            if step.get() == 0 && ticks.get() >= 4 && lastDevice.get() > 0 { step.set(1); choice.set(lastDevice.get() - 1); ui.click(context,"mic-record") }
+            else if step.get() == 1 && mode.get() == 2 && ticks.get() >= startedAt.get() + 8 { step.set(2); ui.click(context,"mic-record") }
+            else if step.get() == 2 && mode.get() == 0 { print("PASS native Microphone recorded audio (peak ${peak.get()})"); ui.close(context) }
+        } })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() == 0 { return ui.noop }
+        if asked.get() == 0 { devices.set(f); let count = 0; for record in sp.records(f) { if sp.kindOf(record,77) { count = count + 1 } }; lastDevice.set(count) }
+        else if asked.get() == 1 && has(field(f,1)) { path.set(field(f,1)) }
+        else if asked.get() == 3 { status.set(field(f,1)) }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        if want.get() == 2 && has(path.value) && mode.get() == 0 { begin() }
+        return ui.noop
+    },Vec<i64>(path.revision))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let busy = l.waiting.get() != 0; let m = mode.value
+    let select = ui.named("mic-device"); select.sensitive = m == 0 && !busy
+    let testButton = ui.named("mic-test"); testButton.sensitive = (m == 0 || m == 1) && !busy && ids.len() > 0
+    let recordButton = ui.named("mic-record"); recordButton.sensitive = (m == 0 || m == 2) && !busy && ids.len() > 0
+    let folderButton = ui.named("mic-folder")
+    let meter = ui.named("mic-level"); meter.expand = true
+    let nodes = Vec<ui.Node>(ext.expand(ui.Select(select,labels,choice.value,fn(index:i64) { choice.set(index) })))
+    nodes.push(ext.named(k.caption(has(l.failure.value) ? l.failure.value : status.value,has(l.failure.value) ? "settings-error-banner" : "settings-description"),"mic-status"))
+    nodes.push(ui.Progress(meter,(level.value as f64) / 1000.0))
+    nodes.push(ext.row(8,Vec<ui.Node>(
+        ui.Button(testButton,m == 1 ? "Stop test" : "Test microphone",fn() {
+            if m == 1 { finish(plain("Microphone is off")) } else { want.set(1); begin() }
+        }),
+        ui.Button(recordButton,m == 2 ? "Stop & save" : m == 3 ? "Saving…" : "Record audio",fn() {
+            if m == 2 { unsafe { gst_element_send_event(pipe.get() as *void,gst_event_new_eos()) }; mode.set(3); finishAt.set(ticks.get()); status.set(plain("Saving recording…")) }
+            else { want.set(2); path.set(ui.emptyText()); asked.set(1); sp.send(l,plain("{\"action\":\"prepare\"}")) }
+        }),
+        ui.Button(folderButton,"Open recordings",fn() { asked.set(3); sp.send(l,plain("{\"action\":\"folder\"}")) }))))
+    return ext.column(12,nodes)
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.microphone.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Microphone",760,420,App) ? 0 : 1
+}

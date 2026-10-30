@@ -1,0 +1,72 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+fn worker(d:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_MICROPHONE_TEST","1"); env.set("DEVOS_MICROPHONE_HOME",d + "/home"); env.set("DEVOS_MICROPHONE_PACTL",d + "/pactl"); env.set("DEVOS_MICROPHONE_OPEN",d + "/open"); env.set("DEVOS_MICROPHONE_LOG",d + "/log")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.microphone/service.dev","--",t.root()),env,input,120000)))
+}
+fn rig():str {
+    let d = temporary()
+    fs.mkdirSync(d + "/home",false)
+    fs.writeFileSync(d + "/pactl","#!/bin/sh\nif [ -f \"$(dirname \"$0\")/broken\" ]; then exit 1; fi\ncat \"$(dirname \"$0\")/sources\"\n")
+    fs.writeFileSync(d + "/sources","[{\"index\":5,\"name\":\"alsa_input.usb-Mic.analog-stereo\",\"description\":\"USB\\tMicrophone\"},{\"index\":6,\"name\":\"alsa_output.pci.analog-stereo.monitor\",\"description\":\"Monitor of Speakers\"},{\"index\":7,\"name\":\"alsa_input.pci.analog-stereo\"},{\"index\":8,\"name\":\"-bad\",\"description\":\"Flag-like name\"}]")
+    fs.writeFileSync(d + "/open","#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$DEVOS_MICROPHONE_LOG\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/pactl",d + "/open"))
+    return d
+}
+
+test.case("inputs are listed without monitors or flag-like names, and the test tone is always last",fn() {
+    let d = rig()
+    let all = records(worker(d,"{\"action\":\"devices\"}\n"))
+    test.expect(all.len() == 4 && strings.equal(cells(all[0])[0],"V") && strings.equal(cells(all[0])[1],""),"Frame wrong: " + strings.join(all,"|"))
+    test.expect(strings.equal(cells(all[1])[1],"alsa_input.usb-Mic.analog-stereo") && strings.equal(cells(all[1])[2],"USB Microphone"),"Named input wrong: " + all[1])
+    test.expect(strings.equal(cells(all[2])[1],"alsa_input.pci.analog-stereo") && strings.equal(cells(all[2])[2],"alsa_input.pci.analog-stereo") && strings.equal(cells(all[3])[1],"test"),"Unnamed input or test tone wrong")
+    fs.writeFileSync(d + "/broken","1")
+    let down = records(worker(d,"{\"action\":\"devices\"}\n"))
+    test.expect(down.len() == 2 && strings.contains(cells(down[0])[1],"only the test tone") && strings.equal(cells(down[1])[1],"test"),"A dead audio service must leave the test tone: " + strings.join(down,"|"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a recording gets a new private folder and a name that never repeats; only an own .wav is discarded",fn() {
+    let d = rig(); let folder = d + "/home/Music/Recordings"
+    let lines = strings.split(worker(d,"{\"action\":\"prepare\"}\n{\"action\":\"prepare\"}\n"),"\n")
+    test.expect(lines.len() == 2 && strings.startsWith(lines[0],"V\t" + folder + "/") && strings.endsWith(lines[0],".wav") && !strings.equal(lines[0],lines[1]),"prepare wrong: " + strings.join(lines,"|"))
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("stat","-c","%a",folder))),"700"),"The recordings folder is not private")
+    let mine = folder + "/mine.wav"; fs.writeFileSync(mine,"x"); fs.writeFileSync(folder + "/keep.txt","x"); fs.mkdirSync(folder + "/sub",false); fs.writeFileSync(folder + "/sub/deep.wav","x"); fs.writeFileSync(d + "/outside.wav","x")
+    worker(d,"{\"action\":\"discard\",\"path\":\"" + mine + "\"}\n{\"action\":\"discard\",\"path\":\"" + folder + "/keep.txt\"}\n{\"action\":\"discard\",\"path\":\"" + folder + "/sub/deep.wav\"}\n{\"action\":\"discard\",\"path\":\"" + d + "/outside.wav\"}\n{\"action\":\"discard\",\"path\":\"" + folder + "/../../outside.wav\"}\n")
+    test.expect(!fs.existsSync(mine) && fs.existsSync(folder + "/keep.txt") && fs.existsSync(folder + "/sub/deep.wav") && fs.existsSync(d + "/outside.wav"),"discard removed something it must not")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the folder opens, and bad requests are refused",fn() {
+    let d = rig()
+    let opened = worker(d,"{\"action\":\"folder\"}\n")
+    tool.exec(Vec<str>("sleep","1"))
+    test.expect(strings.startsWith(opened,"V\tOpening ") && strings.equal(strings.trim(fs.readFileSync(d + "/log","utf8")),d + "/home/Music/Recordings"),"The folder was not opened: " + opened)
+    let bad = strings.split(worker(d,"{\"action\":\"bogus\"}\nnot json\n"),"\n")
+    test.expect(bad.len() == 2 && strings.startsWith(bad[0],"E\t") && strings.startsWith(bad[1],"E\t"),"Bad requests accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native Microphone records the test tone to a finished WAV file and shows its level under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/microphone-native"
+    let gst = strings.trim(tool.exec(Vec<str>("sh","-c","cc -print-file-name=libgstreamer-1.0.so.0")))
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.microphone/native-main.devx", executable, gst), Map<str,str>(), "", 240000)
+    let d = rig()
+    fs.writeFileSync(d + "/pactl","#!/bin/sh\necho []\n")
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("DEVOS_MICROPHONE_TEST","1"); env.set("DEVOS_MICROPHONE_HOME",d + "/home"); env.set("DEVOS_MICROPHONE_PACTL",d + "/pactl"); env.set("DEVOS_MICROPHONE_SMOKE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","microphone-native","xvfb-run","-a",executable),env,"",90000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Microphone recorded audio (peak "),"Microphone: " + t.out(done) + " / " + t.err(done))
+    let peak = strings.split(strings.split(t.out(done),"(peak ")[1],")")[0]
+    test.expect(strings.charLength(peak) >= 3,"The meter never moved: peak " + peak)
+    let wav = strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/home/Music/Recordings/*.wav | head -1")))
+    test.expect(!strings.equal(wav,"") && strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","head -c 4 " + wav + "; echo; head -c 12 " + wav + " | tail -c 4"))),"RIFF\nWAVE"),"The recording is not a finished WAV file: " + wav)
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("stat","-c","%a",d + "/home/Music/Recordings"))),"700"),"The recordings folder is not private")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

@@ -1,0 +1,85 @@
+#!/usr/bin/env d
+# Data worker of the native Microphone window. It lists the input devices, picks a new recording file in ~/Music/Recordings (created 0700) and opens
+# that folder. The recording itself is a GStreamer pipeline in the window. One JSON request per line on stdin:
+#   {"action":"devices"}                    -> V message, then M name label per input (monitors left out; the test tone is always last)
+#   {"action":"prepare"}                    -> V path   (a new, not yet existing .wav name)
+#   {"action":"discard","path":"..."}       -> V ""     (removes an unfinished recording; only a .wav inside the recordings folder)
+#   {"action":"folder"}                     -> opens ~/Music/Recordings with the default application
+# Test hooks (only with DEVOS_MICROPHONE_TEST=1): DEVOS_MICROPHONE_HOME, DEVOS_MICROPHONE_PACTL, DEVOS_MICROPHONE_OPEN.
+use "std/io"
+use "std/fs"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/posix.dev" as posix
+use "../../../lib/worker-kit.dev" as kit
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn testing():bool { return process.hasEnv("DEVOS_MICROPHONE_TEST") }
+fn setting(name:str, fallback:str):str { return testing() && process.hasEnv(name) ? process.getenv(name) : fallback }
+fn home():str { return setting("DEVOS_MICROPHONE_HOME",process.hasEnv("HOME") ? process.getenv("HOME") : "/") }
+fn recordings():str { return home() + "/Music/Recordings" }
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
+fn number(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+
+fn devices():str {
+    let out = "V\t"
+    let ran = hw.run(Vec<str>("env","LC_ALL=C",setting("DEVOS_MICROPHONE_PACTL","pactl"),"--format=json","list","sources"),5000)
+    if ran.code == 0 {
+        let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
+        if !result.isErr(parsed) && strings.equal(json.kind(result.unwrap(parsed)),"array") {
+            let list = result.unwrap(parsed)
+            for i in 0..(json.len(list) as i64) {
+                let s = json.at(list,i)
+                if !strings.equal(json.kind(s),"object") { continue }
+                let name = text(s,"name")
+                # The name goes into a GStreamer pipeline description, so quotes, spaces and backslashes cannot be allowed.
+                if strings.equal(name,"") || strings.endsWith(name,".monitor") || strings.startsWith(name,"-") || strings.contains(name,"\"") || strings.contains(name," ") || strings.contains(name,"\\") { continue }
+                let label = text(s,"description"); if strings.equal(label,"") { label = name }
+                out = out + kit.rs() + "M\t" + kit.clean(name) + "\t" + kit.clean(label)
+            }
+        }
+    } else { out = "V\tThe audio service did not answer; only the test tone is available." }
+    return out + kit.rs() + "M\ttest\tTest tone"
+}
+fn prepare():str {
+    let folder = recordings()
+    hw.run(Vec<str>("mkdir","-p","-m","700",folder),5000)
+    if !fs.is_dir(folder) { return kit.failure("Could not create the capture folder.") }
+    let stamp = strings.trim(hw.run(Vec<str>("date","+%Y-%m-%d_%H-%M-%S"),5000).out)
+    let unique = strings.trim(hw.run(Vec<str>("sh","-c","od -An -N4 -tx1 /dev/urandom | tr -d ' \\n'"),5000).out)
+    return "V\t" + kit.clean(folder + "/" + stamp + "-" + unique + ".wav")
+}
+# A .wav directly inside the recordings folder: nothing deeper, no "..", nothing outside.
+fn ownRecording(path:str):bool {
+    let prefix = recordings() + "/"
+    if !strings.startsWith(path,prefix) || !strings.endsWith(path,".wav") || strings.contains(path,"..") { return false }
+    let rest = strings.substring(path,strings.charLength(prefix),strings.charLength(path))
+    return !strings.equal(rest,"") && !strings.contains(rest,"/")
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action")
+    if strings.equal(action,"devices") { return devices() }
+    if strings.equal(action,"prepare") { return prepare() }
+    if strings.equal(action,"discard") { if ownRecording(text(r,"path")) { hw.run(Vec<str>("rm","-f","--",text(r,"path")),5000) }; return "V\t" }
+    if strings.equal(action,"folder") {
+        hw.run(Vec<str>("mkdir","-p","-m","700",recordings()),5000)
+        posix.shell(setting("DEVOS_MICROPHONE_OPEN","gio open") + " " + quote(recordings()) + " >/dev/null 2>&1 &")
+        return "V\tOpening " + kit.clean(recordings())
+    }
+    return kit.failure("Unsupported action")
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()
