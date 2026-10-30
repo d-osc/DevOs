@@ -13,18 +13,9 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
-fn failure(message:str):str {
-    let marker = "std/result.raise: "
-    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
-    return "E\t" + clean(shown)
-}
 # 1-63 characters: letters, digits, hyphen and underscore, not starting with a hyphen (the helper's queue name rule).
 fn queueName(value:str):bool {
     let count = strings.charLength(value)
@@ -41,31 +32,31 @@ fn printerUri(value:str):bool {
     return true
 }
 fn frame(state:json.Value):str {
-    let out = "K\t" + (json.has(state,"available") && strings.equal(json.kind(json.get(state,"available")),"bool") && json.bool(json.get(state,"available")) ? "1" : "0") + "\t" + clean(text(state,"default")) + "\t" + clean(text(state,"message"))
+    let out = "K\t" + (json.has(state,"available") && strings.equal(json.kind(json.get(state,"available")),"bool") && json.bool(json.get(state,"available")) ? "1" : "0") + "\t" + kit.clean(text(state,"default")) + "\t" + kit.clean(text(state,"message"))
     let list = json.has(state,"printers") ? json.get(state,"printers") : json.array()
-    for i in 0..(json.len(list) as i64) { let p = json.at(list,i); out = out + rs() + "L\t" + clean(text(p,"name")) + "\t" + clean(text(p,"uri")) }
+    for i in 0..(json.len(list) as i64) { let p = json.at(list,i); out = out + kit.rs() + "L\t" + kit.clean(text(p,"name")) + "\t" + kit.clean(text(p,"uri")) }
     return out
 }
 fn handle(root:str, line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let request = result.unwrap(parsed)
-    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(request),"object") { return kit.failure("Expected an object request") }
     let action = text(request,"action"); let payload = {action:"list"}
     if strings.equal(action,"add") {
-        if !queueName(text(request,"name")) { return failure("Use a printer name with letters, digits, hyphens or underscores (1–63 characters).") }
-        if !printerUri(text(request,"uri")) { return failure("Enter an ipp:// or ipps:// printer address without credentials or spaces.") }
+        if !queueName(text(request,"name")) { return kit.failure("Use a printer name with letters, digits, hyphens or underscores (1–63 characters).") }
+        if !printerUri(text(request,"uri")) { return kit.failure("Enter an ipp:// or ipps:// printer address without credentials or spaces.") }
         payload = {action:"add",name:text(request,"name"),uri:text(request,"uri")}
     } else if strings.equal(action,"default") || strings.equal(action,"remove") {
-        if !queueName(text(request,"name")) { return failure("Use a printer name with letters, digits, hyphens or underscores (1–63 characters).") }
+        if !queueName(text(request,"name")) { return kit.failure("Use a printer name with letters, digits, hyphens or underscores (1–63 characters).") }
         payload = {action:action,name:text(request,"name")}
-    } else if !strings.equal(action,"list") { return failure("Unsupported action") }
+    } else if !strings.equal(action,"list") { return kit.failure("Unsupported action") }
     let directory = process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
     let ran = hw.runInput(Vec<str>("d",directory + "/dev-os-printers"),json.stringify(payload),30000)
     let answer = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
-    if result.isErr(answer) || !strings.equal(json.kind(result.unwrap(answer)),"object") { return failure("The printer helper did not answer.") }
+    if result.isErr(answer) || !strings.equal(json.kind(result.unwrap(answer)),"object") { return kit.failure("The printer helper did not answer.") }
     let value = result.unwrap(answer)
-    if !(json.has(value,"ok") && strings.equal(json.kind(json.get(value,"ok")),"bool") && json.bool(json.get(value,"ok"))) { return failure(text(value,"error") == "" ? "The printer helper failed." : text(value,"error")) }
+    if !(json.has(value,"ok") && strings.equal(json.kind(json.get(value,"ok")),"bool") && json.bool(json.get(value,"ok"))) { return kit.failure(text(value,"error") == "" ? "The printer helper failed." : text(value,"error")) }
     return frame(value)
 }
 fn main():i32 {

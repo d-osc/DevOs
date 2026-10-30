@@ -17,15 +17,10 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
-fn failure(message:str):str { return "E\t" + clean(message) }
 fn testing():bool { return process.hasEnv("DEVOS_SETTINGS_TEST") }
 fn pactl():str { return testing() && process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") + "/pactl" : "pactl" }
 struct Reply { error: str, out: str }
@@ -67,17 +62,17 @@ fn list(kind:str):json.Value {
     return result.unwrap(parsed)
 }
 fn row(letter:str, i:Item, withDevice:bool):str {
-    return rs() + letter + "\t${i.id}\t" + clean(i.name) + "\t" + clean(i.title) + "\t${i.volume}\t" + (i.muted ? "1" : "0") + (withDevice ? "\t${i.device}" : "")
+    return kit.rs() + letter + "\t${i.id}\t" + kit.clean(i.name) + "\t" + kit.clean(i.title) + "\t${i.volume}\t" + (i.muted ? "1" : "0") + (withDevice ? "\t${i.device}" : "")
 }
 fn frame():str {
     let sinks = list("sinks"); let sources = list("sources"); let streams = list("sink-inputs")
-    if json.is_null(sinks) || json.is_null(sources) || json.is_null(streams) { return failure("The audio service did not respond.") }
+    if json.is_null(sinks) || json.is_null(sources) || json.is_null(streams) { return kit.failure("The audio service did not respond.") }
     let info = pa(Vec<str>("--format=json","info"))
-    if !strings.equal(info.error,"") { return failure(info.error) }
+    if !strings.equal(info.error,"") { return kit.failure(info.error) }
     let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(info.out)) })
-    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return failure("The audio service did not respond.") }
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return kit.failure("The audio service did not respond.") }
     let details = result.unwrap(parsed)
-    let out = "V\t" + clean(text(details,"default_sink_name")) + "\t" + clean(text(details,"default_source_name"))
+    let out = "V\t" + kit.clean(text(details,"default_sink_name")) + "\t" + kit.clean(text(details,"default_source_name"))
     for i in 0..(json.len(sinks) as i64) { if strings.equal(json.kind(json.at(sinks,i)),"object") { out = out + row("O",item(json.at(sinks,i)),false) } }
     for i in 0..(json.len(sources) as i64) {
         if !strings.equal(json.kind(json.at(sources,i)),"object") { continue }
@@ -101,34 +96,34 @@ fn nameOk(name:str):bool {
 }
 fn change(args:Vec<str>):str {
     let reply = pa(args)
-    if !strings.equal(reply.error,"") { return failure(reply.error) }
+    if !strings.equal(reply.error,"") { return kit.failure(reply.error) }
     return frame()
 }
 fn handle(line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let r = result.unwrap(parsed)
-    if !strings.equal(json.kind(r),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
     let action = text(r,"action"); let kind = text(r,"kind")
     if strings.equal(action,"get") { return frame() }
     if strings.equal(action,"volume") {
-        if !kindOk(kind,true) || !idOk(r,"id") || !(json.has(r,"value") && strings.equal(json.kind(json.get(r,"value")),"number")) { return failure("Invalid volume.") }
+        if !kindOk(kind,true) || !idOk(r,"id") || !(json.has(r,"value") && strings.equal(json.kind(json.get(r,"value")),"number")) { return kit.failure("Invalid volume.") }
         let value = json.float(json.get(r,"value")); if value < 0.0 { value = 0.0 }; if value > 100.0 { value = 100.0 }
         return change(Vec<str>("set-" + kind + "-volume","${json.int(json.get(r,"id"))}","${(value + 0.5) as i64}%"))
     }
     if strings.equal(action,"mute") {
-        if !kindOk(kind,true) || !idOk(r,"id") || !(json.has(r,"muted") && strings.equal(json.kind(json.get(r,"muted")),"bool")) { return failure("Invalid audio device.") }
+        if !kindOk(kind,true) || !idOk(r,"id") || !(json.has(r,"muted") && strings.equal(json.kind(json.get(r,"muted")),"bool")) { return kit.failure("Invalid audio device.") }
         return change(Vec<str>("set-" + kind + "-mute","${json.int(json.get(r,"id"))}",bool(r,"muted") ? "1" : "0"))
     }
     if strings.equal(action,"select") {
-        if !kindOk(kind,false) || !nameOk(text(r,"name")) { return failure("Invalid audio device.") }
+        if !kindOk(kind,false) || !nameOk(text(r,"name")) { return kit.failure("Invalid audio device.") }
         return change(Vec<str>("set-default-" + kind,text(r,"name")))
     }
     if strings.equal(action,"route") {
-        if !idOk(r,"id") || !idOk(r,"output") { return failure("Invalid audio device.") }
+        if !idOk(r,"id") || !idOk(r,"output") { return kit.failure("Invalid audio device.") }
         return change(Vec<str>("move-sink-input","${json.int(json.get(r,"id"))}","${json.int(json.get(r,"output"))}"))
     }
-    return failure("Unsupported action")
+    return kit.failure("Unsupported action")
 }
 fn main():i32 {
     while true {

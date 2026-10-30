@@ -18,20 +18,11 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn number(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"number") ? json.stringify(json.get(value,key)) : "" }
 fn yes(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) ? "1" : "0" }
-fn failure(message:str):str {
-    let marker = "std/result.raise: "
-    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
-    return "E\t" + clean(shown)
-}
 struct Answer { error: str, value: json.Value }
 fn ask(root:str, payload:json.Value):Answer {
     let directory = process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
@@ -57,12 +48,12 @@ fn frame(answer:json.Value):str {
     let identity = json.has(answer,"identity") ? json.get(answer,"identity") : json.object()
     let system = json.has(answer,"system") ? json.get(answer,"system") : json.object()
     let binding = json.has(system,"binding") && strings.equal(json.kind(json.get(system,"binding")),"object") ? json.get(system,"binding") : json.object()
-    let out = "A\t" + clean(text(answer,"clientId")) + "\t" + clean(text(identity,"provider")) + "\t" + clean(text(identity,"name")) + "\t" + clean(text(identity,"login")) + "\t" + number(identity,"id") + "\t" + yes(system,"available") + "\t" + clean(text(system,"currentUser"))
-    out = out + "\t" + number(binding,"id") + "\t" + clean(text(binding,"login")) + "\t" + yes(system,"firstSetup") + "\t" + clean(text(answer,"code")) + "\t" + clean(text(answer,"url")) + "\t" + number(answer,"interval") + "\t" + yes(answer,"pending")
+    let out = "A\t" + kit.clean(text(answer,"clientId")) + "\t" + kit.clean(text(identity,"provider")) + "\t" + kit.clean(text(identity,"name")) + "\t" + kit.clean(text(identity,"login")) + "\t" + number(identity,"id") + "\t" + yes(system,"available") + "\t" + kit.clean(text(system,"currentUser"))
+    out = out + "\t" + number(binding,"id") + "\t" + kit.clean(text(binding,"login")) + "\t" + yes(system,"firstSetup") + "\t" + kit.clean(text(answer,"code")) + "\t" + kit.clean(text(answer,"url")) + "\t" + number(answer,"interval") + "\t" + yes(answer,"pending")
     let users = json.has(system,"users") ? json.get(system,"users") : json.array()
     for i in 0..(json.len(users) as i64) {
         let user = json.at(users,i)
-        out = out + rs() + "U\t" + clean(text(user,"username")) + "\t" + clean(text(user,"name")) + "\t" + number(user,"uid") + "\t" + clean(text(user,"home")) + "\t" + clean(text(user,"github")) + "\t" + number(user,"githubId")
+        out = out + kit.rs() + "U\t" + kit.clean(text(user,"username")) + "\t" + kit.clean(text(user,"name")) + "\t" + number(user,"uid") + "\t" + kit.clean(text(user,"home")) + "\t" + kit.clean(text(user,"github")) + "\t" + number(user,"githubId")
     }
     return out
 }
@@ -87,9 +78,9 @@ fn switchCommand(root:str, username:str):Vec<str> {
 }
 fn handle(root:str, line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let request = result.unwrap(parsed)
-    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(request),"object") { return kit.failure("Expected an object request") }
     let action = text(request,"action")
     let known = false
     for name in Vec<str>("get","begin","poll","cancel","signout","unlink") { if strings.equal(name,action) { known = true } }
@@ -98,31 +89,31 @@ fn handle(root:str, line:str):str {
         if strings.equal(action,"begin") {
             # Link the GitHub account to this OS user when user management is available (like the JS page).
             let first = ask(root,{action:"get"})
-            if !strings.equal(first.error,"") { return failure(first.error) }
+            if !strings.equal(first.error,"") { return kit.failure(first.error) }
             let system = json.get(first.value,"system")
             payload = {action:"begin",link:json.has(system,"available") && strings.equal(json.kind(json.get(system,"available")),"bool") && json.bool(json.get(system,"available"))}
         }
         let answer = ask(root,payload)
-        if !strings.equal(answer.error,"") { return failure(answer.error) }
+        if !strings.equal(answer.error,"") { return kit.failure(answer.error) }
         let full = withState(root,answer.value)
-        if !strings.equal(full.error,"") { return failure(full.error) }
+        if !strings.equal(full.error,"") { return kit.failure(full.error) }
         return frame(full.value)
     }
     if strings.equal(action,"switch") {
         let username = text(request,"username")
-        if !usernameOk(username) { return failure("Choose a user from the list.") }
+        if !usernameOk(username) { return kit.failure("Choose a user from the list.") }
         # Only users that exist on this device, never the shared 'devos' profile or the current user.
         let state = ask(root,{action:"get"})
-        if !strings.equal(state.error,"") { return failure(state.error) }
+        if !strings.equal(state.error,"") { return kit.failure(state.error) }
         let system = json.get(state.value,"system")
         let listed = false; let users = json.has(system,"users") ? json.get(system,"users") : json.array()
         for i in 0..(json.len(users) as i64) { if strings.equal(text(json.at(users,i),"username"),username) { listed = true } }
-        if !listed || strings.equal(username,"devos") || strings.equal(username,text(system,"currentUser")) { return failure("Choose another user on this device.") }
+        if !listed || strings.equal(username,"devos") || strings.equal(username,text(system,"currentUser")) { return kit.failure("Choose another user on this device.") }
         let ran = hw.run(switchCommand(root,username),30000)
-        if ran.code != 0 { return failure("Could not switch user: " + strings.trim(ran.out)) }
+        if ran.code != 0 { return kit.failure("Could not switch user: " + strings.trim(ran.out)) }
         return frame(state.value)
     }
-    return failure("Unsupported action")
+    return kit.failure("Unsupported action")
 }
 fn main():i32 {
     let root = args.len() > 0 ? args.get(0) : "."

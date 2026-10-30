@@ -1,0 +1,19 @@
+# What every Settings page worker needs for its answers: the record separator, text that is safe inside a tab-separated frame, and the
+# error frame "E<TAB>message". Used by wifi-page.dev, bluetooth-page.dev, sound-page.dev, display-page.dev, printers-page.dev,
+# accounts-page.dev, network-pages.dev and system-pages.dev.
+use "std/strings"
+use "std/encoding"
+
+# ASCII 30 separates the records of a frame.
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+# Text for a cell: tabs, line breaks and the record separator become spaces.
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
+    return strings.replaceAll(out,rs()," ")
+}
+# The error frame. An error raised by a std module arrives as "std/result.raise: message"; only the message is shown.
+fn failure(message:str):str {
+    let marker = "std/result.raise: "
+    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
+    return "E\t" + clean(shown)
+}

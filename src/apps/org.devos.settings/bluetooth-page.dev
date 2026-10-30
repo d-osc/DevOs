@@ -21,15 +21,10 @@ use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
 use "../../../lib/posix.dev" as posix
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
-fn failure(message:str):str { return "E\t" + clean(message) }
 fn testing():bool { return process.hasEnv("DEVOS_SETTINGS_TEST") }
 fn windows():bool {
     if testing() && process.hasEnv("DEVOS_BLUETOOTH_MODE") { return strings.equal(process.getenv("DEVOS_BLUETOOTH_MODE"),"windows") }
@@ -61,28 +56,28 @@ fn objects(state:json.Value, key:str):bool {
     return true
 }
 fn frame(state:json.Value, message:str):str {
-    if !strings.equal(json.kind(state),"object") { return failure("Device settings helper returned no state.") }
-    for key in Vec<str>("adapters","devices","usb","inputs") { if !objects(state,key) { return failure("Invalid device list returned by the system.") } }
-    let out = "V\t" + (windows() ? "Windows" : "Linux") + "\t" + clean(text(state,"bluetoothError")) + "\t" + clean(message)
+    if !strings.equal(json.kind(state),"object") { return kit.failure("Device settings helper returned no state.") }
+    for key in Vec<str>("adapters","devices","usb","inputs") { if !objects(state,key) { return kit.failure("Invalid device list returned by the system.") } }
+    let out = "V\t" + (windows() ? "Windows" : "Linux") + "\t" + kit.clean(text(state,"bluetoothError")) + "\t" + kit.clean(message)
     let adapters = listOf(state,"adapters")
     for i in 0..(json.len(adapters) as i64) {
         let a = json.at(adapters,i)
-        if !pathOk(text(a,"id")) { return failure("Invalid Bluetooth adapter returned by the system.") }
-        out = out + rs() + "A\t" + text(a,"id") + "\t" + clean(text(a,"name")) + "\t" + (bool(a,"powered") ? "1" : "0")
+        if !pathOk(text(a,"id")) { return kit.failure("Invalid Bluetooth adapter returned by the system.") }
+        out = out + kit.rs() + "A\t" + text(a,"id") + "\t" + kit.clean(text(a,"name")) + "\t" + (bool(a,"powered") ? "1" : "0")
     }
     let devices = listOf(state,"devices")
     for i in 0..(json.len(devices) as i64) {
         let d = json.at(devices,i)
-        if !pathOk(text(d,"id")) || !pathOk(text(d,"adapter")) { return failure("Invalid Bluetooth device returned by the system.") }
+        if !pathOk(text(d,"id")) || !pathOk(text(d,"adapter")) { return kit.failure("Invalid Bluetooth device returned by the system.") }
         let named = !(json.has(d,"named") && strings.equal(json.kind(json.get(d,"named")),"bool") && !json.bool(json.get(d,"named")))
-        out = out + rs() + "D\t" + text(d,"id") + "\t" + text(d,"adapter") + "\t" + clean(text(d,"name")) + "\t" + (named ? "1" : "0") + "\t" + clean(text(d,"address")) + "\t" + clean(text(d,"icon")) + "\t" + (bool(d,"paired") ? "1" : "0") + "\t" + (bool(d,"connected") ? "1" : "0")
+        out = out + kit.rs() + "D\t" + text(d,"id") + "\t" + text(d,"adapter") + "\t" + kit.clean(text(d,"name")) + "\t" + (named ? "1" : "0") + "\t" + kit.clean(text(d,"address")) + "\t" + kit.clean(text(d,"icon")) + "\t" + (bool(d,"paired") ? "1" : "0") + "\t" + (bool(d,"connected") ? "1" : "0")
     }
     let usb = listOf(state,"usb")
-    for i in 0..(json.len(usb) as i64) { let u = json.at(usb,i); out = out + rs() + "U\t" + clean(text(u,"name")) + "\t" + clean(text(u,"vendor")) }
+    for i in 0..(json.len(usb) as i64) { let u = json.at(usb,i); out = out + kit.rs() + "U\t" + kit.clean(text(u,"name")) + "\t" + kit.clean(text(u,"vendor")) }
     let inputs = listOf(state,"inputs")
-    for i in 0..(json.len(inputs) as i64) { let u = json.at(inputs,i); out = out + rs() + "I\t" + clean(text(u,"name")) + "\t" + clean(text(u,"vendor")) }
+    for i in 0..(json.len(inputs) as i64) { let u = json.at(inputs,i); out = out + kit.rs() + "I\t" + kit.clean(text(u,"name")) + "\t" + kit.clean(text(u,"vendor")) }
     let p = pairing()
-    return out + rs() + "P\t" + p.state + "\t" + p.kind + "\t" + clean(p.code) + "\t" + clean(p.message) + "\t" + clean(p.device)
+    return out + kit.rs() + "P\t" + p.state + "\t" + p.kind + "\t" + kit.clean(p.code) + "\t" + kit.clean(p.message) + "\t" + kit.clean(p.device)
 }
 
 # Pairing. The agent program (native/devos-bluetooth-agent.c) does the D-Bus part and talks to this worker through two files in a private folder:
@@ -132,11 +127,11 @@ fn knownUnpaired(root:str, id:str):bool {
 }
 fn startPairing(root:str, r:json.Value):str {
     let id = text(r,"id")
-    if !pathOk(id) || !strings.contains(id,"/dev_") { return failure("Choose a Bluetooth device first.") }
-    if pairingActive() { return failure("Another pairing request is in progress.") }
-    if !knownUnpaired(root,id) { return failure("Device is no longer available. Refresh the list.") }
+    if !pathOk(id) || !strings.contains(id,"/dev_") { return kit.failure("Choose a Bluetooth device first.") }
+    if pairingActive() { return kit.failure("Another pairing request is in progress.") }
+    if !knownUnpaired(root,id) { return kit.failure("Device is no longer available. Refresh the list.") }
     let agent = agentProgram(root)
-    if !quoteOk(agent) || !quoteOk(stateDir()) || !fs.existsSync(agent) { return failure("The Bluetooth pairing helper is missing. Reinstall the current DevOs runtime.") }
+    if !quoteOk(agent) || !quoteOk(stateDir()) || !fs.existsSync(agent) { return kit.failure("The Bluetooth pairing helper is missing. Reinstall the current DevOs runtime.") }
     clearPairing()
     fs.mkdirSync(stateDir(),true)
     fs.writeFileSync(deviceFile(),id + "\n")
@@ -147,15 +142,15 @@ fn startPairing(root:str, r:json.Value):str {
 # The user's answer to the pending request. PIN: 1 to 16 characters; passkey: up to six digits.
 fn respond(root:str, r:json.Value):str {
     let p = pairing()
-    if !strings.equal(p.state,"prompt") { return failure("There is no pairing request to answer.") }
-    if !(json.has(r,"accept") && strings.equal(json.kind(json.get(r,"accept")),"bool")) { return failure("Invalid pairing answer.") }
+    if !strings.equal(p.state,"prompt") { return kit.failure("There is no pairing request to answer.") }
+    if !(json.has(r,"accept") && strings.equal(json.kind(json.get(r,"accept")),"bool")) { return kit.failure("Invalid pairing answer.") }
     if !bool(r,"accept") { writeAtomic("response","decline"); return read(root,"") }
     let value = text(r,"value")
-    if strings.equal(p.kind,"pin") && (strings.charLength(value) < 1 || strings.charLength(value) > 16 || !noControl(value)) { return failure("Enter a PIN of 1–16 characters.") }
+    if strings.equal(p.kind,"pin") && (strings.charLength(value) < 1 || strings.charLength(value) > 16 || !noControl(value)) { return kit.failure("Enter a PIN of 1–16 characters.") }
     if strings.equal(p.kind,"passkey") {
         let ok = strings.charLength(value) >= 1 && strings.charLength(value) <= 6
         for b in encoding.encode(value,"utf8") { if b < 48 || b > 57 { ok = false } }
-        if !ok { return failure("Enter a passkey of up to six digits.") }
+        if !ok { return kit.failure("Enter a passkey of up to six digits.") }
     }
     writeAtomic("response","accept\t" + (strings.equal(p.kind,"pin") || strings.equal(p.kind,"passkey") ? value : ""))
     return read(root,"")
@@ -172,19 +167,19 @@ fn poll(root:str):str {
 }
 fn read(root:str, message:str):str {
     let answer = request(root,{action:"get"},20)
-    if !strings.equal(answer.error,"") { return failure(answer.error) }
+    if !strings.equal(answer.error,"") { return kit.failure(answer.error) }
     return frame(answer.state,message)
 }
 fn answer(root:str, payload:json.Value, seconds:i64, message:str):str {
     let ran = request(root,payload,seconds)
-    if !strings.equal(ran.error,"") { return failure(ran.error) }
+    if !strings.equal(ran.error,"") { return kit.failure(ran.error) }
     return frame(ran.state,message)
 }
 fn handle(root:str, line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let r = result.unwrap(parsed)
-    if !strings.equal(json.kind(r),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
     let action = text(r,"action")
     if strings.equal(action,"get") { return read(root,"") }
     if strings.equal(action,"scan") { return answer(root,{action:"scan"},40,"") }
@@ -197,20 +192,20 @@ fn handle(root:str, line:str):str {
     }
     if strings.equal(action,"settings") {
         let page = text(r,"page")
-        if !(strings.equal(page,"bluetooth") || strings.equal(page,"mouse") || strings.equal(page,"keyboard") || strings.equal(page,"printers")) { return failure("Unknown devices settings page.") }
+        if !(strings.equal(page,"bluetooth") || strings.equal(page,"mouse") || strings.equal(page,"keyboard") || strings.equal(page,"printers")) { return kit.failure("Unknown devices settings page.") }
         let opened = request(root,{action:"settings",page:page},20)
-        if !strings.equal(opened.error,"") { return failure(opened.error) }
+        if !strings.equal(opened.error,"") { return kit.failure(opened.error) }
         return read(root,"")
     }
     if strings.equal(action,"power") {
-        if !pathOk(text(r,"id")) || strings.contains(text(r,"id"),"/dev_") || !(json.has(r,"powered") && strings.equal(json.kind(json.get(r,"powered")),"bool")) { return failure("Invalid Bluetooth adapter or power state.") }
+        if !pathOk(text(r,"id")) || strings.contains(text(r,"id"),"/dev_") || !(json.has(r,"powered") && strings.equal(json.kind(json.get(r,"powered")),"bool")) { return kit.failure("Invalid Bluetooth adapter or power state.") }
         return answer(root,{action:"power",id:text(r,"id"),powered:bool(r,"powered")},20,"")
     }
     if strings.equal(action,"connect") || strings.equal(action,"disconnect") || strings.equal(action,"forget") {
-        if !pathOk(text(r,"id")) || !strings.contains(text(r,"id"),"/dev_") { return failure("Choose a Bluetooth device first.") }
+        if !pathOk(text(r,"id")) || !strings.contains(text(r,"id"),"/dev_") { return kit.failure("Choose a Bluetooth device first.") }
         return answer(root,{action:action,id:text(r,"id")},30,"")
     }
-    return failure("Unsupported action")
+    return kit.failure("Unsupported action")
 }
 fn main():i32 {
     let root = args.len() > 0 ? args.get(0) : "."

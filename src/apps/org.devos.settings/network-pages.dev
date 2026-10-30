@@ -22,20 +22,11 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn number(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"number") ? json.stringify(json.get(value,key)) : "" }
 fn yes(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) ? "1" : "0" }
-fn failure(message:str):str {
-    let marker = "std/result.raise: "
-    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
-    return "E\t" + clean(shown)
-}
 struct Answer { error: str, value: json.Value }
 fn ask(root:str, payload:json.Value):Answer {
     let directory = process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
@@ -55,16 +46,16 @@ fn passphrase():str {
 }
 fn listOf(value:json.Value, key:str):str {
     let out = Vec<str>(); let list = json.has(value,key) ? json.get(value,key) : json.array()
-    for i in 0..(json.len(list) as i64) { if strings.equal(json.kind(json.at(list,i)),"string") { out.push(clean(json.string(json.at(list,i)))) } }
+    for i in 0..(json.len(list) as i64) { if strings.equal(json.kind(json.at(list,i)),"string") { out.push(kit.clean(json.string(json.at(list,i)))) } }
     return strings.join(out,", ")
 }
 fn isLink(type:i64):bool { return type == 1 || type == 2 }
 fn frame(state:json.Value):str {
-    let out = "W\t" + yes(state,"available") + "\t" + yes(state,"airplane") + "\t" + clean(text(state,"radioError")) + "\t" + number(state,"connectivity") + "\t" + passphrase()
+    let out = "W\t" + yes(state,"available") + "\t" + yes(state,"airplane") + "\t" + kit.clean(text(state,"radioError")) + "\t" + number(state,"connectivity") + "\t" + passphrase()
     let radios = json.has(state,"radios") ? json.get(state,"radios") : json.array()
     for i in 0..(json.len(radios) as i64) {
         let r = json.at(radios,i)
-        out = out + rs() + "R\t" + number(r,"id") + "\t" + clean(text(r,"type")) + "\t" + clean(text(r,"device")) + "\t" + clean(text(r,"soft")) + "\t" + clean(text(r,"hard"))
+        out = out + kit.rs() + "R\t" + number(r,"id") + "\t" + kit.clean(text(r,"type")) + "\t" + kit.clean(text(r,"device")) + "\t" + kit.clean(text(r,"soft")) + "\t" + kit.clean(text(r,"hard"))
     }
     # Wired and Wi-Fi adapters first, then by name (like the JS page).
     let adapters = json.has(state,"adapters") ? json.get(state,"adapters") : json.array()
@@ -74,13 +65,13 @@ fn frame(state:json.Value):str {
     for key in keys {
         let index = json.int(json.parse(strings.split(key,"\n")[1])); let a = json.at(adapters,index)
         let v4 = json.has(a,"ipv4") ? json.get(a,"ipv4") : json.object(); let v6 = json.has(a,"ipv6") ? json.get(a,"ipv6") : json.object()
-        out = out + rs() + "A\t" + clean(text(a,"path")) + "\t" + clean(text(a,"name")) + "\t" + number(a,"type") + "\t" + number(a,"state") + "\t" + yes(a,"managed") + "\t" + number(a,"mtu") + "\t" + clean(text(a,"mac")) + "\t" + clean(text(a,"driver")) + "\t" + yes(a,"ap")
-        out = out + "\t" + listOf(v4,"addresses") + "\t" + clean(text(v4,"gateway")) + "\t" + listOf(v4,"dns") + "\t" + listOf(v6,"addresses") + "\t" + clean(text(v6,"gateway")) + "\t" + listOf(v6,"dns")
+        out = out + kit.rs() + "A\t" + kit.clean(text(a,"path")) + "\t" + kit.clean(text(a,"name")) + "\t" + number(a,"type") + "\t" + number(a,"state") + "\t" + yes(a,"managed") + "\t" + number(a,"mtu") + "\t" + kit.clean(text(a,"mac")) + "\t" + kit.clean(text(a,"driver")) + "\t" + yes(a,"ap")
+        out = out + "\t" + listOf(v4,"addresses") + "\t" + kit.clean(text(v4,"gateway")) + "\t" + listOf(v4,"dns") + "\t" + listOf(v6,"addresses") + "\t" + kit.clean(text(v6,"gateway")) + "\t" + listOf(v6,"dns")
     }
     let profiles = json.has(state,"profiles") ? json.get(state,"profiles") : json.array()
     for i in 0..(json.len(profiles) as i64) {
         let p = json.at(profiles,i)
-        out = out + rs() + "P\t" + clean(text(p,"id")) + "\t" + clean(text(p,"name")) + "\t" + clean(text(p,"type")) + "\t" + clean(text(p,"activePath")) + "\t" + yes(p,"active") + "\t" + yes(p,"hotspot") + "\t" + yes(p,"ownHotspot")
+        out = out + kit.rs() + "P\t" + kit.clean(text(p,"id")) + "\t" + kit.clean(text(p,"name")) + "\t" + kit.clean(text(p,"type")) + "\t" + kit.clean(text(p,"activePath")) + "\t" + yes(p,"active") + "\t" + yes(p,"hotspot") + "\t" + yes(p,"ownHotspot")
     }
     return out
 }
@@ -96,37 +87,37 @@ fn printable(value:str):bool {
 }
 fn handle(root:str, line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let request = result.unwrap(parsed)
-    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(request),"object") { return kit.failure("Expected an object request") }
     let action = text(request,"action"); let payload = json.null_value()
     if member(Vec<str>("list","radios","connectivity-check"),action) { payload = {action:action} }
     else if strings.equal(action,"airplane") {
-        if !(json.has(request,"enabled") && strings.equal(json.kind(json.get(request,"enabled")),"bool")) { return failure("Invalid airplane mode state.") }
+        if !(json.has(request,"enabled") && strings.equal(json.kind(json.get(request,"enabled")),"bool")) { return kit.failure("Invalid airplane mode state.") }
         payload = {action:"airplane",enabled:json.bool(json.get(request,"enabled"))}
     } else if strings.equal(action,"vpn-import") {
         let type = text(request,"type"); let file = text(request,"file")
-        if !member(Vec<str>("wireguard","openvpn"),type) { return failure("Choose WireGuard or OpenVPN.") }
-        if !strings.startsWith(file,"/") || !noControl(file) || strings.charLength(file) > 4096 { return failure("Choose a readable VPN configuration file.") }
+        if !member(Vec<str>("wireguard","openvpn"),type) { return kit.failure("Choose WireGuard or OpenVPN.") }
+        if !strings.startsWith(file,"/") || !noControl(file) || strings.charLength(file) > 4096 { return kit.failure("Choose a readable VPN configuration file.") }
         payload = {action:"vpn-import",type:type,file:file}
     } else if strings.equal(action,"vpn-connect") {
         let username = text(request,"username"); let password = text(request,"password")
-        if text(request,"id") == "" || !noControl(username) || !noControl(password) || strings.charLength(username) > 256 || strings.charLength(password) > 1024 { return failure("Invalid VPN request.") }
+        if text(request,"id") == "" || !noControl(username) || !noControl(password) || strings.charLength(username) > 256 || strings.charLength(password) > 1024 { return kit.failure("Invalid VPN request.") }
         payload = {action:"vpn-connect",id:text(request,"id"),username:username,password:password}
     } else if member(Vec<str>("vpn-disconnect","vpn-remove","hotspot-stop"),action) {
-        if text(request,"id") == "" { return failure("Choose a connection first.") }
+        if text(request,"id") == "" { return kit.failure("Choose a connection first.") }
         payload = {action:action,id:text(request,"id")}
     } else if strings.equal(action,"hotspot-start") {
         let ssid = text(request,"ssid"); let password = text(request,"password")
-        if text(request,"device") == "" || ssid == "" || strings.charLength(ssid) > 32 || !noControl(ssid) { return failure("Enter a network name of 1 to 32 characters.") }
-        if strings.charLength(password) < 8 || strings.charLength(password) > 63 || !printable(password) { return failure("The password must be 8 to 63 ASCII characters.") }
+        if text(request,"device") == "" || ssid == "" || strings.charLength(ssid) > 32 || !noControl(ssid) { return kit.failure("Enter a network name of 1 to 32 characters.") }
+        if strings.charLength(password) < 8 || strings.charLength(password) > 63 || !printable(password) { return kit.failure("The password must be 8 to 63 ASCII characters.") }
         payload = {action:"hotspot-start",device:text(request,"device"),ssid:ssid,password:password}
     } else if member(Vec<str>("adapter-connect","adapter-disconnect"),action) {
-        if text(request,"device") == "" { return failure("Choose an adapter first.") }
+        if text(request,"device") == "" { return kit.failure("Choose an adapter first.") }
         payload = {action:action,device:text(request,"device")}
-    } else { return failure("Unsupported action") }
+    } else { return kit.failure("Unsupported action") }
     let answer = ask(root,payload)
-    if !strings.equal(answer.error,"") { return failure(answer.error) }
+    if !strings.equal(answer.error,"") { return kit.failure(answer.error) }
     return frame(answer.value)
 }
 fn main():i32 {

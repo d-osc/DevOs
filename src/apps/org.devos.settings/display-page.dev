@@ -21,16 +21,11 @@ use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
 use "../../../lib/posix.dev" as posix
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
 fn num(value:json.Value, key:str, fallback:f64):f64 { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"number") ? json.float(json.get(value,key)) : fallback }
-fn failure(message:str):str { return "E\t" + clean(message) }
 fn testing():bool { return process.hasEnv("DEVOS_SETTINGS_TEST") }
 fn setting(name:str, fallback:str):str { return testing() && process.hasEnv(name) ? process.getenv(name) : fallback }
 fn seconds(name:str, fallback:i64):i64 { let n = 0; let v = setting(name,"${fallback}"); for b in encoding.encode(v,"utf8") { if b < 48 || b > 57 { return fallback }; n = n * 10 + ((b - 48) as i64) }; return n }
@@ -128,33 +123,33 @@ fn restore():str {
 }
 
 fn frame(loaded:Loaded):str {
-    if !strings.equal(loaded.error,"") { return failure(loaded.error) }
+    if !strings.equal(loaded.error,"") { return kit.failure(loaded.error) }
     let out = "V\t" + (pending() ? "1" : "0") + "\t${remaining()}"
     for o in loaded.outputs {
-        out = out + rs() + "D\t" + clean(o.name) + "\t" + clean(o.description) + "\t" + (o.enabled ? "1" : "0") + "\t" + fmt(o.scale) + "\t" + clean(o.transform) + "\t${o.x}\t${o.y}"
-        for m in o.modes { out = out + rs() + "M\t" + m.id + "\t${m.width}\t${m.height}\t" + fmt(m.refresh) + "\t" + (m.current ? "1" : "0") + "\t" + (m.preferred ? "1" : "0") }
+        out = out + kit.rs() + "D\t" + kit.clean(o.name) + "\t" + kit.clean(o.description) + "\t" + (o.enabled ? "1" : "0") + "\t" + fmt(o.scale) + "\t" + kit.clean(o.transform) + "\t${o.x}\t${o.y}"
+        for m in o.modes { out = out + kit.rs() + "M\t" + m.id + "\t${m.width}\t${m.height}\t" + fmt(m.refresh) + "\t" + (m.current ? "1" : "0") + "\t" + (m.preferred ? "1" : "0") }
     }
     return out
 }
 fn read():str { return frame(load()) }
 fn quoteOk(value:str):bool { return !strings.contains(value,"'") }
 fn preview(r:json.Value):str {
-    if pending() { return failure("Keep or revert the current preview first.") }
-    if !quoteOk(marker()) || !quoteOk(randr()) { return failure("The runtime folder name is not supported.") }
-    let loaded = load(); if !strings.equal(loaded.error,"") { return failure(loaded.error) }
+    if pending() { return kit.failure("Keep or revert the current preview first.") }
+    if !quoteOk(marker()) || !quoteOk(randr()) { return kit.failure("The runtime folder name is not supported.") }
+    let loaded = load(); if !strings.equal(loaded.error,"") { return kit.failure(loaded.error) }
     let target = Output("","",false,Vec<Mode>(),0,0,1.0,"normal"); let found = false
     for o in loaded.outputs { if strings.equal(o.name,text(r,"name")) { target = o; found = true } }
-    if !found || !target.enabled { return failure("Select a connected display and one of its supported modes.") }
+    if !found || !target.enabled { return kit.failure("Select a connected display and one of its supported modes.") }
     let modeOk = false; for m in target.modes { if strings.equal(m.id,text(r,"mode")) { modeOk = true } }
-    if !modeOk { return failure("Select a connected display and one of its supported modes.") }
+    if !modeOk { return kit.failure("Select a connected display and one of its supported modes.") }
     let scale = num(r,"scale",0.0); let x = num(r,"x",1000000.0); let y = num(r,"y",1000000.0)
     let whole = fn(v:f64):bool { return v >= 0.0 - 32768.0 && v <= 32768.0 && (v as i64) as f64 == v }
-    if scale < 0.5 || scale > 4.0 || !known(transforms(),text(r,"transform")) || !whole(x) || !whole(y) { return failure("Invalid display scale, rotation or position.") }
-    let back = rollback(loaded.outputs); if !strings.equal(back.error,"") { return failure(back.error) }
+    if scale < 0.5 || scale > 4.0 || !known(transforms(),text(r,"transform")) || !whole(x) || !whole(y) { return kit.failure("Invalid display scale, rotation or position.") }
+    let back = rollback(loaded.outputs); if !strings.equal(back.error,"") { return kit.failure(back.error) }
     let change = argsFor(target,text(r,"mode"),scale,text(r,"transform"),x as i64,y as i64)
     let dry = Vec<str>(randr(),"--dryrun"); for a in change { dry.push(a) }
     let tried = hw.run(dry,8000)
-    if tried.code != 0 { return failure(strings.equal(strings.trim(tried.out),"") ? "The compositor rejected the display configuration." : strings.trim(tried.out)) }
+    if tried.code != 0 { return kit.failure(strings.equal(strings.trim(tried.out),"") ? "The compositor rejected the display configuration." : strings.trim(tried.out)) }
     # The marker holds the layout to restore; the detached process restores it after the safety delay unless the marker is gone by then.
     fs.writeFileSync(marker(),strings.join(back.lines,"\n") + "\n")
     let timer = "( sleep ${safety()}; if test -f '" + marker() + "'; then xargs -d '\\n' '" + randr() + "' < '" + marker() + "'; rm -f '" + marker() + "'; fi ) >/dev/null 2>&1 &"
@@ -163,33 +158,33 @@ fn preview(r:json.Value):str {
     let ran = hw.run(apply,8000)
     if ran.code != 0 {
         let problem = restore()
-        return failure(strings.equal(strings.trim(ran.out),"") ? "The compositor rejected the display configuration." : strings.trim(ran.out) + (strings.equal(problem,"") ? "" : " " + problem))
+        return kit.failure(strings.equal(strings.trim(ran.out),"") ? "The compositor rejected the display configuration." : strings.trim(ran.out) + (strings.equal(problem,"") ? "" : " " + problem))
     }
     return read()
 }
 fn handle(line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let r = result.unwrap(parsed)
-    if !strings.equal(json.kind(r),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
     let action = text(r,"action")
     if strings.equal(action,"get") { return read() }
     if strings.equal(action,"status") {
         # The page's countdown ran out: put the old layout back.
-        if pending() && remaining() == 0 { let problem = restore(); if !strings.equal(problem,"") { return failure(problem) } }
+        if pending() && remaining() == 0 { let problem = restore(); if !strings.equal(problem,"") { return kit.failure(problem) } }
         return read()
     }
     if strings.equal(action,"preview") { return preview(r) }
     if strings.equal(action,"keep") {
-        if !pending() { return failure("The preview expired and was reverted. Refresh the display settings.") }
+        if !pending() { return kit.failure("The preview expired and was reverted. Refresh the display settings.") }
         fs.unlinkSync(marker()); return read()
     }
     if strings.equal(action,"revert") {
         let problem = restore()
-        if !strings.equal(problem,"") { return failure(problem) }
+        if !strings.equal(problem,"") { return kit.failure(problem) }
         return read()
     }
-    return failure("Unsupported action")
+    return kit.failure("Unsupported action")
 }
 fn main():i32 {
     while true {

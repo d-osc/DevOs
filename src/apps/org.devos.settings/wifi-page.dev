@@ -17,19 +17,10 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
+use "./worker-kit.dev" as kit
 
-fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
-fn clean(value:str):str {
-    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
-    return strings.replaceAll(out,rs()," ")
-}
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
-fn failure(message:str):str {
-    let marker = "std/result.raise: "
-    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
-    return "E\t" + clean(shown)
-}
 fn testing():bool { return process.hasEnv("DEVOS_SETTINGS_TEST") }
 fn windows():bool {
     if testing() && process.hasEnv("DEVOS_WIFI_MODE") { return strings.equal(process.getenv("DEVOS_WIFI_MODE"),"windows") }
@@ -115,14 +106,14 @@ fn normalize(raw:json.Value):Networks {
 }
 fn frame(root:str, scan:json.Value, message:str):str {
     let found = normalize(json.has(scan,"networks") ? json.get(scan,"networks") : json.array())
-    if !strings.equal(found.error,"") { return failure(found.error) }
+    if !strings.equal(found.error,"") { return kit.failure(found.error) }
     let radio = json.has(scan,"wirelessEnabled") && strings.equal(json.kind(json.get(scan,"wirelessEnabled")),"bool") ? (json.bool(json.get(scan,"wirelessEnabled")) ? "1" : "0") : ""
-    let out = "V\t" + (windows() ? "Windows" : "Linux") + "\t" + radio + "\t" + clean(message)
-    for n in found.list { out = out + rs() + "N\t" + clean(n.ssid) + "\t" + clean(n.profile) + "\t" + clean(n.adapter) + "\t" + n.interfaceId + "\t${n.signal}\t" + (n.secure ? "1" : "0") + "\t" + (n.connected ? "1" : "0") + "\t" + (n.connectable ? "1" : "0") + "\t" + clean(n.security) }
+    let out = "V\t" + (windows() ? "Windows" : "Linux") + "\t" + radio + "\t" + kit.clean(message)
+    for n in found.list { out = out + kit.rs() + "N\t" + kit.clean(n.ssid) + "\t" + kit.clean(n.profile) + "\t" + kit.clean(n.adapter) + "\t" + n.interfaceId + "\t${n.signal}\t" + (n.secure ? "1" : "0") + "\t" + (n.connected ? "1" : "0") + "\t" + (n.connectable ? "1" : "0") + "\t" + kit.clean(n.security) }
     return out
 }
 fn noControl(value:str):bool { return !strings.contains(value,"\n") && !strings.contains(value,"\r") && !strings.contains(value,"\t") }
-fn explain(answer:Answer):str { return failure(answer.denied ? answer.error + " Allow location access for desktop apps in Windows Privacy settings, then refresh." : answer.error) }
+fn explain(answer:Answer):str { return kit.failure(answer.denied ? answer.error + " Allow location access for desktop apps in Windows Privacy settings, then refresh." : answer.error) }
 fn scan(root:str, message:str):str {
     let answer = request(root,{action:"scan"})
     if !strings.equal(answer.error,"") { return explain(answer) }
@@ -130,46 +121,46 @@ fn scan(root:str, message:str):str {
 }
 fn handle(root:str, line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
-    if result.isErr(parsed) { return failure("Invalid service request") }
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let r = result.unwrap(parsed)
-    if !strings.equal(json.kind(r),"object") { return failure("Expected an object request") }
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
     let action = text(r,"action")
     if strings.equal(action,"scan") { return scan(root,"") }
     if strings.equal(action,"settings") {
-        if !windows() { return failure("Manage Wi-Fi inside DevOs Settings.") }
+        if !windows() { return kit.failure("Manage Wi-Fi inside DevOs Settings.") }
         let opened = request(root,{action:"settings",page:"wifi"})
         if !strings.equal(opened.error,"") { return explain(opened) }
         return scan(root,"")
     }
     if strings.equal(action,"radio") {
-        if windows() { return failure("Turn Wi-Fi on or off in Windows.") }
-        if !(json.has(r,"enabled") && strings.equal(json.kind(json.get(r,"enabled")),"bool")) { return failure("Invalid Wi-Fi state.") }
+        if windows() { return kit.failure("Turn Wi-Fi on or off in Windows.") }
+        if !(json.has(r,"enabled") && strings.equal(json.kind(json.get(r,"enabled")),"bool")) { return kit.failure("Invalid Wi-Fi state.") }
         let answer = request(root,{action:"radio",enabled:bool(r,"enabled")})
         if !strings.equal(answer.error,"") { return explain(answer) }
         return scan(root,"")
     }
     if strings.equal(action,"disconnect") {
-        if windows() { return failure("Disconnect in Windows.") }
-        if !uuid(text(r,"interfaceId")) { return failure("Choose a Wi-Fi network first.") }
+        if windows() { return kit.failure("Disconnect in Windows.") }
+        if !uuid(text(r,"interfaceId")) { return kit.failure("Choose a Wi-Fi network first.") }
         let answer = request(root,{action:"disconnect",interfaceId:text(r,"interfaceId")})
         if !strings.equal(answer.error,"") { return explain(answer) }
         return scan(root,"")
     }
     if strings.equal(action,"connect") {
         let id = text(r,"interfaceId"); let profile = text(r,"profile")
-        if !uuid(id) || !noControl(profile) || strings.charLength(profile) > 256 { return failure("Choose a Wi-Fi network first.") }
+        if !uuid(id) || !noControl(profile) || strings.charLength(profile) > 256 { return kit.failure("Choose a Wi-Fi network first.") }
         let payload = {action:"connect",interfaceId:id,profile:profile}
         if !windows() {
             let ssid = text(r,"ssid"); let password = text(r,"password"); let security = text(r,"security")
-            if ssid == "" || (encoding.encode(ssid,"utf8").len() as i64) > 32 || !noControl(ssid) { return failure("Choose a Wi-Fi network first.") }
-            if !noControl(password) || strings.charLength(password) > 128 || !noControl(security) || strings.charLength(security) > 16 { return failure("Invalid Wi-Fi password.") }
+            if ssid == "" || (encoding.encode(ssid,"utf8").len() as i64) > 32 || !noControl(ssid) { return kit.failure("Choose a Wi-Fi network first.") }
+            if !noControl(password) || strings.charLength(password) > 128 || !noControl(security) || strings.charLength(security) > 16 { return kit.failure("Invalid Wi-Fi password.") }
             payload = {action:"connect",interfaceId:id,profile:profile,ssid:ssid,security:security,secure:bool(r,"secure"),password:password}
         }
         let answer = request(root,payload)
         if !strings.equal(answer.error,"") { return explain(answer) }
         return scan(root,"Connected to " + text(r,"ssid") + ".")
     }
-    return failure("Unsupported action")
+    return kit.failure("Unsupported action")
 }
 fn main():i32 {
     let root = args.len() > 0 ? args.get(0) : "."
