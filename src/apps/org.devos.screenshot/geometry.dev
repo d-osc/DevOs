@@ -1,0 +1,76 @@
+# Screenshot geometry in DevLang (geometry.ts, same behavior): rectangles and paths of the snipping overlay, scaling a logical selection to image
+# pixels without losing an edge pixel, the logical desktop of several monitors, file names that never overwrite an earlier snip, and thinning a
+# freehand path. No GTK here, so the native overlay and its tests can use it as it is.
+use "std/fs"
+use "std/strings"
+
+struct Point { x: f64, y: f64 }
+struct Rect { x: f64, y: f64, width: f64, height: f64 }
+
+fn minOf(a:f64, b:f64):f64 { return a < b ? a : b }
+fn maxOf(a:f64, b:f64):f64 { return a > b ? a : b }
+fn absOf(a:f64):f64 { return a < 0.0 ? 0.0 - a : a }
+fn floorOf(value:f64):f64 { let whole = (value as i64) as f64; return whole > value ? whole - 1.0 : whole }
+fn ceilOf(value:f64):f64 { let whole = (value as i64) as f64; return whole < value ? whole + 1.0 : whole }
+fn emptyRect():Rect { return Rect(0.0,0.0,0.0,0.0) }
+
+fn delays():Vec<i64> { return Vec<i64>(0,3,5,10) }
+fn minSide():f64 { return 4.0 }
+
+fn normalizeRect(a:Point, b:Point):Rect { return Rect(minOf(a.x,b.x),minOf(a.y,b.y),absOf(a.x - b.x),absOf(a.y - b.y)) }
+# The overlap of two rectangles (zero-sized when they do not touch).
+fn intersect(a:Rect, b:Rect):Rect {
+    let x = maxOf(a.x,b.x); let y = maxOf(a.y,b.y)
+    let right = minOf(a.x + a.width,b.x + b.width); let bottom = minOf(a.y + a.height,b.y + b.height)
+    return Rect(x,y,maxOf(0.0,right - x),maxOf(0.0,bottom - y))
+}
+fn usable(rect:Rect):bool { return rect.width >= minSide() && rect.height >= minSide() }
+fn pathBounds(points:Vec<Point>):Rect {
+    if points.len() == 0 { return emptyRect() }
+    let left = points[0].x; let top = points[0].y; let right = points[0].x; let bottom = points[0].y
+    for p in points { left = minOf(left,p.x); top = minOf(top,p.y); right = maxOf(right,p.x); bottom = maxOf(bottom,p.y) }
+    return Rect(left,top,right - left,bottom - top)
+}
+# Scales a logical rectangle to image pixels, growing outwards so no edge pixel of the selection is lost.
+fn scaleRect(rect:Rect, factor:f64):Rect {
+    let x = floorOf(rect.x * factor); let y = floorOf(rect.y * factor)
+    return Rect(x,y,ceilOf((rect.x + rect.width) * factor) - x,ceilOf((rect.y + rect.height) * factor) - y)
+}
+# Pixels per logical pixel for an image that covers `logical` (grim captures at the highest output scale).
+fn imageScale(imageWidth:f64, logicalWidth:f64):f64 { return logicalWidth > 0.0 && imageWidth > 0.0 ? imageWidth / logicalWidth : 1.0 }
+# The union of the monitor rectangles: the logical desktop a grim capture covers.
+fn desktopBounds(monitors:Vec<Rect>):Rect {
+    if monitors.len() == 0 { return emptyRect() }
+    let left = monitors[0].x; let top = monitors[0].y; let right = monitors[0].x + monitors[0].width; let bottom = monitors[0].y + monitors[0].height
+    for m in monitors { left = minOf(left,m.x); top = minOf(top,m.y); right = maxOf(right,m.x + m.width); bottom = maxOf(bottom,m.y + m.height) }
+    return Rect(left,top,right - left,bottom - top)
+}
+fn two(value:i64):str { return value < 10 ? "0${value}" : "${value}" }
+# "Screenshot 2026-10-30 09-05-03.png" from the parts of the local time (month 1-12).
+fn snipFileName(year:i64, month:i64, day:i64, hour:i64, minute:i64, second:i64):str {
+    return "Screenshot ${year}-" + two(month) + "-" + two(day) + " " + two(hour) + "-" + two(minute) + "-" + two(second) + ".png"
+}
+# A path with a number added when the name is taken, so a snip never overwrites an earlier one. "" when 998 names are taken.
+fn uniqueIn(directory:str, name:str):str {
+    if !fs.existsSync(directory + "/" + name) { return name }
+    let dot = strings.lastIndexOf(name,".")
+    let stem = dot > 0 ? strings.substring(name,0,dot) : name
+    let extension = dot > 0 ? strings.substring(name,dot,strings.charLength(name)) : ""
+    for index in 2..1000 {
+        let candidate = stem + " (${index})" + extension
+        if !fs.existsSync(directory + "/" + candidate) { return candidate }
+    }
+    return ""
+}
+# Thins a freehand path: drops points closer than `distance` to the previous kept point (the last point is always kept).
+fn thin(points:Vec<Point>, distance:f64):Vec<Point> {
+    let kept = Vec<Point>()
+    for i in 0..(points.len() as i64) {
+        let p = points[i]
+        if kept.len() == 0 { kept.push(p); continue }
+        let last = kept[(kept.len() as i64) - 1]
+        let dx = p.x - last.x; let dy = p.y - last.y
+        if dx * dx + dy * dy >= distance * distance || i == (points.len() as i64) - 1 { kept.push(p) }
+    }
+    return kept
+}
