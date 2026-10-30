@@ -64,20 +64,22 @@ void rd_close(void *data);
 static gboolean rd_layer_key(GtkWidget *widget, GdkEventKey *event, void *data) {
     (void)widget; if (event->keyval == GDK_KEY_Escape) { rd_close(data); return TRUE; } return FALSE;
 }
-/* Open: the overlay fades in and slides up 28 px over 260 ms (ease-out); close: it fades out over 160 ms (ease-in) before the window is destroyed. */
+/* Open: the overlay fades in while its content slides up 96 px over 320 ms (ease-out); close: it fades out while the content slides back down over 220 ms
+   (ease-in) before the window is destroyed. The content is pushed down with a top margin, so the bottom edge clips it. */
+#define RD_SLIDE 96
 static gboolean rd_fade_in(GtkWidget *widget, GdkFrameClock *clock, void *data) {
     (void)widget; RdRoot *root = data; if (root->closed || root->closing) return G_SOURCE_REMOVE;
     gint64 now = gdk_frame_clock_get_frame_time(clock); if (!root->fade_start) root->fade_start = now;
-    double t = (double)(now - root->fade_start) / 260000.0; if (t > 1) t = 1;
+    double t = (double)(now - root->fade_start) / 320000.0; if (t > 1) t = 1;
     double p = 1 - (1 - t) * (1 - t) * (1 - t);
-    gtk_widget_set_opacity(root->window, p); gtk_widget_set_margin_top(root->host, (int)((1 - p) * 28));
+    gtk_widget_set_opacity(root->window, p); gtk_widget_set_margin_top(root->host, (int)((1 - p) * RD_SLIDE));
     return t >= 1 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
 }
 static gboolean rd_fade_out(GtkWidget *widget, GdkFrameClock *clock, void *data) {
     (void)widget; RdRoot *root = data; if (root->closed) return G_SOURCE_REMOVE;
     gint64 now = gdk_frame_clock_get_frame_time(clock); if (!root->fade_start) root->fade_start = now;
-    double t = (double)(now - root->fade_start) / 160000.0; if (t > 1) t = 1;
-    gtk_widget_set_opacity(root->window, root->fade_from * (1 - t * t));
+    double t = (double)(now - root->fade_start) / 220000.0; if (t > 1) t = 1;
+    gtk_widget_set_opacity(root->window, root->fade_from * (1 - t * t)); gtk_widget_set_margin_top(root->host, (int)(t * t * RD_SLIDE));
     if (t >= 1) { root->layer = FALSE; gtk_widget_destroy(root->window); return G_SOURCE_REMOVE; }
     return G_SOURCE_CONTINUE;
 }
