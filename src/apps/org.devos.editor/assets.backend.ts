@@ -30,7 +30,7 @@ export class EditorAssets {
                         css: 'text/css; charset=utf-8', ttf: 'font/ttf'} as Record<string, string>)[relative.split('.').pop()!] ?? 'application/octet-stream';
                     message.get_response_headers().append('X-Content-Type-Options', 'nosniff');
                     message.get_response_headers().append('Cache-Control', 'private, max-age=3600');
-                    message.get_response_headers().append('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; worker-src 'self' blob:; connect-src 'self'");
+                    message.get_response_headers().append('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; worker-src 'self' blob:; connect-src 'self'");
                     message.set_status(200, null); message.set_response(type, Soup.MemoryUse.COPY, bytes);
                 } catch { message.set_status(404, null); }
                 finally { message.unpause(); }

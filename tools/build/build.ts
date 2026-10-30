@@ -143,7 +143,7 @@ const editorOptions: BuildOptions = {
     // Preserve Monaco's lazy language imports instead of inlining every language
     // into the first script parsed on a cold Live USB boot.
     outdir: resolve(root, 'dist/editor'), bundle: true, format: 'esm', splitting: true, platform: 'browser',
-    target: 'safari16', jsx: 'automatic', minify: true, loader: {'.ttf': 'file'},
+    target: 'safari16', jsx: 'automatic', minify: true, loader: {'.ttf': 'dataurl'},
     metafile: true,
     define: {'process.env.NODE_ENV': '"production"'}, logLevel: 'info',
 };
