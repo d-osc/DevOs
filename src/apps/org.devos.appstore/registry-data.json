@@ -1,0 +1,472 @@
+{
+  "schema_version": 2,
+  "source_commit": null,
+  "working_tree_dirty": true,
+  "apps": [
+    {
+      "manifest": {
+        "schema_version": 2,
+        "id": "chatgpt",
+        "status": "catalog",
+        "name": "ChatGPT",
+        "aliases": [
+          "chat-gpt"
+        ],
+        "summary": "Desktop AI assistant by OpenAI.",
+        "publisher": {
+          "id": "openai",
+          "name": "OpenAI"
+        },
+        "license": "LicenseRef-OpenAI-ChatGPT",
+        "categories": [
+          "productivity"
+        ],
+        "tags": [
+          "ai",
+          "assistant"
+        ],
+        "links": {
+          "homepage": "https://chatgpt.com/"
+        },
+        "readme": "README.md",
+        "icon_fallback": {
+          "text": "GPT",
+          "background": "#107F65"
+        },
+        "screenshots": [],
+        "distribution": {
+          "type": "external-download",
+          "url": "https://chatgpt.com/download/",
+          "checked_on": "2026-10-27",
+          "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+        },
+        "downloads": [
+          {
+            "platform": "linux",
+            "arch": "arm64",
+            "format": "deb",
+            "file_url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb",
+            "version_policy": "rolling",
+            "source_url": "https://learn.chatgpt.com/docs/linux/linux-app",
+            "checked_on": "2026-10-27",
+            "verification": "headers-checked",
+            "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution."
+          }
+        ],
+        "compatibility": {
+          "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+          "status": "untested",
+          "libc": "glibc",
+          "display": "wayland",
+          "profile": "devos-desktop-arm64"
+        },
+        "kind": "app"
+      },
+      "readme": "# ChatGPT\r\n\r\nDesktop AI assistant by OpenAI.\r\n\r\n- Publisher: OpenAI\r\n- Official website: [ChatGPT](https://chatgpt.com/)\r\n- Official download page: [Download](https://chatgpt.com/download/)\r\n- Source checked: 2026-10-27\r\n\r\n## Installation status\r\n\r\nThis app is listed in the DevOs catalog. Automatic installation through DevOsPM is not configured yet. Use the official download page for manual installation. No download-page URL is treated as a binary artifact.\r\n\r\nBefore enabling `dev install chatgpt`, add a pinned release, platform/architecture artifacts, verified SHA-256 and file sizes, a supported installation recipe, and launcher entries verified against the installed files.\r\n\r\nThe icon fallback is a text tile, not the official app logo. Replace it with an approved local PNG when available. LicenseRef values identify vendor-specific terms; they do not grant redistribution rights.\n\n## Direct installer files\n\nTarget: Linux ARM64. Format: Debian package (`deb`).\n\n| Platform | Architecture | Format | File | Verification |\n| --- | --- | --- | --- | --- |\n| linux | arm64 | deb | [Download](https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb) | headers-checked |\n\nLinux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.\n\nAutomatic PM installation remains disabled until the artifact and DevOs runtime compatibility are verified.\r\n"
+    },
+    {
+      "manifest": {
+        "schema_version": 2,
+        "id": "chrome",
+        "status": "catalog",
+        "name": "Google Chrome",
+        "aliases": [
+          "google-chrome"
+        ],
+        "summary": "Web browser by Google.",
+        "publisher": {
+          "id": "google",
+          "name": "Google"
+        },
+        "license": "LicenseRef-Google-Chrome",
+        "categories": [
+          "web-browsers"
+        ],
+        "tags": [
+          "browser",
+          "web"
+        ],
+        "links": {
+          "homepage": "https://www.google.com/chrome/"
+        },
+        "readme": "README.md",
+        "icon_fallback": {
+          "text": "CH",
+          "background": "#4285F4"
+        },
+        "screenshots": [],
+        "distribution": {
+          "type": "external-download",
+          "url": "https://www.google.com/chrome/",
+          "checked_on": "2026-10-27",
+          "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+        },
+        "downloads": [
+          {
+            "platform": "linux",
+            "arch": "arm64",
+            "format": "deb",
+            "file_url": "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb",
+            "version_policy": "rolling",
+            "source_url": "https://support.google.com/chrome/answer/95346?hl=en",
+            "checked_on": "2026-10-27",
+            "verification": "headers-checked",
+            "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution."
+          }
+        ],
+        "compatibility": {
+          "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+          "status": "untested",
+          "libc": "glibc",
+          "display": "wayland",
+          "profile": "devos-desktop-arm64"
+        },
+        "kind": "app"
+      },
+      "readme": "# Google Chrome\r\n\r\nWeb browser by Google.\r\n\r\n- Publisher: Google\r\n- Official website: [Google Chrome](https://www.google.com/chrome/)\r\n- Official download page: [Download](https://www.google.com/chrome/)\r\n- Source checked: 2026-10-27\r\n\r\n## Installation status\r\n\r\nThis app is listed in the DevOs catalog. Automatic installation through DevOsPM is not configured yet. Use the official download page for manual installation. No download-page URL is treated as a binary artifact.\r\n\r\nBefore enabling `dev install chrome`, add a pinned release, platform/architecture artifacts, verified SHA-256 and file sizes, a supported installation recipe, and launcher entries verified against the installed files.\r\n\r\nThe icon fallback is a text tile, not the official app logo. Replace it with an approved local PNG when available. LicenseRef values identify vendor-specific terms; they do not grant redistribution rights.\n\n## Direct installer files\n\nTarget: Linux ARM64. Format: Debian package (`deb`).\n\n| Platform | Architecture | Format | File | Verification |\n| --- | --- | --- | --- | --- |\n| linux | arm64 | deb | [Download](https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb) | headers-checked |\n\nLinux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.\n\nAutomatic PM installation remains disabled until the artifact and DevOs runtime compatibility are verified.\r\n"
+    },
+    {
+      "manifest": {
+        "schema_version": 2,
+        "id": "claude-desktop",
+        "status": "catalog",
+        "name": "Claude Desktop",
+        "aliases": [
+          "claude"
+        ],
+        "summary": "Desktop AI assistant by Anthropic.",
+        "publisher": {
+          "id": "anthropic",
+          "name": "Anthropic"
+        },
+        "license": "LicenseRef-Anthropic-Claude",
+        "categories": [
+          "productivity"
+        ],
+        "tags": [
+          "ai",
+          "assistant"
+        ],
+        "links": {
+          "homepage": "https://claude.com/"
+        },
+        "readme": "README.md",
+        "icon_fallback": {
+          "text": "CL",
+          "background": "#B45F44"
+        },
+        "screenshots": [],
+        "distribution": {
+          "type": "external-download",
+          "url": "https://claude.com/download",
+          "checked_on": "2026-10-27",
+          "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+        },
+        "downloads": [
+          {
+            "platform": "linux",
+            "arch": "arm64",
+            "format": "deb",
+            "file_url": "https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_3.6556.2_arm64.deb",
+            "version_policy": "versioned",
+            "source_url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-arm64/Packages",
+            "checked_on": "2026-10-27",
+            "verification": "headers-checked",
+            "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.",
+            "version": "3.6556.2"
+          }
+        ],
+        "compatibility": {
+          "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+          "status": "untested",
+          "libc": "glibc",
+          "display": "wayland",
+          "profile": "devos-desktop-arm64"
+        },
+        "kind": "app"
+      },
+      "readme": "# Claude Desktop\r\n\r\nDesktop AI assistant by Anthropic.\r\n\r\n- Publisher: Anthropic\r\n- Official website: [Claude Desktop](https://claude.com/)\r\n- Official download page: [Download](https://claude.com/download)\r\n- Source checked: 2026-10-27\r\n\r\n## Installation status\r\n\r\nThis app is listed in the DevOs catalog. Automatic installation through DevOsPM is not configured yet. Use the official download page for manual installation. No download-page URL is treated as a binary artifact.\r\n\r\nBefore enabling `dev install claude-desktop`, add a pinned release, platform/architecture artifacts, verified SHA-256 and file sizes, a supported installation recipe, and launcher entries verified against the installed files.\r\n\r\nThe icon fallback is a text tile, not the official app logo. Replace it with an approved local PNG when available. LicenseRef values identify vendor-specific terms; they do not grant redistribution rights.\n\n## Direct installer files\n\nTarget: Linux ARM64. Format: Debian package (`deb`).\n\n| Platform | Architecture | Format | File | Verification |\n| --- | --- | --- | --- | --- |\n| linux | arm64 | deb | [Download](https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_3.6556.2_arm64.deb) | headers-checked |\n\nLinux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.\n\nAutomatic PM installation remains disabled until the artifact and DevOs runtime compatibility are verified.\r\n"
+    },
+    {
+      "manifest": {
+        "schema_version": 2,
+        "id": "firefox",
+        "status": "catalog",
+        "name": "Mozilla Firefox",
+        "aliases": [
+          "mozilla-firefox"
+        ],
+        "summary": "Web browser by Mozilla.",
+        "publisher": {
+          "id": "mozilla",
+          "name": "Mozilla"
+        },
+        "license": "MPL-2.0",
+        "categories": [
+          "web-browsers"
+        ],
+        "tags": [
+          "browser",
+          "web"
+        ],
+        "links": {
+          "homepage": "https://www.mozilla.org/firefox/"
+        },
+        "readme": "README.md",
+        "icon_fallback": {
+          "text": "FF",
+          "background": "#C94D13"
+        },
+        "screenshots": [],
+        "distribution": {
+          "type": "external-download",
+          "url": "https://www.mozilla.org/firefox/new/",
+          "checked_on": "2026-10-27",
+          "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+        },
+        "downloads": [
+          {
+            "platform": "linux",
+            "arch": "arm64",
+            "format": "deb",
+            "file_url": "https://packages.mozilla.org/apt/pool/mozilla/firefox_158.0.1~build1_arm64_9cfb667797b45d588269f88a64e12d56.deb",
+            "version_policy": "versioned",
+            "source_url": "https://packages.mozilla.org/apt/dists/mozilla/main/binary-arm64/Packages",
+            "checked_on": "2026-10-27",
+            "verification": "source-only",
+            "note": "Listed in the official Mozilla ARM64 apt Packages index. HTTP HEAD returned 400; file availability and payload remain unverified. DevOs compatibility is untested.",
+            "version": "158.0.1~build1"
+          }
+        ],
+        "compatibility": {
+          "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+          "status": "untested",
+          "libc": "glibc",
+          "display": "wayland",
+          "profile": "devos-desktop-arm64"
+        },
+        "kind": "app"
+      },
+      "readme": "# Mozilla Firefox\r\n\r\nWeb browser by Mozilla.\r\n\r\n- Publisher: Mozilla\r\n- Official website: [Mozilla Firefox](https://www.mozilla.org/firefox/)\r\n- Official download page: [Download](https://www.mozilla.org/firefox/new/)\r\n- Source checked: 2026-10-27\r\n\r\n## Installation status\r\n\r\nThis app is listed in the DevOs catalog. Automatic installation through DevOsPM is not configured yet. Use the official download page for manual installation. No download-page URL is treated as a binary artifact.\r\n\r\nBefore enabling `dev install firefox`, add a pinned release, platform/architecture artifacts, verified SHA-256 and file sizes, a supported installation recipe, and launcher entries verified against the installed files.\r\n\r\nThe icon fallback is a text tile, not the official app logo. Replace it with an approved local PNG when available. LicenseRef values identify vendor-specific terms; they do not grant redistribution rights.\n\n## Direct installer files\n\nTarget: Linux ARM64. Format: Debian package (`deb`).\n\n| Platform | Architecture | Format | File | Verification |\n| --- | --- | --- | --- | --- |\n| linux | arm64 | deb | [Download](https://packages.mozilla.org/apt/pool/mozilla/firefox_158.0.1~build1_arm64_9cfb667797b45d588269f88a64e12d56.deb) | source-only |\n\nListed in the official Mozilla ARM64 apt Packages index. HTTP HEAD returned 400; file availability and payload remain unverified. DevOs compatibility is untested.\n\nAutomatic PM installation remains disabled until the artifact and DevOs runtime compatibility are verified.\r\n"
+    },
+    {
+      "manifest": {
+        "schema_version": 2,
+        "id": "vscode",
+        "status": "catalog",
+        "name": "Visual Studio Code",
+        "aliases": [
+          "code",
+          "visual-studio-code"
+        ],
+        "summary": "Code editor with extensions, debugging, and Git integration.",
+        "publisher": {
+          "id": "microsoft",
+          "name": "Microsoft"
+        },
+        "license": "LicenseRef-Microsoft-VSCode",
+        "categories": [
+          "developer-tools"
+        ],
+        "tags": [
+          "editor",
+          "code"
+        ],
+        "links": {
+          "homepage": "https://code.visualstudio.com/"
+        },
+        "readme": "README.md",
+        "icon_fallback": {
+          "text": "VS",
+          "background": "#007ACC"
+        },
+        "screenshots": [],
+        "distribution": {
+          "type": "external-download",
+          "url": "https://code.visualstudio.com/download",
+          "checked_on": "2026-10-27",
+          "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+        },
+        "downloads": [
+          {
+            "platform": "linux",
+            "arch": "arm64",
+            "format": "deb",
+            "file_url": "https://update.code.visualstudio.com/latest/linux-deb-arm64/stable",
+            "version_policy": "rolling",
+            "source_url": "https://code.visualstudio.com/docs/setup/linux",
+            "checked_on": "2026-10-27",
+            "verification": "headers-checked",
+            "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution. Redirect URL has no .deb suffix; current DevOsPM URL precheck requires a supported suffix. Download to a .deb filename before passing the local file to PM."
+          }
+        ],
+        "compatibility": {
+          "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+          "status": "untested",
+          "libc": "glibc",
+          "display": "wayland",
+          "profile": "devos-desktop-arm64"
+        },
+        "kind": "app"
+      },
+      "readme": "# Visual Studio Code\r\n\r\nCode editor with extensions, debugging, and Git integration.\r\n\r\n- Publisher: Microsoft\r\n- Official website: [Visual Studio Code](https://code.visualstudio.com/)\r\n- Official download page: [Download](https://code.visualstudio.com/download)\r\n- Source checked: 2026-10-27\r\n\r\n## Installation status\r\n\r\nThis app is listed in the DevOs catalog. Automatic installation through DevOsPM is not configured yet. Use the official download page for manual installation. No download-page URL is treated as a binary artifact.\r\n\r\nBefore enabling `dev install vscode`, add a pinned release, platform/architecture artifacts, verified SHA-256 and file sizes, a supported installation recipe, and launcher entries verified against the installed files.\r\n\r\nThe icon fallback is a text tile, not the official app logo. Replace it with an approved local PNG when available. LicenseRef values identify vendor-specific terms; they do not grant redistribution rights.\n\n## Direct installer files\n\nTarget: Linux ARM64. Format: Debian package (`deb`).\n\n| Platform | Architecture | Format | File | Verification |\n| --- | --- | --- | --- | --- |\n| linux | arm64 | deb | [Download](https://update.code.visualstudio.com/latest/linux-deb-arm64/stable) | headers-checked |\n\nLinux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution. Redirect URL has no .deb suffix; current DevOsPM URL precheck requires a supported suffix. Download to a .deb filename before passing the local file to PM.\n\nAutomatic PM installation remains disabled until the artifact and DevOs runtime compatibility are verified.\r\n"
+    },
+    {
+      "manifest": {
+        "schema_version": 2,
+        "id": "zcode",
+        "status": "catalog",
+        "name": "ZCode",
+        "aliases": [],
+        "summary": "Agentic development workspace by Z.ai.",
+        "publisher": {
+          "id": "z-ai",
+          "name": "Z.ai"
+        },
+        "license": "LicenseRef-Zai-ZCode",
+        "categories": [
+          "developer-tools"
+        ],
+        "tags": [
+          "ai",
+          "coding"
+        ],
+        "links": {
+          "homepage": "https://zcode.z.ai/en"
+        },
+        "readme": "README.md",
+        "icon_fallback": {
+          "text": "Z",
+          "background": "#3157CE"
+        },
+        "screenshots": [],
+        "distribution": {
+          "type": "external-download",
+          "url": "https://zcode.z.ai/en#all-downloads",
+          "checked_on": "2026-10-27",
+          "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+        },
+        "downloads": [
+          {
+            "platform": "linux",
+            "arch": "arm64",
+            "format": "deb",
+            "file_url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.16.3/linux-arm64/ZCode-3.16.3-linux-arm64.deb",
+            "version_policy": "versioned",
+            "source_url": "https://zcode.z.ai/en#all-downloads",
+            "checked_on": "2026-10-27",
+            "verification": "headers-checked",
+            "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.",
+            "version": "3.16.3"
+          }
+        ],
+        "compatibility": {
+          "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+          "status": "untested",
+          "libc": "glibc",
+          "display": "wayland",
+          "profile": "devos-desktop-arm64"
+        },
+        "kind": "app"
+      },
+      "readme": "# ZCode\r\n\r\nAgentic development workspace by Z.ai.\r\n\r\n- Publisher: Z.ai\r\n- Official website: [ZCode](https://zcode.z.ai/en)\r\n- Official download page: [Download](https://zcode.z.ai/en#all-downloads)\r\n- Source checked: 2026-10-27\r\n\r\n## Installation status\r\n\r\nThis app is listed in the DevOs catalog. Automatic installation through DevOsPM is not configured yet. Use the official download page for manual installation. No download-page URL is treated as a binary artifact.\r\n\r\nBefore enabling `dev install zcode`, add a pinned release, platform/architecture artifacts, verified SHA-256 and file sizes, a supported installation recipe, and launcher entries verified against the installed files.\r\n\r\nThe icon fallback is a text tile, not the official app logo. Replace it with an approved local PNG when available. LicenseRef values identify vendor-specific terms; they do not grant redistribution rights.\r\n\r\nIdentity confirmed by the user: ZCode by Z.ai. Official installation documentation: https://zcode.z.ai/en/docs/install\n\n## Direct installer files\n\nTarget: Linux ARM64. Format: Debian package (`deb`).\n\n| Platform | Architecture | Format | File | Verification |\n| --- | --- | --- | --- | --- |\n| linux | arm64 | deb | [Download](https://cdn-zcode.z.ai/zcode/electron/releases/3.16.3/linux-arm64/ZCode-3.16.3-linux-arm64.deb) | headers-checked |\n\nLinux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.\n\nAutomatic PM installation remains disabled until the artifact and DevOs runtime compatibility are verified.\r\n"
+    }
+  ],
+  "extensions": [
+    {
+      "listing": {
+        "schema_version": 2,
+        "kind": "extension",
+        "id": "org.example.workspace-notes",
+        "status": "draft",
+        "name": "Workspace Notes",
+        "summary": "Example settings extension for a workspace note and personal preferences.",
+        "publisher": {
+          "id": "devos-examples",
+          "name": "DevOs Examples"
+        },
+        "license": "MIT",
+        "categories": [
+          "extensions",
+          "productivity"
+        ],
+        "tags": [
+          "example",
+          "settings",
+          "workspace"
+        ],
+        "readme": "README.md",
+        "icon": "package/icons/workspace-notes.svg",
+        "target": {
+          "platform": "linux",
+          "arch": "arm64",
+          "apiVersion": 1
+        },
+        "manifest": "package/extension.json",
+        "delivery": {
+          "backend": "devos-extension-store",
+          "scope": "user",
+          "source": {
+            "type": "local-example",
+            "directory": "package"
+          },
+          "assets": {
+            "manifest": "extension.json",
+            "archive": "dev-os-extension.tar.gz",
+            "checksums": "SHA256SUMS"
+          }
+        }
+      },
+      "manifest": {
+        "id": "org.example.workspace-notes",
+        "name": "Workspace Notes",
+        "description": "A declarative settings example for storing a workspace note. It does not modify the panel, launcher, wallpaper or system configuration.",
+        "version": "1.0.0",
+        "apiVersion": 1,
+        "kind": "settings",
+        "settingsVersion": 1,
+        "enabledByDefault": true,
+        "settings": [
+          {
+            "id": "workspace",
+            "title": "Workspace Notes",
+            "description": "Example preferences saved by DevOs for this extension only.",
+            "fields": [
+              {
+                "key": "note",
+                "title": "Workspace note",
+                "type": "string",
+                "default": "Welcome to DevOs"
+              },
+              {
+                "key": "showNote",
+                "title": "Keep note enabled",
+                "description": "Example stored flag; this settings-only extension does not draw a desktop widget.",
+                "type": "boolean",
+                "default": true
+              },
+              {
+                "key": "accentColor",
+                "title": "Preferred accent",
+                "description": "Stored preference for the example; does not change the system theme.",
+                "type": "color",
+                "default": "#4F70E8"
+              },
+              {
+                "key": "focusMinutes",
+                "title": "Focus duration",
+                "type": "number",
+                "default": 25,
+                "min": 5,
+                "max": 120,
+                "integer": true
+              }
+            ]
+          }
+        ]
+      },
+      "readme": "# Workspace Notes\n\nตัวอย่าง **settings extension** สำหรับ App Store ที่รวม Extensions แล้ว เก็บ note, boolean, color และจำนวน focus minutes ด้วย declarative settings ของ DevOs ไม่โหลด JavaScript เพิ่ม ไม่เปลี่ยน panel/launcher/theme และยังไม่มี public GitHub release\n\n`listing.json` เป็นข้อมูลของ registry ส่วน `package/extension.json` เป็น manifest ที่ runtime อ่าน ห้ามเอา publisher, delivery, readme หรือ target ไปเติมใน runtime manifest เพราะ consumer ปฏิเสธ field ที่ไม่รู้จัก\n\n## สร้าง package ด้วย DevLang\n\nจาก root ของ DevOsAppStore:\n\n```sh\nd scripts/build_registry.dev\nd scripts/package_extension.dev -- org.example.workspace-notes\n```\n\nผลลัพธ์อยู่ที่ `dist/extensions/org.example.workspace-notes/1.0.0/`:\n\n- `extension.json`\n- `dev-os-extension.tar.gz` ที่มี `extension/extension.json` และ `extension/icons/workspace-notes.svg`\n- `SHA256SUMS` พร้อม hash จริงของไฟล์ที่สร้าง\n\nทดสอบ local package บน DevOs Linux ผ่าน DevOsPM ที่ติดตั้งอยู่ได้ด้วย:\n\n```sh\ndev install /absolute/path/dev-os-extension.tar.gz --sha256 ACTUAL_ARCHIVE_HASH\n```\n\nชื่อ executable อาจใช้ `devospm` หรือ path ตาม environment ให้เลือก binary ของ DevOsPM ไม่ใช่ alias ของ DevLang ตัวอย่างนี้ตรวจ manifest และ archive ได้บนเครื่องพัฒนา แต่ยังไม่ได้เปิดทดสอบ settings page ใน session DevOs จริง\n\n## เผยแพร่เข้า App Store → Extensions\n\nConsumer ปัจจุบันใช้หนึ่ง public GitHub repo ต่อหนึ่ง extension ต้องนำ package source นี้ไปไว้ใน repo ของ extension แยก แล้วเผยแพร่ stable tag `v1.0.0` พร้อม 3 assets ข้างต้น ค่า version ต้องตรง manifest และ GitHub API ต้องให้ SHA-256 digest ของ archive\n\nหลังมี repo/release จริง จึงแก้ delivery.source เป็น `{\"type\":\"github\",\"repository\":\"OWNER/REPO\"}` และ status เป็น published ใน listing (OWNER/REPO เป็นคำอธิบาย ไม่ใช่ repository ที่สร้างแล้ว) ปัจจุบัน AppStore importer อ่าน `extensions/` และแสดงรายการนี้ในแท็บ Extensions แล้ว รายการ published จะมี Check availability เพื่อตรวจ release ก่อนติดตั้ง ตัวอย่าง local draft นี้แสดง Not released yet\n\nการ enable/disable, connected repositories, preferences และ install history เป็นข้อมูลเครื่องผู้ใช้ ไม่อยู่ใน listing การเปลี่ยน enable/disable มีผลต่อ session ถัดไปตาม runtime เดิม\n",
+      "iconBase64": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjgiIGhlaWdodD0iMTI4IiB2aWV3Qm94PSIwIDAgMTI4IDEyOCI+CiAgPHJlY3QgeD0iOCIgeT0iOCIgd2lkdGg9IjExMiIgaGVpZ2h0PSIxMTIiIHJ4PSIyOCIgZmlsbD0iIzRmNzBlOCIvPgogIDxyZWN0IHg9IjMyIiB5PSIyNiIgd2lkdGg9IjY0IiBoZWlnaHQ9Ijc4IiByeD0iOCIgZmlsbD0iI2ZmZiIvPgogIDxwYXRoIGQ9Ik00NiA0OGgzNk00NiA2NGgzNk00NiA4MGgyMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGY3MGU4IiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K"
+    }
+  ]
+}

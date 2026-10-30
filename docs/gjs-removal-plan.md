@@ -22,7 +22,7 @@ Native but not yet the default: Settings (opt-in with `DEVOS_NATIVE_SETTINGS=1`)
 1. **Settings becomes the default** (3,708 lines, 82 files, plus `src/legacy/` 9 files). Needs one real session or VM check of the opt-in switch,
    then flip `settings` in `packages/shell/app-processes.ts`, delete the JS Settings and the TS tests that import it.
    Open: the user-switch dialog (native opens Accounts), per-app cosmetic pages.
-2. **Apps that need no new toolkit widget**: Files (a native window exists behind `DEVOS_NATIVE_FILES=1`: browse, create, rename, open; search, context menu and package install remain),
+2. **Apps that need no new toolkit widget** (App Store: a native window exists behind `DEVOS_NATIVE_APPSTORE=1`, with the catalog, installed packages and install from a file; the package preview and the Extensions tab remain): Files (a native window exists behind `DEVOS_NATIVE_FILES=1`: browse, create, rename, open; search, context menu and package install remain),
    Launcher (overlay as a layer-shell window; `model.dev` exists), App Store (package rules in `package-rules.dev`; the `.deb`/`.rpm`/tar readers
    come from the update code), Icons, Theme, Updates, Camera settings page. ~4,800 lines.
 3. **Apps that need a toolkit bridge first** (each bridge is a C function plus a test in `packages/react-devlang`):

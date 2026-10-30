@@ -1,0 +1,2 @@
+use "./native.devx" as appstore
+return appstore.run()

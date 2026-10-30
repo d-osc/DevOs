@@ -1,0 +1,128 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+use "../org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+
+# Native App Store window with three tabs: the catalog (install an app: the worker downloads the catalog's ARM64 package over https and DevOsPM installs
+# it), what is installed (remove, roll back to the previous version) and a package file you choose. DevOsPM (`dev`) does the extracting, checking and
+# registering; the worker only starts it and reports its words. An install can take minutes, during which the buttons stay off and the status says so.
+# Frames: V message; A id name publisher category summary homepage format boundPackage; P id version kind files bytes previous commands title description.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_APPSTORE_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn idRequest(action:str, id:ui.Text):ui.Text { return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"id\":"),channel.quote(id),plain("}"))) }
+fn contains(text:ui.Text, needle:ui.Text):bool {
+    let n = needle.bytes; let h = text.bytes
+    if n.len() == 0 { return true }
+    if h.len() < n.len() { return false }
+    for i in 0..((h.len() - n.len() + 1) as i64) {
+        let same = true
+        for j in 0..(n.len() as i64) { let a = h[i + j]; let b = n[j]; if (a >= 65 && a <= 90 ? a + 32 : a) != (b >= 65 && b <= 90 ? b + 32 : b) { same = false; break } }
+        if same { return true }
+    }
+    return false
+}
+fn size(bytes:i64):ui.Text {
+    if bytes < 1024 { return plain("${bytes} B") }
+    if bytes < 1048576 { return plain("${(bytes + 512) / 1024} KB") }
+    return plain("${(bytes * 10 + 524288) / 1048576 / 10}.${(bytes * 10 + 524288) / 1048576 % 10} MB")
+}
+fn tabButton(name:str, label:str, current:i64, index:i64, pick:fn():void):ui.Node {
+    let options = ui.named(name); options.className = ui.text(current == index ? "settings-nav settings-nav-active" : "settings-nav")
+    return ui.Button(options,label,pick)
+}
+
+fn App(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"../org.devos.appstore/service.dev","{\"action\":\"catalog\"}")
+    # asked: kind of the last request (0 catalog, 1 installed, 2 installApp, 3 another change); tab: 0 store, 1 installed, 2 file
+    let asked = ui.useRef(context,0); let catalog = ui.useText(context,ui.emptyText()); let installed = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText())
+    let tab = ui.useState(context,0); let query = ui.useText(context,ui.emptyText()); let filePath = ui.useText(context,ui.emptyText()); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"App Store","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"app-store")
+        }
+        # Commands the shell sends to the App Store: `package-install <file>` (from Files) opens the "Install a file" tab with that path; the others bring the window up.
+        ui.onCommand(context,"app-store.,package-install,extension-store,settings.store",fn(line:ui.Text) {
+            let parts = channel.split(line,31)
+            if parts.len() > 1 && has(parts[1]) && ui.equalText(parts[0],plain("package-install")) { tab.set(2); filePath.set(parts[1]) }
+        })
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() == 0 { return ui.noop }
+        let kind = asked.get()
+        if kind == 0 { catalog.set(f); asked.set(1); sp.send(l,plain("{\"action\":\"installed\"}")) }
+        else {
+            installed.set(f); message.set(field(f,1))
+            if kind == 2 { asked.set(0); sp.send(l,plain("{\"action\":\"catalog\"}")) }
+            if smoke() && step.get() == 1 && kind == 2 && contains(field(f,1),plain("Installed hello-demo")) { print("PASS native App Store installed a catalog app"); ui.close(context) }
+        }
+        if smoke() && step.get() == 0 && kind == 1 { step.set(1); asked.set(2); ui.click(context,"store-install-0") }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let busy = l.waiting.get() != 0; let current = tab.value
+    let nodes = Vec<ui.Node>(ext.row(8,Vec<ui.Node>(
+        tabButton("store-tab-store","Apps",current,0,fn() { tab.set(0) }),tabButton("store-tab-installed","Installed",current,1,fn() { tab.set(1) }),tabButton("store-tab-file","Install a file",current,2,fn() { tab.set(2) }))))
+    if has(l.failure.value) { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"store-error")) }
+    else if busy { nodes.push(ext.named(k.note(asked.get() == 2 ? "Downloading and installing… this can take a few minutes." : "Working…","settings-description"),"store-working")) }
+    else if has(message.value) { nodes.push(ext.named(k.caption(message.value,"settings-description"),"store-message")) }
+    if current == 0 {
+        let search = ui.named("store-search"); search.expand = true; search.placeholder = plain("Search apps")
+        nodes.push(ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) }))
+        let shown = 0
+        for record in sp.records(catalog.value) {
+            if !sp.kindOf(record,65) { continue }
+            let a = sp.cells(record)
+            if has(query.value) && !contains(join(Vec<ui.Text>(sp.cell(a,2),plain(" "),sp.cell(a,3),plain(" "),sp.cell(a,4),plain(" "),sp.cell(a,5))),query.value) { continue }
+            let index = shown; shown = shown + 1
+            let bound = has(sp.cell(a,8)); let usable = has(sp.cell(a,7))
+            let install = ui.named("store-install-${index}"); install.sensitive = !busy && usable
+            let detail = join(Vec<ui.Text>(sp.cell(a,3),has(sp.cell(a,3)) ? plain(" · ") : ui.emptyText(),sp.cell(a,4),usable ? ui.emptyText() : plain(" · No Linux ARM64 download")))
+            nodes.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"application-x-executable-symbolic"),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(a,2),"settings-field-title"),k.caption(detail,"settings-description"),k.caption(sp.cell(a,5),"settings-description")))),
+                ui.Button(install,bound ? "Reinstall" : "Install",fn() { asked.set(2); message.set(ui.emptyText()); sp.send(l,idRequest("installApp",sp.cell(a,1))) }))))
+        }
+        if shown == 0 { nodes.push(ext.named(k.note("No apps match.","settings-description"),"store-empty")) }
+    } else if current == 1 {
+        let shown = 0
+        for record in sp.records(installed.value) {
+            if !sp.kindOf(record,80) { continue }
+            let p = sp.cells(record); let index = shown; shown = shown + 1
+            let remove = ui.named("installed-remove-${index}"); remove.sensitive = !busy
+            let rollback = ui.named("installed-rollback-${index}"); rollback.sensitive = !busy && has(sp.cell(p,6))
+            let detail = join(Vec<ui.Text>(plain("Version "),sp.cell(p,2),has(sp.cell(p,6)) ? join(Vec<ui.Text>(plain(" · previous "),sp.cell(p,6))) : ui.emptyText(),plain(" · "),sp.cell(p,3),plain(" · "),size(sp.number(sp.cell(p,5)))))
+            nodes.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"application-x-executable-symbolic"),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(p,8),"settings-field-title"),k.caption(detail,"settings-description"),k.caption(sp.cell(p,9),"settings-description")))),
+                ui.Button(rollback,"Roll back",fn() { asked.set(3); sp.send(l,idRequest("rollback",sp.cell(p,1))) }),
+                ui.Button(remove,"Remove",fn() { asked.set(3); sp.send(l,idRequest("remove",sp.cell(p,1))) }))))
+        }
+        if shown == 0 { nodes.push(ext.named(k.note("Nothing is installed yet.","settings-description"),"installed-empty")) }
+    } else {
+        let path = ui.named("store-file-path"); path.expand = true; path.placeholder = plain("/full/path/to/package.dpk (.deb, .rpm and .tar.gz work too)")
+        let install = ui.named("store-file-install"); install.className = ui.text("settings-primary"); install.sensitive = !busy && has(filePath.value)
+        nodes.push(k.note("Choose a package file by its full path. DevOsPM checks it before anything is installed; a package with the same name is replaced and the old version can be rolled back.","settings-description"))
+        nodes.push(ext.row(8,Vec<ui.Node>(ui.Entry(path,filePath.value,fn(value:ui.Text) { filePath.set(value) }),
+            ui.Button(install,"Install",fn() { asked.set(3); message.set(ui.emptyText()); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"installFile\",\"path\":"),channel.quote(filePath.get()),plain("}")))) }))))
+    }
+    return ext.column(12,nodes)
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.appstore.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("App Store",960,680,App) ? 0 : 1
+}

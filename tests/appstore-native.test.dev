@@ -1,0 +1,118 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The service runs the real DevOsPM (`dev`, build/wsl/bin/dev) against a private DEV_ROOT, a private HOME and a stand-in curl that copies a local package.
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+fn at(c:Vec<str>, i:i64):str { return i < (c.len() as i64) ? c[i] : "" }
+fn dev():str { return t.root() + "/build/wsl/bin/dev" }
+fn package(d:str, name:str, version:str):str {
+    let dir = d + "/pkg-" + name + version
+    fs.mkdirSync(dir,false); fs.mkdirSync(dir + "/bin",false)
+    fs.writeFileSync(dir + "/package.json","{\"name\":\"" + name + "\",\"version\":\"" + version + "\",\"description\":\"A demo\",\"bin\":{\"" + name + "\":\"bin/run\"}}")
+    fs.writeFileSync(dir + "/bin/run","#!/bin/sh\necho hello\n")
+    tool.exec(Vec<str>("chmod","755",dir + "/bin/run"))
+    let file = d + "/" + name + "-" + version + ".dpk"
+    tool.exec(Vec<str>("sh","-c","cd " + dir + " && tar -czf " + file + " package.json bin"))
+    return file
+}
+fn rig():str {
+    let d = temporary()
+    fs.mkdirSync(d + "/home",false); fs.mkdirSync(d + "/tmp",false)
+    let demo = package(d,"hello-demo","1.0.0")
+    # a curl that ignores its URL and copies the fixture to the --output path
+    fs.writeFileSync(d + "/curl","#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --output ]; then out=$2; fi; shift; done\ncp \"$DEVOS_FAKE_PACKAGE\" \"$out\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/curl"))
+    fs.writeFileSync(d + "/registry.json","{\"schema_version\":2,\"apps\":[{\"manifest\":{\"schema_version\":2,\"id\":\"hello-demo\",\"name\":\"Hello Demo\",\"summary\":\"Says hello\",\"publisher\":{\"name\":\"Demo Inc\"},\"categories\":[\"developer-tools\"],\"links\":{\"homepage\":\"https://example.org/\"},\"downloads\":[{\"platform\":\"linux\",\"arch\":\"arm64\",\"format\":\"dpk\",\"file_url\":\"https://example.org/hello-demo.dpk\"}]}},{\"manifest\":{\"schema_version\":2,\"id\":\"no-download\",\"name\":\"No Download\",\"summary\":\"Catalog only\",\"categories\":[],\"downloads\":[{\"platform\":\"linux\",\"arch\":\"x86_64\",\"format\":\"deb\",\"file_url\":\"https://example.org/x.deb\"},{\"platform\":\"linux\",\"arch\":\"arm64\",\"format\":\"deb\",\"file_url\":\"http://insecure.example.org/x.deb\"}]}},{\"manifest\":{\"schema_version\":2,\"id\":\"Bad Id\",\"name\":\"Skipped\"}}]}")
+    fs.writeFileSync(d + "/demo-path",demo)
+    return d
+}
+fn worker(d:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_APPSTORE_TEST","1"); env.set("DEV_OS_PM",dev()); env.set("DEV_ROOT",d + "/store"); env.set("HOME",d + "/home"); env.set("XDG_DATA_HOME",d + "/home/.local/share")
+    env.set("DEVOS_APPSTORE_REGISTRY",d + "/registry.json"); env.set("DEVOS_APPSTORE_CURL",d + "/curl"); env.set("DEVOS_APPSTORE_ARCH","aarch64"); env.set("DEVOS_APPSTORE_TMP",d + "/tmp"); env.set("DEVOS_FAKE_PACKAGE",fs.readFileSync(d + "/demo-path","utf8"))
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.appstore/service.dev","--",t.root()),env,input,300000)))
+}
+fn ids(frame:str, letter:str):str {
+    let out = Vec<str>()
+    for r in records(frame) { let c = cells(r); if strings.equal(c[0],letter) { out.push(c[1]) } }
+    return strings.join(out,",")
+}
+
+test.case("the catalog lists valid apps with their category and publisher, without bindings at first",fn() {
+    let d = rig()
+    let all = records(worker(d,"{\"action\":\"catalog\"}\n"))
+    test.expect(strings.equal(ids(strings.join(all,rs()),"A"),"hello-demo,no-download"),"Catalog ids wrong: " + strings.join(all,"|"))
+    let a = cells(all[1])
+    test.expect(strings.equal(a[2],"Hello Demo") && strings.equal(a[3],"Demo Inc") && strings.equal(a[4],"Developer Tools") && strings.equal(a[5],"Says hello") && strings.equal(a[6],"https://example.org/") && strings.equal(a[7],"dpk") && strings.equal(a[8],""),"Catalog entry wrong: " + all[1])
+    let b = cells(all[2])
+    test.expect(strings.equal(b[4],"Other") && strings.equal(at(b,7),""),"An app without a usable ARM64 https download must show no format: " + all[2])
+    fs.writeFileSync(d + "/registry.json","{\"schema_version\":3,\"apps\":[]}")
+    test.expect(strings.startsWith(worker(d,"{\"action\":\"catalog\"}\n"),"E\tThe app registry is unavailable."),"An unsupported registry was accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a catalog app is downloaded, installed by DevOsPM, remembered, replaced, rolled back and removed",fn() {
+    let d = rig()
+    test.expect(strings.equal(ids(worker(d,"{\"action\":\"installed\"}\n"),"P"),""),"The store should start empty")
+    let first = worker(d,"{\"action\":\"installApp\",\"id\":\"hello-demo\"}\n")
+    test.expect(strings.equal(cells(records(first)[0])[1],"Installed hello-demo 1.0.0.") && strings.equal(ids(first,"P"),"hello-demo"),"Install failed: " + first)
+    let p = cells(records(first)[1])
+    test.expect(strings.equal(p[2],"1.0.0") && strings.equal(p[3],"app") && strings.equal(p[7],"hello-demo") && strings.equal(p[8],"hello-demo") && strings.equal(p[9],"A demo"),"Installed entry wrong: " + records(first)[1])
+    test.expect(strings.equal(cells(records(worker(d,"{\"action\":\"catalog\"}\n"))[1])[8],"hello-demo"),"The catalog does not show which package the app is")
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/tmp | wc -l"))),"0"),"The download folder was not removed")
+    let v2 = package(d,"hello-demo","1.1.0")
+    let replaced = worker(d,"{\"action\":\"installFile\",\"path\":\"" + v2 + "\"}\n")
+    test.expect(strings.equal(cells(records(replaced)[0])[1],"Installed hello-demo 1.1.0.") && strings.equal(cells(records(replaced)[1])[2],"1.1.0") && strings.equal(cells(records(replaced)[1])[6],"1.0.0"),"Replace failed: " + replaced)
+    let back = worker(d,"{\"action\":\"rollback\",\"id\":\"hello-demo\"}\n")
+    test.expect(strings.contains(cells(records(back)[0])[1],"Rolled back hello-demo to 1.0.0") && strings.equal(cells(records(back)[1])[2],"1.0.0"),"Rollback failed: " + back)
+    let gone = worker(d,"{\"action\":\"remove\",\"id\":\"hello-demo\"}\n")
+    test.expect(strings.contains(cells(records(gone)[0])[1],"Removed hello-demo") && strings.equal(ids(gone,"P"),""),"Remove failed: " + gone)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad requests never reach DevOsPM and its refusals are reported in its own words",fn() {
+    let d = rig()
+    fs.writeFileSync(d + "/notes.txt","x"); fs.writeFileSync(d + "/broken.dpk","not an archive")
+    let input = "{\"action\":\"installApp\",\"id\":\"nothing\"}\n{\"action\":\"installApp\",\"id\":\"no-download\"}\n{\"action\":\"installFile\",\"path\":\"relative.dpk\"}\n{\"action\":\"installFile\",\"path\":\"" + d + "/notes.txt\"}\n{\"action\":\"installFile\",\"path\":\"" + d + "/missing.dpk\"}\n{\"action\":\"remove\",\"id\":\"../x\"}\n{\"action\":\"rollback\",\"id\":\"\"}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,input),"\n")
+    test.expect(lines.len() == 9,"One answer per request expected: ${lines.len()}")
+    for i in 0..9 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(strings.equal(ids(worker(d,"{\"action\":\"installed\"}\n"),"P"),""),"A refused request installed something")
+    let broken = worker(d,"{\"action\":\"installFile\",\"path\":\"" + d + "/broken.dpk\"}\n")
+    test.expect(strings.startsWith(broken,"E\t") && !strings.contains(broken,"Installed"),"DevOsPM accepted a file that is not an archive: " + broken)
+    let gone = worker(d,"{\"action\":\"remove\",\"id\":\"never-installed\"}\n")
+    test.expect(strings.startsWith(gone,"E\t"),"Removing an unknown package was reported as done: " + gone)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("an unsupported architecture, a failed download and a missing package manager are explained",fn() {
+    let d = rig()
+    let run = fn(overrides:Vec<str>, input:str):str {
+        let all = Map<str,str>(); all.set("DEVOS_APPSTORE_TEST","1"); all.set("DEV_OS_PM",dev()); all.set("DEV_ROOT",d + "/store"); all.set("HOME",d + "/home"); all.set("XDG_DATA_HOME",d + "/home/.local/share"); all.set("DEVOS_APPSTORE_REGISTRY",d + "/registry.json"); all.set("DEVOS_APPSTORE_CURL",d + "/curl"); all.set("DEVOS_APPSTORE_ARCH","aarch64"); all.set("DEVOS_APPSTORE_TMP",d + "/tmp"); all.set("DEVOS_FAKE_PACKAGE",fs.readFileSync(d + "/demo-path","utf8"))
+        for i in 0..((overrides.len() as i64) / 2) { all.set(overrides[i * 2],overrides[i * 2 + 1]) }
+        return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.appstore/service.dev","--",t.root()),all,input,300000)))
+    }
+    test.expect(strings.startsWith(run(Vec<str>("DEVOS_APPSTORE_ARCH","x86_64"),"{\"action\":\"installApp\",\"id\":\"hello-demo\"}\n"),"E\tThis catalog provides Linux ARM64 packages."),"A non-ARM64 host was allowed")
+    fs.writeFileSync(d + "/failcurl","#!/bin/sh\necho 'curl: (22) The requested URL returned error: 404' >&2\nexit 22\n"); tool.exec(Vec<str>("chmod","755",d + "/failcurl"))
+    test.expect(strings.startsWith(run(Vec<str>("DEVOS_APPSTORE_CURL",d + "/failcurl"),"{\"action\":\"installApp\",\"id\":\"hello-demo\"}\n"),"E\tDownload failed (exit 22)") && strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/tmp | wc -l"))),"0"),"A failed download was not explained or left files behind")
+    test.expect(strings.contains(run(Vec<str>("DEV_OS_PM","/nonexistent/dev"),"{\"action\":\"installed\"}\n"),"The dev package manager is unavailable"),"A missing package manager was not explained")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native App Store window installs a catalog app through DevOsPM under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/appstore-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.appstore/native-main.devx", executable), Map<str,str>(), "", 240000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("DEVOS_APPSTORE_TEST","1"); env.set("DEV_OS_PM",dev()); env.set("DEV_ROOT",d + "/store"); env.set("HOME",d + "/home"); env.set("XDG_DATA_HOME",d + "/home/.local/share")
+    env.set("DEVOS_APPSTORE_REGISTRY",d + "/registry.json"); env.set("DEVOS_APPSTORE_CURL",d + "/curl"); env.set("DEVOS_APPSTORE_ARCH","aarch64"); env.set("DEVOS_APPSTORE_TMP",d + "/tmp"); env.set("DEVOS_FAKE_PACKAGE",fs.readFileSync(d + "/demo-path","utf8")); env.set("DEVOS_APPSTORE_SMOKE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","appstore-native","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native App Store installed a catalog app"),"App Store: " + t.out(done) + " / " + t.err(done))
+    let installed = Map<str,str>(); installed.set("DEV_ROOT",d + "/store"); installed.set("HOME",d + "/home")
+    test.expect(strings.contains(tool.exec(Vec<str>(dev(),"list","--json")),"hello-demo") || strings.contains(t.out(tool.run(Vec<str>(dev(),"list","--json"),installed,"",30000)),"hello-demo"),"DevOsPM does not list the app the window installed")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

@@ -1,0 +1,270 @@
+#!/usr/bin/env d
+# Data worker of the native App Store window. It reads the catalog (registry-data.json), lists what DevOsPM (`dev`) has installed, and installs,
+# removes and rolls back packages by running `dev` with separate arguments: DevOsPM extracts, checks and registers the files, this worker only
+# downloads a catalog app (https only, from the catalog's own address) or hands over a package file the user chose. One JSON request per line:
+#   {"action":"catalog"}                       {"action":"installed"}
+#   {"action":"installApp","id":"firefox"}     (download the catalog's ARM64 package, install it, remember which catalog app it is)
+#   {"action":"installFile","path":"/abs/file.dpk"}      {"action":"remove","id":"hello"}      {"action":"rollback","id":"hello"}
+# Every answer is a frame (records separated by ASCII 30; cells never hold tabs or newlines):
+#   V message                                              the first record
+#   A id name publisher category summary homepage format boundPackage     the catalog
+#   P id version kind files bytes previous commands title description     what is installed
+#   E message
+# Test hooks (only with DEVOS_APPSTORE_TEST=1): DEVOS_APPSTORE_REGISTRY, DEVOS_APPSTORE_CURL, DEVOS_APPSTORE_ARCH, DEVOS_APPSTORE_TMP.
+# The package manager is DEV_OS_PM when set, else the first of `dev` in PATH, <root>/bin/dev, <root>/build/wsl/bin/dev, ~/.local/bin/dev that answers `--version`.
+use "std/args"
+use "std/io"
+use "std/fs"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/worker-kit.dev" as kit
+use "./package-rules.dev" as rules
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn obj(value:json.Value, key:str):json.Value { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"object") ? json.get(value,key) : json.object() }
+fn list(value:json.Value, key:str):json.Value { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"array") ? json.get(value,key) : json.array() }
+fn testing():bool { return process.hasEnv("DEVOS_APPSTORE_TEST") }
+fn setting(name:str, fallback:str):str { return testing() && process.hasEnv(name) ? process.getenv(name) : fallback }
+fn env(name:str, fallback:str):str { return process.hasEnv(name) ? process.getenv(name) : fallback }
+fn home():str { return env("HOME","/") }
+fn dataHome():str { return env("XDG_DATA_HOME",home() + "/.local/share") }
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
+
+# --- the package manager ---
+fn answers(path:str):bool {
+    if strings.equal(path,"") || !fs.is_file(path) { return false }
+    let ran = hw.run(Vec<str>(path,"--version"),10000)
+    if ran.code != 0 { return false }
+    let words = strings.split(strings.trim(ran.out)," ")
+    if words.len() != 2 || !strings.equal(words[0],"dev") { return false }
+    let parts = strings.split(words[1],".")
+    return parts.len() >= 3 && !strings.equal(parts[0],"") && !strings.equal(parts[1],"")
+}
+fn devBinary(root:str):str {
+    if process.hasEnv("DEV_OS_PM") { return answers(process.getenv("DEV_OS_PM")) ? process.getenv("DEV_OS_PM") : "" }
+    let found = strings.trim(hw.run(Vec<str>("sh","-c","command -v dev"),5000).out)
+    for candidate in Vec<str>(found,root + "/bin/dev",root + "/build/wsl/bin/dev",home() + "/.local/bin/dev","/usr/local/bin/dev","/usr/bin/dev") { if answers(candidate) { return candidate } }
+    return ""
+}
+fn pm(root:str, arguments:Vec<str>, seconds:i64):hw.Run {
+    let binary = devBinary(root)
+    if strings.equal(binary,"") { return hw.Run(127,"The dev package manager is unavailable. For WSL development, run sh tools/setup/bootstrap-pm.sh and reopen App Store.") }
+    # stderr is merged into the output, where `dev` writes its refusals ("dev: ...").
+    let argv = Vec<str>("sh","-c","exec \"$@\" 2>&1","sh","env","NO_COLOR=1","TERM=dumb",binary)
+    for a in arguments { argv.push(a) }
+    return hw.run(argv,seconds * 1000)
+}
+
+# --- bindings: which catalog app is which package (the same file the JS App Store keeps) ---
+fn storeIdentity():str {
+    let store = process.hasEnv("DEV_ROOT") ? process.getenv("DEV_ROOT") : dataHome() + "/devos"
+    return strings.trim(hw.run(Vec<str>("sh","-c","printf %s \"$1\" | sha256sum | cut -d' ' -f1","sh",store),5000).out)
+}
+fn bindingPath():str { return dataHome() + "/dev-os/app-store/bindings-" + storeIdentity() + ".json" }
+fn bindings():json.Value {
+    let path = bindingPath()
+    if !fs.existsSync(path) { return json.object() }
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(path,"utf8")) })
+    return result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") ? json.object() : result.unwrap(parsed)
+}
+fn bind(catalogId:str, package:str) {
+    let all = bindings()
+    let path = bindingPath()
+    hw.run(Vec<str>("mkdir","-p","-m","700",dataHome() + "/dev-os/app-store"),5000)
+    fs.writeFileSync(path,json.stringify(json.set(all,catalogId,package)))
+}
+fn packageName(value:str):bool {
+    if strings.equal(value,"") || strings.charLength(value) > 64 { return false }
+    for i in 0..(strings.charLength(value) as i64) {
+        let c = strings.substring(value,i,i + 1)
+        if !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789_-",c) || (i == 0 && (strings.equal(c,"-") || strings.equal(c,"_"))) { return false }
+    }
+    return true
+}
+
+# --- the catalog ---
+fn categoryOf(id:str):str {
+    if strings.equal(id,"developer-tools") { return "Developer Tools" }
+    if strings.equal(id,"web-browsers") { return "Internet" }
+    if strings.equal(id,"productivity") { return "Productivity" }
+    if strings.equal(id,"creative") { return "Creative" }
+    if strings.equal(id,"media") { return "Media" }
+    return "Other"
+}
+fn safeWebsite(address:str):bool {
+    if !strings.startsWith(address,"https://") || strings.contains(address," ") || strings.contains(address,"\\") { return false }
+    let rest = strings.substring(address,8,strings.charLength(address))
+    let slash = strings.indexOf(rest,"/")
+    let host = slash < 0 ? rest : strings.substring(rest,0,slash)
+    return !strings.equal(host,"") && !strings.contains(host,"@") && !strings.contains(host,"?") && !strings.contains(host,"#")
+}
+struct App { id: str, name: str, publisher: str, category: str, summary: str, homepage: str, url: str, format: str }
+fn registry(root:str):json.Value {
+    let own = setting("DEVOS_APPSTORE_REGISTRY",root + "/src/apps/org.devos.appstore/registry-data.json")
+    if !fs.is_file(own) { return json.null_value() }
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(own,"utf8")) })
+    if result.isErr(parsed) { return json.null_value() }
+    let data = result.unwrap(parsed)
+    return strings.equal(json.kind(data),"object") && json.has(data,"schema_version") && json.int(json.get(data,"schema_version")) == 2 ? data : json.null_value()
+}
+fn apps(root:str):Vec<App> {
+    let out = Vec<App>(); let data = registry(root)
+    if json.is_null(data) { return out }
+    let rows = list(data,"apps"); let seen = Vec<str>()
+    for i in 0..(json.len(rows) as i64) {
+        let manifest = obj(json.at(rows,i),"manifest"); let id = text(manifest,"id")
+        if !packageName(id) || strings.equal(text(manifest,"name"),"") || !(json.has(manifest,"schema_version") && strings.equal(json.kind(json.get(manifest,"schema_version")),"number") && json.int(json.get(manifest,"schema_version")) == 2) { continue }
+        let duplicate = false; for s in seen { if strings.equal(s,id) { duplicate = true } }
+        if duplicate { continue }
+        seen.push(id)
+        let categories = list(manifest,"categories")
+        let url = ""; let format = ""
+        let downloads = list(manifest,"downloads")
+        for j in 0..(json.len(downloads) as i64) {
+            let d = json.at(downloads,j); let f = text(d,"format")
+            if strings.equal(text(d,"platform"),"linux") && strings.equal(text(d,"arch"),"arm64") && safeWebsite(text(d,"file_url")) && (strings.equal(f,"deb") || strings.equal(f,"rpm") || strings.equal(f,"dpk") || strings.equal(f,"dpkx") || strings.equal(f,"tar.gz")) && strings.equal(url,"") { url = text(d,"file_url"); format = f }
+        }
+        let homepage = text(obj(manifest,"links"),"homepage")
+        out.push(App(id,text(manifest,"name"),text(obj(manifest,"publisher"),"name"),categoryOf(json.len(categories) > 0 && strings.equal(json.kind(json.at(categories,0)),"string") ? json.string(json.at(categories,0)) : ""),text(manifest,"summary"),safeWebsite(homepage) ? homepage : "",url,format))
+    }
+    return out
+}
+
+# --- frames ---
+fn installedFrame(root:str, message:str):str {
+    let ran = pm(root,Vec<str>("list","--json"),30)
+    if ran.code != 0 { return kit.failure(strings.equal(strings.trim(ran.out),"") ? "Could not list packages." : strings.trim(ran.out)) }
+    let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return kit.failure("Could not list packages.") }
+    let data = result.unwrap(parsed)
+    let out = "V\t" + kit.clean(message)
+    let packages = obj(data,"packages")
+    let names = json.keys(packages); names.sort()
+    for id in names {
+        let item = json.get(packages,id); let active = obj(item,"active"); let manifest = obj(active,"manifest")
+        let commands = Vec<str>()
+        let bin = obj(manifest,"bin")
+        for c in json.keys(bin) { if !strings.equal(c,"") { commands.push(c) } }
+        if commands.len() == 0 { commands.push(id) }
+        let title = text(manifest,"fullname"); if strings.equal(title,"") { title = text(manifest,"shortname") }; if strings.equal(title,"") { title = id }
+        let previous = json.has(item,"previous") && strings.equal(json.kind(json.get(item,"previous")),"object") ? text(obj(json.get(item,"previous"),"manifest"),"version") : ""
+        let files = json.keys(obj(active,"files")).len()
+        let bytes = json.has(active,"bytes") && strings.equal(json.kind(json.get(active,"bytes")),"number") ? json.int(json.get(active,"bytes")) : 0
+        out = out + kit.rs() + "P\t" + kit.clean(id) + "\t" + kit.clean(text(manifest,"version")) + "\t" + kit.clean(text(active,"kind") == "" ? "app" : text(active,"kind")) + "\t${files}\t${bytes}\t" + kit.clean(previous) + "\t" + kit.clean(strings.join(commands,",")) + "\t" + kit.clean(title) + "\t" + kit.clean(text(manifest,"description"))
+    }
+    let extensions = obj(data,"extensions")
+    let extNames = json.keys(extensions); extNames.sort()
+    for id in extNames {
+        let item = json.get(extensions,id)
+        out = out + kit.rs() + "P\t" + kit.clean(id) + "\t" + kit.clean(text(item,"version")) + "\textension\t${list(item,"files").len()}\t0\t\t\t" + kit.clean(id) + "\t" + kit.clean(text(item,"description"))
+    }
+    return out
+}
+fn catalogFrame(root:str):str {
+    let all = apps(root)
+    if all.len() == 0 { return kit.failure("The app registry is unavailable.") }
+    let bound = bindings()
+    let out = "V\t"
+    for a in all { out = out + kit.rs() + "A\t" + kit.clean(a.id) + "\t" + kit.clean(a.name) + "\t" + kit.clean(a.publisher) + "\t" + kit.clean(a.category) + "\t" + kit.clean(a.summary) + "\t" + kit.clean(a.homepage) + "\t" + kit.clean(a.format) + "\t" + kit.clean(text(bound,a.id)) }
+    return out
+}
+
+# --- installing ---
+# The "Installed NAME VERSION" line of `dev install`, as (name, version, isExtension); name is "" when there is none.
+struct Installed { name: str, version: str, extension: bool }
+fn parseInstalled(output:str):Installed {
+    let found = Installed("","",false)
+    for line in strings.split(output,"\n") {
+        let words = strings.split(strings.trim(strings.replaceAll(line,"\r","")),"  ")[0]
+        let w = strings.split(strings.trim(strings.replaceAll(line,"\r",""))," ")
+        if w.len() >= 5 && strings.equal(w[0],"Installed") && strings.equal(w[1],"Dev") && strings.equal(w[2],"OS") && strings.equal(w[3],"extension") { found = Installed(w[4],w.len() > 5 ? w[5] : "",true) }
+        else if w.len() >= 3 && strings.equal(w[0],"Installed") { found = Installed(w[1],w[2],false) }
+    }
+    return found
+}
+fn failureText(output:str, fallback:str):str {
+    let lines = Vec<str>()
+    for line in strings.split(output,"\n") { let t = strings.trim(line); if strings.startsWith(t,"dev:") { lines.push(strings.trim(strings.substring(t,4,strings.charLength(t)))) } }
+    if lines.len() > 0 { return strings.join(lines," ") }
+    return strings.equal(strings.trim(output),"") ? fallback : strings.trim(output)
+}
+fn installPath(root:str, path:str, replace:bool, catalogId:str):str {
+    let arguments = Vec<str>("install")
+    if replace { arguments.push("--replace") }
+    arguments.push(path)
+    let ran = pm(root,arguments,290)
+    if ran.code != 0 { return kit.failure(failureText(ran.out,"Installation failed (exit ${ran.code}).")) }
+    let done = parseInstalled(ran.out)
+    if strings.equal(done.name,"") { return kit.failure(failureText(ran.out,"The package manager did not confirm the installation.")) }
+    if !strings.equal(catalogId,"") {
+        if done.extension { return kit.failure("An application download must not install an extension.") }
+        if !packageName(done.name) { return kit.failure("Cannot determine a valid DevOsPM package name from the downloaded file.") }
+        bind(catalogId,done.name)
+    }
+    return installedFrame(root,"Installed " + done.name + " " + done.version + ".")
+}
+fn hostArch():str { return strings.trim(setting("DEVOS_APPSTORE_ARCH",strings.trim(hw.run(Vec<str>("uname","-m"),5000).out))) }
+fn installApp(root:str, id:str):str {
+    let chosen = App("","","","","","","","")
+    for a in apps(root) { if strings.equal(a.id,id) { chosen = a } }
+    if strings.equal(chosen.id,"") { return kit.failure("That app is not in the catalog.") }
+    if strings.equal(chosen.url,"") { return kit.failure("This app has no supported HTTPS download.") }
+    if !strings.equal(hostArch(),"aarch64") && !strings.equal(hostArch(),"arm64") { return kit.failure("This catalog provides Linux ARM64 packages. Use an ARM64 DevOs system.") }
+    if strings.equal(devBinary(root),"") { return kit.failure("The package manager (dev) is not installed or is not available in PATH.") }
+    let curl = setting("DEVOS_APPSTORE_CURL","curl")
+    let base = setting("DEVOS_APPSTORE_TMP",env("TMPDIR","/tmp"))
+    let made = hw.run(Vec<str>("mktemp","-d",base + "/devos-app-store-XXXXXX"),5000)
+    if made.code != 0 { return kit.failure("Could not create a folder for the download.") }
+    let directory = strings.trim(made.out); let file = directory + "/download." + chosen.format
+    let arguments = Vec<str>(curl,"--disable","--fail","--location","--silent","--show-error","--proto","=https","--proto-redir","=https","--max-redirs","10","--connect-timeout","30","--max-time","280","--max-filesize","2147483648","--output",file,chosen.url)
+    let downloaded = hw.run(arguments,290000)
+    let answer = ""
+    if downloaded.code != 0 { answer = kit.failure("Download failed (exit ${downloaded.code}). Retry or check the publisher website.") }
+    else if !fs.is_file(file) || strings.equal(strings.trim(hw.run(Vec<str>("sh","-c","wc -c < " + quote(file)),5000).out),"0") { answer = kit.failure("The download must be nonempty and at most 2 GiB.") }
+    else {
+        let known = false
+        let current = installedFrame(root,"")
+        let bound = text(bindings(),chosen.id)
+        if !strings.equal(bound,"") { for record in strings.split(current,kit.rs()) { if strings.startsWith(record,"P\t" + bound + "\t") { known = true } } }
+        answer = installPath(root,file,known,chosen.id)
+    }
+    hw.run(Vec<str>("rm","-rf","--",directory),10000)
+    return answer
+}
+fn packageId(value:str):bool { return packageName(value) }
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action")
+    if strings.equal(action,"catalog") { return catalogFrame(root) }
+    if strings.equal(action,"installed") { return installedFrame(root,"") }
+    if strings.equal(action,"installApp") { return installApp(root,text(r,"id")) }
+    if strings.equal(action,"installFile") {
+        let path = text(r,"path")
+        if !strings.startsWith(path,"/") || strings.contains(path,"\0") || strings.contains(path,"\n") { return kit.failure("Choose a package file with a full path.") }
+        if !rules.isPackageFile(path) { return kit.failure("Not a package file (.dpk, .deb, .rpm or .tar.gz expected).") }
+        if !fs.is_file(path) { return kit.failure("That file is not there.") }
+        return installPath(root,path,true,"")
+    }
+    if strings.equal(action,"remove") || strings.equal(action,"rollback") {
+        if !packageId(text(r,"id")) { return kit.failure("Choose an installed package first.") }
+        let ran = pm(root,Vec<str>(action,text(r,"id")),120)
+        if ran.code != 0 { return kit.failure(strings.equal(strings.trim(ran.out),"") ? "Could not " + action + " " + text(r,"id") + "." : failureText(ran.out,"")) }
+        return installedFrame(root,strings.trim(ran.out))
+    }
+    return kit.failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()
