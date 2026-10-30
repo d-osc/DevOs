@@ -6,7 +6,6 @@ import type {RegistryControls} from '../apps/org.devos.appstore/registry-backend
 import type {StoreItem} from '../../packages/extensions/store.js';
 import type {ProcessState} from '../apps/org.devos.taskmanager/processes.js';
 import type {NetworkSnapshot} from '../apps/org.devos.settings/network-settings.js';
-import type {FileEntry} from '../apps/org.devos.files/model.js';
 
 /** Data shaping is centralized in the worker, including search/ranking and joins. */
 export async function projectAppView(kind: string, input: any): Promise<any> {
@@ -16,10 +15,6 @@ export async function projectAppView(kind: string, input: any): Promise<any> {
         const metric = (item: NonNullable<typeof state>['processes'][number]): number => sort === 'gpu' ? item.gpu ?? -1 : sort === 'gpuMemory' ? item.gpuMemory ?? -1 : sort === 'swap' ? item.swap ?? -1 : sort === 'disk' ? item.diskRead == null && item.diskWrite == null ? -1 : (item.diskRead ?? 0) + (item.diskWrite ?? 0) : sort === 'network' ? item.networkReceive == null && item.networkSend == null ? -1 : (item.networkReceive ?? 0) + (item.networkSend ?? 0) : sort === 'memory' ? item.memory : item.cpu;
         return (state?.processes ?? []).filter(item => !needle || `${item.name} ${item.command ?? ''} ${item.executable ?? ''} ${item.pid} ${item.user}`.toLowerCase().includes(needle))
             .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : sort === 'pid' ? a.pid - b.pid : metric(b) - metric(a) || b.memory - a.memory);
-    }
-    if (kind === 'files') {
-        const filtered = (input.entries as FileEntry[]).filter(entry => input.hidden || !entry.hidden);
-        return {filtered, folders: filtered.filter(entry => entry.directory).slice(0, 8)};
     }
     if (kind === 'network') {
         const state = input as NetworkSnapshot;

@@ -5,8 +5,6 @@ import {
     memoryStream, gunzipSource, PACKAGE_MIME_TYPES, LIMITS,
 } from '../src/apps/org.devos.appstore/package-file.js';
 import {parseInstallOutput, parseList, resolvePackageManager, packageManagerBinary, PackageManagerCli, PM_ENV} from '../src/apps/org.devos.appstore/package-backend.js';
-import {openPackageFile, installAction} from '../src/apps/org.devos.files/package-open.js';
-import {createFileContextMenu, fileMenuOptions} from '../src/apps/org.devos.files/context-menu.js';
 
 Gtk.init(null);
 const loop = new GLib.MainLoop(null, false);
@@ -143,22 +141,6 @@ function onDisk() {
     assert(fields.Package === 'a' && fields.Description === 'one\ntwo' && fields.Depends === 'x', 'debian control continuation lines');
     let threw = false; try {parseAr(encoder.encode('garbage!'), () => new Uint8Array(60), 100);} catch {threw = true;} assert(threw, 'ar parser rejects non-ar input');
 }
-function routing() {
-    const dpk = write('route.dpk', goodDpk()), plain = write('route-plain.tar.gz', gzip(tar(tarEntry('README', 'hi')))), launcher = write('route-app.tar.gz', gzip(tar(tarEntry('package.json', manifest()))));
-    const opened: string[] = [], opener = (path: string) => {opened.push(path); return true;};
-    assert(openPackageFile(dpk, opener) && openPackageFile(`${temporary}/x.deb`, opener) && openPackageFile(`${temporary}/x.rpm`, opener) && openPackageFile(launcher, opener) && opened.length === 4, 'double-click on dpk/deb/rpm/installable tar.gz opens the install page');
-    assert(!openPackageFile(plain, opener) && !openPackageFile(`${temporary}/notes.txt`, opener) && !openPackageFile(dpk) && opened.length === 4, 'other files and plain archives keep their behaviour; missing handler falls through');
-    assert(!openPackageFile(dpk, () => false), 'a refused install page falls back to the default application');
-    const folder = {path: `${temporary}/folder.dpk`, directory: true};
-    assert(!installAction(folder, opener) && !installAction({path: `${temporary}/notes.txt`, directory: false}, opener) && !installAction({path: plain, directory: false}, opener) && !installAction(undefined, opener) && !installAction({path: dpk, directory: false}), 'no Install action for folders, other files, plain archives, background or without a handler');
-    const names = (path: string, directory: boolean) => createFileContextMenu(fileMenuOptions(), {contextInstall: installAction({path, directory}, opener), contextOpen: () => {}}, true, false, false)
-        .get_children().map(child => child.name);
-    for (const path of [dpk, `${temporary}/x.deb`, `${temporary}/x.rpm`, launcher]) assert(names(path, false).includes('files-menu-contextInstall'), `Install item for ${path}`);
-    for (const [path, directory] of [[folder.path, true], [`${temporary}/notes.txt`, false], [plain, false]] as const) assert(!names(path, directory).includes('files-menu-contextInstall'), `no Install item for ${path}`);
-    const before = opened.length; createFileContextMenu(fileMenuOptions(), {contextInstall: installAction({path: dpk, directory: false}, opener)}, true, false, false).get_children().find(child => child.name === 'files-menu-contextInstall')!.activate();
-    assert(opened.length === before + 1 && opened[before] === dpk, 'activating Install opens the install page with the file');
-    assert(!createFileContextMenu(fileMenuOptions({contextInstall: false}), {contextInstall: installAction({path: dpk, directory: false}, opener)}, true, false, false).get_children().some(child => child.name === 'files-menu-contextInstall'), 'the Install item can be turned off in Files settings');
-}
 function parsers() {
     const result = parseInstallOutput(['Preparing installation...', 'Installed hello-app 1.2.0', 'Path: /home/u/.local/share/devos/packages/hello-app/1.2.0', 'Run: dev run hello']);
     assert(result.id === 'hello-app' && result.version === '1.2.0' && result.commands[0] === 'hello' && result.path.endsWith('1.2.0') && !result.extension, 'install output parsed');
@@ -206,8 +188,8 @@ esac
 }
 async function main() {
     try {
-        formats(); mimeRegistration(); tarListing(); onDisk(); routing(); parsers(); await backend();
-        print('PASS: package kinds, MIME registration, safe archive inspection (traversal, links, huge sizes), Files routing and menu, package-manager bridge');
+        formats(); mimeRegistration(); tarListing(); onDisk(); parsers(); await backend();
+        print('PASS: package kinds, MIME registration, safe archive inspection (traversal, links, huge sizes), package-manager bridge');
     } finally {removeTree(temporary);}
 }
 let failure: unknown; void main().catch(error => {failure = error;}).finally(() => loop.quit()); loop.run(); if (failure) throw failure;

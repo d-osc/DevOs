@@ -9,8 +9,6 @@ export const serviceControllers: Record<string, {create(args: any[]): Promise<an
     'editor/assets.AssetsData': {create: async () => new (await import('../apps/org.devos.editor/assets.backend.js')).AssetsData(), properties: []},
     'camera/capture.MediaData': {create: async args => new (await import('../apps/org.devos.camera/capture.backend.js')).MediaData(args[0], args[1], args[2], args[3], args[4]), properties: []},
     'terminal/data.TerminalData': {create: async args => new (await import('../apps/org.devos.terminal/data.backend.js')).TerminalData(args[0]), properties: []},
-    'files/model.FileBrowser': {create: async args => new ((await import('../apps/org.devos.files/model.backend.js')).FileBrowser as any)(...args), properties: ["state"]},
-    'files/search.FileSearch': {create: async args => new ((await import('../apps/org.devos.files/search.backend.js')).FileSearch as any)(...args), properties: ["state"]},
     'editor/document.EditorDocument': {create: async args => new ((await import('../apps/org.devos.editor/document.backend.js')).EditorDocument as any)(...args), properties: ["path","content","loading","saving","error","dirty","language","title"]},
     'taskmanager/processes.Processes': {create: async args => new ((await import('../apps/org.devos.taskmanager/processes.backend.js')).Processes as any)(...args), properties: []},
     'diskmanager/disks.Disks': {create: async args => new ((await import('../apps/org.devos.diskmanager/disks.backend.js')).Disks as any)(...args), properties: []},

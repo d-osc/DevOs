@@ -53,6 +53,8 @@ static void rd_closed(GtkWidget *widget, void *data) {
     if (root->idle) { g_source_remove(root->idle); root->idle = 0; }
     if (gtk_main_level()) gtk_main_quit();
 }
+/* Puts text on the clipboard of the default display. */
+void rd_clipboard(const char *text) { if (text) gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), text, -1); }
 int64_t rd_strlen(const char *text) { return (int64_t)strlen(text); }
 void *rd_buffer_new(int64_t length) { return g_malloc0((gsize)length + 1); }
 void rd_buffer_free(void *buffer) { g_free(buffer); }

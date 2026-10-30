@@ -4,13 +4,13 @@ import {shellApplicationId} from '@dev-os/runtime/remote';
 import {processApplicationId, sendCommand, missingProcess, optInNative, type ProcessRole} from '@dev-os/runtime/processes';
 
 /** Apps with a native GTK executable under dist/native; every other role runs through the JS app host. */
-const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskmanager', diskmanager: 'diskmanager', installer: 'installer'};
+const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskmanager', diskmanager: 'diskmanager', installer: 'installer', files: 'files'};
 
 /**
  * Apps whose native window can be tried before it becomes the default: DEVOS_NATIVE_<APP>=1, or a file at ~/.config/devos/native-<app>.
  * The JS app stays the default until the native one has been checked on a real session; without dist/native/<app> the JS app is used as well.
  */
-const OPT_IN_APPS: readonly ProcessRole[] = ['settings', 'files', 'terminal', 'browser', 'camera', 'microphone', 'appstore', 'editor'];
+const OPT_IN_APPS: readonly ProcessRole[] = ['settings', 'terminal', 'browser', 'camera', 'microphone', 'appstore', 'editor'];
 export const nativeEnabled = (app: ProcessRole): boolean => optInNative(app);
 export const nativeSettingsEnabled = () => nativeEnabled('settings');
 

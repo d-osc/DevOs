@@ -1,12 +1,23 @@
 #!/usr/bin/env d
-# Data worker of the native Files window. It lists folders, creates a folder, renames, and opens a file with the default application; the rules
-# (names, kinds, natural order, no overwrite) are in model.dev. One JSON request per line on stdin:
+# Data worker of the native Files window. It lists folders, creates a folder, renames, opens a file with the default application, searches (Quick Open),
+# runs the custom menu actions, installs a package through the App Store and opens a Terminal in a folder; the rules are model.dev, search.dev and
+# custom-menu.dev. One JSON request per line on stdin:
 #   {"action":"list","path":"~/Documents","base":"/home/u","hidden":false}      (path may be absolute, relative to base, or start with ~)
+#   {"action":"start"}                                                           the folder of the "Start folder" setting (and its hidden-files choice)
 #   {"action":"mkdir","dir":"/home/u","name":"New","hidden":false}              {"action":"rename","dir":"/home/u","from":"a","name":"b","hidden":false}
 #   {"action":"open","path":"/home/u/a.txt","dir":"/home/u","hidden":false}
+#   {"action":"search","dir":"/home/u","query":"fvtsx"}                         -> V (the folder) and R records
+#   {"action":"install","path":"/home/u/a.deb","dir":"/home/u","hidden":false}  {"action":"terminal","dir":"/home/u","hidden":false}
+#   {"action":"custom","id":"custom-x","path":"/home/u/a.txt","dir":"/home/u","hidden":false}
 # Every answer is the listing of the folder it ended in (frame; records separated by ASCII 30, text never holds tabs or newlines):
-#   V path home parent message           F name path folder hidden size stamp label tag color        E message
-# Test hooks (only with DEVOS_FILES_TEST=1): DEVOS_FILES_HOME, DEVOS_FILES_OPEN (the program that opens a file).
+#   V path home parent message
+#   F name path folder hidden size stamp label tag color installable (1 sure, ? a .tar.gz that must be looked into, 0 not a package)
+#   S grid showHidden menuEnabled flags (eight 0/1 digits: Open Install Rename CopyPath NewFolder Terminal Refresh Hidden)
+#   M id title target                                                            enabled custom actions
+#   R name path relative                                                         search results (search only)
+#   E message
+# Test hooks (only with DEVOS_FILES_TEST=1): DEVOS_FILES_HOME, DEVOS_FILES_OPEN (the program that opens a file), DEVOS_PREFERENCES_DIR, DEVOS_FILES_LOG (shell
+# commands are appended there instead of being sent), DEVOS_FILES_CUSTOM (runs custom actions through this program: it gets the arguments).
 use "std/io"
 use "std/fs"
 use "std/process"
@@ -15,8 +26,14 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/posix.dev" as posix
+use "../../../lib/hw.dev" as hw
+use "../../../lib/ext-prefs.dev" as prefs
+use "../../../lib/shell-command.dev" as shell
 use "../../../lib/worker-kit.dev" as kit
+use "../org.devos.appstore/package-rules.dev" as rules
 use "./model.dev" as model
+use "./search.dev" as search
+use "./custom-menu.dev" as custom
 
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
@@ -25,11 +42,35 @@ fn home():str {
     if testing() && process.hasEnv("DEVOS_FILES_HOME") { return process.getenv("DEVOS_FILES_HOME") }
     return process.hasEnv("HOME") ? process.getenv("HOME") : "/"
 }
+fn root():str { return hw.envOr("DEV_OS_ROOT",".") }
+fn preferencesDirectory():str { return testing() && process.hasEnv("DEVOS_PREFERENCES_DIR") ? process.getenv("DEVOS_PREFERENCES_DIR") : hw.configHome() + "/dev-os/extensions" }
+# The Files preferences ({} when they cannot be read, so the window still works with the defaults).
+fn stored():json.Value {
+    let read = result.attempt(fn():json.Value {
+        let manifest = json.parse(fs.readFileSync(root() + "/src/apps/org.devos.files/extension.json","utf8"))
+        return hw.jget(prefs.read(preferencesDirectory(),"org.devos.files",manifest),"values")
+    })
+    return result.isErr(read) ? json.object() : result.unwrap(read)
+}
+fn flag(value:bool):str { return value ? "1" : "0" }
 fn sizeLabel(bytes:i64):str {
     if bytes < 1024 { return "${bytes} B" }
     if bytes < 1048576 { return "${(bytes * 10 + 512) / 1024 / 10}.${(bytes * 10 + 512) / 1024 % 10} KB" }
     if bytes < 1073741824 { return "${(bytes * 10 + 524288) / 1048576 / 10}.${(bytes * 10 + 524288) / 1048576 % 10} MB" }
     return "${(bytes * 10 + 536870912) / 1073741824 / 10}.${(bytes * 10 + 536870912) / 1073741824 % 10} GB"
+}
+fn installable(path:str, directory:bool):str {
+    if directory { return "0" }
+    let kind = rules.packageKind(path)
+    return strings.equal(kind,"") ? "0" : strings.equal(kind,"tar.gz") ? "?" : "1"
+}
+# The settings and custom action records every frame carries.
+fn settingsRecords():str {
+    let v = stored()
+    let flags = flag(hw.jbool(v,"contextOpen",true)) + flag(hw.jbool(v,"contextInstall",true)) + flag(hw.jbool(v,"contextRename",true)) + flag(hw.jbool(v,"contextCopyPath",true)) + flag(hw.jbool(v,"contextNewFolder",true)) + flag(hw.jbool(v,"contextTerminal",true)) + flag(hw.jbool(v,"contextRefresh",true)) + flag(hw.jbool(v,"contextHidden",true))
+    let out = kit.rs() + "S\t" + flag(hw.jbool(v,"gridView",false)) + "\t" + flag(hw.jbool(v,"showHidden",false)) + "\t" + flag(hw.jbool(v,"contextEnabled",true)) + "\t" + flags
+    for item in custom.parse(hw.jstr(v,"contextCustomItems","[]")) { if item.enabled { out = out + kit.rs() + "M\t" + kit.clean(item.id) + "\t" + kit.clean(item.title) + "\t" + item.target } }
+    return out
 }
 # The listing frame of `path`; `message` is shown by the window after a change.
 fn frame(path:str, hidden:bool, message:str):str {
@@ -38,9 +79,9 @@ fn frame(path:str, hidden:bool, message:str):str {
     let out = "V\t" + kit.clean(path) + "\t" + kit.clean(home()) + "\t" + kit.clean(model.parent(path)) + "\t" + kit.clean(message)
     for e in model.visible(listing.entries,hidden) {
         let kind = model.fileKind(e.name,e.directory)
-        out = out + kit.rs() + "F\t" + kit.clean(e.name) + "\t" + kit.clean(e.path) + "\t" + (e.directory ? "1" : "0") + "\t" + (e.hidden ? "1" : "0") + "\t" + (e.directory ? "" : sizeLabel(e.size)) + "\t" + kit.clean(e.stamp) + "\t" + kit.clean(kind.label) + "\t" + kit.clean(kind.tag) + "\t" + kit.clean(kind.color)
+        out = out + kit.rs() + "F\t" + kit.clean(e.name) + "\t" + kit.clean(e.path) + "\t" + (e.directory ? "1" : "0") + "\t" + (e.hidden ? "1" : "0") + "\t" + (e.directory ? "" : sizeLabel(e.size)) + "\t" + kit.clean(e.stamp) + "\t" + kit.clean(kind.label) + "\t" + kit.clean(kind.tag) + "\t" + kind.color + "\t" + installable(e.path,e.directory)
     }
-    return out
+    return out + settingsRecords()
 }
 fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
 fn opener():str { return testing() && process.hasEnv("DEVOS_FILES_OPEN") ? process.getenv("DEVOS_FILES_OPEN") : "gio open" }
@@ -48,12 +89,39 @@ fn folder(r:json.Value):str {
     let resolved = model.resolve(text(r,"dir"),"/",home())
     return strings.equal(resolved,"") ? home() : resolved
 }
+# Sends a command to the shell (the test log stands in for it).
+fn sendShell(args:Vec<str>, directory:str):bool {
+    if testing() && process.hasEnv("DEVOS_FILES_LOG") {
+        fs.appendFileSync(process.getenv("DEVOS_FILES_LOG"),strings.join(args," ") + " @ " + directory + "\n")
+        return true
+    }
+    return shell.remote(args,hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),directory) == 0
+}
+fn searchFrame(dir:str, query:str):str {
+    let v = stored()
+    let excluded = Vec<str>(); for name in strings.split(hw.jstr(v,"searchExcludedDirectories",".git,node_modules,dist,build,.venv,vendor,.cache"),",") { excluded.push(strings.trim(name)) }
+    let found = search.rank(search.files(dir,excluded,30000),query,100)
+    let out = "V\t" + kit.clean(dir) + "\t" + kit.clean(home()) + "\t" + kit.clean(model.parent(dir)) + "\t" + "${found.matches} match${found.matches == 1 ? "" : "es"}"
+    for m in found.results { out = out + kit.rs() + "R\t" + kit.clean(m.name) + "\t" + kit.clean((strings.equal(dir,"/") ? "" : dir) + "/" + m.relative) + "\t" + kit.clean(m.relative) }
+    return out + settingsRecords()
+}
+# A .tar.gz is installable only when its first 500 entries show a Dev OS manifest or a launcher entry.
+fn archiveInstallable(path:str):bool {
+    let ran = hw.run(Vec<str>("sh","-c","tar -tzf " + quote(path) + " 2>/dev/null | head -n 500"),15000)
+    for line in strings.split(ran.out,"\n") { if !strings.equal(line,"") && rules.entryInstallable(line,strings.endsWith(line,"/")) { return true } }
+    return false
+}
 fn handle(line:str):str {
     let parsed = result.attempt(fn():json.Value { return json.parse(line) })
     if result.isErr(parsed) { return kit.failure("Invalid service request") }
     let r = result.unwrap(parsed)
     if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
     let action = text(r,"action"); let hidden = bool(r,"hidden")
+    if strings.equal(action,"start") {
+        let v = stored()
+        let path = model.resolve(hw.jstr(v,"homeDirectory","~"),home(),home())
+        return frame(strings.equal(path,"") || !fs.is_dir(path) ? home() : path,hw.jbool(v,"showHidden",false),"")
+    }
     if strings.equal(action,"list") {
         let base = strings.equal(text(r,"base"),"") ? home() : text(r,"base")
         let path = model.resolve(strings.equal(text(r,"path"),"") ? "~" : text(r,"path"),base,home())
@@ -61,6 +129,7 @@ fn handle(line:str):str {
         return frame(path,hidden,"")
     }
     let dir = folder(r)
+    if strings.equal(action,"search") { return searchFrame(dir,text(r,"query")) }
     if strings.equal(action,"mkdir") {
         let problem = model.createFolder(dir,text(r,"name"))
         if !strings.equal(problem,"") { return kit.failure(problem) }
@@ -76,6 +145,29 @@ fn handle(line:str):str {
         if !strings.startsWith(path,"/") || strings.contains(path,"\0") || !fs.existsSync(path) { return kit.failure("That file is no longer there.") }
         posix.shell(opener() + " " + quote(path) + " >/dev/null 2>&1 &")
         return frame(dir,hidden,"Opening " + path)
+    }
+    if strings.equal(action,"install") {
+        let path = text(r,"path")
+        if !strings.startsWith(path,"/") || strings.contains(path,"\0") || !fs.is_file(path) || !rules.isPackageFile(path) { return kit.failure("Choose a package file (.dpk, .deb, .rpm or .tar.gz).") }
+        if strings.equal(rules.packageKind(path),"tar.gz") && !archiveInstallable(path) { return kit.failure("This archive is not an installable package.") }
+        if !sendShell(Vec<str>("package-install",path),dir) { return kit.failure("Could not open the installer.") }
+        return frame(dir,hidden,"Opening the installer")
+    }
+    if strings.equal(action,"terminal") {
+        if !sendShell(Vec<str>("terminal"),dir) { return kit.failure("Could not open the terminal.") }
+        return frame(dir,hidden,"Opening a terminal")
+    }
+    if strings.equal(action,"custom") {
+        let wanted = text(r,"id"); let chosen = custom.Item("","","",false,"")
+        for item in custom.parse(hw.jstr(stored(),"contextCustomItems","[]")) { if strings.equal(item.id,wanted) { chosen = item } }
+        if strings.equal(chosen.id,"") || !chosen.enabled { return kit.failure("That action is not available.") }
+        let path = text(r,"path"); if strings.equal(path,"") { path = dir }
+        let argv = custom.arguments(chosen.command,path,dir)
+        if argv.len() == 0 { return kit.failure("Enter a valid command with balanced quotes.") }
+        let words = Vec<str>(); for word in argv { words.push(quote(word)) }
+        let program = testing() && process.hasEnv("DEVOS_FILES_CUSTOM") ? quote(process.getenv("DEVOS_FILES_CUSTOM")) + " " : ""
+        posix.shell("cd " + quote(dir) + " && (setsid " + program + strings.join(words," ") + " >/dev/null 2>&1 &)")
+        return frame(dir,hidden,chosen.title)
     }
     return kit.failure("Unsupported action")
 }

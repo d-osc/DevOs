@@ -1,7 +1,6 @@
 import {MediaData} from '../src/apps/org.devos.camera/capture.js';
 import {Gio, GLib} from '@dev-os/core/base';
 import {appService, closeAppService} from '@dev-os/runtime/app-service';
-import {FileBrowser} from '../src/apps/org.devos.files/model.js';
 import {EditorDocument} from '../src/apps/org.devos.editor/document.js';
 import {AppPreferences} from '../src/app-data.js';
 
@@ -23,10 +22,6 @@ async function run() {
     const path = `${directory}/example.ts`;
     GLib.file_set_contents(path, 'initial');
     const document = new EditorDocument();
-    let opened = '';
-    const files = new FileBrowser(async (uri, cancel) => {
-        assert(cancel instanceof Gio.Cancellable, 'IPC callback restores a cancellable'); opened = uri;
-    });
     const preferences = new AppPreferences();
     try {
         await preferences.initialize();
@@ -36,10 +31,6 @@ async function run() {
         assert(document.dirty && document.content === 'edited', 'Typing updates the view immediately');
         assert(await document.save(), 'Saving runs in the data service');
         assert(new TextDecoder().decode(GLib.file_get_contents(path)[1]) === 'edited', 'Saved bytes match the edit');
-        assert(await files.navigate(directory), 'File model receives directory state');
-        assert(files.state.entries.some(entry => entry.name === 'example.ts' && entry.icon), 'File metadata/icons survive IPC');
-        assert(await files.openPath(path), 'UI launch callback round-trips to the worker');
-        assert(opened.endsWith('/example.ts'), 'UI launch receives a URI');
         // Exercise real GStreamer streams in the worker without opening physical hardware.
         const until = async (ready: () => boolean) => {for (let attempt = 0; attempt < 100; attempt++) {if (ready()) return; await wait(50);} throw new Error('Media service did not respond');};
         let frames = 0, photo = '', recording = '', peaks = 0;
@@ -58,7 +49,7 @@ async function run() {
         signal(identity.pid, 'STOP');
         await wait(80);
         const before = ticks;
-        const pending = files.refresh();
+        const pending = document.load(path);
         await wait(150);
         assert(ticks > before + 5, 'A stopped data worker cannot freeze the UI event loop');
         signal(identity.pid, 'CONT');
@@ -72,7 +63,7 @@ async function run() {
         print('PASS: separate data PID, real snapshots/callbacks, editor save, remote camera/audio streams, frozen-service responsiveness and crash errors');
     } finally {
         if (GLib.file_test(`/proc/${identity.pid}`, GLib.FileTest.IS_DIR)) signal(identity.pid, 'CONT');
-        files.dispose(); document.dispose(); preferences.dispose(); GLib.source_remove(timer); closeAppService();
+        document.dispose(); preferences.dispose(); GLib.source_remove(timer); closeAppService();
         const {removeTree} = await import('@dev-os/core/base'); removeTree(directory);
     }
 }

@@ -3,7 +3,6 @@ import {ExtensionManager} from '@dev-os/extensions';
 import {AppUpdates as Updates} from './app-data.js';
 import {sendCommand, processApplicationId, missingProcess} from '@dev-os/runtime/processes';
 import {UpdatesView} from './apps/org.devos.updates/view.js';
-import {FilesSettings} from './apps/org.devos.files/settings-view.js';
 import {TerminalSettings} from './apps/org.devos.terminal/settings-view.js';
 import {CameraSettings} from './apps/org.devos.camera/settings-view.js';
 import {MicrophoneSettings} from './apps/org.devos.microphone/settings-view.js';
@@ -19,7 +18,7 @@ export function registerAppSettings(context: UIContext): () => void {
     });};
     const updater = new Updates();
     const pages = {
-        files: () => <FilesSettings preferences={preferences}/>, terminal: () => <TerminalSettings preferences={preferences}/>,
+        terminal: () => <TerminalSettings preferences={preferences}/>,
         camera: () => <CameraSettings open={() => context.invoke('camera')}/>,
         microphone: () => <MicrophoneSettings open={() => context.invoke('microphone')}/>,
         taskmanager: () => <TaskManagerSettings openManager={() => context.invoke('task-manager')}/>,

@@ -19,14 +19,89 @@ fn rig():str {
     return d
 }
 fn worker(d:str, input:str):str {
-    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log")
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log")
     return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.files/service.dev","--",t.root()),env,input,120000)))
 }
 fn names(frame:str):str {
     let out = Vec<str>(); let all = records(frame)
-    for i in 1..(all.len() as i64) { out.push(cells(all[i])[1]) }
+    for i in 1..(all.len() as i64) { if strings.startsWith(all[i],"F\t") { out.push(cells(all[i])[1]) } }
     return strings.join(out,",")
 }
+
+fn json_text(value:str):str { return "\"" + strings.replaceAll(strings.replaceAll(value,"\\","\\\\"),"\"","\\\"") + "\"" }
+
+fn kinds(frame:str, letter:str):Vec<str> {
+    let out = Vec<str>(); for record in records(frame) { if strings.startsWith(record,letter + "\t") { out.push(record) } }
+    return out
+}
+fn prefsFile(d:str, values:str) { fs.mkdirSync(d + "/prefs",false); fs.writeFileSync(d + "/prefs/org.devos.files.json","{\"enabled\":true,\"values\":" + values + ",\"version\":1}") }
+fn allValues(overrides:Map<str,str>):str {
+    let defaults = Map<str,str>()
+    defaults.set("homeDirectory","\"~\""); defaults.set("gridView","false"); defaults.set("showHidden","false"); defaults.set("searchExcludedDirectories","\".git,node_modules\"")
+    let keys = Vec<str>("homeDirectory","gridView","showHidden","searchExcludedDirectories","contextEnabled","contextOpen","contextInstall","contextRename","contextCopyPath","contextNewFolder","contextTerminal","contextRefresh","contextHidden","contextCustomItems")
+    for key in keys { if !defaults.contains(key) { defaults.set(key,"true") } }
+    defaults.set("contextCustomItems","\"[]\"")
+    let parts = Vec<str>()
+    for key in keys { parts.push("\"" + key + "\":" + (overrides.contains(key) ? overrides.get(key) : defaults.get(key))) }
+    return "{" + strings.join(parts,",") + "}"
+}
+test.case("the start folder and the view choices come from the preferences, and every frame carries the menu settings",fn() {
+    let d = rig()
+    let none = worker(d,"{\"action\":\"start\"}\n")
+    test.expect(strings.equal(cells(records(none)[0])[1],d + "/home"),"the default start folder is home: " + records(none)[0])
+    test.expect(strings.contains(strings.join(kinds(none,"S"),""),"S\t0\t0\t1\t11111111"),"defaults: " + strings.join(kinds(none,"S"),""))
+    let o = Map<str,str>(); o.set("homeDirectory","\"~/Docs\""); o.set("gridView","true"); o.set("showHidden","true"); o.set("contextRename","false"); o.set("contextEnabled","true")
+    prefsFile(d,allValues(o))
+    let set = worker(d,"{\"action\":\"start\"}\n")
+    test.expect(strings.equal(cells(records(set)[0])[1],d + "/home/Docs"),"the start folder: " + records(set)[0])
+    test.expect(strings.contains(strings.join(kinds(set,"S"),""),"S\t1\t1\t1\t11011111"),"grid, hidden and the rename switch: " + strings.join(kinds(set,"S"),""))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("Quick Open ranks names above paths, skips excluded folders and takes several words",fn() {
+    let d = rig()
+    fs.mkdirSync(d + "/home/src",false); fs.mkdirSync(d + "/home/node_modules",false)
+    fs.writeFileSync(d + "/home/src/files-view.tsx","x"); fs.writeFileSync(d + "/home/src/other.ts","x"); fs.writeFileSync(d + "/home/node_modules/files-view.tsx","x"); fs.writeFileSync(d + "/home/Docs/view-notes.md","x")
+    let frame = worker(d,"{\"action\":\"search\",\"dir\":\"" + d + "/home\",\"query\":\"fvtsx\"}\n{\"action\":\"search\",\"dir\":\"" + d + "/home\",\"query\":\"view\"}\n{\"action\":\"search\",\"dir\":\"" + d + "/home\",\"query\":\"src other\"}\n")
+    let lines = strings.split(frame,"\n")
+    test.expect(strings.contains(lines[0],"R\tfiles-view.tsx\t" + d + "/home/src/files-view.tsx\tsrc/files-view.tsx") && !strings.contains(lines[0],"node_modules"),"a subsequence finds the file and the excluded folder is skipped: " + lines[0])
+    test.expect(strings.contains(lines[0],"1 match"),"one match: " + lines[0])
+    let view = kinds(lines[1],"R")
+    test.expect(view.len() == 2 && strings.contains(view[0],"view-notes.md"),"a name that starts with the word ranks first: " + lines[1])
+    test.expect(strings.contains(lines[2],"R\tother.ts"),"every word must match: " + lines[2])
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("install checks the file is a package, terminal and custom actions run, and the shell commands reach the shell",fn() {
+    let d = rig()
+    fs.writeFileSync(d + "/home/app.deb","x"); fs.writeFileSync(d + "/home/plain.tar.gz","not an archive")
+    fs.writeFileSync(d + "/run","#!/bin/sh\nprintf '%s|' \"$@\" >> \"$DEVOS_FILES_LOG.custom\"\n"); tool.exec(Vec<str>("chmod","755",d + "/run"))
+    let items = "[{\"id\":\"custom-edit\",\"title\":\"My editor\",\"command\":\"edit --file '{path}' {directory}\",\"enabled\":true,\"target\":\"file\"},{\"id\":\"custom-off\",\"title\":\"Off\",\"command\":\"x\",\"enabled\":false,\"target\":\"any\"}]"
+    let o = Map<str,str>(); o.set("contextCustomItems",json_text(items)); prefsFile(d,allValues(o))
+    let frame = worker(d,"{\"action\":\"list\"}\n{\"action\":\"install\",\"path\":\"" + d + "/home/app.deb\",\"dir\":\"" + d + "/home\"}\n{\"action\":\"install\",\"path\":\"" + d + "/home/notes.txt\",\"dir\":\"" + d + "/home\"}\n{\"action\":\"install\",\"path\":\"" + d + "/home/plain.tar.gz\",\"dir\":\"" + d + "/home\"}\n{\"action\":\"terminal\",\"dir\":\"" + d + "/home/Docs\"}\n{\"action\":\"custom\",\"id\":\"custom-edit\",\"path\":\"" + d + "/home/notes.txt\",\"dir\":\"" + d + "/home\"}\n{\"action\":\"custom\",\"id\":\"custom-off\",\"dir\":\"" + d + "/home\"}\n")
+    let lines = strings.split(frame,"\n")
+    test.expect(strings.contains(lines[0],"F\tapp.deb\t") && strings.contains(lines[0],"\t1" + rs()) || strings.contains(lines[0],"app.deb"),"the listing marks packages")
+    test.expect(strings.contains(strings.join(kinds(lines[0],"M"),""),"M\tcustom-edit\tMy editor\tfile") && !strings.contains(lines[0],"custom-off"),"only enabled custom actions are listed: " + lines[0])
+    test.expect(strings.contains(lines[1],"Opening the installer"),"a package is sent to the installer: " + lines[1])
+    test.expect(strings.startsWith(lines[2],"E\tChoose a package file"),"a text file is refused: " + lines[2])
+    test.expect(strings.startsWith(lines[3],"E\tThis archive is not an installable package."),"an archive without a manifest is refused: " + lines[3])
+    test.expect(strings.contains(lines[4],"Opening a terminal"),"terminal: " + lines[4])
+    test.expect(strings.startsWith(lines[6],"E\tThat action is not available."),"a disabled custom action is refused: " + lines[6])
+    let log = fs.readFileSync(d + "/log","utf8")
+    test.expect(strings.contains(log,"package-install " + d + "/home/app.deb @ " + d + "/home") && strings.contains(log,"terminal @ " + d + "/home/Docs"),"shell commands: " + log)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("custom actions split their command like a shell and replace {path} and {directory}",fn() {
+    let d = rig()
+    fs.writeFileSync(d + "/run","#!/bin/sh\nfor a in \"$@\"; do printf '[%s]' \"$a\"; done > \"$DEVOS_FILES_LOG.custom\"\n"); tool.exec(Vec<str>("chmod","755",d + "/run"))
+    let items = "[{\"id\":\"custom-edit\",\"title\":\"My editor\",\"command\":\"edit --file '{path}' \\\"a b\\\" {directory}\",\"enabled\":true,\"target\":\"file\"}]"
+    let o = Map<str,str>(); o.set("contextCustomItems",json_text(items)); prefsFile(d,allValues(o))
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_LOG",d + "/log"); env.set("DEVOS_FILES_CUSTOM",d + "/run")
+    let answer = strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.files/service.dev"),env,"{\"action\":\"custom\",\"id\":\"custom-edit\",\"path\":\"" + d + "/home/my file.txt\",\"dir\":\"" + d + "/home\"}\n",120000)))
+    test.expect(strings.contains(answer,"My editor"),"the action ran: " + answer)
+    tool.exec(Vec<str>("sleep","1"))
+    let seen = fs.existsSync(d + "/log.custom") ? fs.readFileSync(d + "/log.custom","utf8") : ""
+    test.expect(strings.equal(seen,"[edit][--file][" + d + "/home/my file.txt][a b][" + d + "/home]"),"arguments: " + seen)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 
 test.case("a listing starts in the home folder, hides dot files and orders folders first, then names naturally",fn() {
     let d = rig()
@@ -77,11 +152,23 @@ test.case("the native Files window browses into a folder and creates a folder th
     let executable = t.root() + "/build/react-devlang/tests/files-native"
     tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.files/native-main.devx", executable), Map<str,str>(), "", 180000)
     let d = rig()
-    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log"); env.set("DEVOS_FILES_SMOKE","1"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs")
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log"); env.set("DEVOS_FILES_SMOKE","1"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs")
     env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
     let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","files-native","xvfb-run","-a",executable),env,"",120000)
     test.expect(done.success && strings.contains(t.out(done),"PASS native Files browsed into a folder and created one"),"Files window: " + t.out(done) + " / " + t.err(done))
     test.expect(fs.is_dir(d + "/home/Docs/Made"),"The folder was not created inside the folder that was opened")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the native Files window searches below the folder, opens a result and the opener gets its path, under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/files-native"
+    let d = rig()
+    fs.mkdirSync(d + "/home/Docs/deep",false); fs.writeFileSync(d + "/home/Docs/deep/needle-file.txt","x")
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log")
+    env.set("DEVOS_FILES_SMOKE","search"); env.set("DEVOS_FILES_QUERY","needle"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs/deep/needle-file.txt"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","files-native","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Files searched, opened a result and showed its folder"),"Files window: " + t.out(done) + " / " + t.err(done))
+    tool.exec(Vec<str>("sleep","1"))
+    test.expect(fs.existsSync(d + "/log") && strings.contains(fs.readFileSync(d + "/log","utf8"),d + "/home/Docs/deep/needle-file.txt"),"the opener did not get the result")
     tool.exec(Vec<str>("rm","-rf",d))
 })
 return t.finish()

@@ -1,0 +1,73 @@
+# Quick Open for the Files app in DevLang (search.backend.ts): the file index is one `find` call (folders in the excluded list are not entered,
+# at most `maxEntries` files), and a query matches the file name first and the relative path second. Consecutive letters and word boundaries rank
+# above scattered subsequences, so "fvtsx" finds "files-view.tsx". Results are ranked by score (higher first), then shorter paths, then by path.
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+
+struct Score { ok: bool, value: i64 }
+fn isBoundary(c:str):bool { return strings.contains("/._- ",c) }
+fn fuzzy(text:str, query:str):Score {
+    if strings.equal(text,query) { return Score(true,1000) }
+    let length = strings.charLength(text) as i64
+    if strings.startsWith(text,query) { return Score(true,700 - length) }
+    let at = strings.indexOf(text,query)
+    if at >= 0 { return Score(true,500 - (at as i64) * 2 - length) }
+    let position = -1; let score = 100
+    for i in 0..(strings.charLength(query) as i64) {
+        let letter = strings.substring(query,i,i + 1)
+        let next = -1
+        for j in (position + 1)..length { if strings.equal(strings.substring(text,j,j + 1),letter) { next = j; break } }
+        if next < 0 { return Score(false,0) }
+        score = score + (next == position + 1 ? 12 : -(next - position))
+        if next == 0 || isBoundary(strings.substring(text,next - 1,next)) { score = score + 10 }
+        position = next
+    }
+    return Score(true,score - length)
+}
+fn pad(value:i64, width:i64):str {
+    let digits = "${value < 0 ? 0 : value}"
+    while (strings.charLength(digits) as i64) < width { digits = "0" + digits }
+    return digits
+}
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
+
+# The relative paths of the files under `root`.
+fn files(root:str, excluded:Vec<str>, maxEntries:i64):Vec<str> {
+    let prune = ""
+    for name in excluded { if !strings.equal(name,"") && !strings.contains(name,"/") { prune = prune + (strings.equal(prune,"") ? "" : " -o ") + "-name " + quote(name) } }
+    let command = "find " + quote(root) + " -xdev " + (strings.equal(prune,"") ? "" : "\\( " + prune + " \\) -prune -o ") + "\\( -type f -o -type l \\) -print 2>/dev/null | head -n " + "${maxEntries}"
+    let ran = hw.run(Vec<str>("sh","-c",command),20000)
+    let out = Vec<str>()
+    let prefix = strings.equal(root,"/") ? "/" : root + "/"
+    for line in strings.split(ran.out,"\n") {
+        if strings.startsWith(line,prefix) { out.push(strings.substring(line,strings.charLength(prefix),strings.charLength(line))) }
+    }
+    return out
+}
+struct Match { relative:str, name:str, score:i64 }
+# The best `limit` matches (as Match records, best first) and how many files matched.
+struct Found { results:Vec<Match>, matches:i64 }
+fn rank(relatives:Vec<str>, query:str, limit:i64):Found {
+    let tokens = Vec<str>()
+    for part in strings.split(strings.toLowerCase(strings.replaceAll(strings.trim(query),"\\","/"))," ") { if !strings.equal(part,"") { tokens.push(part) } }
+    let keys = Vec<str>(); let table = Map<str,Match>()
+    for relative in relatives {
+        let at = strings.lastIndexOf(relative,"/")
+        let name = at < 0 ? relative : strings.substring(relative,at + 1,strings.charLength(relative))
+        let lowerName = strings.toLowerCase(name); let lowerPath = strings.toLowerCase(relative)
+        let total = 0; let matched = true
+        for token in tokens {
+            let byName = fuzzy(lowerName,token)
+            if byName.ok { total = total + byName.value + 200 }
+            else { let byPath = fuzzy(lowerPath,token); if byPath.ok { total = total + byPath.value } else { matched = false; break } }
+        }
+        if !matched { continue }
+        # Ascending keys: the highest score first (offset keeps it positive), then the shorter path, then the path itself.
+        let key = pad(9999999 - (total + 100000),7) + pad(strings.charLength(relative) as i64,4) + relative
+        keys.push(key); table.set(key,Match(relative,name,total))
+    }
+    keys.sort()
+    let results = Vec<Match>(); let count = keys.len() as i64
+    for i in 0..(count < limit ? count : limit) { results.push(table.get(keys[i])) }
+    return Found(results,count)
+}

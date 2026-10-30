@@ -1,0 +1,63 @@
+# Custom right-click actions of the Files app in DevLang (custom-menu.ts): the stored JSON list, its validation, and the command line of an action with
+# {path} (the selected item, or the folder when nothing is selected) and {directory} (the current folder) replaced. A command is split like a
+# shell would (quotes and backslashes) but nothing is run through a shell: the words become the arguments.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+
+struct Item { id:str, title:str, command:str, enabled:bool, target:str }
+
+# The words of `command`, or an empty list when a quote is not closed (or the command is empty or over 2,000 characters).
+fn words(command:str):Vec<str> {
+    let out = Vec<str>()
+    if strings.equal(strings.trim(command),"") || strings.charLength(command) > 2000 || strings.contains(command,"\0") { return out }
+    let current = ""; let started = false; let quote = ""; let i = 0; let length = strings.charLength(command) as i64
+    while i < length {
+        let c = strings.substring(command,i,i + 1)
+        if strings.equal(quote,"'") { if strings.equal(c,"'") { quote = "" } else { current = current + c } }
+        else if strings.equal(quote,"\"") {
+            if strings.equal(c,"\"") { quote = "" }
+            else if strings.equal(c,"\\") && i + 1 < length && strings.contains("\"\\$`",strings.substring(command,i + 1,i + 2)) { current = current + strings.substring(command,i + 1,i + 2); i = i + 1 }
+            else { current = current + c }
+        } else if strings.equal(c,"'") || strings.equal(c,"\"") { quote = c; started = true }
+        else if strings.equal(c,"\\") && i + 1 < length { current = current + strings.substring(command,i + 1,i + 2); i = i + 1; started = true }
+        else if strings.equal(c," ") || strings.equal(c,"\t") || strings.equal(c,"\n") { if started || !strings.equal(current,"") { out.push(current); current = ""; started = false } }
+        else { current = current + c; started = true }
+        i = i + 1
+    }
+    if !strings.equal(quote,"") { return Vec<str>() }
+    if started || !strings.equal(current,"") { out.push(current) }
+    return out
+}
+fn arguments(command:str, path:str, directory:str):Vec<str> {
+    let out = Vec<str>()
+    for word in words(command) { out.push(strings.replaceAll(strings.replaceAll(word,"{path}",path),"{directory}",directory)) }
+    return out
+}
+fn idOk(id:str):bool {
+    if !strings.startsWith(id,"custom-") || strings.charLength(id) > 87 { return false }
+    for ch in strings.split(strings.substring(id,7,strings.charLength(id)),"") { if !strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",ch) { return false } }
+    return strings.charLength(id) > 7
+}
+# The valid items of the stored text; an invalid list (or text) gives no items, so the built-in actions stay available.
+fn parse(value:str):Vec<Item> {
+    let out = Vec<Item>()
+    if strings.equal(value,"") || strings.charLength(value) > 150000 { return out }
+    let parsed = result.attempt(fn():json.Value { return json.parse(value) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"array") { return out }
+    let list = result.unwrap(parsed)
+    if json.len(list) > 50 { return out }
+    let seen = Vec<str>()
+    for i in 0..(json.len(list) as i64) {
+        let entry = json.at(list,i); let id = hw.jstr(entry,"id",""); let title = strings.trim(hw.jstr(entry,"title","")); let target = hw.jstr(entry,"target","")
+        let known = false; for s in seen { if strings.equal(s,id) { known = true } }
+        let targetOk = strings.equal(target,"any") || strings.equal(target,"file") || strings.equal(target,"folder") || strings.equal(target,"background")
+        if !idOk(id) || known || strings.equal(title,"") || strings.charLength(title) > 80 || !targetOk || !strings.equal(json.kind(hw.jget(entry,"enabled")),"bool") { return Vec<Item>() }
+        if arguments(hw.jstr(entry,"command",""),"/preview/item","/preview").len() == 0 { return Vec<Item>() }
+        seen.push(id); out.push(Item(id,title,hw.jstr(entry,"command",""),hw.jbool(entry,"enabled",false),target))
+    }
+    return out
+}
+# `target` is "file", "folder" or "background".
+fn matches(item:Item, target:str):bool { return item.enabled && (strings.equal(item.target,"any") || strings.equal(item.target,target)) }
