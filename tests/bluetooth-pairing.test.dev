@@ -1,0 +1,63 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The pairing agent (native/devos-bluetooth-agent.c) against a stand-in BlueZ (tests/fixtures/fake-bluez.py) on a private session bus.
+# `steps` is a shell fragment run once the stand-in is up and the agent is started in the background (variables: $state, $log, $agent_pid).
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn scenario(name:str, steps:str):str {
+    tool.checked(Vec<str>("sh",t.root() + "/tools/build/native-bluetooth-agent.sh"),Map<str,str>(),"",120000)
+    let d = temporary()
+    let lines = Vec<str>("state=" + d + "/state-dir; log=" + d + "/log; mkdir -p $state; export DEVOS_BT_BUS=session FAKE_LOG=$log FAKE_READY=" + d + "/ready FAKE_SCENARIO=" + name,
+        "python3 " + t.root() + "/tests/fixtures/fake-bluez.py & bluez=$!",
+        "for i in $(seq 1 100); do [ -f " + d + "/ready ] && break; sleep 0.1; done",
+        "wait_state() { for i in $(seq 1 100); do grep -q \"$1\" $state/state 2>/dev/null && return 0; sleep 0.1; done; echo \"timeout waiting for $1: $(cat $state/state 2>/dev/null)\"; return 1; }",
+        t.root() + "/dist/native/devos-bluetooth-agent /org/bluez/hci0/dev_AA_BB_CC_DD_EE_01 $state & agent_pid=$!",
+        steps,
+        "wait $agent_pid; echo \"agent exit=$?\"; echo \"final: $(cat $state/state)\"; kill $bluez 2>/dev/null; cat $log")
+    let script = strings.join(lines,"\n")
+    let done = tool.run(Vec<str>("dbus-run-session","--","sh","-c",script),Map<str,str>(),"",120000)
+    tool.exec(Vec<str>("rm","-rf",d))
+    return t.out(done) + t.err(done)
+}
+
+test.case("a confirmation is shown with its code, accepted by the user and pairing finishes",fn() {
+    let out = scenario("confirm","wait_state 'prompt'; head -1 $state/state; printf 'accept\\t' > $state/response; wait_state done")
+    test.expect(strings.contains(out,"prompt\tconfirm\t123456"),"The confirmation code was not shown: " + out)
+    test.expect(strings.contains(out,"final: done") && strings.contains(out,"register KeyboardDisplay") && strings.contains(out,"agent replied RequestConfirmation") && strings.contains(out,"unregister"),"Pairing did not finish cleanly: " + out)
+})
+test.case("a declined confirmation fails the pairing with the BlueZ message",fn() {
+    let out = scenario("confirm","wait_state 'prompt'; printf 'decline' > $state/response; wait_state error")
+    test.expect(strings.contains(out,"final: error\tAuthentication Failed") && strings.contains(out,"agent refused RequestConfirmation") && strings.contains(out,"Pairing declined."),"A declined pairing was not reported: " + out)
+})
+test.case("a PIN and a passkey are passed to BlueZ as typed",fn() {
+    let pin = scenario("pin","wait_state 'prompt\tpin'; printf 'accept\\t1234' > $state/response; wait_state done")
+    test.expect(strings.contains(pin,"agent replied RequestPinCode ('1234',)") && strings.contains(pin,"final: done"),"The PIN was not passed on: " + pin)
+    let key = scenario("passkey","wait_state 'prompt\tpasskey'; printf 'accept\\t004321' > $state/response; wait_state done")
+    test.expect(strings.contains(key,"agent replied RequestPasskey (4321,)") && strings.contains(key,"final: done"),"The passkey was not passed on as a number: " + key)
+})
+test.case("a code to type on the device is displayed and authorization requests are answered",fn() {
+    let shown = scenario("display","wait_state 'display'; head -1 $state/state; wait_state done")
+    test.expect(strings.contains(shown,"display\t654321 · 2 digits entered") && strings.contains(shown,"final: done"),"The displayed code was wrong: " + shown)
+    let auth = scenario("authorize","wait_state 'prompt\tauthorize'; printf 'accept' > $state/response; wait_state done")
+    test.expect(strings.contains(auth,"agent replied RequestAuthorization") && strings.contains(auth,"final: done"),"Authorization failed: " + auth)
+})
+test.case("a request about another device is rejected and cancel stops a waiting pairing",fn() {
+    let other = scenario("other","wait_state error")
+    test.expect(strings.contains(other,"agent refused RequestConfirmation") && strings.contains(other,"Unexpected pairing request.") && strings.contains(other,"final: error"),"A request for another device was not rejected: " + other)
+    let cancelled = scenario("confirm","wait_state 'prompt'; printf 'cancel' > $state/response; wait_state error")
+    test.expect(strings.contains(cancelled,"cancel") && strings.contains(cancelled,"final: error") && strings.contains(cancelled,"unregister"),"Cancel did not stop the pairing: " + cancelled)
+})
+test.case("the agent refuses anything that is not a BlueZ device path",fn() {
+    tool.checked(Vec<str>("sh",t.root() + "/tools/build/native-bluetooth-agent.sh"),Map<str,str>(),"",120000)
+    let d = temporary()
+    for bad in Vec<str>("/etc/passwd","/org/bluez/hci0","/org/bluez/hci0/dev_x;rm") {
+        let done = tool.run(Vec<str>(t.root() + "/dist/native/devos-bluetooth-agent",bad,d),Map<str,str>(),"",20000)
+        test.expect(!done.success,"Accepted " + bad)
+    }
+    test.expect(!fs.existsSync(d + "/state"),"A state file was written for a bad path")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

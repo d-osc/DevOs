@@ -20,6 +20,7 @@ use "std/strings"
 use "std/result"
 use "std/encoding"
 use "../../../lib/hw.dev" as hw
+use "../../../lib/posix.dev" as posix
 
 fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
 fn clean(value:str):str {
@@ -80,7 +81,94 @@ fn frame(state:json.Value, message:str):str {
     for i in 0..(json.len(usb) as i64) { let u = json.at(usb,i); out = out + rs() + "U\t" + clean(text(u,"name")) + "\t" + clean(text(u,"vendor")) }
     let inputs = listOf(state,"inputs")
     for i in 0..(json.len(inputs) as i64) { let u = json.at(inputs,i); out = out + rs() + "I\t" + clean(text(u,"name")) + "\t" + clean(text(u,"vendor")) }
-    return out
+    let p = pairing()
+    return out + rs() + "P\t" + p.state + "\t" + p.kind + "\t" + clean(p.code) + "\t" + clean(p.message) + "\t" + clean(p.device)
+}
+
+# Pairing. The agent program (native/devos-bluetooth-agent.c) does the D-Bus part and talks to this worker through two files in a private folder:
+# `state` (written by the agent) and `response` (written here). A pairing that is over is reported once and its folder removed.
+fn stateDir():str { return testing() && process.hasEnv("DEVOS_BLUETOOTH_STATE") ? process.getenv("DEVOS_BLUETOOTH_STATE") : (process.hasEnv("XDG_RUNTIME_DIR") ? process.getenv("XDG_RUNTIME_DIR") : "/tmp") + "/devos-bluetooth-pairing" }
+fn agentProgram(root:str):str { return testing() && process.hasEnv("DEVOS_BLUETOOTH_AGENT") ? process.getenv("DEVOS_BLUETOOTH_AGENT") : root + "/dist/native/devos-bluetooth-agent" }
+struct Pairing { state: str, kind: str, code: str, message: str, device: str }
+fn noPairing():Pairing { return Pairing("none","","","","") }
+fn deviceFile():str { return stateDir() + "/device" }
+fn seconds(command:Vec<str>):i64 {
+    let ran = hw.run(command,5000); let n = 0
+    if ran.code != 0 { return 0 }
+    for b in encoding.encode(strings.trim(ran.out),"utf8") { if b < 48 || b > 57 { return 0 }; n = n * 10 + ((b - 48) as i64) }
+    return n
+}
+fn pairing():Pairing {
+    let file = stateDir() + "/state"
+    if !fs.existsSync(file) { return noPairing() }
+    let device = fs.existsSync(deviceFile()) ? strings.trim(fs.readFileSync(deviceFile(),"utf8")) : ""
+    let parts = strings.split(strings.trim(fs.readFileSync(file,"utf8")),"\t")
+    let p = noPairing()
+    if strings.equal(parts[0],"pairing") { p = Pairing("pairing","","","",device) }
+    else if strings.equal(parts[0],"prompt") && parts.len() >= 3 { p = Pairing("prompt",parts[1],parts[2],"",device) }
+    else if strings.equal(parts[0],"display") && parts.len() >= 2 { p = Pairing("display","",parts[1],"",device) }
+    else if strings.equal(parts[0],"done") { p = Pairing("done","","","",device) }
+    else if strings.equal(parts[0],"error") { p = Pairing("error","","",parts.len() >= 2 ? parts[1] : "Pairing failed.",device) }
+    else { return noPairing() }
+    # An agent that stopped without a last word (BlueZ gives up after 90 s) must not hold the page in "pairing" forever.
+    let waiting = strings.equal(p.state,"pairing") || strings.equal(p.state,"prompt") || strings.equal(p.state,"display")
+    if waiting && seconds(Vec<str>("date","+%s")) - seconds(Vec<str>("stat","-c","%Y",file)) > 120 { return Pairing("error","","","The pairing agent stopped. Try again.",device) }
+    return p
+}
+fn pairingActive():bool { let p = pairing(); return strings.equal(p.state,"pairing") || strings.equal(p.state,"prompt") || strings.equal(p.state,"display") }
+fn writeAtomic(name:str, content:str) {
+    fs.writeFileSync(stateDir() + "/" + name + ".tmp",content)
+    fs.renameSync(stateDir() + "/" + name + ".tmp",stateDir() + "/" + name)
+}
+fn quoteOk(value:str):bool { return !strings.contains(value,"'") && !strings.contains(value,"\n") }
+fn clearPairing() { hw.run(Vec<str>("rm","-rf",stateDir()),5000) }
+fn knownUnpaired(root:str, id:str):bool {
+    let ran = request(root,{action:"get"},20)
+    if !strings.equal(ran.error,"") || !strings.equal(json.kind(ran.state),"object") { return false }
+    let devices = listOf(ran.state,"devices")
+    if !strings.equal(json.kind(devices),"array") { return false }
+    for i in 0..(json.len(devices) as i64) { let d = json.at(devices,i); if strings.equal(text(d,"id"),id) && !bool(d,"paired") { return true } }
+    return false
+}
+fn startPairing(root:str, r:json.Value):str {
+    let id = text(r,"id")
+    if !pathOk(id) || !strings.contains(id,"/dev_") { return failure("Choose a Bluetooth device first.") }
+    if pairingActive() { return failure("Another pairing request is in progress.") }
+    if !knownUnpaired(root,id) { return failure("Device is no longer available. Refresh the list.") }
+    let agent = agentProgram(root)
+    if !quoteOk(agent) || !quoteOk(stateDir()) || !fs.existsSync(agent) { return failure("The Bluetooth pairing helper is missing. Reinstall the current DevOs runtime.") }
+    clearPairing()
+    fs.mkdirSync(stateDir(),true)
+    fs.writeFileSync(deviceFile(),id + "\n")
+    writeAtomic("state","pairing")
+    posix.shell("'" + agent + "' '" + id + "' '" + stateDir() + "' >/dev/null 2>&1 &")
+    return read(root,"")
+}
+# The user's answer to the pending request. PIN: 1 to 16 characters; passkey: up to six digits.
+fn respond(root:str, r:json.Value):str {
+    let p = pairing()
+    if !strings.equal(p.state,"prompt") { return failure("There is no pairing request to answer.") }
+    if !(json.has(r,"accept") && strings.equal(json.kind(json.get(r,"accept")),"bool")) { return failure("Invalid pairing answer.") }
+    if !bool(r,"accept") { writeAtomic("response","decline"); return read(root,"") }
+    let value = text(r,"value")
+    if strings.equal(p.kind,"pin") && (strings.charLength(value) < 1 || strings.charLength(value) > 16 || !noControl(value)) { return failure("Enter a PIN of 1–16 characters.") }
+    if strings.equal(p.kind,"passkey") {
+        let ok = strings.charLength(value) >= 1 && strings.charLength(value) <= 6
+        for b in encoding.encode(value,"utf8") { if b < 48 || b > 57 { ok = false } }
+        if !ok { return failure("Enter a passkey of up to six digits.") }
+    }
+    writeAtomic("response","accept\t" + (strings.equal(p.kind,"pin") || strings.equal(p.kind,"passkey") ? value : ""))
+    return read(root,"")
+}
+fn noControl(value:str):bool {
+    for b in encoding.encode(value,"utf8") { if b < 32 || b == 127 { return false } }
+    return true
+}
+fn poll(root:str):str {
+    let answer = read(root,"")
+    let p = pairing()
+    if strings.equal(p.state,"done") || strings.equal(p.state,"error") { clearPairing() }
+    return answer
 }
 fn read(root:str, message:str):str {
     let answer = request(root,{action:"get"},20)
@@ -100,6 +188,13 @@ fn handle(root:str, line:str):str {
     let action = text(r,"action")
     if strings.equal(action,"get") { return read(root,"") }
     if strings.equal(action,"scan") { return answer(root,{action:"scan"},40,"") }
+    if strings.equal(action,"pair") { return startPairing(root,r) }
+    if strings.equal(action,"pairing") { return poll(root) }
+    if strings.equal(action,"respond") { return respond(root,r) }
+    if strings.equal(action,"cancelPair") {
+        if pairingActive() { writeAtomic("response","cancel") }
+        return read(root,"")
+    }
     if strings.equal(action,"settings") {
         let page = text(r,"page")
         if !(strings.equal(page,"bluetooth") || strings.equal(page,"mouse") || strings.equal(page,"keyboard") || strings.equal(page,"printers")) { return failure("Unknown devices settings page.") }

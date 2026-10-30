@@ -23,10 +23,14 @@ fn rig():str {
     let d = temporary()
     fs.writeFileSync(d + "/dev-os-devices-linux","use \"std/io\"\nuse \"std/fs\"\nuse \"std/json\"\nuse \"std/process\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    let action = json.string(json.get(json.parse(raw),\"action\"))\n    fs.writeFileSync(dir + \"/last.\" + action,raw)\n    let own = dir + \"/reply.\" + action\n    print(fs.readFileSync(fs.existsSync(own) ? own : dir + \"/reply.get\",\"utf8\"))\n    return 0\n}\nreturn main()\n")
     fs.writeFileSync(d + "/reply.get",state())
+    # A stand-in for the pairing agent: it asks the kind of question in `kind` and waits for the response file, like the real agent does.
+    fs.writeFileSync(d + "/agent","#!/bin/sh\ndevice=$1; dir=$2\nprintf '%s\\n' \"$*\" > \"$DEVOS_FAKE_DIR/agent.args\"\nkind=$(cat \"$DEVOS_FAKE_DIR/kind\" 2>/dev/null || echo confirm)\nprintf 'prompt\\t%s\\t123456\\n' \"$kind\" > \"$dir/state\"\nwhile [ ! -f \"$dir/response\" ]; do sleep 0.05; done\ncp \"$dir/response\" \"$DEVOS_FAKE_DIR/response.seen\"; rm \"$dir/response\"\nif grep -q '^accept' \"$DEVOS_FAKE_DIR/response.seen\"; then printf 'done\\n' > \"$dir/state\"; else printf 'error\\tPairing declined.\\n' > \"$dir/state\"; fi\n")
+    tool.exec(Vec<str>("chmod","755",d + "/agent"))
     return d
 }
 fn worker(directory:str, mode:str, input:str):str {
     let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_BLUETOOTH_MODE",mode)
+    env.set("DEVOS_BLUETOOTH_STATE",directory + "/pairing"); env.set("DEVOS_BLUETOOTH_AGENT",directory + "/agent")
     return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/bluetooth-page.dev","--",t.root()),env,input,120000)))
 }
 fn sent(directory:str, action:str):json.Value { return json.parse(fs.readFileSync(directory + "/last." + action,"utf8")) }
@@ -34,7 +38,7 @@ fn sent(directory:str, action:str):json.Value { return json.parse(fs.readFileSyn
 test.case("the helper state becomes a frame with adapters, devices, USB and input records",fn() {
     let d = rig()
     let all = records(worker(d,"linux","{\"action\":\"get\"}\n")); let h = cells(all[0])
-    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],"Linux") && strings.equal(h[2],"") && all.len() == 7,"Header or count wrong: " + strings.join(all,"|"))
+    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],"Linux") && strings.equal(h[2],"") && all.len() == 8,"Header or count wrong: " + strings.join(all,"|"))
     let a = cells(all[1]); let buds = cells(all[2]); let unknown = cells(all[4])
     test.expect(strings.equal(a[0],"A") && strings.equal(a[1],adapter()) && strings.equal(a[3],"1"),"Adapter record wrong")
     test.expect(strings.equal(buds[2],adapter()) && strings.equal(buds[3],"Buds") && strings.equal(buds[4],"1") && strings.equal(buds[7],"1") && strings.equal(buds[8],"1"),"Connected device wrong")
@@ -55,17 +59,75 @@ test.case("power, connect, disconnect, forget and scan are forwarded exactly and
 })
 test.case("bad Bluetooth requests never reach the helper, and helper failures are reported",fn() {
     let d = rig()
-    let input = "{\"action\":\"power\",\"id\":\"/etc/passwd\",\"powered\":true}\n{\"action\":\"power\",\"id\":\"" + dev("1") + "\",\"powered\":true}\n{\"action\":\"power\",\"id\":\"" + adapter() + "\",\"powered\":\"on\"}\n{\"action\":\"connect\",\"id\":\"" + adapter() + "\"}\n{\"action\":\"forget\",\"id\":\"/org/bluez/hci0/dev_x;rm\"}\n{\"action\":\"settings\",\"page\":\"../x\"}\n{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n{\"action\":\"bogus\"}\nnot json\n"
+    let input = "{\"action\":\"power\",\"id\":\"/etc/passwd\",\"powered\":true}\n{\"action\":\"power\",\"id\":\"" + dev("1") + "\",\"powered\":true}\n{\"action\":\"power\",\"id\":\"" + adapter() + "\",\"powered\":\"on\"}\n{\"action\":\"connect\",\"id\":\"" + adapter() + "\"}\n{\"action\":\"forget\",\"id\":\"/org/bluez/hci0/dev_x;rm\"}\n{\"action\":\"settings\",\"page\":\"../x\"}\n{\"action\":\"bogus\"}\nnot json\n"
     let lines = strings.split(worker(d,"linux",input),"\n")
-    test.expect(lines.len() == 9,"Expected one frame per request: ${lines.len()}")
-    for i in 0..9 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
-    for action in Vec<str>("power","connect","forget","settings","pair") { test.expect(!fs.existsSync(d + "/last." + action),action + " reached the helper") }
+    test.expect(lines.len() == 8,"Expected one frame per request: ${lines.len()}")
+    for i in 0..8 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    for action in Vec<str>("power","connect","forget","settings") { test.expect(!fs.existsSync(d + "/last." + action),action + " reached the helper") }
     fs.writeFileSync(d + "/reply.get","{\"ok\":false,\"error\":\"Bluetooth service unavailable.\"}")
     test.expect(strings.equal(worker(d,"linux","{\"action\":\"get\"}\n"),"E\tBluetooth service unavailable."),"A helper error was not passed on")
     fs.writeFileSync(d + "/reply.get","{\"ok\":true,\"state\":{\"adapters\":[{\"id\":\"bad\",\"name\":\"x\",\"powered\":true}],\"devices\":[],\"usb\":[],\"inputs\":[]}}")
     test.expect(strings.startsWith(worker(d,"linux","{\"action\":\"get\"}\n"),"E\tInvalid Bluetooth adapter"),"A malformed adapter was accepted")
     fs.writeFileSync(d + "/reply.get","garbage")
     test.expect(strings.contains(worker(d,"linux","{\"action\":\"get\"}\n"),"returned no valid data"),"A silent helper was not reported")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+fn pstate(frame:str):Vec<str> { let all = records(frame); return cells(all[all.len() - 1]) }
+fn wait(seconds:str) { tool.exec(Vec<str>("sleep",seconds)) }
+test.case("pairing starts the agent, shows its question, passes the answer on and reports the end once",fn() {
+    let d = rig()
+    let started = pstate(worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"))
+    test.expect(strings.equal(started[0],"P") && (strings.equal(started[1],"pairing") || strings.equal(started[1],"prompt")) && strings.equal(started[5],dev("3")),"Pairing did not start: " + strings.join(started,"|"))
+    wait("1")
+    let asked = pstate(worker(d,"linux","{\"action\":\"pairing\"}\n"))
+    test.expect(strings.equal(asked[1],"prompt") && strings.equal(asked[2],"confirm") && strings.equal(asked[3],"123456"),"The question was not shown: " + strings.join(asked,"|"))
+    test.expect(strings.contains(fs.readFileSync(d + "/agent.args","utf8"),dev("3") + " " + d + "/pairing"),"The agent got wrong arguments: " + fs.readFileSync(d + "/agent.args","utf8"))
+    test.expect(strings.startsWith(pstate(worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"))[0],"E") || strings.startsWith(worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"),"E\tAnother pairing request is in progress."),"A second pairing was started")
+    worker(d,"linux","{\"action\":\"respond\",\"accept\":true,\"value\":\"\"}\n")
+    wait("1")
+    test.expect(strings.startsWith(fs.readFileSync(d + "/response.seen","utf8"),"accept"),"The answer did not reach the agent")
+    let done = pstate(worker(d,"linux","{\"action\":\"pairing\"}\n"))
+    test.expect(strings.equal(done[1],"done"),"The end was not reported: " + strings.join(done,"|"))
+    test.expect(strings.equal(pstate(worker(d,"linux","{\"action\":\"get\"}\n"))[1],"none"),"A finished pairing was reported twice")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a declined pairing is reported as an error, and cancel reaches the agent",fn() {
+    let d = rig()
+    worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"); wait("1")
+    worker(d,"linux","{\"action\":\"respond\",\"accept\":false}\n"); wait("1")
+    let failed = pstate(worker(d,"linux","{\"action\":\"pairing\"}\n"))
+    test.expect(strings.equal(failed[1],"error") && strings.equal(failed[4],"Pairing declined."),"A declined pairing was not reported: " + strings.join(failed,"|"))
+    worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"); wait("1")
+    worker(d,"linux","{\"action\":\"cancelPair\"}\n"); wait("1")
+    test.expect(strings.startsWith(fs.readFileSync(d + "/response.seen","utf8"),"cancel"),"Cancel did not reach the agent")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("PIN and passkey answers are checked before they reach the agent",fn() {
+    let d = rig()
+    fs.writeFileSync(d + "/kind","pin")
+    worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"); wait("1")
+    let bad = strings.split(worker(d,"linux","{\"action\":\"respond\",\"accept\":true,\"value\":\"\"}\n{\"action\":\"respond\",\"accept\":true,\"value\":\"12345678901234567\"}\n{\"action\":\"respond\",\"accept\":\"yes\"}\n"),"\n")
+    test.expect(strings.startsWith(bad[0],"E\tEnter a PIN of 1–16 characters.") && strings.startsWith(bad[1],"E\tEnter a PIN") && strings.startsWith(bad[2],"E\t") && !fs.existsSync(d + "/response.seen"),"A bad PIN reached the agent")
+    worker(d,"linux","{\"action\":\"respond\",\"accept\":true,\"value\":\"1234\"}\n"); wait("1")
+    test.expect(strings.equal(strings.trim(fs.readFileSync(d + "/response.seen","utf8")),"accept\t1234"),"The PIN did not arrive as typed: " + fs.readFileSync(d + "/response.seen","utf8"))
+    tool.exec(Vec<str>("rm","-f",d + "/response.seen")); fs.writeFileSync(d + "/kind","passkey")
+    clear(d)
+    worker(d,"linux","{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n"); wait("1")
+    let key = strings.split(worker(d,"linux","{\"action\":\"respond\",\"accept\":true,\"value\":\"12a\"}\n{\"action\":\"respond\",\"accept\":true,\"value\":\"1234567\"}\n"),"\n")
+    test.expect(strings.startsWith(key[0],"E\tEnter a passkey of up to six digits.") && strings.startsWith(key[1],"E\tEnter a passkey") && !fs.existsSync(d + "/response.seen"),"A bad passkey reached the agent")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+fn clear(d:str) { tool.exec(Vec<str>("rm","-rf",d + "/pairing")) }
+test.case("bad pairing requests never start the agent, an answer without a question is refused and a stale agent is reported",fn() {
+    let d = rig()
+    let input = "{\"action\":\"pair\",\"id\":\"/etc/passwd\"}\n{\"action\":\"pair\",\"id\":\"" + adapter() + "\"}\n{\"action\":\"pair\",\"id\":\"" + dev("1") + "\"}\n{\"action\":\"pair\",\"id\":\"/org/bluez/hci0/dev_AA_BB_CC_DD_EE_77\"}\n{\"action\":\"respond\",\"accept\":true,\"value\":\"1\"}\n"
+    let lines = strings.split(worker(d,"linux",input),"\n")
+    test.expect(lines.len() == 5,"One frame per request expected: ${lines.len()}")
+    for i in 0..5 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(!fs.existsSync(d + "/agent.args"),"The agent was started for a bad request")
+    fs.mkdirSync(d + "/pairing",true); fs.writeFileSync(d + "/pairing/state","pairing\n"); tool.exec(Vec<str>("touch","-d","10 minutes ago",d + "/pairing/state"))
+    let stale = pstate(worker(d,"linux","{\"action\":\"pairing\"}\n"))
+    test.expect(strings.equal(stale[1],"error") && strings.contains(stale[4],"stopped"),"A stale agent was not reported: " + strings.join(stale,"|"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
 test.case("native Settings connects a paired device from the Bluetooth page under real GTK",fn() {
@@ -76,6 +138,17 @@ test.case("native Settings connects a paired device from the Bluetooth page unde
     let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","bluetooth-settings","xvfb-run","-a",executable),env,"",120000)
     test.expect(done.success && strings.contains(t.out(done),"PASS native Bluetooth page connected"),"Bluetooth page: " + t.out(done) + " / " + t.err(done))
     test.expect(strings.equal(json.string(json.get(sent(d,"connect"),"id")),dev("2")),"The page connected the wrong device: " + json.stringify(sent(d,"connect")))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("native Settings pairs a device through the question and the answer under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/bluetooth-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_BLUETOOTH_MODE","linux"); env.set("DEVOS_BLUETOOTH_SMOKE","pair"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    env.set("DEVOS_BLUETOOTH_STATE",d + "/pairing"); env.set("DEVOS_BLUETOOTH_AGENT",d + "/agent")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","bluetooth-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Bluetooth page paired a device"),"Bluetooth pairing: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.contains(fs.readFileSync(d + "/agent.args","utf8"),dev("3")) && strings.startsWith(fs.readFileSync(d + "/response.seen","utf8"),"accept"),"The page paired the wrong device or did not answer")
     tool.exec(Vec<str>("rm","-rf",d))
 })
 return t.finish()
