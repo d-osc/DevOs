@@ -70,44 +70,67 @@ fn TaskView(context:*ui.Context):ui.Node {
         return ui.noop
     },Vec<i64>(visible.len() as i64))
     # --- the window ---
-    let close = ui.named("task-view-dismiss")
-    let summary = k.note("${desks.len() > 0 ? desks.len() : 1} desktop${desks.len() == 1 ? "" : "s"}  ·  ${visible.len()} open window${visible.len() == 1 ? "" : "s"}","settings-description")
-    let nodes = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(2,Vec<ui.Node>(k.note("WORKSPACE OVERVIEW","settings-description"),k.note("Task View","section-heading")))),summary,ui.Button(close,"Close",fn() { dismiss() }))))
+    let label = fn(value:ui.Text, style:str, align:f64, chars:i32):ui.Node {
+        let options = ui.props(); options.className = ui.text(style); options.xalign = align; if chars > 0 { options.widthChars = chars; options.ellipsize = true }
+        return ui.withProps(ui.TextLabel(value),options)
+    }
+    let pill = fn(value:ui.Text, style:str):ui.Node { let options = ui.props(); options.className = ui.text(style); options.valign = 3; return ui.withProps(ui.TextLabel(value),options) }
+    let close = ui.named("task-view-dismiss"); close.valign = 3
+    let heading = ext.column(4,Vec<ui.Node>(label(plain("WORKSPACE OVERVIEW"),"rd-eyebrow",0.0,0),label(plain("Task View"),"rd-heading",0.0,0),
+        label(plain("Pick a window to bring it forward, or move it to another desktop."),"rd-muted",0.0,0)))
+    let summary = pill(plain("${desks.len() > 0 ? desks.len() : 1} desktop${desks.len() == 1 ? "" : "s"}  ·  ${visible.len()} open window${visible.len() == 1 ? "" : "s"}"),"rd-pill")
+    let nodes = Vec<ui.Node>(ext.row(16,Vec<ui.Node>(ext.expand(heading),summary,ui.Button(close,"Close",fn() { dismiss() }))))
     if has(failure.value) { nodes.push(k.caption(failure.value,"settings-error-banner")) }
-    nodes.push(ext.row(8,Vec<ui.Node>(k.note("Open windows","section-heading"),k.note("${visible.len()}","settings-description"))))
-    let cards = Vec<ui.Node>()
+    # --- window cards: app and title bar, a large emblem, the window title; move and close below ---
+    let cards = Vec<ui.Node>(); let line = Vec<ui.Node>(); let perLine: usize = 4
     for w in visible {
-        let picture = ui.element(11,ui.props(),has(w.icon) ? w.icon : plain("application-x-executable-symbolic"),Vec<ui.Node>())
-        let heading = Vec<ui.Node>(k.caption(w.app,"launcher-app-name"),k.caption(has(w.title) ? w.title : w.app,"launcher-app-description"))
-        if w.minimized { heading.push(k.note("Minimized","settings-description")) }
-        let content = ext.row(12,Vec<ui.Node>(picture,ext.expand(ext.column(2,heading))))
-        let activate = ui.props(); activate.id = join(Vec<ui.Text>(plain("task-view-activate-"),w.id)); activate.expand = true
-        let closer = ui.props(); closer.id = join(Vec<ui.Text>(plain("task-view-close-"),w.id))
-        let row = Vec<ui.Node>(ext.expand(ui.WidgetButton(activate,content,fn() { ask(action("activate",w.id,ui.emptyText())) })),ui.Button(closer,"×",fn() { ask(action("close",w.id,ui.emptyText())) }))
+        let small = ui.props(); small.iconSize = 16
+        let big = ui.props(); big.iconSize = 56; big.halign = 3
+        let glyph = has(w.icon) ? w.icon : plain("application-x-executable-symbolic")
+        let top = Vec<ui.Node>(ui.element(11,small,glyph,Vec<ui.Node>()),ext.expand(label(w.app,"rd-card-app",0.0,22)))
+        if w.active { top.push(pill(plain("Active"),"rd-badge")) } else if w.minimized { top.push(pill(plain("Minimized"),"rd-badge-muted")) }
+        let body = Vec<ui.Node>(ext.row(8,top),ui.element(11,big,glyph,Vec<ui.Node>()),label(has(w.title) ? w.title : w.app,"rd-card-title",0.5,24))
+        let tile = ui.props(); tile.id = join(Vec<ui.Text>(plain("task-view-activate-"),w.id)); tile.className = ui.text("rd-tile"); tile.width = 268; tile.height = 168
+        let column = ui.props(); column.spacing = 14; column.margin = 4
+        let controls = Vec<ui.Node>()
         if desks.len() > 1 && !w.sticky {
             let names = Vec<ui.Text>(plain("Move to…")); let ids = Vec<ui.Text>(ui.emptyText())
             for d in desks { if !ui.equalText(d.id,w.desktop) { names.push(d.name); ids.push(d.id) } }
-            let mover = ui.props(); mover.id = join(Vec<ui.Text>(plain("task-view-move-"),w.id))
-            row.push(ui.Select(mover,names,0,fn(index:i64) { if index > 0 { ask(action("move",w.id,join(Vec<ui.Text>(plain(",\"desktop\":"),ids[index])))) } }))
-        }
-        cards.push(ext.row(8,row))
+            let mover = ui.props(); mover.id = join(Vec<ui.Text>(plain("task-view-move-"),w.id)); mover.expand = true
+            controls.push(ui.Select(mover,names,0,fn(index:i64) { if index > 0 { ask(action("move",w.id,join(Vec<ui.Text>(plain(",\"desktop\":"),ids[index])))) } }))
+        } else { controls.push(ext.expand(label(plain(w.sticky ? "On every desktop" : ""),"rd-muted",0.0,0))) }
+        let closer = ui.props(); closer.id = join(Vec<ui.Text>(plain("task-view-close-"),w.id))
+        controls.push(ui.Button(closer,"Close window",fn() { ask(action("close",w.id,ui.emptyText())) }))
+        let card = ui.props(); card.spacing = 10; card.className = ui.text(w.active ? "rd-window rd-window-active" : "rd-window")
+        let item = ui.Box(card,Vec<ui.Node>(ui.WidgetButton(tile,ui.Box(column,body),fn() { ask(action("activate",w.id,ui.emptyText())) }),ext.row(8,controls)))
+        line.push(item)
+        if line.len() >= perLine { let rowProps = ui.props(); rowProps.vertical = false; rowProps.spacing = 18; rowProps.halign = 3; cards.push(ui.Box(rowProps,line)); line = Vec<ui.Node>() }
     }
-    if visible.len() == 0 { cards.push(k.note("No open windows on this desktop. Open an app and it will show up here.","launcher-app-description")) }
+    if line.len() > 0 { let rowProps = ui.props(); rowProps.vertical = false; rowProps.spacing = 18; rowProps.halign = 3; cards.push(ui.Box(rowProps,line)) }
+    if visible.len() == 0 {
+        let empty = ui.props(); empty.valign = 3; empty.halign = 3; empty.spacing = 10
+        cards.push(ui.Box(empty,Vec<ui.Node>(label(plain("No open windows on this desktop"),"rd-heading-small",0.5,0),label(plain("Open an app and it will show up here."),"rd-muted",0.5,0))))
+    }
     let scroller = ui.props(); scroller.expand = true
-    nodes.push(ui.Scroll(scroller,ext.column(8,cards)))
+    nodes.push(ui.Scroll(scroller,ext.column(18,cards)))
+    # --- desktops ---
     if desks.len() > 0 {
         let chips = Vec<ui.Node>()
         for d in desks {
-            let switcher = ui.props(); switcher.id = join(Vec<ui.Text>(plain("task-view-desktop-"),d.id))
             let members = 0; for w in windows { if ui.equalText(w.desktop,d.id) || w.sticky { members = members + 1 } }
-            chips.push(ui.TextButton(switcher,join(Vec<ui.Text>(d.name,plain(d.active ? " · current" : ""),plain("  (${members})"))),fn() { ask(action("desktop",d.id,ui.emptyText())) }))
-            if canRemove && desks.len() > 1 { let remover = ui.props(); remover.id = join(Vec<ui.Text>(plain("task-view-remove-"),d.id)); chips.push(ui.Button(remover,"Remove",fn() { ask(action("remove-desktop",d.id,ui.emptyText())) })) }
+            let switcher = ui.props(); switcher.id = join(Vec<ui.Text>(plain("task-view-desktop-"),d.id)); switcher.className = ui.text(d.active ? "rd-chip rd-chip-current" : "rd-chip")
+            let inner = ui.props(); inner.spacing = 2
+            let caption = Vec<ui.Node>(label(d.name,"rd-card-title",0.0,0),label(plain("${members} window${members == 1 ? "" : "s"}${d.active ? "  ·  current" : ""}"),"rd-muted",0.0,0))
+            let chip = ui.WidgetButton(switcher,ui.Box(inner,caption),fn() { ask(action("desktop",d.id,ui.emptyText())) })
+            if canRemove && desks.len() > 1 { let remover = ui.props(); remover.valign = 3; remover.id = join(Vec<ui.Text>(plain("task-view-remove-"),d.id)); chips.push(ext.row(4,Vec<ui.Node>(chip,ui.Button(remover,"×",fn() { ask(action("remove-desktop",d.id,ui.emptyText())) })))) } else { chips.push(chip) }
         }
-        if canCreate { let add = ui.named("task-view-create"); chips.push(ui.Button(add,"New desktop",fn() { ask(plain("{\"action\":\"create-desktop\"}")) })) }
-        nodes.push(k.note("Your desktops","section-heading"))
-        nodes.push(ext.row(8,chips))
+        if canCreate { let add = ui.named("task-view-create"); chips.push(ui.Button(add,"+ New desktop",fn() { ask(plain("{\"action\":\"create-desktop\"}")) })) }
+        nodes.push(label(plain("YOUR DESKTOPS"),"rd-eyebrow",0.0,0))
+        let strip = ui.props(); strip.vertical = false; strip.spacing = 12
+        let stripScroll = ui.props(); stripScroll.height = 76
+        nodes.push(ui.Scroll(stripScroll,ui.Box(strip,chips)))
     }
-    let body = ui.props(); body.spacing = 12; body.margin = 0; body.expand = true; body.className = ui.text("rd-layer-panel")
+    let body = ui.props(); body.spacing = 18; body.margin = 0; body.expand = true; body.className = ui.text("rd-layer-panel")
     return ui.Box(body,nodes)
 }
 fn run():i32 {
