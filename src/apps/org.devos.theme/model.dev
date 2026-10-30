@@ -1,0 +1,20 @@
+# Theme rules shared by the native Settings page and its worker. Same behavior as packages/core/theme.ts
+# (parseClock, normalizeSchedule, scheduleError, resolveTheme): strict 24-hour HH:MM, two different times, Auto is Light
+# from `lightFrom` (inclusive) until `darkFrom` (exclusive) and wraps past midnight.
+use "std/strings"
+use "std/encoding"
+use "./clock.dev" as clock
+
+# Minutes after midnight for a strict HH:MM (surrounding spaces ignored), or -1.
+fn parseClock(value:str):i64 { return clock.parse(encoding.encode(value,"utf8")) }
+fn two(value:i64):str { return value < 10 ? "0${value}" : "${value}" }
+fn formatClock(minutes:i64):str { return two(minutes / 60) + ":" + two(minutes % 60) }
+# Why a schedule would be rejected; empty when it is usable.
+fn scheduleError(lightFrom:str, darkFrom:str):str { return clock.problem(encoding.encode(lightFrom,"utf8"),encoding.encode(darkFrom,"utf8")) }
+fn validMode(value:str):bool { return strings.equal(value,"auto") || strings.equal(value,"dark") || strings.equal(value,"light") }
+fn validFamily(value:str):bool { return strings.equal(value,"vscode") || strings.equal(value,"github") }
+# "dark" or "light" for a mode at `minute` (minutes after local midnight). An invalid schedule uses 07:00 / 19:00.
+fn resolve(mode:str, minute:i64, lightFrom:str, darkFrom:str):str {
+    return clock.resolve(encoding.encode(mode,"utf8"),minute,encoding.encode(lightFrom,"utf8"),encoding.encode(darkFrom,"utf8"))
+}
+

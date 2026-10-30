@@ -1,0 +1,236 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+
+# Native Network pages: VPN, Mobile hotspot, Airplane mode and Advanced network settings. The worker (network-pages.dev) runs
+# bin/dev-os-network-settings; this file only displays its frames and sends the user's choices.
+# Frame W: available airplane radioError connectivity suggestedPassphrase, then records
+#   R (id type device soft hard) | A (path name type state managed mtu mac driver ap v4 v4gateway v4dns v6 v6gateway v6dns)
+#   P (id name type activePath active hotspot ownHotspot)
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke(page:str):bool { return k.isText(ui.text(environment("DEVOS_NETWORK_SMOKE")),page) }
+fn flag(value:ui.Text):bool { return sp.flag(value) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn quoted(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn row(title:str, value:ui.Text):ui.Node {
+    let name = ui.props(); name.className = ui.text("settings-description"); name.xalign = 0.0; name.widthChars = 15
+    let shown = ui.props(); shown.xalign = 0.0; shown.expand = true; shown.wrap = true
+    let line = ui.props(); line.vertical = false; line.spacing = 14
+    return ui.Box(line,Vec<ui.Node>(ui.withProps(ui.Label(title),name),ui.withProps(ui.TextLabel(has(value) ? value : plain("—")),shown)))
+}
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 14; options.className = ui.text("settings-card system-card"); return ui.Box(options,children) }
+fn kindOf(record:ui.Text, letter:u8):bool { return sp.kindOf(record,letter) }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+# Sends a request and remembers that the next answer should say "Network settings updated.".
+fn act(l:sp.Link, acted:ui.IntRef, body:ui.Text) { acted.set(1); sp.send(l,body) }
+fn notes(l:sp.Link, message:ui.Text):Vec<ui.Node> {
+    let out = Vec<ui.Node>()
+    if has(message) { out.push(ext.named(k.caption(message,"settings-description"),"network-status")) }
+    if has(l.failure.value) { out.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"network-error")) }
+    return out
+}
+
+# --- VPN -----------------------------------------------------------------------------------------------------------------------
+fn renderVpn(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"network-pages.dev","{\"action\":\"list\"}")
+    let connect = ui.useText(context,ui.emptyText()); let removing = ui.useText(context,ui.emptyText()); let username = ui.useText(context,ui.emptyText()); let password = ui.useText(context,ui.emptyText())
+    let kind = ui.useState(context,0); let file = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText()); let acted = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { message.set(plain("Network settings updated.")); connect.set(ui.emptyText()); password.set(ui.emptyText()) } }
+        if smoke("vpn") && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"vpn-toggle-0") }
+            else if step.get() == 1 { step.set(2); ui.click(context,"vpn-connect-confirm") }
+            else if step.get() == 2 { print("PASS native VPN page connected"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void { if smoke("vpn") && step.get() == 1 && connect.value.bytes.len() > 0 { step.set(2); ui.click(context,"vpn-connect-confirm") }; return ui.noop },Vec<i64>(connect.revision))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let nodes = Vec<ui.Node>(); let list = Vec<ui.Node>(); let count = 0
+    list.push(k.note("Your VPN connections","section-heading"))
+    for record in sp.records(f) {
+        if !kindOf(record,80) { continue }
+        let p = sp.cells(record); let type = sp.cell(p,3)
+        if !(k.isText(type,"vpn") || k.isText(type,"wireguard")) { continue }
+        let id = sp.cell(p,1); let name = sp.cell(p,2); let active = flag(sp.cell(p,5)); let route = has(sp.cell(p,4))
+        let state = active ? "Connected" : route ? "Connecting" : "Disconnected"
+        let toggle = ui.named("vpn-toggle-${count}"); toggle.sensitive = !busy
+        let remove = ui.named("vpn-remove-${count}"); remove.sensitive = !busy && !route
+        let head = Vec<ui.Node>(ui.Icon(ui.props(),"network-vpn-symbolic"),ext.expand(ext.column(5,Vec<ui.Node>(k.caption(name,"settings-field-title"),k.caption(join(Vec<ui.Text>(plain(k.isText(type,"wireguard") ? "WireGuard" : "VPN"),plain(" · " + state))),"settings-description")))),
+            ui.Button(toggle,route ? "Disconnect" : "Connect…",fn() { if route { act(l,acted,join(Vec<ui.Text>(plain("{\"action\":\"vpn-disconnect\",\"id\":"),channel.quote(id),plain("}")))) } else { connect.set(id); username.set(ui.emptyText()); password.set(ui.emptyText()); removing.set(ui.emptyText()) } }),
+            ui.Button(remove,"Remove…",fn() { removing.set(id); connect.set(ui.emptyText()) }))
+        let item = Vec<ui.Node>(ext.row(12,head))
+        if ui.equalText(connect.value,id) {
+            let user = ui.named("vpn-username"); user.sensitive = !k.isText(type,"wireguard"); user.placeholder = plain("VPN user name, if required")
+            let pass = ui.named("vpn-password"); pass.placeholder = plain("VPN password, if required")
+            let cancel = ui.named("vpn-connect-cancel"); cancel.sensitive = !busy
+            let go = ui.named("vpn-connect-confirm"); go.className = ui.text("settings-primary"); go.sensitive = !busy
+            item.push(ext.column(10,Vec<ui.Node>(ui.Entry(user,username.value,fn(value:ui.Text) { username.set(value) }),ui.PasswordEntry(pass,password.value,fn(value:ui.Text) { password.set(value) }),
+                ext.row(8,Vec<ui.Node>(ui.Button(cancel,"Cancel",fn() { connect.set(ui.emptyText()); password.set(ui.emptyText()) }),ui.Button(go,"Connect",fn() {
+                    act(l,acted,join(Vec<ui.Text>(plain("{\"action\":\"vpn-connect\",\"id\":"),channel.quote(id),plain(",\"username\":"),channel.quote(username.get()),plain(",\"password\":"),channel.quote(password.get()),plain("}"))))
+                }))),k.note("Saved credentials are used when this field is empty. WireGuard uses the key in its imported configuration.","settings-description"))))
+        }
+        if ui.equalText(removing.value,id) {
+            let no = ui.named("vpn-remove-cancel"); no.sensitive = !busy
+            let yes = ui.named("vpn-remove-confirm"); yes.sensitive = !busy
+            item.push(ext.row(8,Vec<ui.Node>(ext.expand(k.note("Remove this VPN configuration?","settings-field-title")),ui.Button(no,"Cancel",fn() { removing.set(ui.emptyText()) }),ui.Button(yes,"Remove VPN",fn() {
+                removing.set(ui.emptyText()); act(l,acted,join(Vec<ui.Text>(plain("{\"action\":\"vpn-remove\",\"id\":"),channel.quote(id),plain("}"))))
+            }))))
+        }
+        list.push(ext.column(12,item)); count = count + 1
+    }
+    if count == 0 { list.push(ext.named(k.note(busy ? "Checking VPN profiles…" : "No VPN connections yet. Import a configuration to get started.","settings-description"),"vpn-empty")) }
+    nodes.push(card(list))
+    let types = Vec<ui.Text>(plain("WireGuard (.conf)"),plain("OpenVPN (.ovpn)"))
+    let selectType = ui.named("vpn-type"); selectType.sensitive = !busy
+    let fileEntry = ui.named("vpn-file"); fileEntry.expand = true; fileEntry.sensitive = !busy; fileEntry.placeholder = plain("Full path of the configuration file, e.g. /home/you/vpn.conf")
+    let importButton = ui.named("vpn-import"); importButton.className = ui.text("settings-primary"); importButton.sensitive = !busy && file.value.bytes.len() > 0 && file.value.bytes[0] == 47
+    nodes.push(card(Vec<ui.Node>(k.note("Add a VPN","section-heading"),k.note("Import a configuration from your VPN provider. OpenVPN requires the NetworkManager OpenVPN plugin.","settings-description"),
+        ui.Select(selectType,types,kind.value,fn(index:i64) { kind.set(index) }),ui.Entry(fileEntry,file.value,fn(value:ui.Text) { file.set(value) }),
+        ui.Button(importButton,"Import configuration",fn() { act(l,acted,join(Vec<ui.Text>(plain("{\"action\":\"vpn-import\",\"type\":\"" + (kind.get() == 1 ? "openvpn" : "wireguard") + "\",\"file\":"),channel.quote(file.get()),plain("}")))) }))))
+    for item in notes(l,message.value) { nodes.push(item) }
+    return ext.column(18,nodes)
+}
+fn vpn():ui.Node { return ui.component(9370,ui.keyed(930),renderVpn) }
+
+# --- Mobile hotspot ------------------------------------------------------------------------------------------------------------
+fn renderHotspot(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"network-pages.dev","{\"action\":\"list\"}")
+    let adapter = ui.useState(context,0); let ssid = ui.useText(context,plain("DevOs Hotspot")); let password = ui.useText(context,ui.emptyText())
+    let sharedName = ui.useText(context,ui.emptyText()); let sharedPassword = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText()); let acted = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        # A random password is suggested once; the user may change it.
+        if password.value.bytes.len() == 0 && l.frame.value.bytes.len() > 0 { password.set(field(l.frame.value,5)) }
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { message.set(plain("Network settings updated.")) } }
+        if smoke("hotspot") && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 && password.value.bytes.len() > 0 { step.set(1); ui.click(context,"hotspot-start") }
+            else if step.get() == 1 { print("PASS native hotspot page started"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void { if smoke("hotspot") && step.get() == 0 && password.value.bytes.len() > 0 && l.frame.value.bytes.len() > 0 { step.set(1); ui.click(context,"hotspot-start") }; return ui.noop },Vec<i64>(password.revision))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let nodes = Vec<ui.Node>()
+    let adapters = Vec<ui.Text>(); let paths = Vec<ui.Text>(); let wifiCount = 0; let unmanaged = Vec<ui.Text>(); let running = Vec<ui.Text>(); let runningIds = Vec<ui.Text>()
+    for record in sp.records(f) {
+        if kindOf(record,65) {
+            let a = sp.cells(record)
+            if k.isText(sp.cell(a,3),"2") {
+                wifiCount = wifiCount + 1
+                if flag(sp.cell(a,5)) && flag(sp.cell(a,9)) { adapters.push(sp.cell(a,2)); paths.push(sp.cell(a,1)) }
+                else if !flag(sp.cell(a,5)) { unmanaged.push(join(Vec<ui.Text>(sp.cell(a,2),plain(" is not managed by NetworkManager.")))) }
+                else { unmanaged.push(join(Vec<ui.Text>(sp.cell(a,2),plain(" (driver "),has(sp.cell(a,8)) ? sp.cell(a,8) : plain("unknown"),plain(") does not report access point mode, so its driver or firmware cannot host a hotspot. Your current internet connection remains available.")))) }
+            }
+        }
+        if kindOf(record,80) { let p = sp.cells(record); if flag(sp.cell(p,6)) && has(sp.cell(p,4)) { running.push(sp.cell(p,2)); runningIds.push(sp.cell(p,1)) } }
+    }
+    let heading = running.len() > 0 ? "Your hotspot is running" : "Mobile hotspot is off"
+    let detail = running.len() > 0 ? running[0] : adapters.len() > 0 ? plain("Share an internet connection over Wi-Fi.") : busy ? plain("Checking Wi-Fi adapters…") : wifiCount > 0 ? plain("This Wi-Fi hardware cannot host a hotspot.") : plain("No Wi-Fi adapter with access point support was found.")
+    nodes.push(ext.row(16,Vec<ui.Node>(ui.Icon(ui.props(),"network-wireless-hotspot-symbolic"),ext.column(6,Vec<ui.Node>(ext.named(k.note(heading,"section-heading"),"hotspot-status"),k.caption(detail,"settings-description"))))))
+    if running.len() > 0 {
+        if has(sharedName.value) { nodes.push(card(Vec<ui.Node>(row("Network name",sharedName.value),row("Password",sharedPassword.value),k.note("Join from another device with these details. The password is shown only until you leave this page.","settings-description")))) }
+        for index in 0..(runningIds.len() as i64) {
+            let stop = ui.named("hotspot-stop"); stop.sensitive = !busy
+            let id = runningIds[index]
+            nodes.push(ui.Button(stop,"Stop hotspot",fn() { sharedName.set(ui.emptyText()); sharedPassword.set(ui.emptyText()); act(l,acted,join(Vec<ui.Text>(plain("{\"action\":\"hotspot-stop\",\"id\":"),channel.quote(id),plain("}")))) }))
+        }
+    } else if adapters.len() == 0 && !busy {
+        let why = Vec<ui.Text>(); for item in unmanaged { why.push(item) }
+        nodes.push(card(Vec<ui.Node>(k.note(wifiCount > 0 ? "Hotspot is not supported by this Wi-Fi hardware" : "A supported Wi-Fi adapter is needed","section-heading"),
+            ext.named(k.caption(why.len() > 0 ? join(why) : plain("Connect an adapter with access point support, then refresh this page. Your current internet connection remains available."),"settings-description"),"hotspot-unsupported"))))
+    } else if adapters.len() > 0 {
+        let selected = adapter.value < adapters.len() as i64 ? adapter.value : 0
+        let choose = ui.named("hotspot-adapter"); choose.sensitive = !busy
+        let name = ui.named("hotspot-name"); name.sensitive = !busy; name.placeholder = plain("Network name")
+        let secret = ui.named("hotspot-password"); secret.sensitive = !busy; secret.placeholder = plain("Password (8–63 ASCII characters)")
+        let start = ui.named("hotspot-start"); start.className = ui.text("settings-primary")
+        start.sensitive = !busy && ssid.value.bytes.len() > 0 && password.value.bytes.len() >= 8 && password.value.bytes.len() <= 63
+        nodes.push(card(Vec<ui.Node>(k.note("Set up your hotspot","section-heading"),ui.Select(choose,adapters,selected,fn(index:i64) { adapter.set(index) }),
+            ui.Entry(name,ssid.value,fn(value:ui.Text) { ssid.set(value) }),ui.PasswordEntry(secret,password.value,fn(value:ui.Text) { password.set(value) }),
+            k.note("A random password is suggested; change it if you like. Uses WPA2 security on 2.4 GHz and IPv4 internet sharing. Starting a hotspot disconnects the selected adapter from its current Wi-Fi network. A separate internet connection, such as Ethernet, is needed to share internet access.","settings-description"),
+            ui.Button(start,"Start hotspot",fn() {
+                sharedName.set(ssid.get()); sharedPassword.set(password.get())
+                act(l,acted,join(Vec<ui.Text>(plain("{\"action\":\"hotspot-start\",\"device\":"),channel.quote(paths[selected]),plain(",\"ssid\":"),channel.quote(ssid.get()),plain(",\"password\":"),channel.quote(password.get()),plain("}"))))
+            }))))
+    }
+    for item in notes(l,message.value) { nodes.push(item) }
+    return ext.column(18,nodes)
+}
+fn hotspot():ui.Node { return ui.component(9371,ui.keyed(931),renderHotspot) }
+
+# --- Airplane mode -------------------------------------------------------------------------------------------------------------
+fn renderAirplane(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"network-pages.dev","{\"action\":\"radios\"}")
+    let message = ui.useText(context,ui.emptyText()); let acted = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { message.set(plain("Network settings updated.")) } }
+        if smoke("airplane") && l.frame.value.bytes.len() > 0 { print("PASS native Airplane page"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let airplane = flag(field(f,2)); let nodes = Vec<ui.Node>(); let radios = Vec<ui.Node>(); let count = 0
+    for record in sp.records(f) {
+        if !kindOf(record,82) { continue }
+        let r = sp.cells(record); count = count + 1
+        radios.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),k.isText(sp.cell(r,2),"bluetooth") ? "bluetooth-symbolic" : "network-wireless-symbolic"),
+            ext.expand(ext.column(5,Vec<ui.Node>(k.caption(join(Vec<ui.Text>(sp.cell(r,3),plain(" · "),sp.cell(r,2))),"settings-field-title"),
+                k.note(k.isText(sp.cell(r,5),"blocked") ? "Blocked by a hardware switch" : k.isText(sp.cell(r,4),"blocked") ? "Blocked by software" : "Available","settings-description")))))))
+    }
+    let statusText = has(field(f,3)) ? field(f,3) : count > 0 ? plain(airplane ? "Wireless radios are blocked by software." : "Wireless radios are allowed.") : plain(busy ? "Checking wireless radios…" : "No wireless radios are present.")
+    let toggle = ui.named("airplane-enabled"); toggle.sensitive = !busy && count > 0; toggle.valign = 3
+    nodes.push(card(Vec<ui.Node>(ext.row(16,Vec<ui.Node>(ui.Icon(ui.props(),"airplane-mode-symbolic"),ext.expand(ext.column(6,Vec<ui.Node>(k.note("Airplane mode","section-heading"),ext.named(k.caption(statusText,"settings-description"),"airplane-status")))),
+        ui.Switch(toggle,airplane,fn(next:bool) { if next != airplane { act(l,acted,plain(next ? "{\"action\":\"airplane\",\"enabled\":true}" : "{\"action\":\"airplane\",\"enabled\":false}")) } }))),
+        k.note("Blocks Wi-Fi, Bluetooth and mobile broadband radios. Turning it off restores the previous software blocks. Physical hardware switches remain in control. Administrator authentication may be required.","settings-description"))))
+    if count > 0 { let all = Vec<ui.Node>(k.note("Wireless radios","section-heading")); for item in radios { all.push(item) }; nodes.push(card(all)) }
+    for item in notes(l,message.value) { nodes.push(item) }
+    return ext.column(18,nodes)
+}
+fn airplane():ui.Node { return ui.component(9372,ui.keyed(932),renderAirplane) }
+
+# --- Advanced network settings -------------------------------------------------------------------------------------------------
+fn adapterState(value:ui.Text):str { return k.isText(value,"100") ? "Connected" : k.isText(value,"30") ? "Disconnected" : k.isText(value,"20") ? "Unavailable" : k.isText(value,"10") ? "Unmanaged" : k.isText(value,"120") ? "Connection failed" : "Connecting" }
+fn connectivityText(value:ui.Text):str { return k.isText(value,"1") ? "No network connection" : k.isText(value,"2") ? "Sign-in required" : k.isText(value,"3") ? "Limited connectivity" : k.isText(value,"4") ? "Internet connected" : "Unknown connectivity" }
+fn renderAdvanced(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"network-pages.dev","{\"action\":\"list\"}")
+    let confirm = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText()); let acted = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { message.set(plain("Network settings updated.")) } }
+        if smoke("advanced") && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"network-check") }
+            else if step.get() == 1 { print("PASS native Advanced network page checked"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let nodes = Vec<ui.Node>(); let count = 0
+    let check = ui.named("network-check"); check.sensitive = flag(field(f,1)) && !busy
+    nodes.push(ext.row(16,Vec<ui.Node>(ui.Icon(ui.props(),"network-wired-symbolic"),ext.expand(ext.column(6,Vec<ui.Node>(ext.named(k.note(connectivityText(field(f,4)),"section-heading"),"network-connectivity"),k.note("Connection status reported by NetworkManager.","settings-description")))),
+        ui.Button(check,"Check now",fn() { act(l,acted,plain("{\"action\":\"connectivity-check\"}")) }))))
+    for record in sp.records(f) {
+        if !kindOf(record,65) { continue }
+        let a = sp.cells(record); let path = sp.cell(a,1); let wireless = k.isText(sp.cell(a,3),"2"); let canManage = flag(sp.cell(a,5)) && (wireless || k.isText(sp.cell(a,3),"1")); let connected = k.isText(sp.cell(a,4),"100")
+        let head = Vec<ui.Node>(ui.Icon(ui.props(),wireless ? "network-wireless-symbolic" : "network-wired-symbolic"),ext.expand(ext.column(5,Vec<ui.Node>(k.caption(sp.cell(a,2),"section-heading"),k.note(adapterState(sp.cell(a,4)),"settings-description")))))
+        if canManage { let button = ui.named("adapter-action-${count}"); button.sensitive = !busy; head.push(ui.Button(button,connected ? "Disconnect…" : "Connect…",fn() { confirm.set(path) })) }
+        let body = Vec<ui.Node>(ext.row(12,head))
+        if ui.equalText(confirm.value,path) {
+            let no = ui.named("adapter-cancel-${count}"); no.sensitive = !busy
+            let yes = ui.named("adapter-confirm-${count}"); yes.sensitive = !busy
+            body.push(ext.row(8,Vec<ui.Node>(ext.expand(k.note(connected ? "Disconnect this adapter from its network?" : "Connect this adapter?","settings-field-title")),ui.Button(no,"Cancel",fn() { confirm.set(ui.emptyText()) }),
+                ui.Button(yes,connected ? "Disconnect" : "Connect",fn() { confirm.set(ui.emptyText()); act(l,acted,join(Vec<ui.Text>(plain(connected ? "{\"action\":\"adapter-disconnect\",\"device\":" : "{\"action\":\"adapter-connect\",\"device\":"),channel.quote(path),plain("}")))) }))))
+        }
+        body.push(row("Hardware address",sp.cell(a,7))); body.push(row("Driver",sp.cell(a,8))); body.push(row("MTU",sp.cell(a,6)))
+        body.push(row("IPv4 address",sp.cell(a,10))); body.push(row("IPv4 gateway",sp.cell(a,11))); body.push(row("IPv6 address",sp.cell(a,13))); body.push(row("IPv6 gateway",sp.cell(a,14)))
+        let dns = has(sp.cell(a,12)) && has(sp.cell(a,15)) ? join(Vec<ui.Text>(sp.cell(a,12),plain(", "),sp.cell(a,15))) : has(sp.cell(a,12)) ? sp.cell(a,12) : sp.cell(a,15)
+        body.push(row("DNS servers",dns))
+        nodes.push(card(body)); count = count + 1
+    }
+    if count == 0 { nodes.push(k.note(busy ? "Checking network adapters…" : "No network adapters were found.","settings-description")) }
+    for item in notes(l,message.value) { nodes.push(item) }
+    return ext.column(16,nodes)
+}
+fn advanced():ui.Node { return ui.component(9373,ui.keyed(933),renderAdvanced) }

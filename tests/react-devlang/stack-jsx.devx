@@ -1,0 +1,13 @@
+use "react_devlang/ui" as ui
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {if !value {unsafe {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let page=ui.useState(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if page.value==0 {check(ui.readText(context,"b").bytes.len()>0,"Hidden JSX page was not mounted");page.set(1)} else {ui.close(context)}
+        return ui.noop
+    },Vec<i64>(page.value))
+    return <Stack id="pages" active={page.value}><Label id="a">A</Label><Label id="b">B</Label></Stack>
+}
+fn main():i32 {check(ui.run("Stack JSX",320,200,App),"Stack JSX failed");unsafe {check(rd_widget_live_count()==0,"Stack JSX leaked widgets")};print("PASS native Stack JSX tag");return 0}
+return main()

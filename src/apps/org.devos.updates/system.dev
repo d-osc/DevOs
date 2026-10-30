@@ -1,0 +1,132 @@
+# System update bundles (kernel, initramfs, bootloader stub, firmware, modules, system files): the data format shared with the
+# privileged helper native/devos-system-update (same rules as packages/updates/system.ts). Pure data: no disk, no network, and
+# nothing here runs the helper. The helper re-checks every file itself; these checks decide what is offered and what is passed on.
+use "std/json"
+use "std/strings"
+use "./protocol.dev" as proto
+use "./manifest.dev" as manifest
+
+struct Meta { error: str, version: str, platform: str, kernel: str, minCompatible: str, components: Vec<str>, esp: Vec<manifest.File>, root: Vec<manifest.File>, remove: Vec<str> }
+struct Offer { found: bool, version: str, kernel: str, components: str, size: i64, files: i64 }
+struct Info { error: str, version: str, kernel: str, machine: str, live: bool, efi: bool, esp: bool, safeBoot: bool, pending: str, pendingKernel: str, canRollback: bool, lastError: str, signed: bool }
+
+fn components():Vec<str> { return Vec<str>("kernel","initramfs","bootloader","firmware","packages") }
+fn assetName(platform:str):str { return "dev-os-system-" + platform + ".tar.gz" }
+fn metaName(platform:str):str { return "dev-os-system-" + platform + ".json" }
+fn word(value:str, allowed:str):bool {
+    if strings.charLength(value) == 0 { return false }
+    for i in 0..(strings.charLength(value) as i64) { if !strings.contains(allowed,strings.substring(value,i,i+1)) { return false } }
+    return true
+}
+fn plain():str { return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" }
+# EFI/DEVOS/<name>.EFI
+fn okEspPath(path:str):bool {
+    if !strings.startsWith(path,"EFI/DEVOS/") { return false }
+    let name = strings.substring(path,10,strings.charLength(path))
+    return strings.endsWith(name,".EFI") && word(name,plain())
+}
+# usr/(lib|bin|sbin|libexec|share)/<safe path>, never the helper itself, its polkit rules or its units.
+fn okRootPath(path:str):bool {
+    let ok = false
+    for area in Vec<str>("lib","bin","sbin","libexec","share") { if strings.startsWith(path,"usr/" + area + "/") && strings.charLength(path) > strings.charLength(area) + 5 { ok = true } }
+    if !ok || !word(path,plain() + "+@/") || strings.contains(path,"..") || strings.contains(path,"//") { return false }
+    if strings.equal(path,"usr/libexec/devos-system-update") || strings.startsWith(path,"usr/share/polkit-1/") || strings.startsWith(path,"usr/lib/polkit-1/") || strings.startsWith(path,"usr/lib/systemd/system/devos-system-") { return false }
+    return true
+}
+struct Entries { error: str, files: Vec<manifest.File> }
+fn badEntries(message:str):Entries { return Entries(message,Vec<manifest.File>()) }
+fn entries(raw:json.Value, area:str):Entries {
+    if !strings.equal(json.kind(raw),"array") || json.len(raw) > 200000 { return badEntries("Invalid file list in system update") }
+    let out = Vec<manifest.File>(); let seen = Map<str,bool>()
+    for i in 0..(json.len(raw) as i64) {
+        let item = json.at(raw,i)
+        if !strings.equal(json.kind(item),"object") { return badEntries("Invalid file entry in system update") }
+        let entry = manifest.file(item)
+        if !proto.lowerHex(entry.sha256,64) { return badEntries("Invalid file checksum in system update") }
+        if entry.size < 0 || entry.size > 1073741824 { return badEntries("Invalid file size in system update") }
+        if !strings.equal(entry.mode,"644") && !strings.equal(entry.mode,"755") { return badEntries("Invalid file mode in system update") }
+        if !manifest.safePath(entry.path) { return badEntries("Unsafe path in update manifest") }
+        if !(strings.equal(area,"esp") ? okEspPath(entry.path) : okRootPath(entry.path)) { return badEntries("Path " + entry.path + " is not allowed in a system update") }
+        if seen.contains(entry.path) { return badEntries("Duplicate file in system update") }
+        seen.set(entry.path,true); out.push(entry)
+    }
+    return Entries("",out)
+}
+fn badMeta(message:str):Meta { return Meta(message,"","","","",Vec<str>(),Vec<manifest.File>(),Vec<manifest.File>(),Vec<str>()) }
+# `expectedPlatform` is "" when not required.
+fn parseMeta(raw:json.Value, expectedPlatform:str):Meta {
+    if !strings.equal(json.kind(raw),"object") { return badMeta("Invalid system update") }
+    if manifest.wholeNumber(raw,"format") != 1 || !strings.equal(manifest.text(raw,"kind"),"system") { return badMeta("Unsupported system update format") }
+    let version = manifest.semver(manifest.text(raw,"version"))
+    if strings.equal(version,"") { return badMeta("Invalid system update version") }
+    let target = manifest.text(raw,"platform")
+    if !manifest.platformOf(target) { return badMeta("Invalid system update platform") }
+    if !strings.equal(expectedPlatform,"") && !strings.equal(target,expectedPlatform) { return badMeta("System update is for another platform") }
+    let kernel = manifest.text(raw,"kernel")
+    if !json.has(raw,"kernel") || !strings.equal(json.kind(json.get(raw,"kernel")),"string") || (strings.charLength(kernel) > 0 && !word(kernel,plain() + "+")) { return badMeta("Invalid kernel release in system update") }
+    let minimum = manifest.semver(manifest.text(raw,"minCompatible"))
+    if strings.equal(minimum,"") { return badMeta("Invalid minimum compatible version in system update") }
+    let listed = json.has(raw,"components") ? json.get(raw,"components") : json.null_value()
+    if !strings.equal(json.kind(listed),"array") { return badMeta("Unknown component in system update") }
+    let names = Vec<str>()
+    for i in 0..(json.len(listed) as i64) {
+        let item = json.at(listed,i)
+        if !strings.equal(json.kind(item),"string") || !manifest.has(components(),json.string(item)) { return badMeta("Unknown component in system update") }
+        names.push(json.string(item))
+    }
+    let removal = json.has(raw,"remove") ? json.get(raw,"remove") : json.null_value()
+    if !strings.equal(json.kind(removal),"array") { return badMeta("Invalid removal list in system update") }
+    let remove = Vec<str>()
+    for i in 0..(json.len(removal) as i64) {
+        let item = json.at(removal,i)
+        if !strings.equal(json.kind(item),"string") || !manifest.safePath(json.string(item)) { return badMeta("Unsafe path in update manifest") }
+        if !okRootPath(json.string(item)) { return badMeta("Path " + json.string(item) + " is not allowed in a system update") }
+        remove.push(json.string(item))
+    }
+    let esp = entries(json.has(raw,"esp") ? json.get(raw,"esp") : json.null_value(),"esp")
+    if !strings.equal(esp.error,"") { return badMeta(esp.error) }
+    let root = entries(json.has(raw,"root") ? json.get(raw,"root") : json.null_value(),"root")
+    if !strings.equal(root.error,"") { return badMeta(root.error) }
+    if esp.files.len() > 0 {
+        let image = false; for entry in esp.files { if strings.equal(entry.path,"EFI/DEVOS/DEVOS.EFI") { image = true } }
+        if !image { return badMeta("A boot image update must contain EFI/DEVOS/DEVOS.EFI") }
+    }
+    return Meta("",version,target,kernel,minimum,names,esp.files,root.files,remove)
+}
+fn deriveComponents(esp:Vec<manifest.File>, root:Vec<manifest.File>):Vec<str> {
+    let out = Vec<str>()
+    if esp.len() > 0 { out.push("kernel"); out.push("initramfs"); out.push("bootloader") }
+    let firmware = false; let packages = false
+    for entry in root {
+        if strings.startsWith(entry.path,"usr/lib/firmware/") { firmware = true }
+        else if !strings.startsWith(entry.path,"usr/lib/modules/") { packages = true }
+    }
+    if firmware { out.push("firmware") }
+    if packages { out.push("packages") }
+    return out
+}
+# The line format native/devos-system-update reads (it never parses JSON).
+fn systemList(meta:Meta):str {
+    let out = "format 1\nversion " + meta.version + "\nplatform " + meta.platform + "\nkernel " + meta.kernel + "\nmin " + meta.minCompatible + "\ncomponents " + strings.join(meta.components," ") + "\n"
+    for entry in meta.esp { out = out + "F esp " + entry.mode + " " + entry.sha256 + " ${entry.size} " + entry.path + "\n" }
+    for entry in meta.root { out = out + "F root " + entry.mode + " " + entry.sha256 + " ${entry.size} " + entry.path + "\n" }
+    for path in meta.remove { out = out + "R " + path + "\n" }
+    return out
+}
+fn offer(meta:Meta):Offer {
+    let size = 0
+    for entry in meta.esp { size = size + entry.size }
+    for entry in meta.root { size = size + entry.size }
+    return Offer(true,meta.version,meta.kernel,strings.join(meta.components,","),size,(meta.esp.len() + meta.root.len()) as i64)
+}
+fn noOffer():Offer { return Offer(false,"","","",0,0) }
+fn flag(raw:json.Value, key:str):bool { return json.has(raw,key) && strings.equal(json.kind(json.get(raw,key)),"bool") && json.bool(json.get(raw,key)) }
+fn badInfo(message:str):Info { return Info(message,"","","",false,false,false,false,"","",false,"",false) }
+# The helper's `status` answer.
+fn parseInfo(raw:json.Value):Info {
+    if !strings.equal(json.kind(raw),"object") || !flag(raw,"ok") || strings.equal(manifest.text(raw,"version"),"") {
+        let reason = strings.equal(json.kind(raw),"object") ? manifest.text(raw,"error") : ""
+        return badInfo(strings.equal(reason,"") ? "The system update helper did not answer" : reason)
+    }
+    return Info("",manifest.text(raw,"version"),manifest.text(raw,"kernel"),manifest.text(raw,"machine"),flag(raw,"live"),flag(raw,"efi"),flag(raw,"esp"),flag(raw,"safeBoot"),manifest.text(raw,"pending"),manifest.text(raw,"pendingKernel"),flag(raw,"canRollback"),manifest.text(raw,"lastError"),flag(raw,"signed"))
+}

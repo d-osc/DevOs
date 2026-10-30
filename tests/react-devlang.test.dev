@@ -1,0 +1,78 @@
+# Real native GTK integration tests. Run on Linux/WSL with xvfb-run installed.
+use "std/test"
+use "std/fs"
+use "std/strings"
+use "std/encoding"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn build(name:str, extension:str): str {
+    let executable = t.root() + "/build/react-devlang/tests/" + name
+    tool.checked(Vec<str>("sh", t.root() + "/tools/build/react-devlang.sh", t.root() + "/tests/react-devlang/" + name + "." + extension, executable), Map<str,str>(), "", 90000)
+    return executable
+}
+fn execute(executable:str): child_process.Output {
+    let env = Map<str,str>(); env.set("G_DEBUG", "fatal-warnings"); env.set("NO_AT_BRIDGE", "1")
+    return tool.run(Vec<str>("sh", "-c", "ulimit -c 0; exec \"$@\"", "react-devlang-test", "xvfb-run", "-a", executable), env, "", 30000)
+}
+fn elf(executable:str) {
+    t.equal(tool.exec(Vec<str>("head", "-c", "4", executable)), encoding.decode(Vec<u8>(127, 69, 76, 70), "utf8"))
+}
+fn lines(value:str, expected:str): i64 { let count = 0; for line in strings.split(value, "\n") { if strings.equal(line, expected) { count = count + 1 } }; return count }
+
+test.case("native state, keyed reconciliation and root cleanup", fn() {
+    let executable = build("lifecycle", "dev"); elf(executable)
+    let linked = tool.exec(Vec<str>("ldd", executable)); t.contains(linked, "libgtk-3"); t.lacks(linked, "mozjs")
+    let done = execute(executable); t.success(done); let stdout = t.out(done)
+    test.expect(lines(stdout, "mount 1") == 2 && lines(stdout, "cleanup 1") == 2, "Key 1 lifecycle mismatch")
+    test.expect(lines(stdout, "mount 2") == 1 && lines(stdout, "cleanup 2") == 1, "Key 2 lifecycle mismatch")
+    t.contains(stdout, "PASS native GTK root teardown")
+})
+test.case("widget properties, reducer, refs and CSS", fn() { let done = execute(build("widgets", "dev")); t.success(done); t.contains(t.out(done), "PASS reducer") })
+test.case("native settings controls support JSX, multiline edits and controlled clearing",fn() {let done=execute(build("settings-controls","devx"));t.success(done);t.contains(t.out(done),"PASS native Switch and TextArea JSX")})
+test.case("native Stack shows one mounted page at a time",fn() {let done=execute(build("stack","dev"));t.success(done);t.contains(t.out(done),"PASS native Stack")})
+test.case("Stack is available in JSX",fn() {let done=execute(build("stack-jsx","devx"));t.success(done);t.contains(t.out(done),"PASS native Stack JSX tag")})
+test.case("native login controls preserve password masking and clear state",fn() {
+    let executable=build("login-controls","devx");elf(executable)
+    let done=execute(executable);t.success(done);t.contains(t.out(done),"PASS masked password lifecycle")
+    t.lacks(t.out(done),"secret-123");t.lacks(t.err(done),"secret-123")
+})
+test.case("invalid hook order is rejected", fn() {
+    let done = execute(build("hook-order", "dev")); test.expect(!done.success, "Expected hook failure"); t.contains(t.err(done), "Component changed its hook order or type")
+})
+test.case("duplicate keys are rejected", fn() {
+    let done = execute(build("duplicate-key", "dev")); test.expect(!done.success, "Expected duplicate key failure"); t.contains(t.err(done), "Duplicate sibling key")
+})
+test.case("JSX builds native widgets and delivers real GTK events", fn() {
+    let executable = build("jsx-lifecycle", "devx"); elf(executable); let done = execute(executable); t.success(done); t.contains(t.out(done), "PASS native JSX components")
+})
+test.case("native type errors identify original JSX source", fn() {
+    tool.scope("react-devlang-diagnostics-", fn(dir:str) {
+        let source = dir + "/bad.devx"
+        tool.write(source, "use \"react_devlang/ui\" as ui\nfn App(context:*ui.Context):ui.Node {\n return <Box className=\"ไทย\"\n spacing={\"this must be an integer\"}\n />\n}\nreturn ui.run(\"Bad types\",200,100,App) ? 0 : 1\n")
+        let done = tool.run(Vec<str>("sh", t.root() + "/tools/build/react-devlang.sh", source, dir + "/bad"), Map<str,str>(), "", 90000)
+        test.expect(!done.success, "Expected type error"); t.contains(t.err(done), source + ":4:"); t.lacks(t.err(done), "/.devx/")
+    })
+})
+test.case("JSX type checking needs no display or GTK linking", fn() {
+    let env = Map<str,str>(); env.set("DISPLAY", ""); env.set("WAYLAND_DISPLAY", "")
+    let done = tool.run(Vec<str>("sh", t.root() + "/tools/check/react-devlang.sh"), env, "", 30000)
+    t.success(done); t.contains(t.out(done), "checked")
+})
+test.case("standalone package builds .dev and .devx without Python", fn() {
+    tool.scope("react-devlang-standalone-", fn(dir:str) {
+        let library = dir + "/library with spaces"; fs.mkdirSync(library, true)
+        for item in Vec<str>("src", "native", "tools", "package.don") { tool.copy(t.library() + "/" + item, library + "/" + item) }
+        tool.write(dir + "/bin/python3", "#!/bin/sh\necho 'Python must not be called' >&2\nexit 77\n"); tool.chmod(dir + "/bin/python3", "+x")
+        let env = Map<str,str>(); env.set("PATH", dir + "/bin:" + strings.trim(tool.exec(Vec<str>("printenv", "PATH"))))
+        for extension in Vec<str>("dev", "devx") {
+            let source = dir + "/consumer." + extension
+            let node = strings.equal(extension, "devx") ? "<Box><Label>Standalone JSX package</Label></Box>" : "ui.Label(\"Standalone native package\")"
+            tool.write(source, "use \"react_devlang/ui\" as ui\nfn App(context:*ui.Context):ui.Node {\n ui.useEffect(context, fn():fn():void { ui.close(context); return ui.noop }, Vec<i64>())\n return " + node + "\n}\nreturn ui.run(\"Standalone\",200,100,App) ? 0 : 1\n")
+            let executable = dir + "/consumer-" + extension
+            t.success(tool.run(Vec<str>("sh", library + "/tools/build.sh", source, executable), env, "", 90000)); elf(executable); t.success(execute(executable))
+        }
+    })
+})
+return t.finish()

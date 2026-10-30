@@ -1,0 +1,197 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+# Hardware pages: Battery Care, Fan Profile, Connectivity, Touchpad, Microphone, Keyboard.
+
+# Battery Care: supported, reason, care, full, remaining text, limit, quick
+fn battery(fields:Vec<ui.Text>,ready:bool,busy:bool,send:fn(str,str):void):ui.Node {
+    let supported = k.on(fields,2); let usable = ready && supported && !busy; let care = k.on(fields,4); let full = k.on(fields,5); let quick = k.on(fields,8)
+    let explanation = Vec<ui.Node>()
+    explanation.push(k.note("Keeps your battery healthy even when it's connected to an AC adapter for an extended period of time.","settings-description"))
+    let controls = Vec<ui.Node>()
+    controls.push(k.note("Battery Care Mode","settings-field-title"))
+    controls.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Enable Battery Care Mode to limit battery charging to "),k.field(fields,7),ui.text("% of full capacity, which will improve the battery's lifespan."))),"settings-description"))
+    controls.push(k.switchRow("battery-care-switch",care,usable,care ? "On" : "Off",fn(next:bool) { send("care",next ? "on" : "off") }))
+    controls.push(k.note("Instant Full-Charge Mode","settings-field-title"))
+    controls.push(k.note("Instant Full-Charge Mode charges the battery to 100%. Battery Care Mode will be re-enabled after 24 hours.","settings-description"))
+    controls.push(k.switchRow("battery-full-switch",full,usable && (care || full),full ? "On" : "Off",fn(next:bool) { send("full",next ? "on" : "off") }))
+    if full { controls.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Battery Care Mode returns in "),k.field(fields,6),ui.text("."))),"settings-description")) }
+    if supported && !care && !full { controls.push(k.note("Turn on Battery Care Mode to use Instant Full-Charge Mode.","settings-description")) }
+    let quickOptions = ui.named("battery-quick-check"); quickOptions.sensitive = usable
+    controls.push(ui.CheckBox(quickOptions,"Display this switch in the panel to quickly change the Instant Full-Charge setting.",quick,fn() { send("quick",quick ? "off" : "on") }))
+    if ready && !supported {
+        controls.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.same(fields,3,"") ? ui.text("The battery driver does not provide a charge limit.") : k.field(fields,3),ui.text(" Controls stay off rather than pretending to work."))),"settings-description"))
+    }
+    return k.card("battery-care-card",k.intro("battery-good-symbolic","Battery Care Mode",explanation),k.stack(10,controls))
+}
+
+fn modeTitle(mode:str):str { return mode == "performance" ? "Performance mode" : mode == "whisper" ? "Whisper mode" : "Standard mode" }
+fn modeDetail(mode:str):str {
+    return mode == "performance" ? "Dynamically maximizes cooling performance for demanding tasks." : mode == "whisper" ? "Dynamically minimizes fan speed for the quietest operation." : "Dynamically selects the best fan speed for everyday tasks."
+}
+# Fan Profile: supported, reason, emulated, current, source, ac, battery, sync, syncAvailable, hotkey, rpm, modes
+fn fan(fields:Vec<ui.Text>,editing:i64,ready:bool,busy:bool,edit:fn(i64):void,send:fn(str,str,str):void):ui.Node {
+    let supported = k.on(fields,2); let usable = ready && supported && !busy; let active = k.same(fields,5,"battery") ? 1 : 0
+    let source = editing >= 0 ? editing : active
+    let saved = source == 1 ? k.field(fields,7) : k.field(fields,6)
+    let selected = saved.bytes.len() > 0 ? saved : source == active && k.field(fields,4).bytes.len() > 0 ? k.field(fields,4) : ui.text("standard")
+    let sourceName = source == 1 ? "battery" : "ac"
+    let explanation = Vec<ui.Node>(k.note("Select a preferred fan speed.","settings-description"))
+    if supported && k.on(fields,10) { explanation.push(k.note("Select a preferred fan speed or press [Fn] + [F] to easily switch between Fan Profiles.","settings-description")) }
+    if supported && k.field(fields,11).bytes.len() > 0 { explanation.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Fan speed: "),k.field(fields,11),ui.text(" RPM"))),"settings-description")) }
+    let controls = Vec<ui.Node>()
+    if supported {
+        let sources = ui.props(); sources.vertical = false; sources.spacing = 8
+        let ac = ui.named("fan-source-ac"); ac.sensitive = !busy; ac.className = ui.text(source == 0 ? "power-mode power-mode-selected" : "power-mode")
+        let battery = ui.named("fan-source-battery"); battery.sensitive = !busy; battery.className = ui.text(source == 1 ? "power-mode power-mode-selected" : "power-mode")
+        let where = source == active ? (source == 1 ? "On battery (current power source)" : "Plugged-in (current power source)") : (source == 1 ? "Applies when on battery" : "Applies when plugged in")
+        let hint = k.styled("settings-description"); hint.xalign = 1.0; hint.expand = true
+        controls.push(ui.Box(sources,Vec<ui.Node>(ui.Button(ac,"Plugged-in",fn() { edit(0) }),ui.Button(battery,"On battery",fn() { edit(1) }),ui.withProps(ui.Label(where),hint))))
+    }
+    let modes = Vec<str>("performance","standard","whisper")
+    let rows = Vec<ui.Node>()
+    for mode in modes {
+        rows.push(k.radio("fan-mode-"+mode,supported && k.isText(selected,mode),usable,modeTitle(mode),modeDetail(mode),fn() { if !k.isText(selected,mode) { send("set",sourceName,mode) } }))
+    }
+    controls.push(k.stack(9,rows))
+    if k.on(fields,4) { controls.push(k.note("This device has no fan control. These profiles adjust the CPU performance policy instead; the fan still follows the temperature automatically.","settings-description")) }
+    let syncOn = supported && k.on(fields,9) && k.on(fields,8)
+    controls.push(k.note("Power Mode Synchronization","settings-field-title"))
+    controls.push(k.note("Dynamically adjusts your power mode based on the Fan Profile setting for optimal performance.","settings-description"))
+    controls.push(k.switchRow("fan-sync-switch",syncOn,usable && k.on(fields,9),syncOn ? "Enable" : "Disable",fn(next:bool) { send("sync",next ? "on" : "off","") }))
+    if supported && !k.on(fields,9) { controls.push(k.note("Power modes are not available on this device, so there is nothing to synchronize.","settings-description")) }
+    if ready && !supported {
+        controls.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.same(fields,3,"") ? ui.text("The kernel does not provide a fan profile.") : k.field(fields,3),ui.text(" Controls stay off rather than pretending to work."))),"settings-description"))
+    }
+    return k.card("fan-profile-card",k.intro("weather-windy-symbolic","Fan Profile",explanation),k.stack(14,controls))
+}
+
+fn profileTitle(id:str):str { return id == "productivity" ? "Productivity and Communication" : id == "streaming" ? "Multimedia streaming" : id == "games" ? "Games" : "Off" }
+fn profileDetail(id:str):str {
+    return id == "productivity" ? "Prioritize productivity and communication tasks, such as loading websites, cloud drives, and communication apps" : id == "streaming" ? "Prioritize audio / video streaming apps and websites" : id == "games" ? "Prioritize game-related tasks, such as gameplay and game live streaming" : "Switch off data prioritizing"
+}
+# Connectivity: taskfirstSupported, reason, taskfirst, active, interfaces, smartconnectSupported, reason, smartconnect, last
+fn connectivity(fields:Vec<ui.Text>,ready:bool,busy:bool,send:fn(str,str):void):Vec<ui.Node> {
+    let taskSupported = k.on(fields,2); let taskUsable = ready && taskSupported && !busy; let smartSupported = k.on(fields,7); let smartUsable = ready && smartSupported && !busy
+    let current = k.field(fields,4)
+    let first = Vec<ui.Node>(k.note("Prioritize your internet connection's available bandwidth to particular activities for the smoothest possible performance.","settings-description"),
+        k.note("This sends the chosen kind of traffic first from this computer (fair queueing with priority classes, based on well-known ports and DSCP markings). It cannot add bandwidth, and it only helps while your connection is busy.","settings-description"))
+    if k.on(fields,5) { first.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Active on "),k.field(fields,6),ui.text("."))),"settings-description")) }
+    if ready && taskSupported && !k.isText(current,"off") && !k.on(fields,5) { first.push(k.note("Waiting for a network connection. It is applied as soon as one is up.","settings-description")) }
+    let choices = Vec<ui.Node>()
+    for id in Vec<str>("off","productivity","streaming","games") { choices.push(k.radio("taskfirst-"+id,k.isText(current,id),taskUsable,profileTitle(id),profileDetail(id),fn() { if !k.isText(current,id) { send("taskfirst",id) } })) }
+    if ready && !taskSupported {
+        choices.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this system. "),k.same(fields,3,"") ? ui.text("Traffic control is not available.") : k.field(fields,3),ui.text(" Controls stay off rather than pretending to work."))),"settings-description"))
+    }
+    let smartOn = smartSupported && k.on(fields,9)
+    let smart = Vec<ui.Node>(k.note("Switch on to enable WiFi SmartConnect.","settings-description"),k.switchRow("smartconnect-switch",smartOn,smartUsable,smartOn ? "On" : "Off",fn(next:bool) { send("smartconnect",next ? "on" : "off") }))
+    if smartOn && k.field(fields,10).bytes.len() > 0 { smart.push(k.caption(k.field(fields,10),"settings-description")) }
+    if ready && !smartSupported {
+        smart.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this system. "),k.same(fields,8,"") ? ui.text("No Wi-Fi adapter was found.") : k.field(fields,8),ui.text(" The switch stays off rather than pretending to work."))),"settings-description"))
+    }
+    let wifi = Vec<ui.Node>(k.note("Enable the WiFi SmartConnect feature to automatically connect to the wireless router with the best signal in your current environment.","settings-description"),
+        k.note("It only moves between access points that share the name of the network you are connected to, only when the signal is weak and another one is clearly stronger for a while, and never during a busy transfer or call.","settings-description"))
+    return Vec<ui.Node>(k.card("taskfirst-card",k.intro("network-transmit-symbolic","TaskFirst",first),k.stack(9,choices)),k.card("smartconnect-card",k.intro("network-wireless-signal-excellent-symbolic","WiFi SmartConnect",wifi),k.stack(10,smart)))
+}
+
+fn gesture(title:ui.Text,detail:str,ok:bool,supported:bool,id:str):ui.Node {
+    let options = ui.named("touchpad-gesture-item-"+id); options.spacing = 2
+    return ui.Box(options,Vec<ui.Node>(k.caption(title,"settings-field-title"),k.note(ok || !supported ? detail : detail + " · unavailable on this system","settings-description")))
+}
+# Touchpad: supported, reason, locked, enabled, launch, gesturesAvailable, volume, brightness, seek, launchOk, targets
+fn touchpad(fields:Vec<ui.Text>,ready:bool,busy:bool,send:fn(str,str):void,sendValue:fn(str,ui.Text):void):Vec<ui.Node> {
+    let supported = k.on(fields,2); let usable = ready && supported && !busy; let locked = k.on(fields,4); let enabled = k.on(fields,5)
+    let lockUsable = usable || (ready && !busy && locked); let gestureUsable = usable && k.on(fields,7)
+    let reason = k.same(fields,3,"") ? ui.text("No touchpad was detected.") : k.field(fields,3)
+    let lockRight = Vec<ui.Node>(k.note("Lock/unlock the touchpad input function","settings-description"),k.switchRow("touchpad-lock-switch",!locked,lockUsable,locked ? "Lock" : "Unlock",fn(next:bool) { send("lock",next ? "off" : "on") }))
+    if ready && !supported { lockRight.push(k.caption(ui.concatText(Vec<ui.Text>(reason,ui.text(" The lock stays off rather than pretending to work."))),"settings-description")) }
+    if supported { lockRight.push(k.note("The touchpad key (Fn + F9 on many laptops) also locks and unlocks it when your keyboard sends it.","settings-description")) }
+    let targets = k.entries(k.field(fields,12)); let current = k.field(fields,6)
+    let launchTitle = ui.text("an app"); for i in 0..(targets.len() as i64) { if ui.equalText(targets[i][0],current) && targets[i].len() > 1 { launchTitle = targets[i][1] } }
+    let right = Vec<ui.Node>(k.note("Enable/disable advanced gestures","settings-description"),k.switchRow("touchpad-gestures-switch",enabled,gestureUsable,enabled ? "Enable" : "Disable",fn(next:bool) { send("gestures",next ? "on" : "off") }))
+    right.push(gesture(ui.text("Adjust volume"),"Slide one finger along the left edge",k.on(fields,8),supported,"volume"))
+    right.push(gesture(ui.text("Adjust brightness"),"Slide one finger along the right edge",k.on(fields,9),supported,"brightness"))
+    right.push(gesture(ui.text("Forward/Rewind"),"Slide one finger across the top edge",k.on(fields,10),supported,"seek"))
+    right.push(gesture(ui.concatText(Vec<ui.Text>(ui.text("Launch "),launchTitle)),"Swipe in from the top-right corner with one finger",k.on(fields,11),supported,"launch"))
+    let pick = ui.named("touchpad-gesture-launch"); pick.sensitive = gestureUsable
+    let row = ui.props(); row.vertical = false; row.spacing = 12
+    right.push(ui.Box(row,Vec<ui.Node>(k.note("Corner swipe opens","settings-description"),ui.Select(pick,k.titles(targets),k.choice(targets,current),fn(index:i64) { if index < targets.len() as i64 && !ui.equalText(targets[index][0],current) { sendValue("launch",targets[index][0]) } }))))
+    if ready && !k.on(fields,7) { right.push(k.caption(ui.concatText(Vec<ui.Text>(reason,ui.text(" Gestures stay off rather than pretending to work."))),"settings-description")) }
+    if enabled && locked { right.push(k.note("The touchpad is locked, so gestures are paused.","settings-description")) }
+    right.push(k.note("The pointer still moves while you slide along an edge; gestures only watch the touchpad and do not take it over.","settings-description"))
+    return Vec<ui.Node>(k.card("touchpad-lock-card",k.intro("input-touchpad-symbolic","Touchpad",Vec<ui.Node>(k.note("When set to Lock, touchpad input is disabled.","settings-description"))),k.stack(8,lockRight)),
+        k.card("touchpad-gestures-card",k.intro("input-touchpad-symbolic","Smart Gestures",Vec<ui.Node>(k.note("Quickly access commonly used settings and apps","settings-description"))),k.stack(10,right)))
+}
+
+fn noiseTitle(id:str):str { return id == "general" ? "360° Recording Mode" : id == "conference" ? "Multi-presenter Mode" : "Authentic Recording" }
+fn noiseDetail(id:str):str {
+    return id == "general" ? "Reduce ambient noise from your surroundings to capture the best tone and audio details from all around you." : id == "conference" ? "Filters out ambient noise and evens out the volume of everyone in a shared space, near or far, so the whole meeting is heard. It does not tell speakers apart." : "Turn off AI noise-canceling functions."
+}
+# Microphone: supported, reason, mode, noiseAvailable, noiseReason, warning, device, sources
+fn microphone(fields:Vec<ui.Text>,ready:bool,busy:bool,send:fn(str,str):void,sendValue:fn(str,ui.Text):void):ui.Node {
+    let supported = k.on(fields,2); let usable = ready && supported && !busy; let noise = supported && k.on(fields,5)
+    let mode = noise ? k.field(fields,4) : ui.text("authentic"); let sources = k.entries(k.field(fields,9))
+    let left = Vec<ui.Node>(k.note("Suppresses ambient noise and normalizes all individual voices","settings-description"),k.note("Choose your input device","settings-field-title"))
+    if sources.len() > 0 {
+        let pick = ui.named("mic-noise-device"); pick.sensitive = usable
+        left.push(ui.Select(pick,k.titles(sources),k.choice(sources,k.field(fields,8)),fn(index:i64) { if index < sources.len() as i64 && !ui.equalText(sources[index][0],k.field(fields,8)) { sendValue("device",sources[index][0]) } }))
+    } else { left.push(k.note(ready ? "No microphone is connected." : "Finding microphones…","settings-description")) }
+    let right = Vec<ui.Node>(k.note("General Noise Canceling","settings-field-title"))
+    let general = Vec<ui.Node>(); let conference = Vec<ui.Node>()
+    for id in Vec<str>("general","authentic","conference") {
+        let row = k.radio("mic-mode-"+id,supported && k.isText(mode,id),usable && (id == "authentic" || noise),noiseTitle(id),noiseDetail(id),fn() { if !k.isText(mode,id) { send("mode",id) } })
+        if id == "conference" { conference.push(row) } else { general.push(row) }
+    }
+    right.push(k.stack(9,general)); right.push(k.note("Conference AI Noise Canceling","settings-field-title")); right.push(k.stack(9,conference))
+    if ready && supported && !noise { right.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Noise canceling is not available. "),k.field(fields,6))),"settings-description")) }
+    if ready && supported && noise && k.field(fields,7).bytes.len() > 0 { right.push(k.caption(k.field(fields,7),"settings-description")) }
+    if ready && !supported { right.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not available. "),k.same(fields,3,"") ? ui.text("The audio server is not running.") : k.field(fields,3))),"settings-description")) }
+    if supported && noise { right.push(k.note("Processing uses WebRTC noise suppression and gain control on this device, not a speech-separation model.","settings-description")) }
+    return k.card("mic-noise-card",k.intro("audio-input-microphone-symbolic","AI Noise-Canceling Microphone",left),k.stack(14,right))
+}
+
+fn fnTitle(id:str):str { return id == "locked" ? "Locked Fn key" : "Normal Fn key" }
+fn fnDetail(id:str):str { return id == "locked" ? "Press F1-F12 to initiate the specified hotkey function." : "Press F1-F12 to initiate the F1-F12 function defined by your system or a specific app." }
+fn sleepTitle(id:str):str { return id == "nothing" ? "Do nothing" : id == "both" ? "While on battery or on AC power" : "While on battery power only" }
+fn sleepDetail(id:str):str {
+    return id == "nothing" ? "Keep the keyboard backlight always on" : id == "both" ? "Select the idle time before the keyboard backlight turns off while on battery or AC power" : "Select the idle time before the keyboard backlight turns off while on battery power only"
+}
+fn timeoutTitle(seconds:i64):ui.Text { return seconds < 60 ? ui.text("${seconds} Second(s)") : ui.text("${seconds / 60} Minute(s)") }
+fn timeoutPick(id:str,seconds:Vec<i64>,current:i64,usable:bool,key:str,sendTwo:fn(str,str,str):void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable; let names = Vec<ui.Text>(); let active = 0
+    for i in 0..(seconds.len() as i64) { names.push(timeoutTitle(seconds[i])); if seconds[i] == current { active = i } }
+    return ui.Select(options,names,active,fn(index:i64) { if index < seconds.len() as i64 && seconds[index] != current { sendTwo("set",key,"${seconds[index]}") } })
+}
+fn toggleBlock(id:str,title:str,detail:str,key:str,active:bool,usable:bool,sendTwo:fn(str,str,str):void):ui.Node {
+    let options = ui.props(); options.spacing = 6
+    return ui.Box(options,Vec<ui.Node>(k.note(title,"settings-field-title"),k.note(detail,"settings-description"),k.switchRow(id,active,usable,active ? "On" : "Off",fn(next:bool) { sendTwo("set",key,next ? "on" : "off") })))
+}
+# Keyboard: fnSupported, fnReason, fnMode, backlightSupported, backlightReason, sensorSupported, sensorReason, lux, idleSupported,
+# idleReason, autoBrighten, autoDim, sleep, sleepBoth, sleepBattery, timeouts
+fn keyboard(fields:Vec<ui.Text>,ready:bool,busy:bool,sendTwo:fn(str,str,str):void):Vec<ui.Node> {
+    let free = ready && !busy; let fnUsable = free && k.on(fields,2); let lightUsable = free && k.on(fields,5) && k.on(fields,7); let sleepUsable = free && k.on(fields,5) && k.on(fields,10)
+    let seconds = Vec<i64>(); if k.field(fields,17).bytes.len() > 0 { for item in channel.split(k.field(fields,17),44) { seconds.push(channel.integer(item)) } }
+    let sleep = k.field(fields,14)
+    let fnRows = Vec<ui.Node>()
+    for id in Vec<str>("locked","normal") { fnRows.push(k.radio("keyboard-fn-"+id,k.on(fields,2) && k.isText(k.field(fields,4),id),fnUsable,fnTitle(id),fnDetail(id),fn() { if !k.isText(k.field(fields,4),id) { sendTwo("set","fn",id) } })) }
+    if ready && !k.on(fields,2) { fnRows.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.same(fields,3,"") ? ui.text("The kernel does not provide an Fn lock control.") : k.field(fields,3),ui.text(" The hotkeys keep working the way the firmware sends them."))),"settings-description")) }
+    let lightIntro = Vec<ui.Node>(k.note("Automatically adjusts the keyboard backlight brightness based on the current light conditions using the built-in ambient light sensor.","settings-description"))
+    if k.on(fields,7) && k.field(fields,9).bytes.len() > 0 { lightIntro.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Ambient light: "),k.field(fields,9),ui.text(" lux"))),"settings-description")) }
+    let light = Vec<ui.Node>(toggleBlock("keyboard-auto-brighten","Auto-brighten","The keyboard backlight turns on when the light conditions change from bright to dark.","auto-brighten",lightUsable && k.on(fields,12),lightUsable,sendTwo),
+        toggleBlock("keyboard-auto-dim","Auto-dim","The keyboard backlight turns off when the light conditions change from dark to bright.","auto-dim",lightUsable && k.on(fields,13),lightUsable,sendTwo))
+    if ready && !k.on(fields,5) { light.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.field(fields,6))),"settings-description")) }
+    if ready && k.on(fields,5) && !k.on(fields,7) { light.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.field(fields,8))),"settings-description")) }
+    let sleepRows = Vec<ui.Node>()
+    for id in Vec<str>("nothing","both","battery") {
+        sleepRows.push(k.radio("keyboard-sleep-"+id,k.isText(sleep,id),sleepUsable,sleepTitle(id),sleepDetail(id),fn() { if !k.isText(sleep,id) { sendTwo("set","sleep",id) } }))
+        if id == "both" { sleepRows.push(timeoutPick("keyboard-timeout-both",seconds,channel.integer(k.field(fields,15)),sleepUsable && k.isText(sleep,"both"),"sleep-both",sendTwo)) }
+        if id == "battery" { sleepRows.push(timeoutPick("keyboard-timeout-battery",seconds,channel.integer(k.field(fields,16)),sleepUsable && k.isText(sleep,"battery"),"sleep-battery",sendTwo)) }
+    }
+    if ready && k.on(fields,5) && !k.on(fields,10) { sleepRows.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported in this session. "),k.field(fields,11))),"settings-description")) }
+    if ready && !k.on(fields,5) { sleepRows.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.field(fields,6))),"settings-description")) }
+    return Vec<ui.Node>(
+        k.card("keyboard-fn-card",k.intro("input-keyboard-symbolic","Function key",Vec<ui.Node>(k.note("An optional function key setting that allows you to change your keyboard hotkeys.","settings-description"))),k.stack(9,fnRows)),
+        k.card("keyboard-light-card",k.intro("keyboard-brightness-symbolic","Automatic keyboard backlight",lightIntro),k.stack(16,light)),
+        k.card("keyboard-sleep-card",k.intro("preferences-system-time-symbolic","Keyboard backlight sleep mode",Vec<ui.Node>(k.note("Automatically turns off the keyboard backlight based on your preferences. You can set the idle time for the backlight to turn off when running on battery or running either on battery or AC power.","settings-description"))),k.stack(9,sleepRows)))
+}
+

@@ -1,0 +1,8 @@
+use "std/io"
+use "std/strings"
+let commands = 0
+while true {
+    let line = io.read_line(); if strings.equal(line,"") { break }
+    if strings.startsWith(line,"command") { commands = commands+1 }
+    print(line+":${commands}")
+}

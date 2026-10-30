@@ -1,0 +1,230 @@
+use "std/strings"
+use "std/json"
+use "./base.dev" as b
+
+fn skipSpace(source: b.Source, index: i64): i64 { while b.whitespace(b.char(source, index)) { index = index + 1 }; return index }
+fn comment(source: b.Source, index: i64, end: i64): i64 {
+    if b.at(source, index, "//") || b.eq(b.char(source, index), "#") { while index < end && !b.eq(b.char(source, index), "\n") { index = index + 1 }; return index }
+    if b.at(source, index, "/*") {
+        let close = index + 2
+        while close < end && !b.at(source, close, "*/") { close = close + 1 }
+        if close >= end { b.fail(source, index, "Unterminated comment") }
+        return close + 2
+    }
+    return -1
+}
+fn stringEnd(source: b.Source, index: i64, end: i64, depth: i64): i64 {
+    let start = index
+    let mark = b.char(source, index)
+    if b.at(source, index, "\"\"\"") {
+        index = index + 3
+        while index < end && !b.at(source, index, "\"\"\"") { index = index + 1 }
+        if index >= end { b.fail(source, start, "Unterminated multiline string") }
+        return index + 3
+    }
+    index = index + 1
+    while index < end {
+        if b.eq(b.char(source, index), "\\") { index = index + 2 }
+        else if b.eq(mark, "\"") && b.at(source, index, "\${") { index = expression(source, index + 1, end, depth).end }
+        else if b.eq(b.char(source, index), mark) { return index + 1 }
+        else { index = index + 1 }
+    }
+    b.fail(source, start, "Unterminated string")
+    return end
+}
+fn lex(source: b.Source, start: i64, end: i64, stop: bool, depth: i64): b.Scan {
+    let tokens = Vec<b.Token>()
+    let index = start
+    let previous = ""
+    let braces = 0
+    while index < end {
+        let ch = b.char(source, index)
+        if b.whitespace(ch) { index = index + 1; continue }
+        let skipped = comment(source, index, end)
+        if skipped >= 0 { index = skipped; continue }
+        if b.eq(ch, "\"") || b.eq(ch, "'") {
+            let finish = stringEnd(source, index, end, depth)
+            tokens.push(b.Token(b.slice(source, index, finish), index, finish, 2, json.null_value()))
+            index = finish; previous = "literal"; continue
+        }
+        let follows = b.char(source, index + 1)
+        let begins = b.contains(Vec<str>("", "return", "=", "(", "[", "{", ",", "?", ":", "=>", "&&", "||", ";"), previous)
+        if source.jsx && b.eq(ch, "<") && begins && (b.eq(follows, ">") || b.alpha(follows)) {
+            let node = element(source, index, depth + 1)
+            tokens.push(b.Token("<jsx>", index, b.n(node, "end"), 3, node))
+            index = b.n(node, "end"); previous = "value"; continue
+        }
+        let finish = index + 1
+        if b.alpha(ch) { while finish < end && b.ident(b.char(source, finish)) { finish = finish + 1 } }
+        else if b.digit(ch) { while finish < end && b.digit(b.char(source, finish)) { finish = finish + 1 } }
+        else if b.at(source, index, "...") { finish = index + 3 }
+        else if b.contains(Vec<str>("=>", "->", "&&", "||", "==", "!=", "<=", ">="), b.slice(source, index, finish + (finish < end ? 1 : 0))) { finish = index + 2 }
+        let value = b.slice(source, index, finish)
+        if source.jsx && strings.startsWith(value, "__rdx_") { b.fail(source, index, "Identifiers beginning __rdx_ are reserved for JSX generation") }
+        if stop && b.eq(value, "}") && braces == 0 { return b.Scan(tokens, finish) }
+        if stop && b.eq(value, "{") { braces = braces + 1 }
+        if stop && b.eq(value, "}") { braces = braces - 1 }
+        tokens.push(b.Token(value, index, finish, b.alpha(ch) ? 1 : 0, json.null_value()))
+        index = finish; previous = value
+    }
+    if stop { b.fail(source, start - 1, "Unterminated JSX expression; expected }") }
+    return b.Scan(tokens, end)
+}
+fn expression(source: b.Source, start: i64, end: i64, depth: i64): b.Parsed {
+    let scan = lex(source, start + 1, end, true, depth)
+    return b.Parsed(b.node("expr", start + 1, scan.end - 1), scan.end)
+}
+fn nameEnd(source: b.Source, index: i64, dotted: bool, hyphen: bool): i64 {
+    if !b.alpha(b.char(source, index)) { return index }
+    index = index + 1
+    while b.ident(b.char(source, index)) || hyphen && b.eq(b.char(source, index), "-") { index = index + 1 }
+    if dotted { while b.eq(b.char(source, index), ".") && b.alpha(b.char(source, index + 1)) { index = nameEnd(source, index + 1, false, false) } }
+    return index
+}
+fn element(source: b.Source, start: i64, depth: i64): json.Value {
+    if depth > 100 { b.fail(source, start, "JSX nesting exceeds 100 levels") }
+    let end = source.chars.len() as i64
+    let index = start + 1
+    let finish = nameEnd(source, index, true, false)
+    let name = b.slice(source, index, finish)
+    if finish == index && !b.eq(b.char(source, index), ">") { b.fail(source, start, "Expected JSX tag name or <>") }
+    index = finish
+    let attrs = json.array()
+    let opened = false
+    while index < end {
+        index = skipSpace(source, index)
+        if b.at(source, index, "/>") { return {kind: "element", name: name, attrs: attrs, children: json.array(), start: start, end: index + 2} }
+        if b.eq(b.char(source, index), ">") { index = index + 1; opened = true; break }
+        if b.eq(b.char(source, index), "{") {
+            let parsed = expression(source, index, end, depth)
+            let begin = skipSpace(source, b.n(parsed.node, "start"))
+            if !b.at(source, begin, "...") { b.fail(source, begin, "Expected {...props} attribute spread") }
+            begin = skipSpace(source, begin + 3)
+            if begin >= b.n(parsed.node, "end") { b.fail(source, begin, "Spread expression cannot be empty") }
+            attrs = json.push(attrs, b.attribute("...", "expr", "", b.n(parsed.node, "start"), begin, b.n(parsed.node, "end")))
+            index = parsed.end; continue
+        }
+        let attrStart = index
+        finish = nameEnd(source, index, false, true)
+        if finish == index { b.fail(source, index, "Expected JSX attribute or >") }
+        let attrName = b.slice(source, index, finish)
+        for i in 0..(json.len(attrs) as i64) { if b.eq(b.s(json.at(attrs, i), "name"), attrName) { b.fail(source, index, "Duplicate JSX attribute " + attrName) } }
+        index = skipSpace(source, finish)
+        let attr = b.attribute(attrName, "bool", "true", attrStart, -1, -1)
+        if b.eq(b.char(source, index), "=") {
+            index = skipSpace(source, index + 1)
+            if b.eq(b.char(source, index), "{") {
+                let parsed = expression(source, index, end, depth)
+                let a = b.n(parsed.node, "start")
+                let z = b.n(parsed.node, "end")
+                if b.eq(strings.trim(b.slice(source, a, z)), "") { b.fail(source, a, "Attribute expression cannot be empty") }
+                attr = b.attribute(attrName, "expr", "", attrStart, a, z)
+                index = parsed.end
+            } else if b.eq(b.char(source, index), "\"") || b.eq(b.char(source, index), "'") {
+                let mark = b.char(source, index)
+                finish = index + 1
+                while finish < end && !b.eq(b.char(source, finish), mark) { finish = finish + 1 }
+                if finish >= end { b.fail(source, index, "Unterminated JSX attribute string") }
+                attr = b.attribute(attrName, "text", b.entities(b.slice(source, index + 1, finish), source.entities), attrStart, -1, -1)
+                index = finish + 1
+            } else { b.fail(source, index, "JSX attribute values require quotes or {expression}") }
+        }
+        attrs = json.push(attrs, attr)
+    }
+    if !opened { b.fail(source, start, "Unterminated JSX opening tag") }
+    let children = json.array()
+    while index < end {
+        if b.at(source, index, "</") {
+            let begin = skipSpace(source, index + 2)
+            finish = nameEnd(source, begin, true, false)
+            let closed = b.slice(source, begin, finish)
+            finish = skipSpace(source, finish)
+            if !b.eq(closed, name) || !b.eq(b.char(source, finish), ">") { b.fail(source, index, "Expected closing tag </" + name + ">") }
+            return {kind: "element", name: name, attrs: attrs, children: children, start: start, end: finish + 1}
+        }
+        if b.eq(b.char(source, index), "<") {
+            let child = element(source, index, depth + 1)
+            children = json.push(children, child); index = b.n(child, "end")
+        } else if b.eq(b.char(source, index), "{") {
+            let parsed = expression(source, index, end, depth)
+            let raw = strings.trim(b.slice(source, b.n(parsed.node, "start"), b.n(parsed.node, "end")))
+            if !b.eq(raw, "") && !(strings.startsWith(raw, "/*") && strings.endsWith(raw, "*/")) { children = json.push(children, parsed.node) }
+            index = parsed.end
+        } else {
+            finish = index
+            while finish < end && !b.contains(Vec<str>("<", "{"), b.char(source, finish)) { finish = finish + 1 }
+            children = json.push(children, b.node("text", index, finish)); index = finish
+        }
+    }
+    b.fail(source, start, "Unterminated JSX element <" + name + ">")
+    return json.null_value()
+}
+fn typeText(tokens: Vec<b.Token>, start: i64, end: i64): str { let out = ""; for i in start..end { out = out + tokens[i].text }; return out }
+fn fields(tokens: Vec<b.Token>, structure: bool): json.Value {
+    let result = json.array()
+    let groups = Vec<i64>()
+    let depth = 0
+    for i in 0..(tokens.len() as i64) {
+        if depth == 0 && i + 1 < tokens.len() as i64 && b.eq(tokens[i + 1].text, ":") && tokens[i].kind == 1 { groups.push(i) }
+        if b.contains(Vec<str>("(", "[", "{", "<"), tokens[i].text) { depth = depth + 1 }
+        if b.contains(Vec<str>(")", "]", "}", ">"), tokens[i].text) { depth = depth - 1 }
+    }
+    for i in 0..(groups.len() as i64) {
+        let begin = groups[i]
+        let end = i + 1 < groups.len() as i64 ? groups[i + 1] : tokens.len() as i64
+        while end > begin && b.eq(tokens[end - 1].text, ",") { end = end - 1 }
+        result = json.push(result, {name: tokens[begin].text, type: typeText(tokens, begin + 2, end)})
+    }
+    return result
+}
+fn parse(text: str, file: str, data: json.Value, jsx: bool): b.Source {
+    let source = b.bare(text, file, data, jsx)
+    source.tokens = lex(source, 0, source.chars.len() as i64, false, 0).tokens
+    let tokens = source.tokens
+    for i in 0..(tokens.len() as i64) {
+        if b.eq(tokens[i].text, "use") && i + 1 < tokens.len() as i64 && tokens[i + 1].kind == 2 {
+            let literal = tokens[i + 1]
+            let imported = b.sub(literal.text, 1, b.length(literal.text) - 1)
+            let alias = ""
+            if i + 3 < tokens.len() as i64 && b.eq(tokens[i + 2].text, "as") { alias = tokens[i + 3].text }
+            source.imports = json.push(source.imports, {start: literal.start, end: literal.end, path: imported, alias: alias})
+            if b.eq(imported, "react_devlang/ui") || strings.endsWith(imported, "/ui.dev") { source.ui = b.eq(alias, "") ? "ui" : alias }
+        }
+    }
+    let depth = 0
+    for i in 0..(tokens.len() as i64) {
+        let token = tokens[i]
+        if depth == 0 && b.contains(Vec<str>("struct", "fn"), token.text) && i + 2 < tokens.len() as i64 {
+            let name = tokens[i + 1].text
+            let opener = b.eq(token.text, "struct") ? "{" : "("
+            if b.eq(tokens[i + 2].text, opener) {
+                let close = b.eq(opener, "{") ? "}" : ")"
+                let j = i + 3
+                let level = 1
+                while j < tokens.len() as i64 {
+                    if b.eq(tokens[j].text, opener) { level = level + 1 }
+                    if b.eq(tokens[j].text, close) { level = level - 1; if level == 0 { break } }
+                    j = j + 1
+                }
+                let inside = Vec<b.Token>()
+                for k in (i + 3)..j { inside.push(tokens[k]) }
+                let values = fields(inside, b.eq(token.text, "struct"))
+                if b.eq(token.text, "struct") { source.structs = json.set(source.structs, name, values) }
+                else if j + 4 < tokens.len() as i64 && b.eq(tokens[j + 1].text, ":") {
+                    if json.len(values) > 0 && json.len(values) <= 2 && b.eq(b.s(json.at(values, 0), "type"), "*" + source.ui + ".Context") && b.eq(typeText(tokens, j + 2, j + 5), source.ui + ".Node") {
+                        let propType = json.len(values) == 2 ? b.s(json.at(values, 1), "type") : ""
+                        source.components = json.set(source.components, name, {type: propType, identity: file + ":" + name, fields: json.null_value()})
+                    }
+                }
+            }
+        }
+        if b.eq(token.text, "{") { depth = depth + 1 }
+        if b.eq(token.text, "}") { depth = depth - 1 }
+    }
+    for name in json.keys(source.components) {
+        let component = json.get(source.components, name)
+        component = json.set(component, "fields", b.get(source.structs, b.s(component, "type")))
+        source.components = json.set(source.components, name, component)
+    }
+    return source
+}

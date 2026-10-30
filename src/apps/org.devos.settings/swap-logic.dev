@@ -1,0 +1,35 @@
+# Swap draft rules shared by the native Settings window and its tests. No std imports so the .devx UI can use it directly.
+# Sizes are whole MiB; `percent` is -1 for a custom size. Mirrors the helper (bin/dev-os-swap), which checks the same limits as root.
+
+fn formatSize(bytes:i64):str {
+    if bytes >= 1073741824 { let tenths = (bytes * 10 + 536870912) / 1073741824; return "${tenths / 10}.${tenths % 10} GB" }
+    return "${(bytes + 524288) / 1048576} MB"
+}
+fn mibOf(memory:i64,percent:i64,custom:i64):i64 { return percent < 0 ? custom : memory * percent / 100 }
+
+# Why the draft cannot be applied, or "". "no-file" means the helper reported the reason a swap file is unavailable.
+fn problem(type:str,fileAllowed:bool,memory:i64,minimum:i64,maximum:i64,maximumFile:i64,percent:i64,custom:i64):str {
+    if type == "off" { return "" }
+    if type == "file" && !fileAllowed { return "no-file" }
+    let mib = mibOf(memory,percent,custom)
+    let upper = type == "file" && maximumFile < maximum ? maximumFile : maximum
+    if mib < minimum { return "The size must be at least ${minimum} MB." }
+    if mib > upper {
+        return type == "file" && maximumFile < maximum ? "There is only room for ${formatSize(maximumFile * 1048576)} of swap on the disk (a reserve stays free)." : "The size can be at most twice the RAM (${formatSize(maximum * 1048576)})."
+    }
+    return ""
+}
+# "6.5" or "6,5" gigabytes to whole MiB; -1 when the text is not a plain number with at most two decimals.
+fn gigabytesToMiB(text:Vec<u8>):i64 {
+    let whole = 0; let fraction = 0; let digits = 0; let seen = false; let count = 0
+    for ch in text {
+        if ch == 32 && count == 0 { continue }
+        count = count + 1
+        if ch == 46 || ch == 44 { if seen { return -1 }; seen = true; continue }
+        if ch < 48 || ch > 57 { return -1 }
+        if seen { digits = digits + 1; if digits > 2 { return -1 }; fraction = fraction * 10 + (ch - 48) as i64 } else { whole = whole * 10 + (ch - 48) as i64; if whole > 100000000 { return -1 } }
+    }
+    if count == 0 || (seen && digits == 0) { return -1 }
+    if digits == 1 { fraction = fraction * 10 }
+    return whole * 1024 + (fraction * 1024 + 50) / 100
+}

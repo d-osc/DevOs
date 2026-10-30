@@ -1,0 +1,24 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn gtk_widget_get_style_context(widget:*void):*void
+extern fn gtk_style_context_has_class(style:*void,name:str):i32
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let settings=ui.useRef(context,0);let ticks=ui.useRef(context,0)
+    let parts=tasks.parts(context,false,16,2,fn() {unsafe {ui.rd_fail("Language tracker failed")}},fn(command:ui.Text) {check(ui.equalText(command,ui.text("language")),"Wrong language settings command");settings.set(settings.get()+1);phase.set(4)},true)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>400 {ui.rd_fail("Timed out waiting for native keyboard layouts")}
+            if phase.get()==0 && ui.equalText(ui.readText(context,"panel-language-label"),ui.text("TH")) {check(ui.click(context,"panel-language"),"Language button missing");phase.set(1)}
+            else if phase.get()==1 && ui.find(context,"panel-language-1")!=null {check(gtk_style_context_has_class(gtk_widget_get_style_context(ui.find(context,"panel-language-1")),"language-selected")!=0,"Active keyboard row missing");check(ui.click(context,"panel-language-0"),"English layout missing");phase.set(2)}
+            else if phase.get()==2 && ui.equalText(ui.readText(context,"panel-language-label"),ui.text("EN")) {check(ui.find(context,"panel-language-popup")==null,"Selection did not dismiss popup");check(ui.click(context,"panel-language"),"Language popup cannot reopen");phase.set(3)}
+            else if phase.get()==3 && ui.find(context,"panel-language-settings")!=null {check(ui.click(context,"panel-language-settings"),"Language settings missing")}
+            else if phase.get()==4 && ui.find(context,"panel-language-popup")==null {check(settings.get()==1,"Language settings repeated");ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return parts.language
+}
+fn main():i32 {check(ui.run("Native keyboard layouts",640,80,App),"Language UI failed");unsafe {check(rd_widget_live_count()==0,"Language widgets leaked")};print("PASS native language selection, tracker transport and cleanup");return 0}
+return main()

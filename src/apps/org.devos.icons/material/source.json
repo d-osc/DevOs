@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/material-extensions/vscode-material-icon-theme",
+  "commit": "dd1547babd192e3a307d8acfb2325306b6e89e4d",
+  "version": "5.39.0",
+  "adaptation": "GTK icon names; default angular pack, specific folders, clone base icons without color transformations."
+}

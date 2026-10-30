@@ -1,0 +1,22 @@
+use "react_devlang/ui" as ui
+extern fn gtk_switch_set_active(widget:*void,active:i32)
+extern fn gtk_switch_get_active(widget:*void):i32
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {if !value {unsafe {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let active=ui.useBool(context,false);let note=ui.useText(context,ui.text("Initial\nไทย"));let switches=ui.useRef(context,0);let edits=ui.useRef(context,0);let observed=ui.useRef(context,0);let widget=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if phase.value==0 {
+            widget.set(ui.find(context,"note") as i64);gtk_switch_set_active(ui.find(context,"enabled"),1);ui.change(context,"note","Two lines\nภาษาไทย %");phase.set(1)
+        } else if phase.value==1 {
+            check(active.value && switches.get()==1,"Switch did not deliver exactly one bool event");check(edits.get()>0 && ui.equalText(note.value,ui.text("Two lines\nภาษาไทย %")),"TextArea lost multiline UTF-8 input");observed.set(edits.get())
+            check(ui.equalText(ui.readText(context,"note"),note.value),"Controlled TextArea disagrees with its buffer");active.set(false);note.set(ui.emptyText());phase.set(2)
+        } else {
+            check(gtk_switch_get_active(ui.find(context,"enabled"))==0,"Controlled Switch did not clear");check(ui.readText(context,"note").bytes.len()==0,"Controlled TextArea did not clear")
+            check(switches.get()==1 && edits.get()==observed.get(),"Programmatic reconciliation emitted user edits");check(widget.get()==ui.find(context,"note") as i64,"TextArea update replaced its widget");ui.close(context)
+        };return ui.noop
+    }},Vec<i64>(phase.value))
+    return <Box spacing={12}><Switch id="enabled" active={active.value} onChange={value => {switches.set(switches.get()+1);active.set(value)}}/><TextArea id="note" height={120} value={note.value} onChange={value => {edits.set(edits.get()+1);note.set(value)}}/></Box>
+}
+fn main():i32 {check(ui.run("Native settings controls",480,300,App),"Settings controls failed");unsafe {check(rd_widget_live_count()==0,"Settings controls leaked widgets")};print("PASS native Switch and TextArea JSX, UTF-8 edits, controlled clear and stable widgets");return 0}
+return main()

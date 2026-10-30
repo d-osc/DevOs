@@ -1,0 +1,239 @@
+# Update package format, pure data side (same rules as packages/updates/manifest.ts and validateArchive in protocol.ts):
+# manifest and patch validation, manifest diff, SHA256SUMS, release asset discovery and archive listing checks.
+# Errors are returned as text in `error` (empty means valid); nothing here touches the disk or the network.
+use "std/json"
+use "std/strings"
+use "./protocol.dev" as proto
+
+struct File { path: str, sha256: str, size: i64, mode: str }
+struct Manifest { error: str, version: str, platform: str, minCompatible: str, postInstall: Vec<str>, files: Vec<File> }
+struct Files { error: str, files: Vec<File> }
+struct Patch { error: str, from: str, to: str, platform: str, baseSha: str, targetSha: str, add: Vec<File>, replace: Vec<File>, remove: Vec<str> }
+struct Diff { add: Vec<File>, replace: Vec<File>, remove: Vec<str>, unchanged: i64 }
+struct Sums { error: str, names: Vec<str>, hashes: Vec<str> }
+struct Asset { found: bool, url: str, size: i64, sha256: str, name: str }
+struct Extras { sums: Asset, signature: Asset, patch: Asset, patchFrom: str, system: Asset, systemMeta: Asset }
+
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn isObject(value:json.Value):bool { return strings.equal(json.kind(value),"object") }
+fn wholeNumber(value:json.Value, key:str):i64 {
+    # -1 when the field is missing, not a number or not a whole number.
+    if !json.has(value,key) || !strings.equal(json.kind(json.get(value,key)),"number") { return -1 }
+    let raw = json.get(value,key)
+    if json.float(raw) != (json.int(raw) as f64) { return -1 }
+    return json.int(raw)
+}
+# "x.y.z" with no prefix or suffix, or "".
+fn semver(value:str):str {
+    let parts = strings.split(value,".")
+    if parts.len() != 3 { return "" }
+    for item in parts { if !proto.part(item) { return "" } }
+    return value
+}
+fn platformOf(value:str):bool { return strings.equal(value,"linux-x64") || strings.equal(value,"linux-arm64") }
+fn pathChar(ch:str):bool { return strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",ch) }
+# Relative path made of [A-Za-z0-9._-] segments, no ".", "..", empty segment or leading/trailing slash.
+fn safePath(value:str):bool {
+    if strings.charLength(value) == 0 || strings.charLength(value) > 512 { return false }
+    for i in 0..(strings.charLength(value) as i64) {
+        let ch = strings.substring(value,i,i+1)
+        if !pathChar(ch) && !strings.equal(ch,"/") { return false }
+    }
+    for segment in strings.split(value,"/") { if strings.equal(segment,"") || strings.equal(segment,".") || strings.equal(segment,".." ) { return false } }
+    return true
+}
+fn file(raw:json.Value):File {
+    return File(text(raw,"path"),text(raw,"sha256"),wholeNumber(raw,"size"),text(raw,"mode"))
+}
+fn bad(message:str):Files { return Files(message,Vec<File>()) }
+fn parseFiles(raw:json.Value):Files {
+    if !strings.equal(json.kind(raw),"array") || json.len(raw) > 40000 { return bad("Invalid file list in update manifest") }
+    let out = Vec<File>(); let seen = Vec<str>()
+    for i in 0..(json.len(raw) as i64) {
+        let item = json.at(raw,i)
+        if !isObject(item) { return bad("Invalid file entry in update manifest") }
+        let entry = file(item)
+        if !proto.lowerHex(entry.sha256,64) { return bad("Invalid file checksum in update manifest") }
+        if entry.size < 0 || entry.size > 536870912 { return bad("Invalid file size in update manifest") }
+        if !strings.equal(entry.mode,"644") && !strings.equal(entry.mode,"755") { return bad("Invalid file mode in update manifest") }
+        if !safePath(entry.path) { return bad("Unsafe path in update manifest") }
+        out.push(entry); seen.push(entry.path)
+    }
+    let known = Map<str,bool>()
+    for path in seen { if known.contains(path) { return bad("Duplicate file in update manifest") }; known.set(path,true) }
+    # A file may not also be a directory of another entry: that cannot be unpacked.
+    for path in seen {
+        for at in 1..(strings.charLength(path) as i64) {
+            if strings.equal(strings.substring(path,at,at+1),"/") && known.contains(strings.substring(path,0,at)) { return bad("A file and a directory share a path in the update manifest") }
+        }
+    }
+    return Files("",out)
+}
+fn failedManifest(message:str):Manifest { return Manifest(message,"","","",Vec<str>(),Vec<File>()) }
+# `expectedVersion` / `expectedPlatform` are "" when not required.
+fn parseManifest(raw:json.Value, expectedVersion:str, expectedPlatform:str):Manifest {
+    if !isObject(raw) { return failedManifest("Invalid update manifest") }
+    if wholeNumber(raw,"format") != 1 { return failedManifest("Unsupported update manifest format") }
+    let post = Vec<str>()
+    let list = json.has(raw,"postInstall") ? json.get(raw,"postInstall") : json.null_value()
+    if !strings.equal(json.kind(list),"array") || json.len(list) > 1 { return failedManifest("Update manifest requests an unknown post-install action") }
+    for i in 0..(json.len(list) as i64) {
+        let action = json.at(list,i)
+        if !strings.equal(json.kind(action),"string") || !strings.equal(json.string(action),"restart-shell") { return failedManifest("Update manifest requests an unknown post-install action") }
+        post.push("restart-shell")
+    }
+    let rollback = json.has(raw,"rollback") ? json.get(raw,"rollback") : json.null_value()
+    if !isObject(rollback) || !strings.equal(text(rollback,"strategy"),"keep-previous") { return failedManifest("Unsupported rollback strategy in update manifest") }
+    let version = semver(text(raw,"version"))
+    if strings.equal(version,"") { return failedManifest("Invalid version in update manifest") }
+    let target = text(raw,"platform")
+    if !platformOf(target) { return failedManifest("Invalid platform in update manifest") }
+    let minimum = semver(text(raw,"minCompatible"))
+    if strings.equal(minimum,"") { return failedManifest("Invalid minimum compatible version in update manifest") }
+    let files = parseFiles(json.has(raw,"files") ? json.get(raw,"files") : json.null_value())
+    if !strings.equal(files.error,"") { return failedManifest(files.error) }
+    if !strings.equal(expectedVersion,"") && !strings.equal(version,expectedVersion) { return failedManifest("Update manifest version does not match the release") }
+    if !strings.equal(expectedPlatform,"") && !strings.equal(target,expectedPlatform) { return failedManifest("Update manifest platform does not match the release") }
+    return Manifest("",version,target,minimum,post,files.files)
+}
+fn diff(from:Manifest, to:Manifest):Diff {
+    let before = Map<str,File>(); let after = Map<str,bool>()
+    for item in from.files { before.set(item.path,item) }
+    for item in to.files { after.set(item.path,true) }
+    let out = Diff(Vec<File>(),Vec<File>(),Vec<str>(),0)
+    for item in to.files {
+        if !before.contains(item.path) { out.add.push(item) }
+        else {
+            let old = before.get(item.path)
+            if !strings.equal(old.sha256,item.sha256) || !strings.equal(old.mode,item.mode) { out.replace.push(item) } else { out.unchanged = out.unchanged + 1 }
+        }
+    }
+    for item in from.files { if !after.contains(item.path) { out.remove.push(item.path) } }
+    return out
+}
+# Text for `sha256sum --check`, relative to the release root.
+fn checksumList(files:Vec<File>):str { let out = ""; for item in files { out = out + item.sha256 + "  " + item.path + "\n" }; return out }
+fn badSums(message:str):Sums { return Sums(message,Vec<str>(),Vec<str>()) }
+fn parseSums(content:str):Sums {
+    if strings.charLength(content) > 65536 { return badSums("SHA256SUMS is too large") }
+    let names = Vec<str>(); let hashes = Vec<str>()
+    for line in strings.split(content,"\n") {
+        if strings.equal(line,"") { continue }
+        # <64 lowercase hex> then a space and either a space or "*", then a plain file name.
+        if strings.charLength(line) < 67 || !proto.lowerHex(strings.substring(line,0,64),64) || !strings.equal(strings.substring(line,64,65)," ") { return badSums("SHA256SUMS has an invalid line") }
+        let mark = strings.substring(line,65,66)
+        if !strings.equal(mark," ") && !strings.equal(mark,"*") { return badSums("SHA256SUMS has an invalid line") }
+        let name = strings.substring(line,66,strings.charLength(line))
+        for i in 0..(strings.charLength(name) as i64) { if !pathChar(strings.substring(name,i,i+1)) { return badSums("SHA256SUMS has an invalid line") } }
+        for known in names { if strings.equal(known,name) { return badSums("SHA256SUMS lists a file twice") } }
+        names.push(name); hashes.push(strings.substring(line,0,64))
+    }
+    return Sums("",names,hashes)
+}
+fn patchAssetName(from:str, to:str, platform:str):str { return "dev-os-patch-" + from + "-to-" + to + "-" + platform + ".tar.gz" }
+fn patchFailure(message:str):Patch { return Patch(message,"","","","","",Vec<File>(),Vec<File>(),Vec<str>()) }
+fn parsePatch(raw:json.Value):Patch {
+    if !isObject(raw) { return patchFailure("Invalid update patch") }
+    if wholeNumber(raw,"format") != 1 || !strings.equal(text(raw,"kind"),"patch") { return patchFailure("Unsupported update patch format") }
+    if !proto.lowerHex(text(raw,"baseManifestSha256"),64) || !proto.lowerHex(text(raw,"targetManifestSha256"),64) { return patchFailure("Invalid manifest checksum in update patch") }
+    let removal = json.has(raw,"remove") ? json.get(raw,"remove") : json.null_value()
+    if !strings.equal(json.kind(removal),"array") || json.len(removal) > 40000 { return patchFailure("Invalid removal list in update patch") }
+    let remove = Vec<str>()
+    for i in 0..(json.len(removal) as i64) {
+        let item = json.at(removal,i)
+        if !strings.equal(json.kind(item),"string") || !safePath(json.string(item)) { return patchFailure("Unsafe path in update manifest") }
+        remove.push(json.string(item))
+    }
+    let added = parseFiles(json.has(raw,"add") ? json.get(raw,"add") : json.null_value())
+    if !strings.equal(added.error,"") { return patchFailure(added.error) }
+    let replaced = parseFiles(json.has(raw,"replace") ? json.get(raw,"replace") : json.null_value())
+    if !strings.equal(replaced.error,"") { return patchFailure(replaced.error) }
+    let paths = Map<str,bool>()
+    for item in added.files { if paths.contains(item.path) { return patchFailure("Update patch lists a path twice") }; paths.set(item.path,true) }
+    for item in replaced.files { if paths.contains(item.path) { return patchFailure("Update patch lists a path twice") }; paths.set(item.path,true) }
+    for path in remove { if paths.contains(path) { return patchFailure("Update patch lists a path twice") } }
+    let from = semver(text(raw,"from")); let to = semver(text(raw,"to"))
+    if strings.equal(from,"") { return patchFailure("Invalid from version in update manifest") }
+    if strings.equal(to,"") { return patchFailure("Invalid to version in update manifest") }
+    if !platformOf(text(raw,"platform")) { return patchFailure("Invalid platform in update manifest") }
+    return Patch("",from,to,text(raw,"platform"),text(raw,"baseManifestSha256"),text(raw,"targetManifestSha256"),added.files,replaced.files,remove)
+}
+fn none():Asset { return Asset(false,"",0,"","") }
+fn findAsset(raw:json.Value, repo:str, tag:str, name:str, limit:i64):Asset {
+    if !json.has(raw,"assets") || !strings.equal(json.kind(json.get(raw,"assets")),"array") { return none() }
+    let assets = json.get(raw,"assets")
+    for i in 0..(json.len(assets) as i64) {
+        let item = json.at(assets,i)
+        if !isObject(item) || !strings.equal(text(item,"name"),name) || !strings.equal(text(item,"state"),"uploaded") { continue }
+        let url = "https://github.com/" + repo + "/releases/download/" + tag + "/" + name
+        let size = wholeNumber(item,"size")
+        if !strings.equal(text(item,"browser_download_url"),url) || size <= 0 || size > limit { return none() }
+        let digest = text(item,"digest"); let sha = ""
+        if strings.startsWith(digest,"sha256:") && proto.hex(strings.substring(digest,7,strings.charLength(digest)),64) { sha = strings.toLowerCase(strings.substring(digest,7,strings.charLength(digest))) }
+        return Asset(true,url,size,sha,name)
+    }
+    return none()
+}
+# Assets next to the update package on the same GitHub release; every URL must belong to that release.
+# `installed` is "" for an installation that is not managed yet.
+fn releaseExtras(raw:json.Value, repo:str, platform:str, installed:str):Extras {
+    let tag = text(raw,"tag_name"); let to = strings.startsWith(tag,"v") ? strings.substring(tag,1,strings.charLength(tag)) : tag
+    let out = Extras(none(),none(),none(),"",none(),none())
+    out.sums = findAsset(raw,repo,tag,"SHA256SUMS",65536); out.signature = findAsset(raw,repo,tag,"SHA256SUMS.sig",1024)
+    if !strings.equal(semver(installed),"") && !strings.equal(semver(to),"") {
+        let found = findAsset(raw,repo,tag,patchAssetName(installed,to,platform),134217728)
+        if found.found { out.patch = found; out.patchFrom = installed }
+    }
+    let bundle = findAsset(raw,repo,tag,"dev-os-system-" + platform + ".tar.gz",2147483647); let meta = findAsset(raw,repo,tag,"dev-os-system-" + platform + ".json",8388608)
+    if bundle.found && meta.found { out.system = bundle; out.systemMeta = meta }
+    return out
+}
+# Size field (third column) of a `tar -tv` row.
+fn rowSize(row:str):i64 {
+    let words = Vec<str>(); for word in strings.split(strings.trim(row)," ") { if !strings.equal(word,"") { words.push(word) } }
+    if words.len() < 3 || !proto.digits(words[2]) || strings.charLength(words[2]) > 15 { return -1 }
+    return proto.number(words[2])
+}
+fn archiveRoot(path:str, root:str):bool {
+    if strings.equal(path,root) || strings.equal(path,root + "/") { return true }
+    if !strings.startsWith(path,root + "/") || strings.charLength(path) > 600 { return false }
+    for i in 0..(strings.charLength(path) as i64) {
+        let ch = strings.substring(path,i,i+1)
+        if !pathChar(ch) && !strings.equal(ch,"/") { return false }
+    }
+    for segment in strings.split(path,"/") { if strings.equal(segment,"..") || strings.equal(segment,".") { return false } }
+    return true
+}
+fn listing(names:str, details:str, root:str, maximumFiles:i64, escaped:str, links:str, member:str, expands:str, invalid:str):str {
+    let paths = strings.split(strings.trimEnd(names),"\n"); let rows = strings.split(strings.trimEnd(details),"\n")
+    if (paths.len() as i64) > maximumFiles || paths.len() != rows.len() { return invalid }
+    let total = 0
+    for index in 0..(paths.len() as i64) {
+        if !archiveRoot(paths[index],root) { return escaped }
+        let kind = strings.substring(rows[index],0,1)
+        if !strings.equal(kind,"-") && !strings.equal(kind,"d") { return links }
+        let size = rowSize(rows[index])
+        if size < 0 { return member }
+        total = total + size
+        if total > 1073741824 { return expands }
+    }
+    return ""
+}
+fn has(paths:Vec<str>, wanted:str):bool { for path in paths { if strings.equal(path,wanted) { return true } }; return false }
+# Empty when the file list of a full update package is safe and complete (`names` = tar -t, `details` = tar -tv).
+fn validateArchive(names:str, details:str):str {
+    let reason = listing(names,details,"dev-os",20000,"Unsafe path in update package","Update packages cannot contain links or special files","Invalid package member size","Update package expands beyond 1 GiB","Invalid package file list")
+    if !strings.equal(reason,"") { return reason }
+    let paths = strings.split(strings.trimEnd(names),"\n")
+    for required in Vec<str>("dev-os/release.json","dev-os/dist/main.js","dev-os/dist/supervisor.js","dev-os/dist/react-gtk.js","dev-os/bin/dev-os-session","dev-os/bin/dev-os-shell","dev-os/bin/dev-os-start","dev-os/native/dev-os-window-tracker") {
+        if !has(paths,required) { return "Update package is missing " + required }
+    }
+    return ""
+}
+fn validatePatchArchive(names:str, details:str):str {
+    let reason = listing(names,details,"dev-os-patch",40000,"Unsafe path in update patch","Update patches cannot contain links or special files","Invalid patch member size","Update patch expands beyond 1 GiB","Invalid patch file list")
+    if !strings.equal(reason,"") { return reason }
+    let paths = strings.split(strings.trimEnd(names),"\n")
+    for required in Vec<str>("dev-os-patch/patch.json","dev-os-patch/manifest.json") { if !has(paths,required) { return "Update patch is missing " + required } }
+    return ""
+}

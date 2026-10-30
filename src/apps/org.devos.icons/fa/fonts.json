@@ -1,0 +1,18 @@
+{
+  "classic": {"solid": "fa-solid-900", "regular": "fa-regular-400", "light": "fa-light-300", "thin": "fa-thin-100"},
+  "duotone": {"solid": "fa-duotone-900", "regular": "fa-duotone-regular-400", "light": "fa-duotone-light-300", "thin": "fa-duotone-thin-100"},
+  "sharp": {"solid": "fa-sharp-solid-900", "regular": "fa-sharp-regular-400", "light": "fa-sharp-light-300", "thin": "fa-sharp-thin-100"},
+  "sharp-duotone": {"solid": "fa-sharp-duotone-solid-900", "regular": "fa-sharp-duotone-regular-400", "light": "fa-sharp-duotone-light-300", "thin": "fa-sharp-duotone-thin-100"},
+  "chisel": {"regular": "fa-chisel-regular-400"},
+  "etch": {"solid": "fa-etch-solid-900"},
+  "graphite": {"thin": "fa-graphite-thin-100"},
+  "jelly": {"regular": "fa-jelly-regular-400"},
+  "mosaic": {"solid": "fa-mosaic-solid-900"},
+  "notdog": {"solid": "fa-notdog-solid-900"},
+  "pixel": {"regular": "fa-pixel-regular-400"},
+  "slab": {"regular": "fa-slab-regular-400"},
+  "thumbprint": {"light": "fa-thumbprint-light-300"},
+  "utility": {"solid": "fa-utility-semibold-600"},
+  "vellum": {"solid": "fa-vellum-solid-900"},
+  "whiteboard": {"solid": "fa-whiteboard-semibold-600"}
+}

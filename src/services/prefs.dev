@@ -1,0 +1,68 @@
+#!/usr/bin/env d
+# Native extension preferences worker. One JSON request per line on stdin:
+#   {"action":"get","id":"org.devos.theme"}
+#   {"action":"set","id":"org.devos.theme","enabled":true,"values":{"mode":"dark"}}
+# Answers one JSON line: {"ok":true,"state":{version,enabled,values[,error]}} or {"ok":false,"error":"..."}.
+# The manifest is read from <root>/src/apps|system|extensions/<name>/extension.json (bundled packages only); user packages
+# are not served. DEVOS_PREFERENCES_DIR overrides <config>/dev-os/extensions for tests.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/ext-prefs.dev" as prefs
+
+fn fail(message:str):str { return json.stringify({ok:false,error:message}) }
+fn text(value:json.Value, key:str):str {
+    return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : ""
+}
+fn manifestFor(root:str, id:str):json.Value {
+    for base in Vec<str>(root+"/src/apps",root+"/src/system",root+"/src/extensions") {
+        if !fs.is_dir(base) { continue }
+        for name in fs.readdirSync(base) {
+            if !fs.is_dir(base + "/" + name) { continue }
+            let file = base + "/" + name + "/extension.json"
+            if !fs.existsSync(file) { continue }
+            let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(file,"utf8")) })
+            if result.isErr(parsed) { continue }
+            let manifest = result.unwrap(parsed)
+            if strings.equal(json.kind(manifest),"object") && strings.equal(text(manifest,"id"),id) { return manifest }
+        }
+    }
+    return json.null_value()
+}
+fn directory():str {
+    if process.hasEnv("DEVOS_PREFERENCES_DIR") { return process.getenv("DEVOS_PREFERENCES_DIR") }
+    let config = process.hasEnv("XDG_CONFIG_HOME") ? process.getenv("XDG_CONFIG_HOME") : process.getenv("HOME") + "/.config"
+    return config + "/dev-os/extensions"
+}
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return fail("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return fail("Expected an object request") }
+    let id = text(request,"id")
+    if !prefs.validId(id) { return fail("Extension ID must be namespaced, lowercase, and contain no path separators") }
+    let manifest = manifestFor(root,id)
+    if strings.equal(json.kind(manifest),"null") { return fail("Unknown extension " + id) }
+    let action = text(request,"action")
+    if strings.equal(action,"get") { return json.stringify({ok:true,state:prefs.read(directory(),id,manifest)}) }
+    if strings.equal(action,"set") {
+        let enabled = json.has(request,"enabled") && strings.equal(json.kind(json.get(request,"enabled")),"bool") ? json.bool(json.get(request,"enabled")) : true
+        let reason = prefs.write(directory(),id,manifest,enabled,json.has(request,"values") ? json.get(request,"values") : json.object())
+        if !strings.equal(reason,"") { return fail(reason) }
+        return json.stringify({ok:true,state:prefs.read(directory(),id,manifest)})
+    }
+    return fail("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

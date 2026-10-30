@@ -1,0 +1,68 @@
+use "../../packages/react-devlang/src/ui.dev" as ui
+extern fn rd_fail(message: str)
+extern fn rd_widget_live_count(): i64
+fn check(ok: bool, message: str) { if !ok { unsafe { rd_fail(message) } } }
+
+fn Child(context: *ui.Context, which: i64): ui.Node {
+    let own = ui.useState(context, which * 10)
+    ui.useEffect(context, fn(): fn(): void {
+        print("mount ${which}")
+        return fn() { print("cleanup ${which}") }
+    }, Vec<i64>())
+    let name = which == 1 ? "child-one" : "child-two"
+    let wrapper = ui.props()
+    wrapper.id = ui.text(name)
+    let caption = ui.withProps(ui.Label("${own.value}"), ui.named(which == 1 ? "count-one" : "count-two"))
+    return ui.Box(wrapper, Vec<ui.Node>(caption, ui.Button(ui.named(which == 1 ? "add-one" : "add-two"), "Add", fn() { own.set(own.get() + 1) })))
+}
+fn App(context: *ui.Context): ui.Node {
+    let phase = ui.useState(context, 0)
+    let show = ui.useBool(context, true)
+    let entry = ui.useText(context, ui.text("ภาษาไทย"))
+    let previous = ui.useState(context, 0)
+    let one = ui.component(10, ui.keyed(1), fn(child: *ui.Context): ui.Node { return Child(child, 1) })
+    let two = ui.component(10, ui.keyed(2), fn(child: *ui.Context): ui.Node { return Child(child, 2) })
+    let rows = Vec<ui.Node>(one, two)
+    if phase.value >= 2 { rows = Vec<ui.Node>(two, one) }
+    if !show.value { rows = Vec<ui.Node>(two) }
+    ui.useEffect(context, fn(): fn(): void {
+        if phase.value == 0 {
+            check(ui.equalText(entry.value, ui.text("ภาษาไทย")), "UTF-8 state was not preserved")
+            check(ui.click(context, "add-one"), "Click handler not installed")
+            check(ui.click(context, "add-one"), "Second batched click failed")
+            unsafe { previous.set(ui.find(context, "child-one") as i64) }
+            check(ui.change(context, "entry", "ทดสอบ native"), "Entry event not installed")
+            phase.set(1)
+        } else if phase.value == 1 {
+            check(ui.equalText(entry.value, ui.text("ทดสอบ native")), "Controlled text event lost its owned data")
+            phase.set(2)
+        } else if phase.value == 2 {
+            unsafe { check(ui.find(context, "child-one") as i64 == previous.value, "Keyed reorder replaced the native widget") }
+            check(ui.equalText(ui.readText(context, "count-one"), ui.text("12")), "Batched state or keyed component state was lost")
+            show.set(false)
+            phase.set(3)
+        } else if phase.value == 3 {
+            unsafe { check(ui.find(context, "child-one") == null, "Unmounted child is still present") }
+            show.set(true)
+            phase.set(4)
+        } else if phase.value < 1004 {
+            check(ui.equalText(ui.readText(context, "count-one"), ui.text("10")), "Remount must reset component-local state")
+            check(ui.click(context, "add-two"), "Updated event handler missing")
+            phase.set(phase.value + 1)
+        } else {
+            check(ui.equalText(ui.readText(context, "count-two"), ui.text("1020")), "State did not survive repeated updates")
+            unsafe { check(rd_widget_live_count() < 20, "Native widgets accumulated across renders") }
+            print("PASS keyed reconciliation, text, state, batched events and effects")
+            ui.close(context)
+        }
+        return ui.noop
+    }, Vec<i64>(phase.value))
+    return ui.Box(ui.props(), Vec<ui.Node>(ui.Entry(ui.named("entry"), entry.value, entry.set), ui.Box(ui.props(), rows)))
+}
+fn main(): i32 {
+    check(ui.run("react-devlang test", 480, 420, App), "GTK display unavailable")
+    unsafe { check(rd_widget_live_count() == 0, "Root shutdown leaked GTK widgets") }
+    print("PASS native GTK root teardown")
+    return 0
+}
+return main()

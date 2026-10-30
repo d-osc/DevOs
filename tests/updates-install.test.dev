@@ -1,0 +1,277 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.updates/protocol.dev" as proto
+use "../src/apps/org.devos.updates/manifest.dev" as m
+use "../src/apps/org.devos.updates/package.dev" as pkg
+use "../src/apps/org.devos.updates/install.dev" as inst
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn sh(script:str) { tool.checked(Vec<str>("sh","-c",script),Map<str,str>(),"",120000) }
+fn machine():str { return proto.platform(strings.trim(tool.exec(Vec<str>("uname","-m")))) }
+fn put(file:str, content:str, executable:bool) {
+    sh("mkdir -p \"$(dirname '" + file + "')\"")
+    fs.writeFileSync(file,content)
+    if executable { tool.exec(Vec<str>("chmod","755",file)) }
+}
+fn names():Vec<str> { return Vec<str>("dist/main.js","dist/supervisor.js","dist/react-gtk.js","bin/dev-os-session","bin/dev-os-shell","bin/dev-os-start","native/dev-os-window-tracker","release.json","data/keep.txt","data/old-only.txt") }
+fn isExecutable(name:str):bool { return strings.startsWith(name,"bin/") || strings.startsWith(name,"native/") }
+fn contentOf(version:str, name:str):str {
+    if strings.equal(name,"release.json") { return "{\"format\":1,\"version\":\"" + version + "\",\"platform\":\"" + machine() + "\"}" }
+    if strings.equal(name,"data/keep.txt") { return "keep\n" }
+    # A runnable stand-in for the release's own command: it reports its version and passes `doctor` unless asked not to.
+    if strings.equal(name,"bin/dev-os-shell") { return "#!/bin/sh\ncase \"$1\" in\n  --version) echo " + version + " ;;\n  doctor) [ -e \"$0.fail\" ] && exit 1; exit 0 ;;\nesac\n" }
+    return "// " + version + " " + name + "\n"
+}
+# A release tree whose manifest is built from the real file contents. `extra` adds a file, `without` drops one.
+fn tree(directory:str, version:str, minimum:str, extra:str, without:str) {
+    let files = json.array(); let all = names(); if !strings.equal(extra,"") { all.push(extra) }
+    for name in all {
+        if strings.equal(name,without) { continue }
+        put(directory + "/" + name,contentOf(version,name),isExecutable(name))
+        files = json.push(files,{path:name,sha256:pkg.sha256(directory + "/" + name),size:strings.charLength(contentOf(version,name)),mode:isExecutable(name) ? "755" : "644"})
+    }
+    put(directory + "/manifest.json",json.stringify({format:1,version:version,platform:machine(),minCompatible:minimum,postInstall:json.parse("[\"restart-shell\"]"),rollback:{strategy:"keep-previous"},files:files}),false)
+}
+fn archive(base:str, version:str, minimum:str, extra:str, without:str):str {
+    let directory = base + "/pkg-" + version
+    tree(directory + "/dev-os",version,minimum,extra,without)
+    let out = base + "/dev-os-" + version + ".tar.gz"
+    sh("tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf '" + out + "' -C '" + directory + "' dev-os")
+    return out
+}
+fn patchFile(base:str, from:str, to:str, output:str) {
+    let a = pkg.readManifest(from); let b = pkg.readManifest(to); let d = m.diff(a,b); let root = base + "/dev-os-patch"
+    sh("mkdir -p '" + root + "/tree'")
+    for item in d.add { sh("cd '" + to + "' && cp --parents -a '" + item.path + "' '" + root + "/tree/'") }
+    for item in d.replace { sh("cd '" + to + "' && cp --parents -a '" + item.path + "' '" + root + "/tree/'") }
+    let add = json.array(); for item in d.add { add = json.push(add,{path:item.path,sha256:item.sha256,size:item.size,mode:item.mode}) }
+    let replace = json.array(); for item in d.replace { replace = json.push(replace,{path:item.path,sha256:item.sha256,size:item.size,mode:item.mode}) }
+    let remove = json.array(); for path in d.remove { remove = json.push(remove,path) }
+    sh("cp '" + to + "/manifest.json' '" + root + "/manifest.json'")
+    fs.writeFileSync(root + "/patch.json",json.stringify({format:1,kind:"patch",from:a.version,to:b.version,platform:machine(),baseManifestSha256:pkg.sha256(from + "/manifest.json"),targetManifestSha256:pkg.sha256(to + "/manifest.json"),add:add,replace:replace,remove:remove}))
+    sh("tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf '" + output + "' -C '" + base + "' dev-os-patch && rm -rf '" + root + "'")
+}
+fn ctx(root:str, keys:str, running:str):inst.Ctx { return inst.Ctx(root,keys,running,"/nonexistent-running-root",-1,false,"",inst.noSystem()) }
+fn history(root:str):json.Value { return json.parse(fs.readFileSync(root + "/history.json","utf8")) }
+fn current(root:str):str { return json.string(json.get(json.get(history(root),"current"),"version")) }
+fn previous(root:str):str { let value = json.get(history(root),"previous"); return strings.equal(json.kind(value),"object") ? json.string(json.get(value,"version")) : "" }
+fn leftovers(root:str):str { return strings.trim(tool.exec(Vec<str>("sh","-c","ls -A '" + root + "' '" + root + "/releases' 2>/dev/null | grep -c -e staging -e verify -e install.lock || true"))) }
+
+test.case("a full package installs once verified, atomically and without leftovers",fn() {
+    let base = temporary(); let root = base + "/root"
+    let file = archive(base,"0.3.0","0.0.0","","")
+    let out = inst.installFile(ctx(root,"/nonexistent-keys","0.2.0"),file)
+    test.expect(strings.equal(out.error,"") && strings.equal(out.version,"0.3.0") && strings.equal(out.trust,"unsigned") && strings.contains(out.message,"Restart the shell"),"Full package refused: " + out.error)
+    test.expect(strings.equal(current(root),"0.3.0") && strings.equal(previous(root),"") && fs.is_dir(root + "/releases/" + json.string(json.get(json.get(history(root),"current"),"key"))),"History or release directory wrong")
+    test.expect(strings.contains(tool.exec(Vec<str>("readlink",root + "/current")),"releases/0.3.0-") && strings.equal(leftovers(root),"0"),"current link wrong or leftovers remain")
+    test.expect(strings.equal(inst.selectedRoot(ctx(root,"","0.2.0")),root + "/releases/" + json.string(json.get(json.get(history(root),"current"),"key"))),"selectedRoot wrong")
+    let again = inst.installFile(ctx(root,"/nonexistent-keys","0.2.0"),file)
+    test.expect(strings.contains(again.error,"not newer"),"The same version was installed twice: " + again.error)
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("bad input is explained and changes nothing",fn() {
+    let base = temporary(); let root = base + "/root"
+    put(base + "/old.tar.gz","x",false)
+    test.expect(strings.contains(inst.installFile(ctx(root,"","0.2.0"),"relative/file.tar.gz").error,"ending in .tar.gz"),"Relative path accepted")
+    test.expect(strings.contains(inst.installFile(ctx(root,"","0.2.0"),base + "/missing.txt").error,"ending in .tar.gz"),"Wrong file name accepted")
+    test.expect(!strings.equal(inst.installFile(ctx(root,"","0.2.0"),base + "/old.tar.gz").error,"") && !fs.existsSync(root + "/history.json"),"A non-package file was accepted")
+    let live = inst.Ctx(root,"","0.2.0","/x",-1,true,"",inst.noSystem())
+    test.expect(strings.contains(inst.installFile(live,archive(base,"0.3.0","0.0.0","","")).error,"Live USB") && !fs.existsSync(root + "/history.json"),"Live USB was updated")
+    let small = inst.Ctx(root,"","0.2.0","/x",1024,false,"",inst.noSystem())
+    let space = inst.installFile(small,archive(base,"0.3.0","0.0.0","",""))
+    test.expect(strings.contains(space.error,"Not enough free disk space") && strings.contains(space.error,"not changed") && !fs.existsSync(root + "/history.json"),"Disk space not checked")
+    test.expect(strings.contains(inst.installFile(ctx(root,"","0.2.0"),archive(base,"0.9.0","0.6.5","","")).error,"needs Dev OS 0.6.5") && !fs.existsSync(root + "/history.json"),"minCompatible not enforced")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("a tampered package is refused and leaves the system untouched",fn() {
+    let base = temporary(); let root = base + "/root"
+    # The manifest says one thing and the file another.
+    tree(base + "/bad/dev-os","0.3.0","0.0.0","","")
+    fs.writeFileSync(base + "/bad/dev-os/dist/main.js","tampered\n")
+    sh("tar -czf '" + base + "/bad.tar.gz' -C '" + base + "/bad' dev-os")
+    let out = inst.installFile(ctx(root,"","0.2.0"),base + "/bad.tar.gz")
+    test.expect(strings.contains(out.error,"manifest checksum") && !fs.existsSync(root + "/history.json") && strings.equal(leftovers(root),"0"),"Tampered package installed: " + out.error)
+    tool.exec(Vec<str>("rm","-rf",base + "/bad/dev-os/native")); sh("tar -czf '" + base + "/short.tar.gz' -C '" + base + "/bad' dev-os")
+    test.expect(!strings.equal(inst.installFile(ctx(root,"","0.2.0"),base + "/short.tar.gz").error,"") && !fs.existsSync(root + "/history.json"),"A package with files missing was installed")
+    # A release.json that lies about its version.
+    tree(base + "/liar/dev-os","0.3.0","0.0.0","","")
+    fs.writeFileSync(base + "/liar/dev-os/release.json","{\"format\":1,\"version\":\"0.3.0\",\"platform\":\"" + machine() + "\"}")
+    tool.exec(Vec<str>("sh","-c","cd '" + base + "/liar' && sed -i 's/0.3.0/0.3.0/' dev-os/release.json"))
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("a patch is applied to a copy, rollback and roll forward switch versions, old releases are pruned",fn() {
+    let base = temporary(); let root = base + "/root"
+    let c = ctx(root,"/nonexistent-keys","0.2.0")
+    tree(base + "/v1","0.3.0","0.0.0","","")
+    tree(base + "/v2","0.4.0","0.0.0","data/new.txt","data/old-only.txt")
+    sh("mkdir -p '" + base + "/p'")
+    patchFile(base + "/p",base + "/v1",base + "/v2",base + "/dev-os-patch-0.3.0-to-0.4.0.tar.gz")
+    let first = inst.installFile(c,archive(base,"0.3.0","0.0.0",""," "))
+    test.expect(strings.equal(first.error,"") && strings.equal(current(root),"0.3.0"),"First install failed: " + first.error)
+    let baseKey = json.string(json.get(json.get(history(root),"current"),"key"))
+    let before = tool.exec(Vec<str>("sh","-c","cd '" + root + "/releases/" + baseKey + "' && find . -type f | sort | xargs sha256sum"))
+    let patched = inst.installFile(c,base + "/dev-os-patch-0.3.0-to-0.4.0.tar.gz")
+    test.expect(strings.equal(patched.error,"") && patched.patched && strings.equal(patched.version,"0.4.0") && strings.equal(patched.previous,"0.3.0"),"Patch install failed: " + patched.error)
+    test.expect(strings.equal(current(root),"0.4.0") && strings.equal(previous(root),"0.3.0"),"History after the patch wrong")
+    let newKey = json.string(json.get(json.get(history(root),"current"),"key"))
+    test.expect(fs.existsSync(root + "/releases/" + newKey + "/data/new.txt") && !fs.existsSync(root + "/releases/" + newKey + "/data/old-only.txt"),"Patched tree content wrong")
+    test.expect(strings.equal(tool.exec(Vec<str>("sh","-c","cd '" + root + "/releases/" + baseKey + "' && find . -type f | sort | xargs sha256sum")),before),"The installed base was modified")
+    let back = inst.rollback(c)
+    test.expect(strings.equal(back.error,"") && strings.equal(current(root),"0.3.0") && strings.equal(previous(root),"0.4.0"),"Rollback failed: " + back.error)
+    let forward = inst.rollback(c)
+    test.expect(strings.equal(forward.error,"") && strings.equal(current(root),"0.4.0") && strings.equal(previous(root),"0.3.0"),"Rolling forward failed")
+    test.expect(strings.equal(leftovers(root),"0"),"Leftovers after rollbacks")
+    # A third release prunes the oldest one, keeping current and previous.
+    let third = inst.installFile(c,archive(base,"0.5.0","0.0.0","",""))
+    test.expect(strings.equal(third.error,"") && strings.equal(current(root),"0.5.0") && strings.equal(previous(root),"0.4.0"),"Third install failed: " + third.error)
+    let kept = strings.trim(tool.exec(Vec<str>("sh","-c","ls '" + root + "/releases'")))
+    test.expect(strings.split(kept,"\n").len() == 2 && !strings.contains(kept,"0.3.0-"),"Old releases were not pruned: " + kept)
+    let none = inst.Ctx(base + "/empty","","0.2.0","/x",-1,false,"",inst.noSystem())
+    test.expect(strings.contains(inst.rollback(none).error,"No previous version"),"Rollback without a previous version")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("locks and interrupted installs: a second install is refused, leftovers are cleaned",fn() {
+    let base = temporary(); let root = base + "/root"
+    sh("mkdir -p '" + root + "/releases/.staging-halfway' '" + root + "/.staging-leftover'")
+    put(root + "/install.lock","",false)
+    let blocked = inst.installFile(ctx(root,"","0.2.0"),archive(base,"0.3.0","0.0.0","",""))
+    test.expect(strings.contains(blocked.error,"Another update is in progress") && fs.existsSync(root + "/install.lock") && !fs.existsSync(root + "/history.json"),"A running install did not block another")
+    tool.exec(Vec<str>("rm","-f",root + "/install.lock"))
+    let out = inst.installFile(ctx(root,"","0.2.0"),archive(base,"0.3.0","0.0.0","",""))
+    test.expect(strings.equal(out.error,"") && !fs.existsSync(root + "/releases/.staging-halfway") && !fs.existsSync(root + "/.staging-leftover") && !fs.existsSync(root + "/install.lock"),"Leftovers survived or the lock stayed")
+    fs.writeFileSync(root + "/history.json","not json")
+    test.expect(!strings.equal(inst.installFile(ctx(root,"","0.2.0"),archive(base,"0.8.0","0.0.0","","")).error,"") && !fs.existsSync(root + "/install.lock"),"A damaged history was ignored or the lock stayed")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("with a key installed only signed releases install",fn() {
+    let base = temporary(); let root = base + "/root"; let usb = base + "/usb"
+    sh("mkdir -p '" + usb + "' '" + base + "/keys' && cd '" + base + "' && openssl genpkey -algorithm ed25519 -out priv.pem && openssl pkey -in priv.pem -pubout -out keys/release.pub")
+    let file = archive(base,"0.3.0","0.0.0","","")
+    sh("cp '" + file + "' '" + usb + "/dev-os-" + machine() + ".tar.gz'")
+    let c = ctx(root,base + "/keys","0.2.0")
+    test.expect(strings.contains(inst.installFile(c,usb + "/dev-os-" + machine() + ".tar.gz").error,"only installs signed") && !fs.existsSync(root + "/history.json"),"A bare file installed with a key present")
+    sh("cd '" + usb + "' && sha256sum dev-os-" + machine() + ".tar.gz > SHA256SUMS")
+    test.expect(strings.contains(inst.installFile(c,usb + "/dev-os-" + machine() + ".tar.gz").error,"only installs signed"),"Unsigned SHA256SUMS accepted with a key present")
+    sh("openssl pkeyutl -sign -inkey '" + base + "/priv.pem' -rawin -in '" + usb + "/SHA256SUMS' -out '" + usb + "/SHA256SUMS.sig'")
+    let good = inst.installFile(c,usb + "/dev-os-" + machine() + ".tar.gz")
+    test.expect(strings.equal(good.error,"") && strings.equal(good.trust,"verified"),"A signed release was refused: " + good.error)
+    let second = archive(base,"0.4.0","0.0.0","","")
+    sh("cp '" + second + "' '" + usb + "/dev-os-" + machine() + ".tar.gz'")
+    test.expect(strings.contains(inst.installFile(c,usb + "/dev-os-" + machine() + ".tar.gz").error,"signature is invalid") || strings.contains(inst.installFile(c,usb + "/dev-os-" + machine() + ".tar.gz").error,"not listed in SHA256SUMS"),"A different file under an old signature was accepted")
+    test.expect(strings.equal(current(root),"0.3.0"),"The tampered update changed the installed version")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+# Downloads come from a local web server that stands in for GitHub (loopback only, enabled through Ctx.api).
+fn asset(name:str, url:str, size:i64, sha:str):m.Asset { return m.Asset(true,url,size,sha,name) }
+fn size(file:str):i64 { return inst.fileSize(file) }
+test.case("downloads are verified against two sources and a bad patch falls back to the full package",fn() {
+    let base = temporary(); let root = base + "/root"; let site = base + "/site"
+    sh("mkdir -p '" + site + "'")
+    tree(base + "/v1","0.3.0","0.0.0","","")
+    tree(base + "/v2","0.4.0","0.0.0","data/new.txt","data/old-only.txt")
+    sh("mkdir -p '" + base + "/p'")
+    let full1 = archive(base,"0.3.0","0.0.0","","")
+    sh("cp '" + full1 + "' '" + site + "/full-0.3.0.tar.gz'")
+    let c0 = inst.Ctx(root,"/nonexistent-keys","0.2.0","/x",-1,false,"http://127.0.0.1:18751",inst.noSystem())
+    let full2 = base + "/dev-os-0.4.0.tar.gz"
+    sh("tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf '" + full2 + "' -C '" + base + "/v2/..' v2 --transform 's,^v2,dev-os,'")
+    sh("cp '" + full2 + "' '" + site + "/full-0.4.0.tar.gz'")
+    patchFile(base + "/p",base + "/v1",base + "/v2",site + "/patch.tar.gz")
+    sh("cp '" + site + "/patch.tar.gz' '" + site + "/badpatch.tar.gz' && printf 'junk' >> '" + site + "/badpatch.tar.gz'")
+    let pid = strings.trim(tool.exec(Vec<str>("sh","-c","cd '" + site + "' && (python3 -m http.server 18751 --bind 127.0.0.1 >/dev/null 2>&1 & echo $!)")))
+    tool.exec(Vec<str>("sleep","1"))
+    let api = "http://127.0.0.1:18751"
+    let sha1 = pkg.sha256(site + "/full-0.3.0.tar.gz"); let sha2 = pkg.sha256(site + "/full-0.4.0.tar.gz")
+    let release1 = proto.Release("","0.3.0","v0.3.0","","",size(site + "/full-0.3.0.tar.gz"),api + "/full-0.3.0.tar.gz",sha1,"o/r",machine())
+    let none = m.Extras(m.Asset(false,"",0,"",""),m.Asset(false,"",0,"",""),m.Asset(false,"",0,"",""),"",m.Asset(false,"",0,"",""),m.Asset(false,"",0,"",""))
+    let first = inst.install(c0,release1,none)
+    test.expect(strings.equal(first.error,"") && strings.equal(current(root),"0.3.0"),"Download install failed: " + first.error)
+    # A release whose download does not match the API digest is refused and changes nothing.
+    let wrong = proto.Release("","0.4.0","v0.4.0","","",size(site + "/full-0.4.0.tar.gz"),api + "/full-0.4.0.tar.gz",strings.replaceAll(sha2,sha2,strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","c")),"o/r",machine())
+    let refused = inst.install(c0,wrong,none)
+    test.expect(strings.contains(refused.error,"SHA-256 verification failed") && strings.equal(current(root),"0.3.0") && strings.equal(leftovers(root),"0"),"A package with the wrong digest installed: " + refused.error)
+    let release2 = proto.Release("","0.4.0","v0.4.0","","",size(site + "/full-0.4.0.tar.gz"),api + "/full-0.4.0.tar.gz",sha2,"o/r",machine())
+    # The offered patch is corrupt: the install falls back to the full package.
+    let badPatch = m.Extras(none.sums,none.signature,asset("patch.tar.gz",api + "/badpatch.tar.gz",size(site + "/badpatch.tar.gz"),pkg.sha256(site + "/patch.tar.gz")),"0.3.0",none.system,none.systemMeta)
+    let fallback = inst.install(c0,release2,badPatch)
+    test.expect(strings.equal(fallback.error,"") && !fallback.patched && strings.equal(current(root),"0.4.0") && strings.equal(previous(root),"0.3.0"),"Fallback to the full package failed: " + fallback.error)
+    # Going back to 0.3.0 and offering 0.4.0 again selects the kept previous release without downloading.
+    inst.rollback(c0)
+    let reuse = inst.install(inst.Ctx(root,"/nonexistent-keys","0.2.0","/x",-1,false,"http://127.0.0.1:1",inst.noSystem()),release2,none)
+    test.expect(strings.equal(reuse.error,"") && strings.equal(current(root),"0.4.0"),"The kept release was not reused: " + reuse.error)
+    test.expect(strings.contains(inst.install(c0,release2,none).error,"already installed"),"An installed version was installed again")
+    # Only github.com (or the test loopback) is a download source.
+    let elsewhere = proto.Release("","0.9.0","v0.9.0","","",10,"https://example.com/x.tar.gz",sha2,"o/r",machine())
+    test.expect(strings.contains(inst.install(c0,elsewhere,none).error,"github.com"),"A download from another host was attempted")
+    tool.run(Vec<str>("pkill","-f","http.server 18751"),Map<str,str>(),"",10000)
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("the session is switched to the installed version only after its own checks pass",fn() {
+    let base = temporary(); let root = base + "/root"; let runtime = base + "/run"
+    sh("mkdir -p '" + runtime + "'")
+    let c = ctx(root,"/nonexistent-keys","0.2.0")
+    let request = runtime + "/dev-os-version-0123abcd-ef.json"; let mark = base + "/restarted"
+    let shell = Vec<str>("sh","-c","echo restarted > '" + mark + "'","sh")
+    test.expect(strings.contains(inst.useInstalled(c,"",runtime,shell).error,"cannot switch versions"),"A session that cannot switch was not explained")
+    test.expect(strings.contains(inst.useInstalled(c,base + "/evil.json",runtime,shell).error,"cannot switch versions") && strings.contains(inst.useInstalled(c,runtime + "/evil.json",runtime,shell).error,"cannot switch versions") && strings.contains(inst.useInstalled(c,runtime + "/dev-os-version-xyz.json",runtime,shell).error,"cannot switch versions") && strings.contains(inst.useInstalled(c,runtime + "/../dev-os-version-ab.json",runtime,shell).error,"cannot switch versions"),"A request path outside the runtime directory or with a bad name was accepted")
+    test.expect(strings.contains(inst.useInstalled(c,request,runtime,shell).error,"Install a release"),"Switching with nothing installed")
+    test.expect(strings.equal(inst.installFile(c,archive(base,"0.8.0","0.0.0","","")).error,""),"Install failed")
+    let key = json.string(json.get(json.get(history(root),"current"),"key")); let selected = root + "/releases/" + key
+    tool.exec(Vec<str>("touch",selected + "/bin/dev-os-shell.fail"))
+    test.expect(strings.contains(inst.useInstalled(c,request,runtime,shell).error,"missing dependencies") && !fs.existsSync(request) && !fs.existsSync(mark),"A failing doctor did not stop the switch")
+    tool.exec(Vec<str>("rm","-f",selected + "/bin/dev-os-shell.fail"))
+    tool.exec(Vec<str>("mv",selected + "/dist/supervisor.js",selected + "/dist/supervisor.js.off"))
+    test.expect(strings.contains(inst.useInstalled(c,request,runtime,shell).error,"session manager is missing") && !fs.existsSync(request),"A missing session manager did not stop the switch")
+    tool.exec(Vec<str>("mv",selected + "/dist/supervisor.js.off",selected + "/dist/supervisor.js"))
+    test.expect(strings.contains(inst.useInstalled(c,request,runtime,Vec<str>("false")).error,"could not be restarted"),"A failing restart was not reported")
+    tool.exec(Vec<str>("rm","-f",request))
+    let ok = inst.useInstalled(c,request,runtime,shell)
+    test.expect(strings.equal(ok.error,"") && strings.equal(ok.version,"0.8.0") && strings.contains(ok.message,"0.8.0"),"The switch failed: " + ok.error)
+    let written = json.parse(fs.readFileSync(request,"utf8"))
+    test.expect(strings.equal(json.string(json.get(written,"root")),selected) && strings.equal(json.string(json.get(written,"version")),"0.8.0") && fs.existsSync(mark),"The request or the restart is wrong")
+    put(selected + "/bin/dev-os-shell","#!/bin/sh\necho 9.9.9\n",true)
+    tool.exec(Vec<str>("rm","-f",request))
+    test.expect(strings.contains(inst.useInstalled(c,request,runtime,shell).error,"does not match its package metadata") && !fs.existsSync(request),"A runtime that reports another version was accepted")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+fn worker(root:str, preferences:str, input:str):str {
+    let script = "cd '" + t.root() + "' && DEVOS_UPDATES_API=http://127.0.0.1:1 DEVOS_UPDATES_ROOT='" + root + "' DEVOS_PREFERENCES_DIR='" + preferences + "' d src/apps/org.devos.updates/service.dev -- ."
+    return strings.trim(t.out(tool.run(Vec<str>("sh","-c",script),Map<str,str>(),input,300000)))
+}
+test.case("the worker installs update files, rolls back and explains failures",fn() {
+    let base = temporary(); let root = base + "/root"; let preferences = base + "/prefs"
+    let one = archive(base,"0.8.0","0.0.0","",""); let two = archive(base,"0.9.0","0.0.0","","")
+    let input = "{\"action\":\"installFile\",\"path\":\"" + one + "\"}\n{\"action\":\"installFile\",\"path\":\"" + two + "\"}\n{\"action\":\"rollback\"}\n{\"action\":\"installFile\",\"path\":\"relative.tar.gz\"}\n{\"action\":\"install\"}\n{\"action\":\"rollback\"}\n{\"action\":\"rollback\"}\n{\"action\":\"bogus\"}\n"
+    let lines = strings.split(worker(root,preferences,input),"\n")
+    test.expect(lines.len() == 8,"Expected one frame per request")
+    let first = strings.split(lines[0],"\t")
+    test.expect(strings.equal(first[0],"U") && strings.equal(first[1],"ready") && strings.equal(first[3],"") && strings.equal(first[5],"0.8.0") && strings.equal(first[7],"") && strings.equal(first[23],"unsigned"),"First file install wrong: " + lines[0])
+    let second = strings.split(lines[1],"\t")
+    test.expect(strings.equal(second[1],"ready") && strings.equal(second[5],"0.9.0") && strings.equal(second[7],"0.8.0"),"Second file install wrong")
+    let back = strings.split(lines[2],"\t")
+    test.expect(strings.equal(back[1],"ready") && strings.equal(back[5],"0.8.0") && strings.equal(back[7],"0.9.0"),"Rollback wrong")
+    test.expect(strings.contains(lines[3],"ending in .tar.gz") && strings.contains(lines[3],"\terror\t"),"A relative path was accepted")
+    test.expect(strings.contains(lines[4],"\terror\t") && strings.contains(lines[4],"Cannot reach GitHub"),"An install without a connection did not explain itself")
+    test.expect(strings.contains(lines[5],"\tready\t") && strings.contains(lines[6],"\tready\t"),"Rolling back twice should roll forward again")
+    test.expect(strings.startsWith(lines[7],"E\t"),"An unknown action was accepted")
+    test.expect(strings.equal(leftovers(root),"0"),"Leftovers after the worker finished")
+    let fresh = strings.split(worker(base + "/fresh",preferences,"{\"action\":\"rollback\"}\n"),"\t")
+    test.expect(strings.equal(fresh[1],"error") && strings.contains(fresh[3],"No previous version"),"Rollback without a previous version")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("native Settings Updates page installs an update file after a second click under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/updates-install-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let base = temporary(); let root = base + "/root"; let preferences = base + "/prefs"
+    let file = archive(base,"0.8.0","0.0.0","","")
+    let script = "cd '" + t.root() + "' && ulimit -c 0; DEVOS_UPDATES_API=http://127.0.0.1:1 DEVOS_UPDATES_ROOT='" + root + "' DEVOS_PREFERENCES_DIR='" + preferences + "' DEVOS_UPDATES_SMOKE_FILE='" + file + "' DEV_OS_ROOT='" + t.root() + "' G_DEBUG=fatal-warnings NO_AT_BRIDGE=1 xvfb-run -a '" + executable + "'"
+    let done = tool.run(Vec<str>("sh","-c",script),Map<str,str>(),"",180000)
+    t.success(done); t.contains(t.out(done),"PASS native Updates page installed a file: ready no-error")
+    test.expect(strings.equal(current(root),"0.8.0") && strings.equal(leftovers(root),"0"),"The page did not install the file")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+return t.finish()

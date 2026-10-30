@@ -1,0 +1,116 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+
+# Native Proxy page: the per-user system proxy (mode, PAC address, HTTP / HTTPS / SOCKS servers, HTTP authentication, bypass list).
+# The worker (proxy-page.dev) reads and writes GSettings and validates; the saved password is never sent back, so the password field stays
+# empty unless the user types a new one. Frame X: mode pac http httpPort https httpsPort socks socksPort same authentication username
+# passwordSet bypass locked.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_PROXY_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn modeIndex(mode:ui.Text):ui.Text { return k.isText(mode,"auto") ? plain("1") : k.isText(mode,"manual") ? plain("2") : plain("0") }
+# Draft values joined with ASCII 30: mode index, pac, http, httpPort, https, httpsPort, socks, socksPort, same, auth, username, new password, bypass.
+fn draftOf(frame:ui.Text):ui.Text {
+    let values = Vec<ui.Text>(modeIndex(field(frame,1)),field(frame,2),field(frame,3),field(frame,4),field(frame,5),field(frame,6),field(frame,7),field(frame,8),field(frame,9),field(frame,10),field(frame,11),ui.emptyText(),field(frame,13))
+    let out = Vec<u8>()
+    for i in 0..(values.len() as i64) { if i > 0 { out.push(30) }; for byte in values[i].bytes { out.push(byte) } }
+    return ui.Text(out)
+}
+fn bypassList(value:ui.Text):ui.Text {
+    let out = Vec<ui.Text>(plain("[")); let count = 0
+    for part in channel.split(value,44) {
+        let trimmed = trim(part)
+        if trimmed.bytes.len() == 0 { continue }
+        if count > 0 { out.push(plain(",")) }; out.push(channel.quote(trimmed)); count = count + 1
+    }
+    out.push(plain("]")); return join(out)
+}
+fn trim(value:ui.Text):ui.Text {
+    let start = 0; let end = value.bytes.len() as i64
+    while start < end && (value.bytes[start] == 32 || value.bytes[start] == 9) { start = start + 1 }
+    while end > start && (value.bytes[end - 1] == 32 || value.bytes[end - 1] == 9) { end = end - 1 }
+    let out = Vec<u8>(); for i in start..end { out.push(value.bytes[i]) }; return ui.Text(out)
+}
+fn number(value:ui.Text):ui.Text { return ext.numeric(value) ? value : channel.quote(value) }
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 14; options.className = ui.text("settings-card system-card"); return ui.Box(options,children) }
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"proxy-page.dev","{\"action\":\"get\"}")
+    let draft = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText()); let acted = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        # Every answer is the saved state: it becomes the draft again (the password field is cleared).
+        if l.frame.value.bytes.len() > 0 { draft.set(draftOf(l.frame.value)) }
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { message.set(plain("Proxy preferences saved for this user.")) } }
+        if smoke() && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.select(context,"proxy-mode",2) }
+            else if step.get() == 5 { print("PASS native Proxy page saved"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        if smoke() {
+            if step.get() == 1 && k.isText(ext.at(draft.value,0),"2") { step.set(2); ui.change(context,"proxy-http","proxy.test") }
+            else if step.get() == 2 && k.isText(ext.at(draft.value,2),"proxy.test") { step.set(3); ui.change(context,"proxy-http-port","3128") }
+            else if step.get() == 3 && k.isText(ext.at(draft.value,3),"3128") { step.set(5); acted.set(1); ui.click(context,"proxy-apply") }
+        }
+        return ui.noop
+    },Vec<i64>(draft.revision))
+    if l.frame.value.bytes.len() == 0 && l.failure.value.bytes.len() == 0 { return sp.loading(l) }
+    if l.frame.value.bytes.len() == 0 { return ext.column(12,Vec<ui.Node>(ext.named(k.caption(l.failure.value,"settings-error-banner"),"proxy-error"))) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let saved = draftOf(f); let dirty = !ui.equalText(draft.value,saved)
+    let mode = ext.at(draft.value,0); let manual = k.isText(mode,"2"); let auto = k.isText(mode,"1"); let same = k.isText(ext.at(draft.value,8),"1"); let auth = k.isText(ext.at(draft.value,9),"1")
+    let edit = fn(index:i64, value:ui.Text) { if !ui.equalText(value,ext.at(draft.get(),index)) { draft.set(ext.with(draft.get(),index,value)); message.set(ui.emptyText()) } }
+    let nodes = Vec<ui.Node>()
+    let select = ui.named("proxy-mode"); select.sensitive = !busy
+    let setup = Vec<ui.Node>(k.note("Proxy configuration","section-heading"),
+        ui.Select(select,Vec<ui.Text>(plain("Off — connect directly"),plain("Automatic — use a PAC file"),plain("Manual — choose proxy servers")),sp.number(mode),fn(index:i64) { edit(0,plain("${index}")) }))
+    if auto {
+        let pac = ui.named("proxy-pac"); pac.placeholder = plain("https://example.org/proxy.pac")
+        setup.push(k.note("Use the PAC address provided by your network administrator.","settings-description")); setup.push(ui.Entry(pac,ext.at(draft.value,1),fn(value:ui.Text) { edit(1,value) }))
+    }
+    if manual {
+        let sameSwitch = ui.named("proxy-same")
+        setup.push(ext.row(12,Vec<ui.Node>(ext.expand(k.note("Use the HTTP proxy for all protocols","settings-field-title")),ui.Switch(sameSwitch,same,fn(next:bool) { if next != same { edit(8,plain(next ? "1" : "0")) } }))))
+        let names = Vec<str>("HTTP","HTTPS","SOCKS"); let ids = Vec<str>("http","https","socks")
+        for i in 0..3 {
+            let usable = i == 0 || !same
+            let host = ui.named("proxy-" + ids[i]); host.sensitive = usable; host.expand = true; host.placeholder = plain("Host name or IP address")
+            let port = ui.named("proxy-" + ids[i] + "-port"); port.sensitive = usable; port.width = 90; port.placeholder = plain("Port")
+            setup.push(ext.column(7,Vec<ui.Node>(k.note(names[i] + " proxy","settings-field-title"),ext.row(10,Vec<ui.Node>(ui.Entry(host,ext.at(draft.value,2 + i * 2),fn(value:ui.Text) { edit(2 + i * 2,value) }),ui.Entry(port,ext.at(draft.value,3 + i * 2),fn(value:ui.Text) { edit(3 + i * 2,value) }))))))
+        }
+        let authSwitch = ui.named("proxy-auth")
+        setup.push(ext.row(12,Vec<ui.Node>(ext.expand(k.note("HTTP proxy authentication","settings-field-title")),ui.Switch(authSwitch,auth,fn(next:bool) { if next != auth { edit(9,plain(next ? "1" : "0")) } }))))
+        if auth {
+            let user = ui.named("proxy-username"); user.placeholder = plain("User name")
+            let secret = ui.named("proxy-password"); secret.placeholder = plain(k.isText(field(f,12),"1") ? "Password (leave empty to keep the saved one)" : "Password")
+            setup.push(ui.Entry(user,ext.at(draft.value,10),fn(value:ui.Text) { edit(10,value) })); setup.push(ui.PasswordEntry(secret,ext.at(draft.value,11),fn(value:ui.Text) { edit(11,value) }))
+        }
+    }
+    nodes.push(card(setup))
+    if auto || manual {
+        let bypass = ui.named("proxy-bypass"); bypass.placeholder = plain("localhost, 127.0.0.1, *.local")
+        nodes.push(card(Vec<ui.Node>(k.note("Bypass proxy","section-heading"),ui.Entry(bypass,ext.at(draft.value,12),fn(value:ui.Text) { edit(12,value) }),k.note("Separate host names, IP addresses and domain patterns with commas.","settings-description"))))
+    }
+    if k.isText(field(f,14),"1") { nodes.push(k.note("Your administrator has locked some proxy settings, so saving may be refused.","settings-description")) }
+    nodes.push(k.note("Applies to apps that use the system proxy resolver. Apps with their own proxy settings and command-line tools may need separate configuration. Restart an app if it does not pick up a change.","settings-description"))
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"proxy-error")) }
+    let apply = ui.named("proxy-apply"); apply.className = ui.text("settings-primary"); apply.sensitive = dirty && !busy
+    let bar = ui.props(); bar.vertical = false; bar.spacing = 12; bar.className = ui.text("settings-action-bar")
+    nodes.push(ui.Box(bar,Vec<ui.Node>(ext.expand(ext.named(k.caption(message.value.bytes.len() > 0 ? message.value : plain("Preferences apply to this user."),"settings-description"),"proxy-message")),
+        ui.Button(apply,"Apply",fn() {
+            let v = draft.get(); let names = Vec<str>("none","auto","manual")
+            let body = Vec<ui.Text>(plain("{\"action\":\"save\",\"mode\":\"" + names[sp.number(ext.at(v,0))] + "\",\"pac\":"),channel.quote(ext.at(v,1)),
+                plain(",\"http\":"),channel.quote(ext.at(v,2)),plain(",\"httpPort\":"),number(ext.at(v,3)),plain(",\"https\":"),channel.quote(ext.at(v,4)),plain(",\"httpsPort\":"),number(ext.at(v,5)),
+                plain(",\"socks\":"),channel.quote(ext.at(v,6)),plain(",\"socksPort\":"),number(ext.at(v,7)),plain(",\"same\":" + (k.isText(ext.at(v,8),"1") ? "true" : "false") + ",\"authentication\":" + (k.isText(ext.at(v,9),"1") ? "true" : "false")),
+                plain(",\"username\":"),channel.quote(ext.at(v,10)),plain(",\"password\":"),channel.quote(ext.at(v,11)),plain(",\"changePassword\":" + (ext.at(v,11).bytes.len() > 0 ? "true" : "false") + ",\"bypass\":"),bypassList(ext.at(v,12)),plain("}"))
+            acted.set(1); sp.send(l,join(body))
+        }))))
+    return ext.column(18,nodes)
+}
+fn page():ui.Node { return ui.component(9395,ui.keyed(955),render) }

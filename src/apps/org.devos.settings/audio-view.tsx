@@ -1,0 +1,38 @@
+import {React, Box, Label, Button, Image, ComboBoxText, Scale, GLib, useEffect, useRef, useState} from '@dev-os/core';
+import {LinuxAudio, type AudioControls, type AudioItem, type AudioKind, type AudioState} from './audio.js';
+
+function AudioLevel({item, kind, busy, action, backend}: {item: AudioItem; kind: AudioKind; busy: boolean; action(task: () => Promise<void>): void; backend: AudioControls}) {
+    const [volume, setVolume] = useState(Math.min(100, item.volume)); const pending = useRef(0);
+    useEffect(() => {if (!pending.current) setVolume(Math.min(100, item.volume));}, [item.volume]);
+    useEffect(() => () => {if (pending.current) GLib.source_remove(pending.current);}, []);
+    return <Box spacing={12}><Button id={`audio-mute-${kind}-${item.id}`} sensitive={!busy} tooltip={item.muted ? 'Unmute' : 'Mute'} onClicked={() => action(() => backend.mute(kind, item.id, !item.muted))}><Image iconName={kind === 'source' ? item.muted ? 'microphone-sensitivity-muted-symbolic' : 'audio-input-microphone-symbolic' : item.muted ? 'audio-volume-muted-symbolic' : 'audio-volume-high-symbolic'} pixelSize={20} /></Button><Scale id={`audio-volume-${kind}-${item.id}`} expand value={volume} drawValue={false} sensitive={!busy} onValueChanged={widget => {const value = Math.round(widget.get_value()); if (value === volume) return; setVolume(value); if (pending.current) GLib.source_remove(pending.current); pending.current = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {pending.current = 0; action(() => backend.volume(kind, item.id, value)); return GLib.SOURCE_REMOVE;});}} /><Label className="audio-volume-value" widthChars={5}>{item.muted ? 'Muted' : `${volume}%`}</Label></Box>;
+}
+export function AudioSettings({controls, inputOnly = false, afterOutput}: {controls?: AudioControls; inputOnly?: boolean; afterOutput?: React.ReactNode}) {
+    const [backend] = useState(() => controls ?? new LinuxAudio());
+    const [state, setState] = useState<AudioState | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
+    const alive = useRef(true), working = useRef(false), mutating = useRef(false);
+    const refresh = async () => {if (working.current || mutating.current) return; working.current = true; try {const next = await backend.load(); if (alive.current && !mutating.current) {setState(next); setError('');}} catch (reason) {if (alive.current) setError(String(reason));} finally {working.current = false;}};
+    const action = (task: () => Promise<void>) => {if (mutating.current) return; mutating.current = true; setBusy(true); setError(''); void task().then(async () => {const next = await backend.load(); if (alive.current) setState(next);}).catch(reason => {if (alive.current) setError(String(reason));}).finally(() => {mutating.current = false; if (alive.current) setBusy(false);});};
+    useEffect(() => {alive.current = true; void refresh(); const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {if (!working.current) void refresh(); return GLib.SOURCE_CONTINUE;}); return () => {alive.current = false; GLib.source_remove(timer); backend.destroy();};}, [backend]);
+    const deviceCard = (kind: 'sink' | 'source', items: AudioItem[], selected: string) => {
+        const item = items.find(item => item.name === selected) ?? items[0];
+        return <Box className="settings-card system-card" orientation="vertical" spacing={18}>
+            <Box spacing={14}><Box className="audio-device-icon" widthRequest={42} heightRequest={42}><Image iconName={kind === 'sink' ? 'audio-speakers-symbolic' : 'audio-input-microphone-symbolic'} pixelSize={24} expand /></Box><Box orientation="vertical" spacing={4} expand><Label className="section-heading" xalign={0}>{kind === 'sink' ? 'Output' : 'Input'}</Label><Label className="settings-description" xalign={0} wrap>{kind === 'sink' ? 'Choose where your sound plays.' : 'Choose the microphone apps use.'}</Label></Box></Box>
+            {item ? <><ComboBoxText id={`audio-device-${kind}`} sensitive={!busy} activeId={item.name} items={items.map(item => ({id: item.name, text: item.title}))} onChanged={widget => {const name = widget.get_active_id(); if (name && name !== selected) action(() => backend.select(kind, name));}} /><AudioLevel key={item.id} item={item} kind={kind} busy={busy} action={action} backend={backend} /><Label className="settings-description" xalign={0} wrap>{kind === 'sink' ? 'Default output for new playback. Route running apps below.' : 'Default microphone for new recordings.'}</Label></> : <Label className="settings-description" wrap xalign={0}>{kind === 'sink' ? 'No audio output is available.' : 'No microphone is connected.'}</Label>}
+        </Box>;
+    };
+    if (inputOnly) return <Box orientation="vertical" spacing={16}>
+        <Box spacing={12}><Box orientation="vertical" spacing={4} expand><Label className="section-heading" xalign={0}>Input device</Label><Label className="settings-description" xalign={0} wrap>Choose your microphone and adjust its input volume.</Label></Box><Button id="audio-refresh" sensitive={!busy} tooltip="Refresh microphones" onClicked={() => {void refresh();}}><Image iconName="view-refresh-symbolic" pixelSize={16} /></Button></Box>
+        {error && <Label id="audio-error" className="settings-error-banner" wrap xalign={0}>{error}</Label>}
+        {!state && !error && <Label className="settings-description" xalign={0}>Finding microphones…</Label>}
+        {state && deviceCard('source', state.inputs, state.defaultInput)}
+    </Box>;
+    return <Box orientation="vertical" spacing={18}>
+        <Box spacing={12}><Box orientation="vertical" spacing={4} expand><Label className="section-heading" xalign={0}>Sound &amp; volume</Label><Label className="settings-description" xalign={0}>Your devices and application audio, in one place.</Label></Box><Button id="audio-refresh" sensitive={!busy} tooltip="Refresh audio devices" onClicked={() => {void refresh();}}><Image iconName="view-refresh-symbolic" pixelSize={16} /></Button></Box>
+        {error && <Label id="audio-error" className="settings-error-banner" wrap xalign={0}>{error}</Label>}
+        {!state && !error && <Label className="settings-description" xalign={0}>Finding audio devices…</Label>}
+        {state && <>{deviceCard('sink', state.outputs, state.defaultOutput)}{afterOutput}{deviceCard('source', state.inputs, state.defaultInput)}
+            <Box className="settings-card system-card" orientation="vertical" spacing={16}><Label className="section-heading" xalign={0}>Applications</Label><Label className="settings-description" xalign={0} wrap>Adjust each app while it is playing audio.</Label>{state.applications.map(item => <Box key={item.id} className="audio-app-row" orientation="vertical" spacing={10}><Box spacing={12}><Image iconName="multimedia-volume-control-symbolic" pixelSize={20} /><Label className="settings-field-title" expand xalign={0}>{item.title}</Label></Box><AudioLevel item={item} kind="sink-input" busy={busy} action={action} backend={backend} /><ComboBoxText id={`audio-route-${item.id}`} sensitive={!busy} activeId={String(item.device)} items={state.outputs.map(output => ({id: String(output.id), text: output.title}))} onChanged={widget => {const id = widget.get_active_id(); if (id && Number(id) !== item.device) action(() => backend.route(item.id, Number(id)));}} /></Box>)}{!state.applications.length && <Box className="audio-empty" orientation="vertical" spacing={9}><Image iconName="audio-x-generic-symbolic" pixelSize={28} /><Label className="settings-description" wrap>No apps are playing audio right now.</Label></Box>}</Box>
+        </>}
+    </Box>;
+}

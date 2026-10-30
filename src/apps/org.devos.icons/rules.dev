@@ -1,0 +1,27 @@
+# Icon pack and style rules of the Icons settings without std imports, so the .devx page and fa.dev share them
+# (same data as PACKS, STYLES, PACK_STYLES and PACK_TITLES in fa-icons.ts).
+
+fn packs():Vec<str> { return Vec<str>("classic","duotone","sharp","sharp-duotone","chisel","etch","graphite","jelly","mosaic","notdog","pixel","slab","thumbprint","utility","vellum","whiteboard") }
+fn titles():Vec<str> { return Vec<str>("Classic","Duotone","Sharp","Sharp Duotone","Chisel","Etch","Graphite","Jelly","Mosaic","Notdog","Pixel","Slab","Thumbprint","Utility","Vellum","Whiteboard") }
+fn styles():Vec<str> { return Vec<str>("solid","regular","light","thin") }
+fn packTitle(pack:str):str { let all = packs(); for i in 0..(all.len() as i64) { if all[i] == pack { return titles()[i] } }; return pack }
+fn contains(list:Vec<str>, value:str):bool { for item in list { if item == value { return true } }; return false }
+fn isPack(value:str):bool { return contains(packs(),value) }
+fn isStyle(value:str):bool { return contains(styles(),value) }
+# Styles that exist on disk for each pack.
+fn packStyles(pack:str):Vec<str> {
+    if pack == "classic" || pack == "duotone" || pack == "sharp" || pack == "sharp-duotone" { return styles() }
+    if pack == "etch" || pack == "mosaic" || pack == "notdog" || pack == "utility" || pack == "vellum" || pack == "whiteboard" { return Vec<str>("solid") }
+    if pack == "graphite" { return Vec<str>("thin") }
+    if pack == "thumbprint" { return Vec<str>("light") }
+    return Vec<str>("regular")
+}
+fn hasCombination(pack:str, style:str):bool { return isPack(pack) && contains(packStyles(pack),style) }
+# Styles ordered by weight distance from `style`, ties in styles() order.
+fn nearest(style:str):Vec<str> {
+    let all = styles(); let at = 0
+    for i in 0..(all.len() as i64) { if all[i] == style { at = i } }
+    let out = Vec<str>()
+    for distance in 0..4 { for i in 0..(all.len() as i64) { let gap = i > at ? i - at : at - i; if gap == distance { out.push(all[i]) } } }
+    return out
+}

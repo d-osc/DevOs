@@ -1,0 +1,99 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+# A stand-in for bin/dev-os-network-settings: logs each request (last.<action>) and answers reply.<action> or reply.list. It never
+# touches NetworkManager, rfkill, nmcli or a real connection.
+fn fake(directory:str) {
+    fs.writeFileSync(directory + "/dev-os-network-settings","use \"std/io\"\nuse \"std/fs\"\nuse \"std/json\"\nuse \"std/process\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    let action = json.string(json.get(json.parse(raw),\"action\"))\n    fs.writeFileSync(dir + \"/last.\" + action,raw)\n    let own = dir + \"/reply.\" + action\n    print(fs.readFileSync(fs.existsSync(own) ? own : dir + \"/reply.list\",\"utf8\"))\n    return 0\n}\nreturn main()\n")
+}
+fn ip(addresses:str, dns:str, gateway:str):str { return "{\"addresses\":[" + addresses + "],\"dns\":[" + dns + "],\"gateway\":\"" + gateway + "\"}" }
+fn adapter(index:str, name:str, type:str, state:str, ap:str, v4:str):str {
+    return "{\"path\":\"/org/freedesktop/NetworkManager/Devices/" + index + "\",\"name\":\"" + name + "\",\"type\":" + type + ",\"state\":" + state + ",\"managed\":true,\"mtu\":1500,\"mac\":\"AA:BB:CC:00:00:0" + index + "\",\"driver\":\"drv" + index + "\",\"ap\":" + ap + ",\"ipv4\":" + v4 + ",\"ipv6\":" + ip("","","") + "}"
+}
+fn snapshot():str {
+    return "{\"ok\":true,\"available\":true,\"airplane\":false,\"radioError\":\"\",\"connectivity\":4,\"radios\":[{\"id\":0,\"type\":\"wlan\",\"device\":\"phy0\",\"soft\":\"unblocked\",\"hard\":\"unblocked\"},{\"id\":1,\"type\":\"bluetooth\",\"device\":\"hci0\",\"soft\":\"blocked\",\"hard\":\"unblocked\"}],\"adapters\":[" + adapter("3","lo","14","100","false",ip("\"127.0.0.1/8\"","","")) + "," + adapter("2","wlan0","2","30","true",ip("","","")) + "," + adapter("1","eth0","1","100","false",ip("\"10.0.0.5/24\"","\"1.1.1.1\",\"9.9.9.9\"","10.0.0.1")) + "],\"profiles\":[{\"id\":\"u1\",\"path\":\"/p1\",\"name\":\"Work VPN\",\"type\":\"vpn\",\"activePath\":\"\",\"active\":false,\"hotspot\":false,\"ownHotspot\":false},{\"id\":\"u2\",\"path\":\"/p2\",\"name\":\"Home WG\",\"type\":\"wireguard\",\"activePath\":\"/a\",\"active\":true,\"hotspot\":false,\"ownHotspot\":false},{\"id\":\"u3\",\"path\":\"/p3\",\"name\":\"Cafe Wi-Fi\",\"type\":\"802-11-wireless\",\"activePath\":\"\",\"active\":false,\"hotspot\":false,\"ownHotspot\":false}]}"
+}
+fn rig():str { let d = temporary(); fake(d); fs.writeFileSync(d + "/reply.list",snapshot()); return d }
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory)
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/network-pages.dev","--",t.root()),env,input,150000)))
+}
+fn sent(directory:str, action:str):json.Value { return json.parse(fs.readFileSync(directory + "/last." + action,"utf8")) }
+fn logged(directory:str, action:str):bool { return fs.existsSync(directory + "/last." + action) }
+
+test.case("the NetworkManager snapshot becomes one frame: radios, adapters (links first) and profiles, without secrets",fn() {
+    let d = rig()
+    let all = records(worker(d,"{\"action\":\"list\"}\n")); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"W") && strings.equal(h[1],"1") && strings.equal(h[2],"0") && strings.equal(h[3],"") && strings.equal(h[4],"4") && strings.charLength(h[5]) == 12,"Header wrong: " + all[0])
+    test.expect(strings.equal(all[1],"R\t0\twlan\tphy0\tunblocked\tunblocked") && strings.equal(all[2],"R\t1\tbluetooth\thci0\tblocked\tunblocked"),"Radio records wrong")
+    let names = Vec<str>(); let profiles = Vec<str>(); let eth = ""
+    for record in all { let c = cells(record); if strings.equal(c[0],"A") { names.push(c[2]); if strings.equal(c[2],"eth0") { eth = record } }; if strings.equal(c[0],"P") { profiles.push(c[2]) } }
+    test.expect(strings.equal(strings.join(names,","),"eth0,wlan0,lo"),"Adapters not ordered wired, Wi-Fi, then others: " + strings.join(names,","))
+    test.expect(strings.contains(eth,"\t10.0.0.5/24\t10.0.0.1\t1.1.1.1, 9.9.9.9\t"),"Adapter addresses wrong: " + eth)
+    test.expect(strings.equal(strings.join(profiles,","),"Work VPN,Home WG,Cafe Wi-Fi"),"Profile records wrong")
+    test.expect(!strings.contains(worker(d,"{\"action\":\"list\"}\n"),"password"),"A secret field appeared in a frame")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("requests are checked here and forwarded to the helper as exact payloads",fn() {
+    let d = rig()
+    let input = "{\"action\":\"airplane\",\"enabled\":true}\n{\"action\":\"vpn-import\",\"type\":\"wireguard\",\"file\":\"/home/me/a.conf\"}\n{\"action\":\"vpn-connect\",\"id\":\"u1\",\"username\":\"me\",\"password\":\"pw\"}\n{\"action\":\"vpn-disconnect\",\"id\":\"u2\"}\n{\"action\":\"vpn-remove\",\"id\":\"u1\"}\n{\"action\":\"hotspot-start\",\"device\":\"/org/freedesktop/NetworkManager/Devices/2\",\"ssid\":\"DevOs Hotspot\",\"password\":\"abcd1234\"}\n{\"action\":\"hotspot-stop\",\"id\":\"u3\"}\n{\"action\":\"adapter-disconnect\",\"device\":\"/org/freedesktop/NetworkManager/Devices/1\"}\n{\"action\":\"adapter-connect\",\"device\":\"/org/freedesktop/NetworkManager/Devices/2\"}\n{\"action\":\"connectivity-check\"}\n{\"action\":\"radios\"}\n"
+    let lines = strings.split(worker(d,input),"\n")
+    test.expect(lines.len() == 11,"Expected one frame per request: ${lines.len()}")
+    for i in 0..11 { test.expect(strings.startsWith(lines[i],"W\t"),"Request ${i} was refused: " + lines[i]) }
+    test.expect(json.bool(json.get(sent(d,"airplane"),"enabled")) && strings.equal(json.string(json.get(sent(d,"vpn-import"),"type")),"wireguard") && strings.equal(json.string(json.get(sent(d,"vpn-import"),"file")),"/home/me/a.conf"),"Airplane or import payload wrong")
+    test.expect(strings.equal(json.string(json.get(sent(d,"vpn-connect"),"username")),"me") && strings.equal(json.string(json.get(sent(d,"vpn-connect"),"password")),"pw") && strings.equal(json.string(json.get(sent(d,"vpn-connect"),"id")),"u1"),"VPN connect payload wrong")
+    test.expect(strings.equal(json.string(json.get(sent(d,"hotspot-start"),"ssid")),"DevOs Hotspot") && strings.equal(json.string(json.get(sent(d,"hotspot-start"),"password")),"abcd1234") && strings.equal(json.string(json.get(sent(d,"adapter-connect"),"device")),"/org/freedesktop/NetworkManager/Devices/2"),"Hotspot or adapter payload wrong")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad input never reaches the helper",fn() {
+    let d = rig()
+    let long = strings.replaceAll("0123456789","0123456789","0123456789012345678901234567890123")
+    let input = "{\"action\":\"airplane\",\"enabled\":\"yes\"}\n{\"action\":\"airplane\"}\n{\"action\":\"vpn-import\",\"type\":\"ssh\",\"file\":\"/x\"}\n{\"action\":\"vpn-import\",\"type\":\"wireguard\",\"file\":\"relative.conf\"}\n{\"action\":\"vpn-import\",\"type\":\"wireguard\",\"file\":\"/a\\nb\"}\n{\"action\":\"vpn-connect\",\"id\":\"\"}\n{\"action\":\"vpn-connect\",\"id\":\"u1\",\"username\":\"a\\nb\"}\n{\"action\":\"vpn-connect\",\"id\":\"u1\",\"password\":\"a\\rb\"}\n{\"action\":\"vpn-remove\"}\n{\"action\":\"hotspot-start\",\"device\":\"/x\",\"ssid\":\"\",\"password\":\"abcd1234\"}\n{\"action\":\"hotspot-start\",\"device\":\"/x\",\"ssid\":\"" + long + "\",\"password\":\"abcd1234\"}\n{\"action\":\"hotspot-start\",\"device\":\"/x\",\"ssid\":\"ok\",\"password\":\"short\"}\n{\"action\":\"hotspot-start\",\"device\":\"/x\",\"ssid\":\"ok\",\"password\":\"สวัสดีครับ123\"}\n{\"action\":\"hotspot-start\",\"ssid\":\"ok\",\"password\":\"abcd1234\"}\n{\"action\":\"hotspot-stop\"}\n{\"action\":\"adapter-connect\"}\n{\"action\":\"settings\"}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,input),"\n")
+    test.expect(lines.len() == 19,"Expected one frame per request: ${lines.len()}")
+    for i in 0..19 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    for action in Vec<str>("airplane","vpn-import","vpn-connect","vpn-remove","hotspot-start","hotspot-stop","adapter-connect","settings") { test.expect(!logged(d,action),action + " reached the helper") }
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("helper failures are explained and the real helper's refusal (no NetworkManager here) is passed on",fn() {
+    let d = rig()
+    fs.writeFileSync(d + "/reply.list","{\"ok\":false,\"error\":\"NetworkManager is not running.\"}")
+    test.expect(strings.equal(worker(d,"{\"action\":\"list\"}\n"),"E\tNetworkManager is not running."),"A helper error was not passed on")
+    fs.writeFileSync(d + "/reply.list","garbage")
+    test.expect(strings.contains(worker(d,"{\"action\":\"list\"}\n"),"did not answer"),"A silent helper was not reported")
+    let out = strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/network-pages.dev","--",t.root()),Map<str,str>(),"{\"action\":\"radios\"}\n",150000)))
+    test.expect(strings.startsWith(out,"W\t") || strings.startsWith(out,"E\t"),"The real helper did not answer: " + out)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+fn page(name:str, expected:str):str {
+    let executable = t.root() + "/build/react-devlang/tests/network-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_NETWORK_SMOKE",name); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","network-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),expected),name + " page: " + t.out(done) + " / " + t.err(done))
+    return d
+}
+test.case("native Settings VPN page connects a profile after asking for credentials, under real GTK",fn() {
+    let d = page("vpn","PASS native VPN page connected")
+    test.expect(strings.equal(json.string(json.get(sent(d,"vpn-connect"),"id")),"u1"),"The page connected the wrong profile")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("native Settings hotspot, airplane and advanced pages work under real GTK",fn() {
+    let hotspot = page("hotspot","PASS native hotspot page started")
+    test.expect(strings.equal(json.string(json.get(sent(hotspot,"hotspot-start"),"ssid")),"DevOs Hotspot") && strings.equal(json.string(json.get(sent(hotspot,"hotspot-start"),"device")),"/org/freedesktop/NetworkManager/Devices/2") && strings.charLength(json.string(json.get(sent(hotspot,"hotspot-start"),"password"))) == 12,"The hotspot request is wrong")
+    page("airplane","PASS native Airplane page")
+    let advanced = page("advanced","PASS native Advanced network page checked")
+    test.expect(logged(advanced,"connectivity-check"),"The page did not ask for a connectivity check")
+    tool.exec(Vec<str>("rm","-rf",hotspot,advanced))
+})
+return t.finish()

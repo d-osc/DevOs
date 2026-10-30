@@ -1,0 +1,163 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.updates/protocol.dev" as proto
+use "../src/apps/org.devos.updates/manifest.dev" as m
+use "../src/apps/org.devos.updates/package.dev" as pkg
+use "../src/apps/org.devos.updates/system.dev" as sysd
+use "../src/apps/org.devos.updates/helper.dev" as helper
+use "../src/apps/org.devos.updates/install.dev" as inst
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn sh(script:str) { tool.checked(Vec<str>("sh","-c",script),Map<str,str>(),"",120000) }
+fn machine():str { return proto.platform(strings.trim(tool.exec(Vec<str>("uname","-m")))) }
+fn put(file:str, content:str, executable:bool) {
+    sh("mkdir -p \"$(dirname '" + file + "')\"")
+    fs.writeFileSync(file,content)
+    if executable { tool.exec(Vec<str>("chmod","755",file)) }
+}
+fn sha(file:str):str { return pkg.sha256(file) }
+fn entry(path:str, file:str, mode:str):json.Value { return {path:path,sha256:sha(file),size:inst.fileSize(file),mode:mode} }
+
+# A fake machine for the real helper: a root tree, an ESP, state, and no UEFI variables (in-place mode).
+struct Rig { base: str, root: str, esp: str, state: str, command: Vec<str> }
+fn rig():Rig {
+    let base = temporary(); let root = base + "/root"; let esp = base + "/esp"; let state = base + "/state"
+    put(root + "/usr/bin/hello","old hello\n",true); put(root + "/usr/bin/gone","will be removed\n",true)
+    put(root + "/usr/lib/firmware/a.bin","old firmware\n",false); put(root + "/usr/lib/modules/6.17.0-old/kernel.ko","old module\n",false)
+    put(esp + "/EFI/DEVOS/DEVOS.EFI","OLD UKI",false); put(esp + "/EFI/BOOT/BOOTAA64.EFI","OLD UKI",false); put(esp + "/EFI/BOOT/BOOTX64.EFI","OLD UKI",false)
+    put(base + "/os-release","ID=devos\nVERSION_ID=\"0.3.0\"\n",false)
+    let command = Vec<str>("env","DEVOS_SYS_ROOT=" + root,"DEVOS_SYS_ESP=" + esp,"DEVOS_SYS_STATE=" + state,"DEVOS_SYS_KEYS=" + base + "/nokeys","DEVOS_SYS_LIVE=0","DEVOS_SYS_EFIBOOTMGR=none","DEVOS_SYS_ESP_SOURCE=/dev/test1","DEVOS_SYS_UNAME_R=6.17.0-old","DEVOS_SYS_BOOT_ID=boot-1","DEVOS_SYS_ALLOW_USER=1","DEVOS_SYS_OSRELEASE=" + base + "/os-release","DEVOS_SYS_FREE_KB=100000000","sh",t.root() + "/bin/dev-os-system-update")
+    return Rig(base,root,esp,state,command)
+}
+fn ctx(r:Rig, api:str):inst.Ctx { return inst.Ctx(r.base + "/updates","/nonexistent-keys","0.2.0","/x",-1,false,api,inst.Sys(r.command,Vec<str>("true"))) }
+# dev-os-system-<platform>.tar.gz and its description, built from real files the way make-system-bundle does.
+fn bundle(base:str, version:str, site:str):str {
+    let stage = base + "/stage-" + version
+    put(stage + "/dev-os-system/esp/EFI/DEVOS/DEVOS.EFI","NEW UKI " + version,false)
+    put(stage + "/dev-os-system/root/usr/bin/hello","new hello " + version + "\n",true)
+    put(stage + "/dev-os-system/root/usr/lib/firmware/a.bin","new firmware\n",false)
+    put(stage + "/dev-os-system/root/usr/lib/modules/6.18.0-new/kernel.ko","new module\n",false)
+    let d = stage + "/dev-os-system"
+    let esp = json.array(); esp = json.push(esp,entry("EFI/DEVOS/DEVOS.EFI",d + "/esp/EFI/DEVOS/DEVOS.EFI","644"))
+    let root = json.array()
+    root = json.push(root,entry("usr/bin/hello",d + "/root/usr/bin/hello","755")); root = json.push(root,entry("usr/lib/firmware/a.bin",d + "/root/usr/lib/firmware/a.bin","644")); root = json.push(root,entry("usr/lib/modules/6.18.0-new/kernel.ko",d + "/root/usr/lib/modules/6.18.0-new/kernel.ko","644"))
+    let meta = {format:1,kind:"system",version:version,platform:machine(),kernel:"6.18.0-new",minCompatible:"0.0.0",components:json.parse("[\"kernel\",\"initramfs\",\"bootloader\",\"firmware\",\"packages\"]"),esp:esp,root:root,remove:json.parse("[\"usr/bin/gone\"]")}
+    let parsed = sysd.parseMeta(meta,machine())
+    fs.writeFileSync(d + "/system.json",json.stringify(meta)); fs.writeFileSync(d + "/system.list",sysd.systemList(parsed))
+    sh("mkdir -p '" + site + "' && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf '" + site + "/dev-os-system-" + machine() + ".tar.gz' -C '" + stage + "' dev-os-system && cp '" + d + "/system.json' '" + site + "/dev-os-system-" + machine() + ".json'")
+    return site + "/dev-os-system-" + machine() + ".tar.gz"
+}
+fn text(path:str):str { return fs.readFileSync(path,"utf8") }
+fn leftovers(root:str):str { return strings.trim(tool.exec(Vec<str>("sh","-c","ls -A '" + root + "' '" + root + "/releases' 2>/dev/null | grep -c -e staging -e verify -e install.lock || true"))) }
+
+test.case("system update descriptions are validated like the TypeScript format",fn() {
+    test.expect(sysd.okEspPath("EFI/DEVOS/DEVOS.EFI") && !sysd.okEspPath("EFI/DEVOS/x.txt") && !sysd.okEspPath("EFI/BOOT/BOOTAA64.EFI") && !sysd.okEspPath("EFI/DEVOS/../x.EFI"),"ESP path rules wrong")
+    test.expect(sysd.okRootPath("usr/bin/hello") && sysd.okRootPath("usr/lib/firmware/a-b_c.bin") && sysd.okRootPath("usr/share/x/y+z@1"),"Allowed root paths refused")
+    for bad in Vec<str>("etc/passwd","usr/bin/../../etc/x","usr/bin//x","usr/local/bin/x","usr/libexec/devos-system-update","usr/share/polkit-1/rules.d/x","usr/lib/polkit-1/x","usr/lib/systemd/system/devos-system-x.service","usr/bin/","usr/bin/a b") { test.expect(!sysd.okRootPath(bad),"Allowed " + bad) }
+    let work = temporary()
+    let source = bundle(work,"0.4.0",work + "/site")
+    let meta = json.parse(text(work + "/stage-0.4.0/dev-os-system/system.json"))
+    let ok = sysd.parseMeta(meta,machine())
+    test.expect(strings.equal(ok.error,"") && strings.equal(ok.version,"0.4.0") && ok.esp.len() == 1 && ok.root.len() == 3 && ok.remove.len() == 1 && strings.equal(strings.join(sysd.deriveComponents(ok.esp,ok.root),","),"kernel,initramfs,bootloader,firmware,packages"),"Valid description refused: " + ok.error)
+    let offer = sysd.offer(ok)
+    test.expect(offer.found && offer.files == 4 && offer.size > 0 && strings.equal(offer.kernel,"6.18.0-new"),"Offer wrong")
+    let list = sysd.systemList(ok)
+    test.expect(strings.startsWith(list,"format 1\nversion 0.4.0\n") && strings.contains(list,"F esp 644 ") && strings.contains(list,"\nR usr/bin/gone\n"),"The helper's line list is wrong")
+    test.expect(!strings.equal(sysd.parseMeta(meta,machine() == "linux-x64" ? "linux-arm64" : "linux-x64").error,""),"Another platform accepted")
+    test.expect(!strings.equal(sysd.parseMeta(json.set(meta,"components",json.parse("[\"kernel\",\"rootkit\"]")),"").error,""),"Unknown component accepted")
+    test.expect(!strings.equal(sysd.parseMeta(json.set(meta,"remove",json.parse("[\"etc/shadow\"]")),"").error,""),"Removal outside the allow-list accepted")
+    test.expect(!strings.equal(sysd.parseMeta(json.set(meta,"kernel","6.1 && rm"),"").error,""),"Odd kernel string accepted")
+    let noImage = json.set(meta,"esp",json.parse("[" + json.stringify(entry("EFI/DEVOS/OTHER.EFI",work + "/stage-0.4.0/dev-os-system/esp/EFI/DEVOS/DEVOS.EFI","644")) + "]"))
+    test.expect(strings.contains(sysd.parseMeta(noImage,"").error,"must contain EFI/DEVOS/DEVOS.EFI"),"A boot image update without DEVOS.EFI accepted")
+    let bad = json.set(meta,"root",json.parse("[" + json.stringify(entry("usr/lib/polkit-1/evil",work + "/stage-0.4.0/dev-os-system/root/usr/bin/hello","755")) + "]"))
+    test.expect(strings.contains(sysd.parseMeta(bad,"").error,"not allowed"),"A polkit path in the bundle accepted")
+    let one = entry("usr/bin/hello",work + "/stage-0.4.0/dev-os-system/root/usr/bin/hello","755")
+    test.expect(strings.contains(sysd.parseMeta(json.set(meta,"root",json.parse("[" + json.stringify(one) + "," + json.stringify(one) + "]")),"").error,"Duplicate"),"Duplicate accepted")
+    let info = sysd.parseInfo(json.parse("{\"ok\":true,\"version\":\"0.3.0\",\"kernel\":\"6.17\",\"machine\":\"aarch64\",\"live\":false,\"efi\":true,\"esp\":true,\"safeBoot\":true,\"pending\":\"\",\"canRollback\":true,\"lastError\":\"x\",\"signed\":false}"))
+    test.expect(strings.equal(info.error,"") && info.safeBoot && info.canRollback && strings.equal(info.lastError,"x"),"Status parsing wrong")
+    test.expect(!strings.equal(sysd.parseInfo(json.parse("{\"ok\":false,\"error\":\"nope\"}")).error,"") && strings.equal(sysd.parseInfo(json.parse("{\"ok\":false,\"error\":\"nope\"}")).error,"nope"),"Helper error not reported")
+    tool.exec(Vec<str>("rm","-rf",work))
+})
+test.case("the helper is reached, refused or denied approval with clear messages",fn() {
+    test.expect(strings.contains(helper.call(Vec<str>(),Vec<str>("status"),5).error,"not installed"),"A missing helper was not reported")
+    let denied = helper.call(Vec<str>("sh","-c","echo 'Error executing command as another user: Not authorized' >&2; exit 126","sh"),Vec<str>(),5)
+    test.expect(strings.contains(denied.error,"Administrator approval was cancelled"),"A denied approval was not recognised: " + denied.error)
+    let silent = helper.call(Vec<str>("sh","-c","exit 3","sh"),Vec<str>(),5)
+    test.expect(strings.contains(silent.error,"did not answer"),"A silent helper was not reported")
+    let slow = helper.call(Vec<str>("sh","-c","sleep 30","sh"),Vec<str>(),1)
+    test.expect(strings.contains(slow.error,"took too long"),"A stuck helper was not stopped")
+    let good = helper.call(Vec<str>("sh","-c","echo '{\"ok\":true,\"version\":\"1\"}'","sh"),Vec<str>(),5)
+    test.expect(strings.equal(good.error,"") && strings.equal(json.string(json.get(good.answer,"version")),"1"),"An answer was lost")
+})
+test.case("a system update file goes through the real helper, waits for a restart and can be cancelled",fn() {
+    let r = rig()
+    let file = bundle(r.base,"0.4.0",r.base + "/site")
+    let state = inst.systemState(ctx(r,""))
+    test.expect(state.supported && strings.equal(state.version,"0.3.0") && strings.equal(state.pending,""),"Status through the helper wrong: " + state.reason)
+    let before = tool.exec(Vec<str>("sh","-c","cd '" + r.root + "' && find . -type f | sort | xargs sha256sum"))
+    let out = inst.installFile(ctx(r,""),file)
+    test.expect(strings.equal(out.error,"") && out.restart && strings.contains(out.message,"System update 0.4.0 is installed"),"The helper refused a valid bundle: " + out.error)
+    test.expect(strings.equal(text(r.root + "/usr/bin/hello"),"new hello 0.4.0\n") && !fs.existsSync(r.root + "/usr/bin/gone") && strings.equal(text(r.root + "/usr/lib/firmware/a.bin"),"new firmware\n"),"System files were not updated")
+    test.expect(strings.equal(text(r.esp + "/EFI/DEVOS/DEVOS.EFI"),"NEW UKI 0.4.0") && strings.equal(text(r.esp + "/EFI/DEVOS/DEVOS.EFI.prev"),"OLD UKI"),"Boot image not replaced in place with the old one kept")
+    test.expect(strings.equal(leftovers(r.base + "/updates"),"0"),"Leftovers after a system update")
+    let waiting = inst.systemState(ctx(r,""))
+    test.expect(strings.equal(waiting.pending,"0.4.0"),"Status does not report the pending update")
+    test.expect(strings.contains(inst.installFile(ctx(r,""),file).error,"waiting for a restart"),"A second system update was applied")
+    let cancelled = inst.systemAction(ctx(r,""),"cancel")
+    test.expect(strings.equal(cancelled.error,"") && strings.contains(cancelled.message,"cancelled") && !cancelled.restart,"Cancel failed: " + cancelled.error)
+    test.expect(strings.equal(tool.exec(Vec<str>("sh","-c","cd '" + r.root + "' && find . -type f | sort | xargs sha256sum")),before) && strings.equal(text(r.esp + "/EFI/DEVOS/DEVOS.EFI.prev"),"OLD UKI"),"Cancel did not restore the system files (in this no-UEFI mode the helper keeps the old boot image as .prev)")
+    test.expect(!strings.equal(inst.systemAction(ctx(r,""),"rollback").error,""),"A rollback with nothing to roll back succeeded")
+    # A bundle the helper rejects (checksum of the archive) changes nothing.
+    sh("printf junk >> '" + file + "'")
+    let tampered = inst.installFile(ctx(r,""),file)
+    test.expect(!strings.equal(tampered.error,"") && strings.equal(text(r.root + "/usr/bin/hello"),"old hello\n"),"A damaged bundle was applied")
+    tool.exec(Vec<str>("rm","-rf",r.base))
+})
+fn asset(name:str, url:str, size:i64, hash:str):m.Asset { return m.Asset(true,url,size,hash,name) }
+test.case("a system update is offered from the release, downloaded, verified and handed over",fn() {
+    let r = rig(); let site = r.base + "/site"
+    let file = bundle(r.base,"0.4.0",site)
+    let api = "http://127.0.0.1:18761"
+    let name = "dev-os-system-" + machine() + ".tar.gz"; let metaName = "dev-os-system-" + machine() + ".json"
+    let none = m.Asset(false,"",0,"","")
+    let extras = m.Extras(none,none,none,"",asset(name,api + "/" + name,inst.fileSize(site + "/" + name),sha(site + "/" + name)),asset(metaName,api + "/" + metaName,inst.fileSize(site + "/" + metaName),sha(site + "/" + metaName)))
+    tool.exec(Vec<str>("sh","-c","cd '" + site + "' && (python3 -m http.server 18761 --bind 127.0.0.1 >/dev/null 2>&1 &)"))
+    tool.exec(Vec<str>("sleep","1"))
+    let c = ctx(r,api)
+    let checked = inst.checkSystem(c,extras)
+    test.expect(checked.supported && checked.offer.found && strings.equal(checked.offer.version,"0.4.0") && strings.contains(checked.offer.components,"firmware"),"The system update was not offered: " + checked.lastError)
+    let wrongMeta = m.Extras(none,none,none,"",extras.system,asset(metaName,api + "/" + metaName,inst.fileSize(site + "/" + metaName),strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","d")))
+    test.expect(!inst.checkSystem(c,wrongMeta).offer.found && strings.contains(inst.checkSystem(c,wrongMeta).lastError,"does not match"),"A description that does not match its digest was trusted")
+    let wrong = m.Extras(none,none,none,"",asset(name,api + "/" + name,inst.fileSize(site + "/" + name),strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","e")),extras.systemMeta)
+    let refused = inst.installSystem(c,wrong)
+    test.expect(strings.contains(refused.error,"SHA-256 verification of the system update failed") && strings.equal(text(r.root + "/usr/bin/hello"),"old hello\n") && strings.equal(leftovers(r.base + "/updates"),"0"),"A bundle with the wrong digest was handed to the helper: " + refused.error)
+    let noDigest = m.Extras(none,none,none,"",asset(name,api + "/" + name,inst.fileSize(site + "/" + name),""),extras.systemMeta)
+    let live = inst.Ctx(r.base + "/updates","/nonexistent-keys","0.2.0","/x",-1,true,api,inst.Sys(r.command,Vec<str>("true")))
+    test.expect(strings.contains(inst.installSystem(live,extras).error,"Live USB"),"A Live USB was updated")
+    let done = inst.installSystem(c,extras)
+    test.expect(strings.equal(done.error,"") && done.restart && strings.equal(text(r.root + "/usr/bin/hello"),"new hello 0.4.0\n") && strings.equal(inst.systemState(c).pending,"0.4.0"),"The system update was not installed: " + done.error)
+    test.expect(strings.contains(inst.installSystem(c,extras).error,"waits for a restart"),"A pending update was installed again")
+    test.expect(strings.equal(inst.restartComputer(c),"") && !strings.equal(inst.restartComputer(inst.Ctx(r.base,"","0","/x",-1,false,"",inst.Sys(r.command,Vec<str>("false")))),""),"Restart command handling wrong")
+    tool.run(Vec<str>("pkill","-f","http.server 18761"),Map<str,str>(),"",10000)
+    tool.exec(Vec<str>("rm","-rf",r.base))
+})
+test.case("native Settings Updates page installs a system update file through the helper under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/updates-system-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let r = rig()
+    let file = bundle(r.base,"0.4.0",r.base + "/site")
+    let command = json.array(); for part in r.command { command = json.push(command,part) }
+    let env = Map<str,str>()
+    env.set("DEVOS_UPDATES_API","http://127.0.0.1:1"); env.set("DEVOS_UPDATES_ROOT",r.base + "/updates"); env.set("DEVOS_PREFERENCES_DIR",r.base + "/prefs")
+    env.set("DEVOS_UPDATES_SYSTEM_COMMAND",json.stringify(command)); env.set("DEVOS_UPDATES_REBOOT_COMMAND","[\"true\"]")
+    env.set("DEVOS_UPDATES_SMOKE_FILE",file); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","updates-system","xvfb-run","-a",executable),env,"",180000)
+    t.success(done); t.contains(t.out(done),"PASS native Updates page installed a file: ready no-error pending=0.4.0 restart=yes")
+    test.expect(strings.equal(text(r.root + "/usr/bin/hello"),"new hello 0.4.0\n") && !fs.existsSync(r.root + "/usr/bin/gone"),"The page did not hand the bundle to the helper")
+    tool.exec(Vec<str>("rm","-rf",r.base))
+})
+return t.finish()

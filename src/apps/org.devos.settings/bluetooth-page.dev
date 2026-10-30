@@ -1,0 +1,128 @@
+#!/usr/bin/env d
+# Data worker of the native Bluetooth page. It runs bin/dev-os-devices-linux (BlueZ over D-Bus; inside WSL the helper still lists what Linux
+# can see and opens the Windows pages), checks the shape of every request and of every answer, and turns the state into a frame. Pairing is
+# not here: it needs a BlueZ agent (org.bluez.Agent1) that the JS page still provides. One JSON request per line on stdin:
+#   {"action":"get"}   {"action":"scan"}   {"action":"power","id":"/org/bluez/hci0","powered":true}   {"action":"settings","page":"bluetooth"}
+#   {"action":"connect"|"disconnect"|"forget","id":"/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"}
+# Frame (records separated by ASCII 30; text cells never contain tabs, newlines or ASCII 30):
+#   V host bluetoothError message
+#   A id name powered                                   (adapters)
+#   D id adapter name named address icon paired connected   (devices, already sorted by the helper)
+#   U name vendor    (USB)      I name vendor    (input devices)
+#   E message
+# Test hooks (only with DEVOS_SETTINGS_TEST=1): DEVOS_SETTINGS_HELPERS, DEVOS_BLUETOOTH_MODE=linux|windows.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
+    return strings.replaceAll(out,rs()," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn testing():bool { return process.hasEnv("DEVOS_SETTINGS_TEST") }
+fn windows():bool {
+    if testing() && process.hasEnv("DEVOS_BLUETOOTH_MODE") { return strings.equal(process.getenv("DEVOS_BLUETOOTH_MODE"),"windows") }
+    let release = fs.existsSync("/proc/sys/kernel/osrelease") ? fs.readFileSync("/proc/sys/kernel/osrelease","utf8") : ""
+    return strings.contains(strings.toLowerCase(release),"microsoft")
+}
+struct Answer { error: str, state: json.Value }
+fn request(root:str, payload:json.Value, seconds:i64):Answer {
+    let directory = testing() && process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
+    let ran = hw.runInput(Vec<str>("d",directory + "/dev-os-devices-linux"),json.stringify(payload),seconds * 1000)
+    if ran.code == 127 { return Answer("The Bluetooth request timed out. Check the Bluetooth service.",json.null_value()) }
+    let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return Answer("The device helper returned no valid data. Check the installed desktop package.",json.null_value()) }
+    let value = result.unwrap(parsed)
+    if !bool(value,"ok") { return Answer(text(value,"error") == "" ? "The Bluetooth request failed." : text(value,"error"),json.null_value()) }
+    return Answer("",json.has(value,"state") ? json.get(value,"state") : json.null_value())
+}
+# BlueZ object paths: /org/bluez/hciN (adapter) or /org/bluez/hciN/dev_XX_XX_XX_XX_XX_XX (device).
+fn pathOk(value:str):bool {
+    if !strings.startsWith(value,"/org/bluez/hci") || strings.charLength(value) > 80 { return false }
+    for i in 0..(strings.charLength(value) as i64) { if !strings.contains("/_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",strings.substring(value,i,i + 1)) { return false } }
+    return true
+}
+fn listOf(state:json.Value, key:str):json.Value { return json.has(state,key) ? json.get(state,key) : json.null_value() }
+fn objects(state:json.Value, key:str):bool {
+    let list = listOf(state,key)
+    if !strings.equal(json.kind(list),"array") { return false }
+    for i in 0..(json.len(list) as i64) { if !strings.equal(json.kind(json.at(list,i)),"object") { return false } }
+    return true
+}
+fn frame(state:json.Value, message:str):str {
+    if !strings.equal(json.kind(state),"object") { return failure("Device settings helper returned no state.") }
+    for key in Vec<str>("adapters","devices","usb","inputs") { if !objects(state,key) { return failure("Invalid device list returned by the system.") } }
+    let out = "V\t" + (windows() ? "Windows" : "Linux") + "\t" + clean(text(state,"bluetoothError")) + "\t" + clean(message)
+    let adapters = listOf(state,"adapters")
+    for i in 0..(json.len(adapters) as i64) {
+        let a = json.at(adapters,i)
+        if !pathOk(text(a,"id")) { return failure("Invalid Bluetooth adapter returned by the system.") }
+        out = out + rs() + "A\t" + text(a,"id") + "\t" + clean(text(a,"name")) + "\t" + (bool(a,"powered") ? "1" : "0")
+    }
+    let devices = listOf(state,"devices")
+    for i in 0..(json.len(devices) as i64) {
+        let d = json.at(devices,i)
+        if !pathOk(text(d,"id")) || !pathOk(text(d,"adapter")) { return failure("Invalid Bluetooth device returned by the system.") }
+        let named = !(json.has(d,"named") && strings.equal(json.kind(json.get(d,"named")),"bool") && !json.bool(json.get(d,"named")))
+        out = out + rs() + "D\t" + text(d,"id") + "\t" + text(d,"adapter") + "\t" + clean(text(d,"name")) + "\t" + (named ? "1" : "0") + "\t" + clean(text(d,"address")) + "\t" + clean(text(d,"icon")) + "\t" + (bool(d,"paired") ? "1" : "0") + "\t" + (bool(d,"connected") ? "1" : "0")
+    }
+    let usb = listOf(state,"usb")
+    for i in 0..(json.len(usb) as i64) { let u = json.at(usb,i); out = out + rs() + "U\t" + clean(text(u,"name")) + "\t" + clean(text(u,"vendor")) }
+    let inputs = listOf(state,"inputs")
+    for i in 0..(json.len(inputs) as i64) { let u = json.at(inputs,i); out = out + rs() + "I\t" + clean(text(u,"name")) + "\t" + clean(text(u,"vendor")) }
+    return out
+}
+fn read(root:str, message:str):str {
+    let answer = request(root,{action:"get"},20)
+    if !strings.equal(answer.error,"") { return failure(answer.error) }
+    return frame(answer.state,message)
+}
+fn answer(root:str, payload:json.Value, seconds:i64, message:str):str {
+    let ran = request(root,payload,seconds)
+    if !strings.equal(ran.error,"") { return failure(ran.error) }
+    return frame(ran.state,message)
+}
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return failure("Expected an object request") }
+    let action = text(r,"action")
+    if strings.equal(action,"get") { return read(root,"") }
+    if strings.equal(action,"scan") { return answer(root,{action:"scan"},40,"") }
+    if strings.equal(action,"settings") {
+        let page = text(r,"page")
+        if !(strings.equal(page,"bluetooth") || strings.equal(page,"mouse") || strings.equal(page,"keyboard") || strings.equal(page,"printers")) { return failure("Unknown devices settings page.") }
+        let opened = request(root,{action:"settings",page:page},20)
+        if !strings.equal(opened.error,"") { return failure(opened.error) }
+        return read(root,"")
+    }
+    if strings.equal(action,"power") {
+        if !pathOk(text(r,"id")) || strings.contains(text(r,"id"),"/dev_") || !(json.has(r,"powered") && strings.equal(json.kind(json.get(r,"powered")),"bool")) { return failure("Invalid Bluetooth adapter or power state.") }
+        return answer(root,{action:"power",id:text(r,"id"),powered:bool(r,"powered")},20,"")
+    }
+    if strings.equal(action,"connect") || strings.equal(action,"disconnect") || strings.equal(action,"forget") {
+        if !pathOk(text(r,"id")) || !strings.contains(text(r,"id"),"/dev_") { return failure("Choose a Bluetooth device first.") }
+        return answer(root,{action:action,id:text(r,"id")},30,"")
+    }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

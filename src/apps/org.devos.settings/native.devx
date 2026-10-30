@@ -1,0 +1,209 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-pages-hardware.devx" as h
+use "./native-pages-system.devx" as p
+use "./native-theme-page.devx" as themeView
+use "./native-icons-page.devx" as iconsView
+use "./native-updates-page.devx" as updatesView
+use "./native-extensions-page.devx" as extensionsView
+use "./native-desktop-page.devx" as desktopView
+use "./native-system-pages.devx" as systemView
+use "./native-accounts-page.devx" as accountsView
+use "./native-network-pages.devx" as networkView
+use "./native-printers-page.devx" as printersView
+use "./native-wifi-page.devx" as wifiView
+use "./native-proxy-page.devx" as proxyView
+use "./native-bluetooth-page.devx" as bluetoothView
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_launch_shell(root:str,command:str):i32
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+
+# Native Settings: hardware pages (Battery Care, Fan Profile, Connectivity). Data and helper calls live in service.dev;
+# this window renders its presentation frames (model.dev) and sends the user's changes back. Widgets the toolkit does not
+# have yet (scales, combo boxes with ids, tabs) are why the remaining Settings pages are still the JS views.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn pageNames():Vec<str> { return Vec<str>("battery-care","fan-profile","connectivity","touchpad-gestures","microphone","keyboard","swap","speaker","language","display-care","theme","icons","updates","extensions","desktop","about","storage","power","time","mouse","keyboard-input","accounts","wifi","vpn","hotspot","airplane","proxy","advanced","bluetooth","printers","background","panel") }
+fn pageTitles():Vec<str> { return Vec<str>("Battery Care","Fan Profile","Connectivity","Touchpad","Microphone","Keyboard","Memory & Swap","Speaker","Language","Display Care","Theme","Theme icons","Updates","Apps & extensions","Desktop","About","Storage","Power & battery","Date & time","Mouse","Keyboard input","Accounts","Wi-Fi","VPN","Mobile hotspot","Airplane mode","Proxy","Advanced network settings","Bluetooth & devices","Printers & devices","Background","Panel") }
+fn pageDescriptions():Vec<str> { return Vec<str>("Keep the battery healthy and choose when it charges fully.","Choose how aggressively the device cools itself.","Prioritize the traffic that matters and connect to the best access point.","Lock the touchpad and use edge gestures.","Choose your microphone and noise canceling.","Function keys and keyboard backlight.","Compressed RAM swap, a swap file or no swap.","Noise-canceling speaker, volume booster and sound modes.","Choose your keyboard languages and how you switch between them.","OLED care, flicker-free dimming, Splendid and edge brightness.","Pick a color theme, then choose Dark, Light or Auto, which switches between them during the day.","Font Awesome shell icons, Material file icons and the GTK icon theme.","Check for Dev OS releases and see which versions are installed.","Settings of every app and extension, from its manifest.","Desktop name, panel height, clock format and the commands your session uses.","Dev OS version, device specifications and runtime information.","Disk usage and available space.","Battery status and the power mode.","Time zone, automatic time and the system clock.","Pointer speed, buttons and scrolling.","How keys repeat when you hold them down.","Your profile, GitHub sign-in and the people on this device.","Nearby networks, saved connections and signal strength.","Add and manage your VPN connections.","Share your internet connection with other devices.","Manage wireless radios and airplane mode.","PAC files, proxy servers and bypass rules.","Network adapters, IP addresses, DNS and connection status.","Connect, disconnect and manage Bluetooth accessories.","Your network printers, together in one place.","Wallpaper, widgets and the desktop menu.","Taskbar, clock and panel behavior.") }
+
+# Pages that open their own native window: the table index starts at nativePages().
+fn themeIndex():i64 { return 10 }
+fn iconsIndex():i64 { return 11 }
+fn updatesIndex():i64 { return 12 }
+fn extensionsIndex():i64 { return 13 }
+fn desktopIndex():i64 { return 14 }
+fn aboutIndex():i64 { return 15 }
+fn networkIndex():i64 { return 22 }
+fn printersIndex():i64 { return 28 }
+fn nativePages():i64 { return 30 }
+fn externalCommand(index:i64):str { return index == 30 ? "settings.background" : "settings.panel" }
+
+# The pages that are components with their own worker (flat checks: a long else-if chain exceeds the parser's nesting limit).
+fn componentPage(index:i64):ui.Node {
+    if index == themeIndex() { return themeView.page() }
+    if index == iconsIndex() { return iconsView.page() }
+    if index == updatesIndex() { return updatesView.page() }
+    if index == extensionsIndex() { return extensionsView.page() }
+    if index == desktopIndex() { return desktopView.page() }
+    if index == 15 { return systemView.about() }
+    if index == 16 { return systemView.storage() }
+    if index == 17 { return systemView.power() }
+    if index == 18 { return systemView.time() }
+    if index == 19 { return systemView.mouse() }
+    if index == 20 { return systemView.keyboard() }
+    if index == 21 { return accountsView.page() }
+    if index == 22 { return wifiView.page() }
+    if index == 23 { return networkView.vpn() }
+    if index == 24 { return networkView.hotspot() }
+    if index == 25 { return networkView.airplane() }
+    if index == 26 { return proxyView.page() }
+    if index == 27 { return networkView.advanced() }
+    if index == 28 { return bluetoothView.page() }
+    return printersView.page()
+}
+fn requestMany(pipe:i64,page:str,action:str,values:Vec<ui.Text>) {
+    let list = Vec<u8>(); let count = 0
+    for value in values { if value.bytes.len() == 0 { continue }; if count > 0 { list.push(44) }; for byte in channel.quote(value).bytes { list.push(byte) }; count = count + 1 }
+    let message = ui.concatText(Vec<ui.Text>(ui.text("{\"page\":\"${page}\",\"action\":\"${action}\",\"args\":["),ui.Text(list),ui.text("]}")))
+    if action == "get" { channel.send(pipe,message) } else { channel.command(pipe,message) }
+}
+fn request(pipe:i64,page:str,action:str,first:ui.Text,second:ui.Text) { requestMany(pipe,page,action,Vec<ui.Text>(first,second)) }
+
+fn App(context:*ui.Context):ui.Node {
+    let snapshot = ui.useText(context,ui.emptyText()); let error = ui.useText(context,ui.emptyText())
+    let page = ui.useState(context,0); let editing = ui.useState(context,-1); let busy = ui.useState(context,0); let pipe = ui.useRef(context,0)
+    let smoke = ui.useRef(context,0)
+    let draftType = ui.useText(context,ui.text("zram")); let draftPercent = ui.useState(context,100); let draftMib = ui.useState(context,0)
+    let draftAlgorithm = ui.useText(context,ui.text("zstd")); let draftSwappiness = ui.useState(context,100); let dirty = ui.useState(context,0)
+    let gigabytes = ui.useText(context,ui.emptyText())
+    let langLayouts = ui.useText(context,ui.emptyText()); let langShortcut = ui.useText(context,ui.text("alt-shift")); let langAdding = ui.useState(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root=environment("DEV_OS_ROOT"); let mode=environment("DEV_OS_THEME"); let family=environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len()==0 { unsafe { mode=rd_default_theme() } }
+        if ui.text(family).bytes.len()==0 { family="vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Settings","${root}/data/icons")
+        }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe { if rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"settings") == 0 { error.set(ui.text("Could not register the application control service.")) } }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.settings/service.dev",root,fn(value:ui.Text) {
+            busy.set(0)
+            if value.bytes.len() > 0 && value.bytes[0] == 69 {
+                let parts = channel.split(value,9); if parts.len() > 1 { error.set(parts[1]) }
+            } else { snapshot.set(value); error.set(ui.emptyText()) }
+        },fn(value:i64) {
+            pipe.set(value); request(value,pageNames()[page.get()],"get",ui.emptyText(),ui.emptyText())
+        })
+    },Vec<i64>())
+    let names = pageNames(); let titles = pageTitles()
+    let fields = channel.split(snapshot.value,9)
+    let ready = fields.len() > 1 && ui.equalText(fields[1],ui.text(names[page.value]))
+    let send = fn(action:str,first:str) { busy.set(1); request(pipe.get(),names[page.get()],action,ui.text(first),ui.emptyText()) }
+    let sendTwo = fn(action:str,first:str,second:str) { busy.set(1); request(pipe.get(),names[page.get()],action,ui.text(first),ui.text(second)) }
+    let sendMany = fn(action:str,values:Vec<ui.Text>) { busy.set(1); dirty.set(0); requestMany(pipe.get(),names[page.get()],action,values) }
+    let sendValue = fn(action:str,value:ui.Text) { busy.set(1); request(pipe.get(),names[page.get()],action,value,ui.emptyText()) }
+    let navigation = Vec<ui.Node>()
+    for i in 0..(names.len() as i64) {
+        if i == themeIndex() { let heading = ui.props(); heading.className = ui.text("settings-sidebar-title"); navigation.push(ui.withProps(ui.Label("Personalization"),heading)) }
+        if i == networkIndex() { let heading = ui.props(); heading.className = ui.text("settings-sidebar-title"); navigation.push(ui.withProps(ui.Label("Network & Internet"),heading)) }
+        if i == printersIndex() { let heading = ui.props(); heading.className = ui.text("settings-sidebar-title"); navigation.push(ui.withProps(ui.Label("Devices"),heading)) }
+        if i == aboutIndex() { let heading = ui.props(); heading.className = ui.text("settings-sidebar-title"); navigation.push(ui.withProps(ui.Label("System"),heading)) }
+        if i == nativePages() { let heading = ui.props(); heading.className = ui.text("settings-sidebar-title"); navigation.push(ui.withProps(ui.Label("Desktop"),heading)) }
+        let options = ui.named("settings-nav-"+names[i]); options.className = ui.text(i == page.value ? "settings-nav settings-nav-active" : "settings-nav")
+        navigation.push(ui.Button(options,titles[i],fn() {
+            if i >= themeIndex() && i < nativePages() { page.set(i); editing.set(-1); snapshot.set(ui.emptyText()); error.set(ui.emptyText()); return }
+            if i >= nativePages() { unsafe { rd_launch_shell(environment("DEV_OS_ROOT"),externalCommand(i)) }; return }
+            page.set(i); editing.set(-1); snapshot.set(ui.emptyText()); error.set(ui.emptyText()); request(pipe.get(),names[i],"get",ui.emptyText(),ui.emptyText())
+        }))
+    }
+    let content = Vec<ui.Node>()
+    if page.value >= themeIndex() && page.value < nativePages() { content.push(componentPage(page.value)) }
+    else if ready {
+        if page.value == 0 { content.push(h.battery(fields,true,busy.value != 0,send)) }
+        else if page.value == 1 { content.push(h.fan(fields,editing.value,true,busy.value != 0,fn(source:i64) { editing.set(source) },sendTwo)) }
+        else if page.value == 2 { for item in h.connectivity(fields,true,busy.value != 0,send) { content.push(item) } }
+        else if page.value == 3 { for item in h.touchpad(fields,true,busy.value != 0,send,sendValue) { content.push(item) } }
+        else if page.value == 4 { content.push(h.microphone(fields,true,busy.value != 0,send,sendValue)) }
+        else if page.value == 5 { for item in h.keyboard(fields,true,busy.value != 0,sendTwo) { content.push(item) } }
+        else if page.value == 9 { for item in p.displayCare(fields,true,busy.value != 0,send,sendTwo) { content.push(item) } }
+        else if page.value == 8 { for item in p.languagePage(fields,busy.value != 0,p.LanguageDraft(langLayouts,langShortcut,langAdding,dirty),sendMany) { content.push(item) } }
+        else if page.value == 7 { for item in p.speaker(fields,true,busy.value != 0,send,sendValue,sendMany) { content.push(item) } }
+        else {
+            let draft = p.SwapDraft(draftType,draftPercent,draftMib,draftAlgorithm,draftSwappiness,dirty,gigabytes)
+            for item in p.swapPage(fields,busy.value != 0,draft,sendMany) { content.push(item) }
+        }
+    } else if error.value.bytes.len() == 0 { content.push(ui.Label("Loading…")) }
+    ui.useEffect(context,fn():fn():void {
+        if dirty.get() == 0 && page.get() == 8 && fields.len() > 6 && ui.equalText(fields[1],ui.text("language")) {
+            langLayouts.set(fields[4]); langShortcut.set(fields[3]); langAdding.set(0)
+        }
+        return ui.noop
+    },Vec<i64>(snapshot.revision,page.value))
+    ui.useEffect(context,fn():fn():void {
+        if dirty.get() == 0 && page.get() == 6 && fields.len() > 18 && ui.equalText(fields[1],ui.text("swap")) {
+            draftType.set(fields[8]); draftPercent.set(channel.integer(fields[9]) == 0 && !ui.equalText(fields[9],ui.text("0")) ? -1 : channel.integer(fields[9]))
+            draftMib.set(channel.integer(fields[10])); draftAlgorithm.set(fields[11]); draftSwappiness.set(channel.integer(fields[12]))
+            gigabytes.set(ui.emptyText())
+        }
+        return ui.noop
+    },Vec<i64>(snapshot.revision,page.value))
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_THEME_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-theme") }
+        if ui.text(environment("DEVOS_ICONS_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-icons") }
+        if ui.text(environment("DEVOS_UPDATES_SMOKE")).bytes.len() > 0 || ui.text(environment("DEVOS_UPDATES_SMOKE_FILE")).bytes.len() > 0 { ui.click(context,"settings-nav-updates") }
+        if ui.text(environment("DEVOS_EXTENSIONS_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-extensions") }
+        if ui.text(environment("DEVOS_DESKTOP_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-desktop") }
+        let systemPage = environment("DEVOS_SYSTEM_SMOKE")
+        if ui.text(systemPage).bytes.len() > 0 { ui.click(context,"settings-nav-" + (systemPage == "keyboard" ? "keyboard-input" : systemPage)) }
+        if ui.text(environment("DEVOS_ACCOUNTS_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-accounts") }
+        if ui.text(environment("DEVOS_NETWORK_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-" + environment("DEVOS_NETWORK_SMOKE")) }
+        if ui.text(environment("DEVOS_PRINTERS_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-printers") }
+        if ui.text(environment("DEVOS_WIFI_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-wifi") }
+        if ui.text(environment("DEVOS_PROXY_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-proxy") }
+        if ui.text(environment("DEVOS_BLUETOOTH_SMOKE")).bytes.len() > 0 { ui.click(context,"settings-nav-bluetooth") }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_NATIVE_SMOKE")).bytes.len() > 0 && ready {
+            if smoke.get() == 0 {
+                smoke.set(1)
+                ui.click(context,"settings-nav-fan-profile")
+            } else if page.get() == 1 {
+                print("PASS native Settings hardware pages, helper service and navigation")
+                ui.close(context)
+            }
+        }
+        return ui.noop
+    },Vec<i64>(snapshot.revision))
+    return <Box vertical={false} expand spacing={0} className="settings-native">
+        <Box className="settings-sidebar" width={220} spacing={4}>
+            <Label className="settings-sidebar-title">Hardware</Label>
+            {...navigation}
+        </Box>
+        <Box expand spacing={16} className="settings-content">
+            <Box className="settings-page-header" spacing={10}>
+                <Label className="settings-eyebrow">WORKSPACE / SYSTEM</Label>
+                <Label className="heading">{titles[page.value]}</Label>
+                <Label className="settings-description">{pageDescriptions()[page.value]}</Label>
+            </Box>
+            <Scroll expand><Box className="settings-form" spacing={18}>{...content}</Box></Scroll>
+            {error.value.bytes.len() > 0 && <TextLabel id="settings-error" className="settings-error-banner" wrap value={error.value}/>}
+        </Box>
+    </Box>
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.settings.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Dev OS Settings",960,640,App) ? 0 : 1
+}

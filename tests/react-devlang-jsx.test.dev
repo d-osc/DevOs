@@ -1,0 +1,103 @@
+# Lexer, generation, import and source-map contracts; no GTK or native compiler.
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../packages/react-devlang/tools/devx/base.dev" as b
+use "../packages/react-devlang/tools/devx/parser.dev" as parser
+use "../packages/react-devlang/tools/devx/generator.dev" as generator
+use "../packages/react-devlang/tools/devx/project.dev" as project
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn source(body: str): b.Source {
+    return parser.parse("use \"react_devlang/ui\" as ui\n" + body, "example.devx", json.parse(tool.read(t.library() + "/tools/devx/entities.json")), true)
+}
+fn output(body: str): str { let parsed = source(body); return generator.transform(parsed, 0, parsed.chars.len() as i64, 0, json.object()).code.text }
+fn rejects(body: str, message: str) {
+    let checked = result.attempt(fn(): str { return output(body) })
+    test.expect(result.isErr(checked), "Expected rejection: " + body)
+    t.contains(result.message(checked), message)
+}
+
+test.case("generics, comparisons, strings and comments remain DevLang", fn() {
+    let code = "let nodes = Vec<ui.Node>()\nlet caption = \"<Box>not JSX</Box>\"\n// return <Unknown />\n# return <Unknown />\nlet compare = 1 < 2\nfn helper(c:*ui.Context,a:str,b:str):ui.Node { return ui.Label(a) }\n"
+    code = code + "let interpolation = \"" + "$" + "{fn():str { return 'inner string' }}\"\n"
+    t.equal(output(code), "use \"react_devlang/ui\" as ui\n" + code)
+})
+test.case("fragments, attributes, Unicode and HTML entities", fn() {
+    let code = output("let node = <><Box spacing={16} expand className=\"content\"><Label>It's &amp; ไทย</Label></Box></>")
+    t.contains(code, ".spacing = (16)"); t.contains(code, ".expand = (true)"); t.contains(code, "It's & ไทย"); t.contains(code, "ui.TextLabel"); t.lacks(code, "<>")
+})
+test.case("expressions balance closures, comments and braces", fn() {
+    let code = output("let node = <Button onClick={fn() {\n// } <NotATag />\nlet value = \"}\"\ndoWork(fn(): i64 { return 1 })\n}}>Run</Button>")
+    t.contains(code, "let value = \"}\""); t.contains(code, "doWork(fn(): i64 { return 1 })")
+})
+test.case("event arrows and value aliases", fn() {
+    let code = output("let node = <Box><Button onClick={() => count.set(1)}>Run</Button><Entry value=\"ไทย\" onChange={value => name.set(value)}/><CheckBox checked onChange={value => flag.set(value)}>Yes</CheckBox></Box>")
+    t.contains(code, "fn() { count.set(1)"); t.contains(code, "fn(value: ui.Text)"); t.contains(code, "fn(value: bool)"); t.contains(code, "ui.TextCheckBox")
+})
+test.case("decoded template syntax stays literal", fn() {
+    t.contains(output("let node = <Label>$&#123;not_code&#125;</Label>"), "\\\${not_code}")
+})
+test.case("custom props with newline fields and children", fn() {
+    let parsed = source("struct Props {\n title: str\n children: Vec<ui.Node>\n}\nfn Card(c:*ui.Context,p:Props):ui.Node { return <Box>{...p.children}</Box> }\nlet node = <Card title=\"Hello\"><Label>Child</Label></Card>")
+    let fields = json.get(parsed.structs, "Props")
+    test.expect(json.len(fields) == 2, "Two fields required")
+    t.equal(b.s(json.at(fields, 0), "name"), "title"); t.equal(b.s(json.at(fields, 1), "type"), "Vec<ui.Node>")
+    let code = generator.transform(parsed, 0, parsed.chars.len() as i64, 0, json.object()).code.text
+    t.contains(code, "ui.component("); t.contains(code, "let __rdx_custom_"); t.contains(code, "= Props(")
+})
+test.case("spreads and attributes evaluate once in source order", fn() {
+    let code = output("let node = <Label text={first()} id={second()} {...third()} className={fourth()}/>")
+    let previous = -1
+    for call in Vec<str>("first()", "second()", "third()", "fourth()") {
+        test.expect(tool.count(code, call) == 1, "Repeated " + call)
+        let index = strings.indexOf(code, call); test.expect(index > previous, "Wrong evaluation order"); previous = index
+    }
+})
+test.case("lists, conditional children and JSX comments", fn() {
+    let code = output("let node = <Box>{/* hidden <Bad /> */}{show && <Label>Yes</Label>}{show ? <Label>A</Label> : null}{items.map(fn(n:i64):ui.Node { return <Label key={n}>{n}</Label> })}</Box>")
+    t.contains(code, "if (show "); t.contains(code, "items.map("); t.lacks(code, "hidden <Bad"); t.lacks(code, "push(null)")
+})
+test.case("precise syntax diagnostics", fn() {
+    rejects("let node = <Box>\n<Label>Hi</Box>", "example.devx:3:10: Expected closing tag </Label>")
+    rejects("let node = <Box spacing={1>", "Unterminated JSX expression")
+    rejects("let node = <Box id=\"one\" id=\"two\"/>", "Duplicate JSX attribute id")
+    rejects("let node = <Box {...}/>", "Spread expression cannot be empty")
+    rejects("let node = <Box mystery={1}/>", "Unsupported <Box> attribute mystery")
+    rejects("let node = <Button onClick={x => doWork()}/>", "onClick arrow functions do not accept parameters")
+    rejects("let node = <Label><Box/></Label>", "requires text children")
+    rejects("let node = <Missing/>", "Unknown component Missing")
+})
+test.case("missing custom props fail", fn() { rejects("struct P { title:str }\nfn Card(c:*ui.Context,p:P):ui.Node { return <Label>{p.title}</Label> }\nlet node = <Card/>", "Missing required Card prop title") })
+test.case("unknown custom props fail", fn() { rejects("struct P { title:str }\nfn Card(c:*ui.Context,p:P):ui.Node { return <Label>{p.title}</Label> }\nlet node = <Card other=\"wrong\"/>", "Unknown Card prop other") })
+test.case("nesting is bounded", fn() {
+    let open = "return "; let close = ""; for i in 0..110 { open = open + "<Box>"; close = close + "</Box>" }; rejects(open + close, "nesting exceeds")
+})
+test.case("generated names are reserved", fn() { rejects("let __rdx_props_1 = 0", "reserved") })
+test.case("local and external components without a discovered props schema", fn() {
+    t.contains(output("fn Child(c:*ui.Context):ui.Node { return <Label>Child</Label> }\nlet node = <Child/>"), "Child(__rdx_context)")
+    t.contains(output("let node = <external.Card props={typedProps}/>"), "external.Card(__rdx_context, __rdx_custom_")
+})
+test.case("relative imports and Unicode diagnostic source maps", fn() {
+    tool.scope("react-devlang-map-", fn(dir:str) {
+        tool.write(dir + "/child.devx", "use \"react_devlang/ui\" as ui\nfn Child(c:*ui.Context):ui.Node { return <Label>Imported</Label> }")
+        let entry = dir + "/main.devx"
+        tool.write(entry, "use \"react_devlang/ui\" as ui\nuse \"./child.devx\" as child\nfn App(c:*ui.Context):ui.Node {\n return <Box spacing={\"ไทย wrong type\"}><child.Child/></Box>\n}")
+        let emitted = project.emit(entry, dir + "/output", t.library()); let code = tool.read(emitted)
+        t.lacks(code, "use \"./child.devx\""); t.contains(code, "child.Child(__rdx_context)")
+        let chars = strings.split(code, ""); let row = 1; let column = 1
+        for ch in chars { if b.eq(ch, "ไ") { break }; if b.eq(ch, "\n") { row = row + 1; column = 1 } else { column = column + 1 } }
+        let mapped = project.remap("ไทย " + emitted + ":${row}:${column}: expected i32", json.parse(tool.read(emitted + ".manifest.json")))
+        t.contains(mapped, "ไทย " + entry + ":4:"); t.contains(mapped, "expected i32")
+    })
+})
+test.case("syntax-only CLI needs no native compiler or GTK", fn() {
+    tool.scope("react-devlang-syntax-", fn(dir:str) {
+        tool.write(dir + "/app.devx", "use \"react_devlang/ui\" as ui\nfn App(c:*ui.Context):ui.Node { return <Label>Syntax only</Label> }")
+        let checked = tool.run(Vec<str>(t.runner(), t.library() + "/tools/devx.dev", "--", "check", dir + "/app.devx", "--out-dir", dir + "/output", "--syntax-only", "--compiler", "/not-installed/devlang"), Map<str,str>(), "", 30000)
+        t.success(checked); t.contains(t.out(checked), "JSX syntax and props checked")
+    })
+})
+return t.finish()

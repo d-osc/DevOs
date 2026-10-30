@@ -1,0 +1,180 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-icons-page.devx" as helpers
+extern fn rc_env(name:str):str
+
+# Native "Apps & extensions" page: the generic settings form that every extension gets from its manifest (the JS Settings editor).
+# The worker (extensions.dev) lists the extensions, describes one form and validates and saves; this page keeps the draft.
+# Frames: L = rows (ASCII 30) of id, name, description, category, enabled, fields, error; F = id, name, description, enabled, system,
+# error, then records S (title, description) and K (key, title, description, type, value, min, max, integer).
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn records(frame:ui.Text):Vec<ui.Text> { return channel.split(frame,30) }
+fn cells(record:ui.Text):Vec<ui.Text> { return channel.split(record,9) }
+fn cell(row:Vec<ui.Text>, index:i64):ui.Text { return index < row.len() as i64 ? row[index] : ui.emptyText() }
+fn flag(value:ui.Text):bool { return value.bytes.len() > 0 && value.bytes[0] == 49 }
+fn row(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = spacing; return ui.Box(options,children) }
+fn column(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = spacing; return ui.Box(options,children) }
+fn expand(node:ui.Node):ui.Node { let options = node.props; options.expand = true; return ui.withProps(node,options) }
+fn named(node:ui.Node, id:str):ui.Node { let options = node.props; options.id = ui.text(id); return ui.withProps(node,options) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+# The field values of a form frame, joined with ASCII 30 (the draft has the same shape).
+fn valuesOf(frame:ui.Text):ui.Text {
+    let out = Vec<u8>(); let count = 0
+    for record in records(frame) {
+        let parts = cells(record)
+        if parts.len() > 5 && parts[0].bytes.len() == 1 && parts[0].bytes[0] == 75 {
+            if count > 0 { out.push(30) }
+            for byte in parts[5].bytes { out.push(byte) }
+            count = count + 1
+        }
+    }
+    return ui.Text(out)
+}
+fn at(draft:ui.Text, index:i64):ui.Text { let parts = channel.split(draft,30); return index < parts.len() as i64 ? parts[index] : ui.emptyText() }
+fn with(draft:ui.Text, index:i64, value:ui.Text):ui.Text {
+    let parts = channel.split(draft,30); let out = Vec<u8>()
+    for i in 0..(parts.len() as i64) {
+        if i > 0 { out.push(30) }
+        for byte in (i == index ? value : parts[i]).bytes { out.push(byte) }
+    }
+    return ui.Text(out)
+}
+# Characters that may stand unquoted in a JSON number.
+fn numeric(value:ui.Text):bool {
+    if value.bytes.len() == 0 { return false }
+    for byte in value.bytes { if !((byte >= 48 && byte <= 57) || byte == 45 || byte == 46 || byte == 43 || byte == 101 || byte == 69) { return false } }
+    return true
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let list = ui.useText(context,ui.emptyText()); let form = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText()); let status = ui.useText(context,ui.emptyText())
+    let selected = ui.useText(context,ui.emptyText()); let query = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let enabled = ui.useBool(context,false)
+    let pipe = ui.useRef(context,0); let waiting = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.settings/extensions.dev",root,fn(value:ui.Text) {
+            let kind = waiting.get(); waiting.set(0)
+            if value.bytes.len() > 0 && value.bytes[0] == 69 { let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; return }
+            failure.set(ui.emptyText())
+            if value.bytes.len() > 0 && value.bytes[0] == 76 { list.set(value); return }
+            if value.bytes.len() > 0 && value.bytes[0] == 70 {
+                let head = cells(records(value)[0])
+                form.set(value); draft.set(valuesOf(value)); enabled.set(flag(cell(head,4)))
+                if kind == 3 { status.set(ui.text("Saved.")) } else { status.set(ui.emptyText()) }
+            }
+        },fn(value:i64) { pipe.set(value); channel.pause(value,true); waiting.set(1); channel.command(value,ui.text("{\"action\":\"list\"}")) })
+    },Vec<i64>())
+    let busy = waiting.get() != 0
+    # Diagnostic drive (DEVOS_EXTENSIONS_SMOKE): open the first extension, edit its first field, Apply, report and close.
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_EXTENSIONS_SMOKE")).bytes.len() == 0 { return ui.noop }
+        if list.value.bytes.len() > 0 && step.get() == 0 { step.set(1); ui.click(context,"ext-nav-0") }
+        else if step.get() == 1 && form.value.bytes.len() > 0 { step.set(2); ui.change(context,"ext-field-0","16") }
+        else if step.get() == 2 && draft.value.bytes.len() > 0 && k.isText(at(draft.value,0),"16") { step.set(3); ui.click(context,"ext-apply") }
+        else if step.get() == 3 && k.isText(status.value,"Saved.") && k.isText(at(valuesOf(form.value),0),"16") { print("PASS native extension form saved"); ui.close(context) }
+        else if step.get() >= 1 && failure.value.bytes.len() > 0 { print("FAIL native extension form"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(list.revision,form.revision,draft.revision,status.revision,failure.revision))
+    if list.value.bytes.len() == 0 {
+        let wait = Vec<ui.Node>(); if failure.value.bytes.len() > 0 { wait.push(k.caption(failure.value,"settings-error-banner")) } else { wait.push(ui.Label("Loading…")) }
+        return column(12,wait)
+    }
+    # Left: the extensions, grouped like the JS list.
+    let rows = records(list.value); let shown = 0
+    let navigation = Vec<ui.Node>()
+    let search = ui.named("ext-search"); search.placeholder = ui.text("Search apps and extensions…")
+    navigation.push(ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) }))
+    let groups = Vec<str>("system","app","extension"); let titles = Vec<str>("SYSTEM","SYSTEM APPS","EXTENSIONS")
+    for g in 0..3 {
+        let items = Vec<ui.Node>()
+        for index in 1..(rows.len() as i64) {
+            let parts = cells(rows[index])
+            if !k.isText(cell(parts,3),groups[g]) { continue }
+            if query.value.bytes.len() > 0 && !helpers.foldContains(cell(parts,1),query.value) && !helpers.foldContains(cell(parts,2),query.value) { continue }
+            let id = cell(parts,0); let active = ui.equalText(selected.value,id)
+            let options = ui.named("ext-nav-${shown}"); options.className = ui.text(active ? "settings-nav settings-nav-active" : "settings-nav")
+            shown = shown + 1
+            items.push(ui.TextButton(options,cell(parts,1),fn() {
+                if waiting.get() != 0 { return }
+                selected.set(id); status.set(ui.emptyText()); failure.set(ui.emptyText()); waiting.set(2)
+                channel.command(pipe.get(),join(Vec<ui.Text>(ui.text("{\"action\":\"form\",\"id\":"),channel.quote(id),ui.text("}"))))
+            }))
+        }
+        if items.len() > 0 {
+            navigation.push(k.note(titles[g],"settings-sidebar-title"))
+            for item in items { navigation.push(item) }
+        }
+    }
+    if shown == 0 { navigation.push(k.note("No apps or extensions match your search.","settings-description")) }
+    let sidebarOptions = ui.props(); sidebarOptions.spacing = 6; sidebarOptions.width = 250
+    let sidebar = ui.Box(sidebarOptions,navigation)
+    # Right: the form of the selected extension.
+    let content = Vec<ui.Node>()
+    let head = form.value.bytes.len() > 0 ? cells(records(form.value)[0]) : Vec<ui.Text>()
+    let formId = cell(head,1)
+    if form.value.bytes.len() == 0 || !ui.equalText(formId,selected.value) {
+        content.push(k.note(selected.value.bytes.len() == 0 ? "Choose an app or extension to see its settings." : "Loading…","settings-description"))
+    } else {
+        let system = flag(cell(head,5)); let saved = valuesOf(form.value)
+        let dirty = !ui.equalText(draft.value,saved) || enabled.value != flag(cell(head,4))
+        content.push(k.caption(cell(head,2),"heading"))
+        content.push(k.caption(cell(head,3),"settings-description"))
+        if cell(head,6).bytes.len() > 0 { content.push(named(k.caption(join(Vec<ui.Text>(ui.text("This extension's saved settings are invalid and will not be overwritten: "),cell(head,6))),"error"),"ext-state-error")) }
+        if !system {
+            let toggle = ui.named("ext-enabled")
+            content.push(row(16,Vec<ui.Node>(expand(k.note("Enabled","settings-field-title")),ui.Switch(toggle,enabled.value,fn(next:bool) { enabled.set(next); status.set(ui.emptyText()) }))))
+        }
+        let all = records(form.value); let field = 0
+        for index in 1..(all.len() as i64) {
+            let parts = cells(all[index])
+            let kind = cell(parts,0)
+            if kind.bytes.len() == 1 && kind.bytes[0] == 83 {
+                content.push(k.caption(cell(parts,1),"section-heading"))
+                if cell(parts,2).bytes.len() > 0 { content.push(k.caption(cell(parts,2),"settings-description")) }
+            } else if kind.bytes.len() == 1 && kind.bytes[0] == 75 {
+                let number = field; field = field + 1
+                let kindName = cell(parts,4); let current = at(draft.value,number)
+                let texts = Vec<ui.Node>(k.caption(cell(parts,2),"settings-field-title"))
+                if cell(parts,3).bytes.len() > 0 { texts.push(k.caption(cell(parts,3),"settings-description")) }
+                let textColumn = ui.props(); textColumn.spacing = 4; textColumn.expand = true
+                if k.isText(kindName,"boolean") {
+                    let control = ui.named("ext-field-${number}")
+                    content.push(row(16,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Switch(control,flag(current),fn(next:bool) { draft.set(with(draft.get(),number,ui.text(next ? "1" : "0"))); status.set(ui.emptyText()) }))))
+                } else {
+                    let control = ui.named("ext-field-${number}"); control.width = 220
+                    if k.isText(kindName,"number") && (cell(parts,6).bytes.len() > 0 || cell(parts,7).bytes.len() > 0) { texts.push(k.caption(join(Vec<ui.Text>(ui.text("Allowed: "),cell(parts,6),ui.text(" – "),cell(parts,7))),"settings-description")) }
+                    content.push(row(16,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Entry(control,current,fn(value:ui.Text) { if !ui.equalText(value,at(draft.get(),number)) { draft.set(with(draft.get(),number,value)); status.set(ui.emptyText()) } }))))
+                }
+            }
+        }
+        if failure.value.bytes.len() > 0 { content.push(named(k.caption(failure.value,"error"),"ext-error")) }
+        let reset = ui.named("ext-reset"); reset.sensitive = dirty && !busy
+        let apply = ui.named("ext-apply"); apply.sensitive = dirty && !busy && cell(head,6).bytes.len() == 0; apply.className = ui.text("settings-primary")
+        let message = status.value.bytes.len() > 0 ? status.value : ui.text(dirty ? "Unsaved changes" : "Settings are saved.")
+        let bar = ui.props(); bar.vertical = false; bar.spacing = 12; bar.className = ui.text("settings-action-bar")
+        content.push(ui.Box(bar,Vec<ui.Node>(expand(k.caption(message,"settings-description")),
+            ui.Button(reset,"Reset",fn() { draft.set(saved); enabled.set(flag(cell(head,4))); failure.set(ui.emptyText()); status.set(ui.emptyText()) }),
+            ui.Button(apply,"Apply",fn() {
+                if waiting.get() != 0 { return }
+                # Booleans and numbers go unquoted, everything else is quoted; the worker validates every value against the manifest.
+                let body = Vec<ui.Text>(ui.text("{\"action\":\"save\",\"id\":"),channel.quote(selected.get()),ui.text(",\"enabled\":" + (system || enabled.value ? "true" : "false") + ",\"values\":{"))
+                let n = 0; let written = 0
+                for index in 1..(all.len() as i64) {
+                    let parts = cells(all[index])
+                    if !(cell(parts,0).bytes.len() == 1 && cell(parts,0).bytes[0] == 75) { continue }
+                    let value = at(draft.get(),n); n = n + 1
+                    if written > 0 { body.push(ui.text(",")) }; written = written + 1
+                    body.push(channel.quote(cell(parts,1))); body.push(ui.text(":"))
+                    if k.isText(cell(parts,4),"boolean") { body.push(ui.text(flag(value) ? "true" : "false")) }
+                    else if k.isText(cell(parts,4),"number") && numeric(value) { body.push(value) }
+                    else { body.push(channel.quote(value)) }
+                }
+                body.push(ui.text("}}"))
+                waiting.set(3); failure.set(ui.emptyText()); channel.command(pipe.get(),join(body))
+            }))))
+    }
+    let contentOptions = ui.props(); contentOptions.spacing = 14; contentOptions.expand = true
+    return row(24,Vec<ui.Node>(sidebar,ui.Scroll(contentOptions,column(14,content))))
+}
+fn page():ui.Node { return ui.component(9330,ui.keyed(903),render) }

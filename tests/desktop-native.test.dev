@@ -1,0 +1,72 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn worker(config:str, input:str):str {
+    let env = Map<str,str>(); env.set("XDG_CONFIG_HOME",config); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_SETTINGS_RELOAD_COMMAND","[\"true\"]")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/desktop-config.dev","--",t.root()),env,input,90000)))
+}
+fn save(name:str, height:str, clock:str, terminal:str, files:str, lock:str, autostart:str):str {
+    return json.stringify({action:"save",name:name,panel_height:json.parse(height),clock_format:clock,terminal:terminal,files:files,lock:lock,autostart:autostart})
+}
+fn good(name:str):str { return save(name,"40","%I:%M %p","[\"foot\"]","[\"thunar\",\"~\"]","[\"dev-os-lock\"]","[[\"echo\",\"hi\"]]") }
+
+test.case("the worker shows the defaults, saves a valid desktop configuration and asks the shell to reload",fn() {
+    let config = temporary()
+    let lines = strings.split(worker(config,"{\"action\":\"get\"}\n" + good("Mine") + "\n{\"action\":\"get\"}\n"),"\n")
+    test.expect(lines.len() == 3,"Expected one frame per request")
+    let first = strings.split(lines[0],"\t")
+    test.expect(strings.equal(first[0],"C") && strings.equal(first[1],"Dev OS") && strings.equal(first[2],"36") && strings.equal(first[3],"%H:%M") && strings.equal(first[4],"[\"dev-os-terminal\"]") && strings.equal(first[5],"[\"thunar\",\"~\"]") && strings.equal(first[7],"[]") && strings.equal(first[8],"") && strings.equal(first[9],"0"),"Defaults wrong: " + lines[0])
+    let saved = strings.split(lines[1],"\t")
+    test.expect(strings.equal(saved[1],"Mine") && strings.equal(saved[2],"40") && strings.equal(saved[3],"%I:%M %p") && strings.equal(saved[4],"[\"foot\"]") && strings.equal(saved[7],"[[\"echo\",\"hi\"]]") && strings.equal(saved[9],"1") && strings.equal(saved[10],""),"Saved frame wrong: " + lines[1])
+    test.expect(strings.startsWith(lines[2],"C	Mine	40	"),"The configuration was not read back")
+    let file = json.parse(fs.readFileSync(config + "/dev-os/config.json","utf8"))
+    test.expect(strings.equal(json.string(json.get(file,"name")),"Mine") && json.int(json.get(file,"panel_height")) == 40 && json.len(json.get(file,"terminal")) == 1,"The shared config.json is wrong")
+    tool.exec(Vec<str>("rm","-rf",config))
+})
+test.case("invalid values are refused with the reason and the file is left as it was",fn() {
+    let config = temporary()
+    worker(config,good("Keep") + "\n")
+    let before = fs.readFileSync(config + "/dev-os/config.json","utf8")
+    let input = save("x","10","%H","[\"a\"]","[\"a\"]","[\"a\"]","[]") + "\n" + save("x","40.5","%H","[\"a\"]","[\"a\"]","[\"a\"]","[]") + "\n" + save("x","\"tall\"","%H","[\"a\"]","[\"a\"]","[\"a\"]","[]") + "\n" + save("  ","40","%H","[\"a\"]","[\"a\"]","[\"a\"]","[]") + "\n" + save("x","40","","[\"a\"]","[\"a\"]","[\"a\"]","[]") + "\n" + save("x","40","%H","nope","[\"a\"]","[\"a\"]","[]") + "\n" + save("x","40","%H","[]","[\"a\"]","[\"a\"]","[]") + "\n" + save("x","40","%H","[\"a\"]","[\"\"]","[\"a\"]","[]") + "\n" + save("x","40","%H","[\"a\"]","[\"a\"]","[\"a\"]","[\"not an array\"]") + "\n" + save("x","40","%H","[\"a\"]","[\"a\"]","[\"a\"]","{}") + "\nnot json\n{\"action\":\"bogus\"}\n"
+    let lines = strings.split(worker(config,input),"\n")
+    test.expect(lines.len() == 12,"Expected one frame per request: ${lines.len()}")
+    for i in 0..12 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(strings.contains(lines[0],"panel_height must be an integer between 32 and 96") && strings.contains(lines[1],"panel_height") && strings.contains(lines[2],"panel_height"),"Panel height message wrong: " + lines[0])
+    test.expect(strings.contains(lines[3],"name must be a non-empty string") && strings.contains(lines[4],"clock_format must be a non-empty string"),"Name or clock message wrong")
+    test.expect(strings.contains(lines[5],"Terminal command must be valid JSON") && strings.contains(lines[6],"terminal must be a non-empty array") && strings.contains(lines[7],"files must be a non-empty array") && strings.contains(lines[8],"autostart") && strings.contains(lines[9],"autostart must be an array"),"Command messages wrong")
+    test.expect(!strings.contains(lines[0],"desktop-config.dev") && !strings.contains(lines[0],"std/result"),"The runtime's file prefix leaked into the message")
+    test.expect(strings.equal(fs.readFileSync(config + "/dev-os/config.json","utf8"),before),"A refused save changed the file")
+    tool.exec(Vec<str>("rm","-rf",config))
+})
+test.case("a damaged configuration is reported, shows the defaults and is replaced only by a valid save; a failed reload is reported",fn() {
+    let config = temporary()
+    tool.exec(Vec<str>("mkdir","-p",config + "/dev-os"))
+    fs.writeFileSync(config + "/dev-os/config.json","{\"panel_height\":1000,\"accent\":\"#ff0000\"}")
+    let shown = strings.split(worker(config,"{\"action\":\"get\"}\n"),"\t")
+    test.expect(strings.equal(shown[1],"Dev OS") && strings.contains(shown[8],"panel_height must be an integer between 32 and 96") && !strings.contains(shown[8],"std/result"),"A damaged file was not reported: " + strings.join(shown,"|"))
+    fs.writeFileSync(config + "/dev-os/config.json","{\"accent\":\"#ff0000\",\"name\":\"Old\"}")
+    test.expect(strings.equal(strings.split(worker(config,"{\"action\":\"get\"}\n"),"\t")[8],""),"Legacy colour keys must not count as damage")
+    worker(config,good("New") + "\n")
+    test.expect(!strings.contains(fs.readFileSync(config + "/dev-os/config.json","utf8"),"accent") && strings.contains(fs.readFileSync(config + "/dev-os/config.json","utf8"),"\"New\""),"Saving did not drop the legacy keys")
+    let env = Map<str,str>(); env.set("XDG_CONFIG_HOME",config); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_SETTINGS_RELOAD_COMMAND","[\"false\"]")
+    let failed = strings.split(strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/desktop-config.dev","--",t.root()),env,good("Third") + "\n",90000))),"\t")
+    test.expect(strings.equal(failed[1],"Third") && strings.equal(failed[9],"0") && strings.contains(failed[10],"could not reload"),"A failed reload was not reported: " + strings.join(failed,"|"))
+    test.expect(strings.contains(fs.readFileSync(config + "/dev-os/config.json","utf8"),"\"Third\""),"The file must stay saved when the reload fails")
+    tool.exec(Vec<str>("rm","-rf",config))
+})
+test.case("native Settings renames the desktop and saves it under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/desktop-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let config = temporary()
+    let env = Map<str,str>(); env.set("XDG_CONFIG_HOME",config); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_SETTINGS_RELOAD_COMMAND","[\"true\"]"); env.set("DEVOS_DESKTOP_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","desktop-settings","xvfb-run","-a",executable),env,"",120000)
+    t.success(done); t.contains(t.out(done),"PASS native Desktop page saved")
+    test.expect(strings.contains(fs.readFileSync(config + "/dev-os/config.json","utf8"),"\"Smoke Desk\""),"The page did not save the configuration")
+    tool.exec(Vec<str>("rm","-rf",config))
+})
+return t.finish()

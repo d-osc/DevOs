@@ -1,0 +1,104 @@
+use "../../packages/react-devlang/src/ui.dev" as ui
+use "./jsx-card.devx" as card
+extern fn rd_fail(message: str)
+extern fn rd_widget_live_count(): i64
+fn check(ok: bool, message: str) { if !ok { unsafe { rd_fail(message) } } }
+
+struct FrameProps {
+    title: str
+    children: Vec<ui.Node>
+}
+struct CounterProps { initial: i64 }
+struct BadgeProps { title: str }
+fn Badge(context: *ui.Context, props: BadgeProps): ui.Node {
+    return <Label id="badge">{props.title}</Label>
+}
+
+fn Frame(context: *ui.Context, props: FrameProps): ui.Node {
+    return <Box><Label>{props.title}</Label><Box>{...props.children}</Box></Box>
+}
+
+fn Counter(context: *ui.Context, props: CounterProps): ui.Node {
+    let count = ui.useState(context, props.initial)
+    return <Box>
+        <Label id="child-count">{count.value}</Label>
+        <Button id="child-add" onClick={() => count.set(count.get() + 1)}>Child +1</Button>
+    </Box>
+}
+
+fn App(context: *ui.Context): ui.Node {
+    let phase = ui.useState(context, 0)
+    let count = ui.useState(context, 10)
+    let name = ui.useText(context, ui.text("DevLang"))
+    let enabled = ui.useBool(context, true)
+    let changes = ui.useRef(context, 0)
+    let layout = ui.props()
+    layout.spacing = 12
+    let items = Vec<i64>(1, 2)
+    ui.useEffect(context, fn(): fn(): void {
+        if phase.value == 0 {
+            check(ui.equalText(ui.readText(context, "count"), ui.text("Count: 10")), "JSX scalar interpolation failed")
+            check(ui.equalText(ui.readText(context, "literal"), ui.text('literal ${not_code} & ไทย')), "JSX text entities or literal interpolation escaping failed")
+            check(ui.equalText(ui.readText(context, "row-2"), ui.text("Row 2")), "JSX mapped children failed")
+            check(ui.equalText(ui.readText(context, "explicit"), ui.text("Explicit children")), "children={Vec<Node>} failed")
+            check(ui.equalText(ui.readText(context, "badge"), ui.text("Override")), "Typed props field override failed")
+            check(ui.equalText(ui.readText(context, "literal-entry"), ui.text("เริ่มต้น")), "Quoted entry value was not converted to owned Text")
+            check(ui.click(context, "increment"), "JSX nested button event missing")
+            check(ui.click(context, "child-add"), "Custom JSX component not mounted")
+            check(ui.click(context, "enabled"), "JSX checkbox missing")
+            check(ui.click(context, "enabled"), "Second checkbox toggle missing")
+            check(ui.click(context, "enabled"), "Third checkbox toggle missing")
+            check(ui.change(context, "name", "ทดสอบ JSX"), "JSX change handler missing")
+            phase.set(1)
+        } else {
+            check(count.value == 10 + phase.value, "JSX arrow callback or repeated state update failed")
+            check(!enabled.value, "JSX onChange did not receive the actual checkbox value")
+            check(changes.get() == 212, "Checkbox onChange used a stale render snapshot")
+            check(ui.equalText(name.value, ui.text("ทดสอบ JSX")), "JSX entry text was not owned")
+            check(ui.equalText(ui.readText(context, "child-count"), ui.text("4")), "Custom component state was lost")
+            check(ui.equalText(ui.readText(context, "imported-card"), name.value), "Imported .devx component props were not updated")
+            check(ui.equalText(ui.readText(context, "choice"), ui.text("No")), "JSX ternary branch was not replaced")
+            unsafe { check(ui.find(context, "conditional") == null, "JSX conditional child not removed") }
+            if phase.value < 101 {
+                count.set(count.get() + 1)
+                phase.set(phase.value + 1)
+            } else {
+                unsafe { check(rd_widget_live_count() < 100, "JSX rerenders accumulated native widgets") }
+                print("PASS native JSX components, props, children, events, UTF-8, imports, lists and conditionals")
+                ui.close(context)
+            }
+        }
+        return ui.noop
+    }, Vec<i64>(phase.value))
+    return <>
+        <Box {...layout} id="jsx-app">
+            <Label id="count">Count: {count.value}</Label>
+            <Label id="literal">literal $&#123;not_code&#125; &amp; ไทย</Label>
+            <Entry id="name" value={name.value} onChange={value => { name.set(value) }} />
+            <Entry id="literal-entry" value="เริ่มต้น" />
+            <Button id="increment" onClick={() => { count.set(count.get() + 1) }}>
+                <Box><Label>Increment</Label></Box>
+            </Button>
+            <CheckBox id="enabled" checked={enabled.value} onChange={value => {
+                enabled.set(value)
+                changes.set(changes.get() * 10 + (value ? 1 : 2))
+            }}>Enabled</CheckBox>
+            <Frame title="Custom children"><Label>Nested content</Label></Frame>
+            <Counter initial={3} key={7} />
+            <Badge props={BadgeProps("Original")} title="Override" />
+            <card.Card value={name.value} />
+            <Box children={Vec<ui.Node>(<Label id="explicit">Explicit children</Label>)} />
+            <Box>{items.map(fn(item: i64): ui.Node { return <Label key={item} id={"row-${item}"}>Row {item}</Label> })}</Box>
+            {enabled.value && <Label id="conditional">Visible</Label>}
+            {enabled.value ? <Label id="choice">Yes</Label> : <Label id="choice">No</Label>}
+            {enabled.value ? <Label>Optional</Label> : null}
+            <Progress fraction={0} />
+        </Box>
+    </>
+}
+fn main(): i32 {
+    check(ui.run("Native JSX", 600, 600, App), "GTK unavailable")
+    unsafe { check(rd_widget_live_count() == 0, "JSX root leaked widgets") }
+    return 0
+}
+return main()

@@ -1,0 +1,113 @@
+use "std/strings"
+use "std/json"
+use "std/encoding"
+use "std/result"
+
+struct Token { text: str, start: i64, end: i64, kind: i64, node: json.Value }
+struct Source { text: str, chars: Vec<str>, file: str, ui: str, tokens: Vec<Token>, structs: json.Value, components: json.Value, imports: json.Value, entities: json.Value, jsx: bool, starts: Vec<i64> }
+struct Code { text: str, origins: Vec<i64> }
+struct Generated { code: Code, next: i64 }
+struct Scan { tokens: Vec<Token>, end: i64 }
+struct Parsed { node: json.Value, end: i64 }
+
+fn eq(a: str, b: str): bool { return strings.equal(a, b) }
+fn length(value: str): i64 { return strings.charLength(value) }
+fn sub(value: str, start: i64, end: i64): str { return strings.substring(value, start, end) }
+fn char(source: Source, index: i64): str { if index < 0 || index >= source.chars.len() as i64 { return "" }; return source.chars[index] }
+fn slice(source: Source, start: i64, end: i64): str { return sub(source.text, start, end) }
+fn at(source: Source, index: i64, value: str): bool { return eq(slice(source, index, (index + length(value)) < source.chars.len() as i64 ? index + length(value) : source.chars.len() as i64), value) }
+fn whitespace(value: str): bool { return !eq(value, "") && eq(strings.trim(value), "") }
+fn alpha(value: str): bool { return !eq(value, "") && strings.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_", value) }
+fn digit(value: str): bool { return !eq(value, "") && strings.contains("0123456789", value) }
+fn ident(value: str): bool { return alpha(value) || digit(value) }
+fn contains(values: Vec<str>, value: str): bool { for item in values { if eq(item, value) { return true } }; return false }
+fn get(value: json.Value, name: str): json.Value { if json.has(value, name) { return json.get(value, name) }; return json.null_value() }
+fn text(value: json.Value): str { if eq(json.kind(value), "string") { return json.string(value) }; return "" }
+fn number(value: json.Value): i64 { if eq(json.kind(value), "number") { return json.int(value) }; return 0 }
+fn s(value: json.Value, name: str): str { return text(get(value, name)) }
+fn n(value: json.Value, name: str): i64 { return number(get(value, name)) }
+fn flag(value: json.Value, name: str): bool { return json.has(value, name) && eq(json.kind(json.get(value, name)), "bool") && json.bool(json.get(value, name)) }
+fn integer(value: str): i64 {
+    let result = 0
+    for ch in strings.split(value, "") { if !digit(ch) { break }; result = result * 10 + strings.indexOf("0123456789", ch) }
+    return result
+}
+fn quote(value: str): str {
+    let encoded = json.stringify(json.value(value))
+    encoded = strings.replaceAll(encoded, "\${", "\\\${")
+    return strings.replaceAll(encoded, "\\u0000", "\\0")
+}
+fn position(source: Source, offset: i64): json.Value {
+    let low = 0
+    let high = source.starts.len() as i64
+    while low + 1 < high { let middle = (low + high) / 2; if source.starts[middle] <= offset { low = middle } else { high = middle } }
+    return {row: low + 1, column: offset - source.starts[low] + 1}
+}
+fn fail(source: Source, offset: i64, message: str) {
+    let pos = position(source, offset)
+    result.raise("${source.file}:${n(pos, "row")}:${n(pos, "column")}: " + message)
+}
+fn empty(): Code { return Code("", Vec<i64>()) }
+fn gen(value: str, origin: i64): Code { let origins = Vec<i64>(); for i in 0..length(value) { origins.push(origin) }; return Code(value, origins) }
+fn original(source: Source, start: i64, end: i64): Code { let origins = Vec<i64>(); for i in start..end { origins.push(i) }; return Code(slice(source, start, end), origins) }
+fn add(left: Code, right: Code): Code { let origins = left.origins; for value in right.origins { origins.push(value) }; return Code(left.text + right.text, origins) }
+fn node(kind: str, start: i64, end: i64): json.Value { return {kind: kind, start: start, end: end} }
+fn attribute(name: str, kind: str, value: str, start: i64, begin: i64, end: i64): json.Value { return {name: name, kind: kind, value: value, start: start, begin: begin, end: end} }
+fn bare(source: str, file: str, entities: json.Value, jsx: bool): Source {
+    let chars = strings.split(source, "")
+    let starts = Vec<i64>(0)
+    for i in 0..(chars.len() as i64) { if eq(chars[i], "\n") { starts.push(i + 1) } }
+    return Source(source, chars, file, "ui", Vec<Token>(), json.object(), json.object(), json.array(), entities, jsx, starts)
+}
+fn unicode(code: i64): str {
+    let bytes = Vec<u8>()
+    if code < 128 { bytes.push(code as u8) }
+    else if code < 2048 { bytes.push((192 + code / 64) as u8); bytes.push((128 + code % 64) as u8) }
+    else if code < 65536 { bytes.push((224 + code / 4096) as u8); bytes.push((128 + code / 64 % 64) as u8); bytes.push((128 + code % 64) as u8) }
+    else { bytes.push((240 + code / 262144) as u8); bytes.push((128 + code / 4096 % 64) as u8); bytes.push((128 + code / 64 % 64) as u8); bytes.push((128 + code % 64) as u8) }
+    return encoding.decode(bytes, "utf8")
+}
+fn entities(value: str, data: json.Value): str {
+    let chars = strings.split(value, "")
+    let out = ""
+    let i = 0
+    let names = get(data, "names")
+    while i < chars.len() as i64 {
+        if !eq(chars[i], "&") { out = out + chars[i]; i = i + 1; continue }
+        let end = i + 1
+        if end < chars.len() as i64 && eq(chars[end], "#") {
+            end = end + 1
+            let radix = 10
+            if end < chars.len() as i64 && (eq(chars[end], "x") || eq(chars[end], "X")) { radix = 16; end = end + 1 }
+            let begin = end
+            let code = 0
+            while end < chars.len() as i64 {
+                let d = strings.indexOf("0123456789abcdef", strings.toLowerCase(chars[end]))
+                if d < 0 || d >= radix { break }
+                code = code < 1114112 ? code * radix + d : 1114112
+                end = end + 1
+            }
+            if end > begin {
+                if end < chars.len() as i64 && eq(chars[end], ";") { end = end + 1 }
+                let key = "${code}"
+                if json.has(get(data, "numbers"), key) { out = out + text(json.get(get(data, "numbers"), key)) }
+                else if code > 1114111 || code >= 55296 && code <= 57343 { out = out + unicode(65533) }
+                else if !json.has(get(data, "invalid"), key) { out = out + unicode(code) }
+                i = end
+                continue
+            }
+        }
+        let candidate = ""
+        let found = ""
+        let finish = i + 1
+        end = i + 1
+        while end < chars.len() as i64 && end - i <= 33 && (ident(chars[end]) || eq(chars[end], ";")) {
+            candidate = candidate + chars[end]
+            end = end + 1
+            if json.has(names, candidate) { found = text(json.get(names, candidate)); finish = end }
+        }
+        if !eq(found, "") { out = out + found; i = finish }
+        else { out = out + "&"; i = i + 1 }
+    }
+    return out
+}

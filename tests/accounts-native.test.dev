@@ -1,0 +1,88 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+# A stand-in for bin/dev-os-accounts: logs every request (as .last and, per action, .last.<action>) and answers with
+# reply.<action> when that file exists, otherwise reply.get. It never touches a real account, GitHub or the identity file.
+fn fake(directory:str) {
+    fs.writeFileSync(directory + "/dev-os-accounts","use \"std/io\"\nuse \"std/fs\"\nuse \"std/json\"\nuse \"std/process\"\nuse \"std/strings\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    let action = json.string(json.get(json.parse(raw),\"action\"))\n    fs.writeFileSync(dir + \"/last\",raw)\n    fs.writeFileSync(dir + \"/last.\" + action,raw)\n    let own = dir + \"/reply.\" + action\n    print(fs.readFileSync(fs.existsSync(own) ? own : dir + \"/reply.get\",\"utf8\"))\n    return 0\n}\nreturn main()\n")
+}
+fn state(link:str, available:str):str {
+    return "{\"ok\":true,\"clientId\":\"abc123\",\"identity\":{\"provider\":\"" + link + "\",\"name\":\"Mia\",\"login\":\"mia-dev\",\"id\":42},\"system\":{\"available\":" + available + ",\"currentUser\":\"mia\",\"firstSetup\":false,\"binding\":" + (strings.equal(link,"github") ? "{\"id\":42,\"login\":\"mia-dev\"}" : "null") + ",\"users\":[{\"username\":\"mia\",\"name\":\"Mia Dev\",\"uid\":1000,\"home\":\"/home/mia\",\"github\":\"mia-dev\",\"githubId\":42},{\"username\":\"alice\",\"name\":\"Alice\",\"uid\":1001,\"home\":\"/home/alice\"},{\"username\":\"devos\",\"name\":\"Guest\",\"uid\":900,\"home\":\"/home/devos\"}]}}"
+}
+fn rig(link:str, available:str):str {
+    let d = temporary(); fake(d)
+    fs.writeFileSync(d + "/reply.get",state(link,available))
+    fs.writeFileSync(d + "/reply.begin","{\"ok\":true,\"code\":\"ABCD-1234\",\"url\":\"https://github.com/login/device\",\"interval\":5}")
+    fs.writeFileSync(d + "/reply.poll","{\"ok\":true,\"pending\":true,\"interval\":5}")
+    return d
+}
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_SETTINGS_SWITCH_COMMAND","[\"sh\",\"-c\",\"echo \\\"$1\\\" > '" + directory + "/switched'\",\"sh\"]")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/accounts-page.dev","--",t.root()),env,input,120000)))
+}
+fn request(directory:str, name:str):json.Value { return json.parse(fs.readFileSync(directory + "/" + name,"utf8")) }
+
+test.case("the account state becomes one frame with the profile, link and users",fn() {
+    let d = rig("github","true")
+    let all = records(worker(d,"{\"action\":\"get\"}\n")); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"A") && strings.equal(h[1],"abc123") && strings.equal(h[2],"github") && strings.equal(h[3],"Mia") && strings.equal(h[4],"mia-dev") && strings.equal(h[5],"42") && strings.equal(h[6],"1") && strings.equal(h[7],"mia") && strings.equal(h[8],"42") && strings.equal(h[9],"mia-dev") && strings.equal(h[10],"0") && strings.equal(h[14],"0"),"Header wrong: " + all[0])
+    test.expect(all.len() == 4 && strings.equal(all[1],"U\tmia\tMia Dev\t1000\t/home/mia\tmia-dev\t42") && strings.equal(all[2],"U\talice\tAlice\t1001\t/home/alice\t\t"),"User records wrong: " + strings.join(all,"|"))
+    let local = cells(records(worker(rig("guest","false"),"{\"action\":\"get\"}\n"))[0])
+    test.expect(strings.equal(local[2],"guest") && strings.equal(local[6],"0") && strings.equal(local[9],""),"A local profile is wrong")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("sign-in flow: begin keeps the profile, links to the OS user, and poll and cancel keep the state",fn() {
+    let d = rig("guest","true")
+    let lines = strings.split(worker(d,"{\"action\":\"begin\"}\n{\"action\":\"poll\"}\n{\"action\":\"cancel\"}\n{\"action\":\"signout\"}\n{\"action\":\"unlink\"}\n"),"\n")
+    test.expect(lines.len() == 5,"Expected one frame per request")
+    let begin = cells(records(lines[0])[0])
+    test.expect(strings.equal(begin[11],"ABCD-1234") && strings.equal(begin[12],"https://github.com/login/device") && strings.equal(begin[13],"5") && strings.equal(begin[7],"mia") && strings.equal(begin[14],"0"),"Begin frame wrong: " + lines[0])
+    test.expect(records(lines[0]).len() == 4,"Begin lost the user list")
+    test.expect(json.bool(json.get(request(d,"last.begin"),"link")),"A GitHub link was not requested for an OS user")
+    let poll = cells(records(lines[1])[0])
+    test.expect(strings.equal(poll[14],"1") && strings.equal(poll[11],"") && strings.equal(poll[7],"mia") && records(lines[1]).len() == 4,"Poll frame wrong: " + lines[1])
+    for i in 2..5 { test.expect(strings.startsWith(lines[i],"A\t") && records(lines[i]).len() == 4,"Request ${i} did not answer with the full state") }
+    test.expect(strings.equal(json.string(json.get(request(d,"last.unlink"),"action")),"unlink") && strings.equal(json.string(json.get(request(d,"last.signout"),"action")),"signout") && strings.equal(json.string(json.get(request(d,"last.cancel"),"action")),"cancel"),"Actions were not forwarded")
+    let unmanaged = rig("guest","false"); worker(unmanaged,"{\"action\":\"begin\"}\n")
+    test.expect(!json.bool(json.get(request(unmanaged,"last.begin"),"link")),"A link was requested without user management")
+    tool.exec(Vec<str>("rm","-rf",d,unmanaged))
+})
+test.case("only real, other, non-shared users can be switched to, and failures are explained",fn() {
+    let d = rig("github","true")
+    let lines = strings.split(worker(d,"{\"action\":\"switch\",\"username\":\"alice\"}\n{\"action\":\"switch\",\"username\":\"mia\"}\n{\"action\":\"switch\",\"username\":\"devos\"}\n{\"action\":\"switch\",\"username\":\"nobody\"}\n{\"action\":\"switch\",\"username\":\"a b; rm\"}\n{\"action\":\"switch\"}\n{\"action\":\"create-user\",\"username\":\"x\"}\n{\"action\":\"bogus\"}\nnot json\n"),"\n")
+    test.expect(lines.len() == 9,"Expected one frame per request")
+    test.expect(strings.startsWith(lines[0],"A\t") && strings.equal(strings.trim(fs.readFileSync(d + "/switched","utf8")),"alice"),"Switching to a user failed")
+    for i in 1..9 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(strings.contains(lines[1],"another user") && strings.contains(lines[2],"another user") && strings.contains(lines[3],"another user"),"Messages wrong")
+    test.expect(!fs.existsSync(d + "/last.create-user"),"Creating users must not reach the helper from here")
+    fs.writeFileSync(d + "/reply.get","{\"ok\":false,\"error\":\"Account service is down.\"}")
+    test.expect(strings.equal(worker(d,"{\"action\":\"get\"}\n"),"E\tAccount service is down."),"A helper error was not passed on")
+    fs.writeFileSync(d + "/reply.get","garbage")
+    test.expect(strings.contains(worker(d,"{\"action\":\"get\"}\n"),"did not answer"),"A silent helper was not reported")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the real account helper answers through the worker (read only)",fn() {
+    let out = strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/accounts-page.dev","--",t.root()),Map<str,str>(),"{\"action\":\"get\"}\n",120000)))
+    test.expect(strings.startsWith(out,"A\t") || strings.startsWith(out,"E\t"),"The real helper did not answer: " + out)
+})
+test.case("native Settings switches to another user through the page under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/accounts-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig("github","true")
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_SETTINGS_SWITCH_COMMAND","[\"sh\",\"-c\",\"echo \\\"$1\\\" > '" + d + "/switched'\",\"sh\"]")
+    env.set("DEVOS_ACCOUNTS_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","accounts-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Accounts page switched user"),"Accounts page: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.equal(strings.trim(fs.readFileSync(d + "/switched","utf8")),"alice"),"The page did not ask to switch to alice")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

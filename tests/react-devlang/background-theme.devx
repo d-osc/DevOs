@@ -1,0 +1,52 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.background/native-view.devx" as view
+use "../../src/system/org.devos.background/native-theme.dev" as theme
+use "../../src/system/org.devos.background/native-widget-board.dev" as board
+use "../../src/system/org.devos.background/scene.dev" as scene
+extern fn g_file_get_contents(path:str,contents:**u8,length:*u64,error:*void):i32
+extern fn g_file_set_contents(path:str,contents:*u8,length:i64,error:*void):i32
+extern fn bg_card_unmap_count():i32
+extern fn rd_widget_live_count():i64
+fn copy(source:str,target:str) {unsafe {
+    let bytes:*u8=null;let length=0 as u64
+    if g_file_get_contents(source,&bytes,&length,null)==0 {ui.rd_fail("Cannot read theme fixture")}
+    let written=g_file_set_contents(target,bytes,length as i64,null);ui.rd_buffer_free(bytes as *void)
+    if written==0 {ui.rd_fail("Cannot replace theme snapshot")}
+}}
+fn main():i32 {unsafe {
+    let root=view.rc_env("DEV_OS_ROOT");let snapshot=view.rc_env("DEVOS_BACKGROUND_THEME_FILE")
+    let cache=scene.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new();let complete=0;let accepted=&complete
+    let ok=ui.runStyled("Native background theme test",800,600,board.previewCss(),fn(context:*ui.Context):ui.Node {
+        theme.useTheme(context);let stage=ui.useRef(context,0);let ticks=ui.useRef(context,0);let card=ui.useRef(context,0);let version=ui.useRef(context,0)
+        board.useBoard(context,"desktop-widgets",board.configuration(ui.text("{\"widgetClock\":true,\"widgetNote\":true}"),ui.emptyText()),fn(value:ui.Text) {})
+        ui.useEffect(context,fn():fn():void {unsafe {
+            let callback=callback_context(fn() {unsafe {
+                ticks.set(ticks.get()+1);if ticks.get()>400 {ui.rd_fail("Theme update timed out")}
+                let current=theme.rd_css_revision((*context).native);let widget=ui.find(context,"desktop-widget-clock")
+                if widget==null || (*image).surface==0 || (*image).light!=current {return}
+                if (*image).style!=0 || (*image).revision!=1 {ui.rd_fail("Theme test must exercise a static wallpaper")}
+                if card.get()!=0 && (card.get()!=(widget as i64) || bg_card_unmap_count()!=0) {ui.rd_fail("Theme change remounted a widget")}
+                if stage.get()==0 && theme.rd_theme_is_dark()!=0 {
+                    card.set(widget as i64);version.set(current);copy("${root}/dist/native/theme.github.light.css",snapshot);stage.set(1);return
+                }
+                if stage.get()==1 && theme.rd_theme_is_dark()==0 && current>version.get() {
+                    let base=theme.base(context);let accent=theme.accent(context)
+                    if base.r!=theme.rd_named_color((*context).native,"dv_s1",0) || accent.r!=theme.rd_named_color((*context).native,"dv_accent_fg",0) {ui.rd_fail("Wallpaper palette did not follow the theme")}
+                    version.set(current);let invalid=ui.nativeText(ui.text("invalid CSS {"));g_file_set_contents(snapshot,invalid,-1,null);ui.rd_buffer_free(invalid as *void);ticks.set(0);stage.set(2);return
+                }
+                if stage.get()==2 && ticks.get()>20 {
+                    if current!=version.get() || theme.rd_theme_is_dark()!=0 {ui.rd_fail("Invalid CSS replaced the last valid theme")}
+                    copy("${root}/dist/native/theme.vscode.dark.css",snapshot);stage.set(3);return
+                }
+                if stage.get()==3 && theme.rd_theme_is_dark()!=0 && current>version.get() {(*accepted)=1;ui.close(context)}
+            }})
+            let timer=view.bg_timer(25,callback.call,callback.data);return fn() {unsafe {view.bg_untimer(timer,callback.data)}}
+        }},Vec<i64>())
+        let overlay=ui.named("desktop-widgets");overlay.expand=true
+        return ui.Overlay(overlay,view.App(context,painter,image,photo,true))
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);view.bg_picture_free(photo)
+    if !ok || complete!=1 || rd_widget_live_count()!=0 {return 1}
+    print("PASS live theme, wallpaper cache invalidation, stable widgets, invalid CSS recovery and cleanup");return 0
+}}
+return main()

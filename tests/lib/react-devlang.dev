@@ -1,0 +1,22 @@
+use "std/module"
+use "std/path"
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "std/process"
+use "std/child_process"
+use "../../tools/lib/tool.dev" as tool
+
+fn root(): str {
+    let directory=strings.replaceAll(path.dirname(path.dirname(path.resolve(process.cwd(),module.entry()))),"\\","/")
+    return strings.startsWith(directory,"//?/") ? strings.substring(directory,4,strings.charLength(directory)) : directory
+}
+fn library(): str { return root() + "/packages/react-devlang" }
+fn runner(): str { let command = process.getenv("DEVLANG_RUN"); return strings.equal(command, "") ? "d" : command }
+fn contains(value: str, expected: str) { test.expect(strings.contains(value, expected), "Missing " + expected + " in " + value) }
+fn lacks(value: str, expected: str) { test.expect(!strings.contains(value, expected), "Unexpected " + expected + " in " + value) }
+fn equal(value: str, expected: str) { test.expect(strings.equal(value, expected), value + " != " + expected) }
+fn out(value: child_process.Output): str { return encoding.decode(value.stdout, "utf8") }
+fn err(value: child_process.Output): str { return encoding.decode(value.stderr, "utf8") }
+fn success(value: child_process.Output) { test.expect(value.success, err(value) + out(value)) }
+fn finish(): i32 { let report = test.run(); print(report.summary); print("${report.passed}/${report.total} passed"); return report.failed > 0 ? 1 : 0 }

@@ -1,0 +1,110 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+# A stand-in for bin/dev-os-<name>: logs the request it got and prints <name>.reply, or <name>.reply.after once a request that is not
+# a plain "get" arrives.
+fn fake(directory:str, name:str) {
+    fs.writeFileSync(directory + "/" + name,"use \"std/io\"\nuse \"std/fs\"\nuse \"std/process\"\nuse \"std/strings\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    fs.writeFileSync(dir + \"/" + name + ".last\",raw)\n    let after = dir + \"/" + name + ".reply.after\"\n    if !strings.contains(raw,\"\\\"get\\\"\") && fs.existsSync(after) { print(fs.readFileSync(after,\"utf8\")) } else { print(fs.readFileSync(dir + \"/" + name + ".reply\",\"utf8\")) }\n    return 0\n}\nreturn main()\n")
+}
+fn system(active:str):str {
+    return strings.replaceAll("{\"ok\":true,\"state\":{\"hostManaged\":false,\"hostname\":\"testbox\",\"os\":\"Test OS 1\",\"kernel\":\"6.1\",\"architecture\":\"aarch64\",\"cpu\":\"Test CPU\",\"processors\":4,\"memory\":8589934592,\"session\":\"wayland\",\"hardware\":{\"manufacturer\":\"Acme\",\"model\":\"X1\",\"family\":\"Fam\",\"cpuVendor\":\"V\",\"bootMode\":\"UEFI\",\"cpuMaxMHz\":\"3000\"},\"storage\":[{\"path\":\"/\",\"total\":100000000000,\"used\":40000000000,\"free\":60000000000}],\"batteries\":[{\"name\":\"BAT0\",\"status\":\"Charging\",\"percent\":15,\"health\":97,\"cycles\":120,\"minutes\":90}],\"power\":{\"available\":true,\"active\":\"@@\",\"profiles\":[\"power-saver\",\"balanced\",\"performance\"],\"degraded\":\"\",\"error\":\"\"},\"tools\":{},\"hostSettings\":false,\"desktopBuild\":{}}}","@@",active)
+}
+fn zone(name:str):str { return "{\"ok\":true,\"state\":{\"available\":true,\"hostManaged\":false,\"timezone\":\"" + name + "\",\"ntp\":false,\"canNtp\":true,\"synchronized\":false,\"zones\":[\"UTC\",\"Europe/Paris\",\"Asia/Tokyo\"],\"error\":\"\"}}" }
+fn mouse(speed:str, applied:str):str { return "{\"ok\":true,\"settings\":{\"leftHanded\":false,\"natural\":true,\"speed\":" + speed + "},\"devices\":[\"Test Mouse\"],\"applied\":" + applied + "}" }
+fn rig():str {
+    let d = temporary()
+    for name in Vec<str>("dev-os-system","dev-os-time","dev-os-input-settings") { fake(d,name) }
+    fs.writeFileSync(d + "/dev-os-system.reply",system("balanced")); fs.writeFileSync(d + "/dev-os-system.reply.after",system("performance"))
+    fs.writeFileSync(d + "/dev-os-time.reply",zone("UTC")); fs.writeFileSync(d + "/dev-os-time.reply.after",zone("Europe/Paris"))
+    fs.writeFileSync(d + "/dev-os-input-settings.reply",mouse("60","true")); fs.writeFileSync(d + "/dev-os-input-settings.reply.after",mouse("50","false"))
+    return d
+}
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory)
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/system-pages.dev","--",t.root()),env,input,120000)))
+}
+fn last(directory:str, name:str):json.Value { return json.parse(fs.readFileSync(directory + "/" + name + ".last","utf8")) }
+
+test.case("system information becomes one frame with batteries, disks and hardware records",fn() {
+    let d = rig()
+    let frame = worker(d,"{\"action\":\"system\"}\n")
+    let all = records(frame); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"Y") && strings.equal(h[1],"0") && strings.equal(h[2],"testbox") && strings.equal(h[3],"Test OS 1") && strings.equal(h[5],"aarch64") && strings.equal(h[7],"4") && strings.equal(h[8],"8589934592") && strings.equal(h[11],"1") && strings.equal(h[12],"balanced") && strings.equal(h[13],"power-saver,balanced,performance") && strings.equal(h[16],"0.3.7-ux3407na-dev"),"Header wrong: " + all[0])
+    let battery = ""; let disk = ""; let maker = ""
+    for record in all { if strings.startsWith(record,"B\t") { battery = record }; if strings.startsWith(record,"D\t") { disk = record }; if strings.startsWith(record,"H\tmanufacturer\t") { maker = record } }
+    test.expect(strings.equal(battery,"B\tBAT0\tCharging\t15\t97\t120\t90") && strings.equal(disk,"D\t/\t100000000000\t40000000000\t60000000000") && strings.equal(maker,"H\tmanufacturer\tAcme"),"Records wrong: " + battery + " | " + disk)
+    test.expect(strings.contains(worker(d,"{\"action\":\"system\"}\n"),"cpuMaxMHz"),"Hardware keys missing")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("requests are checked here and forwarded to the helpers as separate, validated payloads",fn() {
+    let d = rig()
+    let lines = strings.split(worker(d,"{\"action\":\"power\",\"profile\":\"performance\"}\n{\"action\":\"power\",\"profile\":\"turbo\"}\n{\"action\":\"power\"}\n{\"action\":\"time-timezone\",\"timezone\":\"Europe/Paris\"}\n{\"action\":\"time-ntp\",\"enabled\":true}\n{\"action\":\"time-set\",\"date\":\"2026-10-29\",\"time\":\"12:30\"}\n{\"action\":\"time-host\"}\n{\"action\":\"input\",\"kind\":\"mouse\",\"op\":\"save\",\"settings\":{\"speed\":70,\"natural\":false,\"leftHanded\":true}}\n{\"action\":\"input\",\"kind\":\"touchpad\",\"op\":\"get\"}\n{\"action\":\"input\",\"kind\":\"mouse\",\"op\":\"format\"}\n{\"action\":\"bogus\"}\nnot json\n"),"\n")
+    test.expect(lines.len() == 12,"Expected one frame per request: ${lines.len()}")
+    test.expect(strings.contains(lines[0],"performance") && strings.startsWith(lines[0],"Y\t"),"Power switch not answered: " + lines[0])
+    test.expect(strings.startsWith(lines[1],"E\t") && strings.startsWith(lines[2],"E\t"),"A bad profile was accepted")
+    test.expect(strings.startsWith(lines[3],"Z\t") && strings.startsWith(lines[4],"Z\t") && strings.startsWith(lines[5],"Z\t") && strings.startsWith(lines[6],"Z\t"),"Time requests not answered")
+    test.expect(strings.startsWith(lines[7],"N\tmouse\t"),"Input save not answered: " + lines[7])
+    test.expect(strings.startsWith(lines[8],"E\t") && strings.startsWith(lines[9],"E\t") && strings.startsWith(lines[10],"E\t") && strings.startsWith(lines[11],"E\t"),"Bad input or action accepted")
+    let power = last(d,"dev-os-system")
+    test.expect(strings.equal(json.string(json.get(power,"action")),"power") && strings.equal(json.string(json.get(power,"profile")),"performance"),"Power payload wrong")
+    let time = last(d,"dev-os-time")
+    test.expect(strings.equal(json.string(json.get(time,"action")),"windows-settings"),"Last time payload wrong: " + json.stringify(time))
+    let input = last(d,"dev-os-input-settings")
+    test.expect(strings.equal(json.string(json.get(input,"action")),"save") && strings.equal(json.string(json.get(input,"kind")),"mouse") && json.int(json.get(json.get(input,"settings"),"speed")) == 70 && json.bool(json.get(json.get(input,"settings"),"leftHanded")),"Input payload wrong: " + json.stringify(input))
+    test.expect(strings.contains(worker(d,"{\"action\":\"time-timezone\",\"timezone\":\"Europe/Paris\"}\n"),"Europe/Paris") && strings.equal(json.string(json.get(last(d,"dev-os-time"),"action")),"set-timezone") && strings.equal(json.string(json.get(last(d,"dev-os-time"),"timezone")),"Europe/Paris"),"Time zone payload wrong")
+    worker(d,"{\"action\":\"time-ntp\",\"enabled\":true}\n")
+    test.expect(json.bool(json.get(last(d,"dev-os-time"),"enabled")) && strings.equal(json.string(json.get(last(d,"dev-os-time"),"action")),"set-ntp"),"NTP payload wrong")
+    worker(d,"{\"action\":\"time-set\",\"date\":\"2026-10-29\",\"time\":\"12:30\"}\n")
+    test.expect(strings.equal(json.string(json.get(last(d,"dev-os-time"),"date")),"2026-10-29") && strings.equal(json.string(json.get(last(d,"dev-os-time"),"time")),"12:30"),"Date and time payload wrong")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("time and input frames carry the helper's state; helper failures are explained",fn() {
+    let d = rig()
+    let time = records(worker(d,"{\"action\":\"time\"}\n")); let h = cells(time[0])
+    test.expect(strings.equal(h[0],"Z") && strings.equal(h[1],"1") && strings.equal(h[2],"0") && strings.equal(h[3],"UTC") && strings.equal(h[4],"0") && strings.equal(h[5],"1") && strings.startsWith(h[8],"20") && strings.charLength(h[9]) == 5 && time.len() == 4 && strings.equal(time[2],"Q\tEurope/Paris"),"Time frame wrong: " + strings.join(time,"|"))
+    let input = cells(worker(d,"{\"action\":\"input\",\"kind\":\"mouse\",\"op\":\"get\"}\n"))
+    test.expect(strings.equal(input[1],"mouse") && strings.equal(input[2],"1") && strings.equal(input[3],"60") && strings.equal(input[4],"1") && strings.equal(input[5],"0") && strings.equal(input[9],"Test Mouse"),"Input frame wrong: " + strings.join(input,"|"))
+    fs.writeFileSync(d + "/dev-os-time.reply","{\"ok\":false,\"error\":\"Not authorized\"}")
+    test.expect(strings.equal(worker(d,"{\"action\":\"time\"}\n"),"E\tNot authorized"),"A helper error was not passed on")
+    fs.writeFileSync(d + "/dev-os-system.reply","garbage")
+    test.expect(strings.contains(worker(d,"{\"action\":\"system\"}\n"),"did not answer"),"A silent helper was not reported")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the real helpers answer through the worker",fn() {
+    let env = Map<str,str>()
+    let out = strings.split(strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/system-pages.dev","--",t.root()),env,"{\"action\":\"system\"}\n{\"action\":\"time\"}\n",180000))),"\n")
+    test.expect(out.len() == 2 && strings.startsWith(out[0],"Y\t") && strings.startsWith(out[1],"Z\t"),"The real helpers did not answer: " + strings.join(out,"|"))
+    test.expect(strings.charLength(cells(records(out[0])[0])[2]) > 0,"The host name is empty")
+})
+fn page(name:str, expected:str, extra:str) {
+    let executable = t.root() + "/build/react-devlang/tests/system-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_SYSTEM_SMOKE",name); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","system-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),expected),name + " page: " + t.out(done) + " / " + t.err(done))
+    if extra == "power" { test.expect(strings.equal(json.string(json.get(last(d,"dev-os-system"),"profile")),"performance"),"The page did not ask for the Performance profile") }
+    if extra == "time" { test.expect(strings.equal(json.string(json.get(last(d,"dev-os-time"),"timezone")),"Europe/Paris"),"The page did not ask for the chosen time zone") }
+    if extra == "mouse" || extra == "keyboard" { test.expect(strings.equal(json.string(json.get(last(d,"dev-os-input-settings"),"action")),"reset") && strings.equal(json.string(json.get(last(d,"dev-os-input-settings"),"kind")),extra),"The page did not ask to reset the " + extra) }
+    tool.exec(Vec<str>("rm","-rf",d))
+}
+test.case("native Settings shows About and Storage from the helper's state under real GTK",fn() {
+    page("about","PASS native About page","")
+    page("storage","PASS native Storage page","")
+})
+test.case("native Settings switches the power mode, the time zone and resets input under real GTK",fn() {
+    page("power","PASS native Power page switched mode: performance","power")
+    page("time","PASS native Time page: zone changed","time")
+    page("mouse","PASS native mouse input page reset","mouse")
+    page("keyboard","PASS native keyboard input page reset","keyboard")
+})
+return t.finish()

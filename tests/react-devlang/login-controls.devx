@@ -1,0 +1,59 @@
+use "../../packages/react-devlang/src/ui.dev" as ui
+extern fn rd_fail(message:str)
+extern fn rd_find_name(root:*void,name:str):*void
+extern fn rd_widget_live_count():i64
+extern fn gtk_entry_get_visibility(widget:*void):i32
+extern fn gtk_entry_get_input_purpose(widget:*void):i32
+extern fn gtk_entry_get_input_hints(widget:*void):i32
+extern fn gtk_widget_get_halign(widget:*void):i32
+extern fn gtk_widget_get_valign(widget:*void):i32
+extern fn gtk_widget_get_margin_start(widget:*void):i32
+extern fn gtk_image_get_pixel_size(widget:*void):i32
+fn check(valid:bool,message:str) {if !valid {unsafe {rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0)
+    let password=ui.useText(context,ui.emptyText())
+    let icon=ui.useRef(context,0)
+    let submitted=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let entry=rd_find_name((*context).native,"secret")
+        let ordinary=rd_find_name((*context).native,"username")
+        let image=rd_find_name((*context).native,"avatar")
+        let form=rd_find_name((*context).native,"form")
+        check(gtk_entry_get_visibility(entry)==0,"Password entry must always be masked")
+        check(gtk_entry_get_input_purpose(entry)==8,"Password purpose was not set")
+        check((gtk_entry_get_input_hints(entry) & 2)!=0,"Password input must disable spellcheck")
+        check(gtk_entry_get_visibility(ordinary)!=0,"Ordinary entry became a password input")
+        check(gtk_widget_get_halign(form)==3 && gtk_widget_get_valign(form)==3,"Centered form layout failed")
+        if phase.value==0 {
+            icon.set(image as i64);phase.set(1)
+            check(ui.change(context,"secret","ทดสอบ-secret-123"),"Password edit event failed")
+        } else if phase.value==1 {
+            check(ui.equalText(password.value,ui.text("ทดสอบ-secret-123")),"UTF-8 password state was lost")
+            check(ui.equalText(ui.readText(context,"secret"),password.value),"Controlled password is out of sync")
+            check(ui.activate(context,"secret"),"Password Enter event failed")
+            check(submitted.get()==1,"Enter did not submit exactly once")
+            password.set(ui.emptyText());phase.set(2)
+        } else {
+            check(ui.readText(context,"secret").bytes.len()==0,"Cleared password remained in the GTK entry")
+            check(image as i64==icon.get(),"Icon update replaced its native widget")
+            check(gtk_image_get_pixel_size(image)==32,"Icon size did not update")
+            check(gtk_widget_get_margin_start(form)==24,"Form margin did not update")
+            ui.close(context)
+        }
+        return ui.noop
+    }},Vec<i64>(phase.value,password.revision))
+    return <Box id="form" halign="center" valign="center" margin={phase.value==2 ? 24 : 12} spacing={10}>
+        <Icon id="avatar" iconName="dialog-password-symbolic" pixelSize={phase.value==2 ? 32 : 24} />
+        <Entry id="username" value="test-user" placeholder="OS username" />
+        <PasswordEntry id="secret" value={password.value} placeholder="OS password" onChange={value => password.set(value)} onActivate={() => submitted.set(submitted.get()+1)} />
+        <SearchEntry id="search" value="" placeholder="Search accounts" />
+    </Box>
+}
+fn main():i32 {
+    check(ui.run("Native login controls",480,320,App),"Native root failed")
+    unsafe {check(rd_widget_live_count()==0,"Login controls leaked GTK widgets")}
+    print("PASS masked password lifecycle, UTF-8 input, controlled clear, icon reuse and centered form layout")
+    return 0
+}
+return main()

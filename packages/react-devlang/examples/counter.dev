@@ -1,0 +1,25 @@
+use "react_devlang/ui" as ui
+
+fn Counter(context: *ui.Context): ui.Node {
+    let count = ui.useState(context, 0)
+    let name = ui.useText(context, ui.text("DevLang"))
+    let enabled = ui.useBool(context, true)
+    let layout = ui.props()
+    layout.spacing = 16
+    layout.className = ui.text("counter")
+    return ui.Box(layout, Vec<ui.Node>(
+        ui.Label("react-devlang · native GTK"),
+        ui.TextLabel(name.value),
+        ui.Entry(ui.named("name"), name.value, name.set),
+        ui.Label("${count.value}"),
+        ui.Button(ui.named("increment"), "Increment", fn() { count.set(count.get() + 1) }),
+        ui.CheckBox(ui.named("enabled"), "Enabled", enabled.value, fn() { enabled.set(!enabled.value) }),
+        ui.Progress(ui.props(), (count.value % 11) as f64 / 10.0)
+    ))
+}
+fn main(): i32 {
+    let css = ".counter { padding: 24px; background: #15181e; } .counter label { color: #e4e8ef; font-size: 18px; } .counter button { padding: 10px; }"
+    if !ui.runStyled("React DevLang", 480, 420, css, Counter) { return 1 }
+    return 0
+}
+return main()

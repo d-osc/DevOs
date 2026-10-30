@@ -1,0 +1,66 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.background/native-settings.devx" as settings
+use "../../src/system/org.devos.background/native-view.devx" as view
+use "../../src/system/org.devos.background/scene.dev" as scene
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_switch_set_active(widget:*void,active:i32)
+extern fn gtk_switch_get_active(widget:*void):i32
+extern fn gtk_widget_translate_coordinates(widget:*void,target:*void,x:i32,y:i32,tx:*i32,ty:*i32):i32
+extern fn rd_window(root:*void):*void
+extern fn g_file_test(path:str,flags:i32):i32
+extern fn g_file_set_contents(path:str,value:*u8,length:i64,error:*void):i32
+extern fn g_file_get_contents(path:str,value:**u8,length:*u64,error:*void):i32
+extern fn rd_widget_live_count():i64
+fn write(file:str,value:ui.Text) {unsafe {let bytes=ui.nativeText(value);if g_file_set_contents(file,bytes,value.bytes.len() as i64,null)==0 {ui.rd_fail("Cannot write settings fixture")};ui.rd_buffer_free(bytes as *void)}}
+fn read(file:str):ui.Text {unsafe {let bytes:*u8=null;let length=0 as u64;if g_file_get_contents(file,&bytes,&length,null)==0 {ui.rd_fail("Cannot read settings fixture")};let value=view.owned(bytes,length as i64);ui.rd_buffer_free(bytes as *void);return value}}
+fn sensitive(context:*ui.Context,name:str):bool {unsafe {let widget=ui.find(context,name);return widget!=null && gtk_widget_get_sensitive(widget)!=0}}
+fn make(file:str) {unsafe {let surface=scene.cairo_image_surface_create(0,32,16);let cr=scene.cairo_create(surface);scene.rgb(cr,scene.Color(0.2,0.6,0.4));scene.cairo_paint(cr);if scene.cairo_surface_write_to_png(surface,file)!=0 {ui.rd_fail("Cannot write settings image")};scene.cairo_destroy(cr);scene.cairo_surface_destroy(surface)}}
+fn main():i32 {unsafe {
+    let file=view.rc_env("DEVOS_BACKGROUND_PREFERENCES");let good="${file}.ไทย%.png";let bad="${file}.bad.png";make(good);write(bad,ui.text("Not an image"))
+    let cache=scene.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new();let complete=0;let accepted=&complete
+    let ok=ui.run("Native Background Settings test",900,820,fn(context:*ui.Context):ui.Node {
+        let content=settings.App(context,ui.text(file),painter,image,photo,false);let stage=ui.useRef(context,0);let ticks=ui.useRef(context,0);let saved=ui.useText(context,ui.emptyText())
+        ui.useEffect(context,fn():fn():void {unsafe {
+            let callback=callback_context(fn() {unsafe {
+                ticks.set(ticks.get()+1);if ticks.get()>1200 {ui.rd_fail("Settings UI timed out at stage ${stage.get()}")}
+                let current=stage.get();let applied=ui.equalText(ui.readText(context,"background-status"),ui.text("Background applied to all displays."))
+                if current==0 && ui.find(context,"background-color")!=null && ui.equalText(ui.readText(context,"background-color"),ui.text("#101b25")) {
+                    if g_file_test(file,16)!=0 {ui.rd_fail("Opening Settings wrote preferences")};ui.select(context,"background-mode",1);stage.set(1);return
+                }
+                if current==1 && (*image).mode==1 {ui.click(context,"background-color-#28344f");stage.set(2);return}
+                if current==2 && ui.equalText(ui.readText(context,"background-color"),ui.text("#28344f")) {
+                    ui.change(context,"background-color","#112233");ui.change(context,"background-color","#445566");stage.set(3);return
+                }
+                if current==3 && ui.equalText(ui.readText(context,"background-color"),ui.text("#445566")) && sensitive(context,"background-apply") {
+                    if g_file_test(file,16)!=0 {ui.rd_fail("Draft saved without Apply")};ui.click(context,"background-reset");stage.set(4);return
+                }
+                if current==4 && (*image).mode==0 && !sensitive(context,"background-apply") {
+                    gtk_switch_set_active(ui.find(context,"background-widgetNote"),1);stage.set(5);return
+                }
+                if current==5 && gtk_switch_get_active(ui.find(context,"background-widgetNote"))!=0 {
+                    ui.change(context,"background-widgetNoteText","Native note\nภาษาไทย %");ui.change(context,"files-custom-title","My action");ui.change(context,"files-custom-command","tool 'two words' {path}");stage.set(6);return
+                }
+                if current==6 && sensitive(context,"files-custom-save") && ui.equalText(ui.readText(context,"background-widgetNoteText"),ui.text("Native note\nภาษาไทย %")) {ui.click(context,"files-custom-save");stage.set(7);return}
+                if current==7 && ui.readText(context,"files-custom-title").bytes.len()==0 && sensitive(context,"background-apply") {
+                    write(file,ui.text("{\"version\":1,\"enabled\":true,\"values\":{\"widgetLocations\":\"{\\\"widgetClock\\\":{\\\"x\\\":0.7,\\\"y\\\":0.2}}\"}}"));ui.click(context,"background-apply");stage.set(8);return
+                }
+                if current==8 && applied {saved.set(read(file));ui.select(context,"background-mode",2);stage.set(9);return}
+                if current==9 && (*image).mode==2 {ui.change(context,"background-imagePath",bad);stage.set(10);return}
+                if current==10 && ui.equalText(ui.readText(context,"background-imagePath"),ui.text(bad)) && sensitive(context,"background-apply") {ui.click(context,"background-apply");stage.set(11);return}
+                if current==11 && ui.equalText(ui.readText(context,"background-error"),ui.text("The selected file is not a supported picture, or it cannot be read.")) {
+                    let banner=ui.find(context,"background-error");let x=0 as i32;let y=0 as i32;let window=rd_window((*context).native)
+                    if gtk_widget_translate_coordinates(banner,window,0,0,&x,&y)==0 || y<0 || y+ui.gtk_widget_get_allocated_height(banner)>ui.gtk_widget_get_allocated_height(window) {ui.rd_fail("Apply error was hidden below the scroll area")}
+                    if !ui.equalText(saved.get(),read(file)) {ui.rd_fail("Failed Apply changed the saved file")};ui.change(context,"background-imagePath",good);stage.set(12);return
+                }
+                if current==12 && ui.equalText(ui.readText(context,"background-imagePath"),ui.text(good)) && sensitive(context,"background-apply") {ui.click(context,"background-apply");stage.set(13);return}
+                if current==13 && applied && !sensitive(context,"background-apply") {(*accepted)=1;ui.close(context)}
+            }})
+            let timer=view.bg_timer(25,callback.call,callback.data);return fn() {unsafe {view.bg_untimer(timer,callback.data)}}
+        }},Vec<i64>())
+        return content
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);view.bg_picture_free(photo)
+    if !ok || complete!=1 || rd_widget_live_count()!=0 {return 1}
+    print("PASS native Settings controls, rapid editing, multiline note, custom action, Reset, atomic Apply and image validation");return 0
+}}
+return main()

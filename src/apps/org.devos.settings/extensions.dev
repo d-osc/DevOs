@@ -1,0 +1,149 @@
+#!/usr/bin/env d
+# Data worker of the native "Apps & extensions" page: the generic settings form that every extension gets from its manifest
+# (sections of string / color / number / boolean fields), like the JS Settings editor. One JSON request per line on stdin:
+#   {"action":"list"}
+#   {"action":"form","id":"org.devos.editor"}
+#   {"action":"save","id":"org.devos.editor","enabled":true,"values":{"fontSize":14}}
+# One frame per request (text, tab separated; records inside a frame are separated by ASCII 30):
+#   L  <row> ...    row = id, name, description, category (system|app|extension), enabled, field count, error
+#   F  id name description enabled(1/0) system(1/0) error <record> ...
+#      record = "S" title description               a section
+#             | "K" key title description type value min max integer     a field (booleans are 1/0)
+#   E  message
+# Manifests come from src/apps, src/system, src/extensions and the user's extension directory. Values are validated and saved by
+# lib/ext-prefs.dev in the same files the JS shell reads. Extensions with a dedicated native page are not listed here.
+# Test hooks: DEVOS_PREFERENCES_DIR, DEVOS_USER_EXTENSIONS.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/ext-prefs.dev" as prefs
+
+struct Item { manifest: json.Value, origin: str }
+
+fn rowSeparator():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
+    return strings.replaceAll(out,rowSeparator()," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn flag(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
+fn yes(value:bool):str { return value ? "1" : "0" }
+fn directory():str {
+    if process.hasEnv("DEVOS_PREFERENCES_DIR") { return process.getenv("DEVOS_PREFERENCES_DIR") }
+    let config = process.hasEnv("XDG_CONFIG_HOME") ? process.getenv("XDG_CONFIG_HOME") : process.getenv("HOME") + "/.config"
+    return config + "/dev-os/extensions"
+}
+fn userDirectory():str {
+    if process.hasEnv("DEVOS_USER_EXTENSIONS") { return process.getenv("DEVOS_USER_EXTENSIONS") }
+    let data = process.hasEnv("XDG_DATA_HOME") ? process.getenv("XDG_DATA_HOME") : process.getenv("HOME") + "/.local/share"
+    return data + "/dev-os/extensions"
+}
+# Extensions that already have their own native page.
+fn dedicated(id:str):bool { for known in Vec<str>("org.devos.theme","org.devos.icons","org.devos.updates","org.devos.background","org.devos.panel") { if strings.equal(known,id) { return true } }; return false }
+fn category(item:Item):str {
+    if strings.equal(item.origin,"user") || !flag(item.manifest,"system") { return "extension" }
+    let id = text(item.manifest,"id")
+    return strings.equal(id,"org.devos.panel") || strings.equal(id,"org.devos.displaycare") || strings.equal(id,"org.devos.background") ? "system" : "app"
+}
+fn sectionCount(manifest:json.Value):i64 { return prefs.fields(manifest).len() as i64 }
+# Every valid manifest, bundled ones first; a user package cannot take the id of a bundled one or declare system UI.
+fn items(root:str):Vec<Item> {
+    let out = Vec<Item>(); let seen = Map<str,bool>()
+    for source in Vec<Vec<str>>(Vec<str>(root + "/src/system","bundled"),Vec<str>(root + "/src/apps","bundled"),Vec<str>(root + "/src/extensions","bundled"),Vec<str>(userDirectory(),"user")) {
+        if !fs.is_dir(source[0]) { continue }
+        for name in fs.readdirSync(source[0]) {
+            let file = source[0] + "/" + name + "/extension.json"
+            if !fs.is_dir(source[0] + "/" + name) || !fs.existsSync(file) { continue }
+            let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(file,"utf8")) })
+            if result.isErr(parsed) { continue }
+            let manifest = result.unwrap(parsed)
+            let id = text(manifest,"id")
+            if !strings.equal(json.kind(manifest),"object") || !prefs.validId(id) || seen.contains(id) { continue }
+            if strings.equal(source[1],"user") && flag(manifest,"system") { continue }
+            seen.set(id,true); out.push(Item(manifest,source[1]))
+        }
+    }
+    return out
+}
+fn find(root:str, id:str):Item {
+    for item in items(root) { if strings.equal(text(item.manifest,"id"),id) { return item } }
+    return Item(json.null_value(),"")
+}
+fn errorOf(state:json.Value):str { return json.has(state,"error") ? json.string(json.get(state,"error")) : "" }
+fn listFrame(root:str):str {
+    let rows = Vec<Item>()
+    for item in items(root) { if !dedicated(text(item.manifest,"id")) && sectionCount(item.manifest) > 0 { rows.push(item) } }
+    # Sorted by name like the JS list.
+    let names = Vec<str>(); for item in rows { names.push(strings.toLowerCase(text(item.manifest,"name")) + "\n" + text(item.manifest,"id")) }
+    names.sort()
+    let out = "L"
+    for ordered in names {
+        for item in rows {
+            if !strings.equal(strings.toLowerCase(text(item.manifest,"name")) + "\n" + text(item.manifest,"id"),ordered) { continue }
+            let id = text(item.manifest,"id")
+            let state = prefs.read(directory(),id,item.manifest)
+            out = out + rowSeparator() + id + "\t" + clean(text(item.manifest,"name")) + "\t" + clean(text(item.manifest,"description")) + "\t" + category(item) + "\t" + yes(flag(state,"enabled")) + "\t${sectionCount(item.manifest)}\t" + clean(errorOf(state))
+        }
+    }
+    return out
+}
+fn display(value:json.Value):str {
+    let kind = json.kind(value)
+    if strings.equal(kind,"string") { return clean(json.string(value)) }
+    if strings.equal(kind,"bool") { return yes(json.bool(value)) }
+    if strings.equal(kind,"number") { return json.stringify(value) }
+    return ""
+}
+fn optional(field:json.Value, key:str):str { return json.has(field,key) && strings.equal(json.kind(json.get(field,key)),"number") ? json.stringify(json.get(field,key)) : "" }
+fn formFrame(item:Item):str {
+    let manifest = item.manifest; let id = text(manifest,"id")
+    let state = prefs.read(directory(),id,manifest)
+    let values = json.get(state,"values")
+    let out = "F\t" + id + "\t" + clean(text(manifest,"name")) + "\t" + clean(text(manifest,"description")) + "\t" + yes(flag(state,"enabled")) + "\t" + yes(flag(manifest,"system")) + "\t" + clean(errorOf(state))
+    let sections = json.has(manifest,"settings") ? json.get(manifest,"settings") : json.array()
+    for i in 0..(json.len(sections) as i64) {
+        let section = json.at(sections,i)
+        out = out + rowSeparator() + "S\t" + clean(text(section,"title")) + "\t" + clean(text(section,"description"))
+        let list = json.has(section,"fields") ? json.get(section,"fields") : json.array()
+        for j in 0..(json.len(list) as i64) {
+            let field = json.at(list,j); let key = text(field,"key")
+            out = out + rowSeparator() + "K\t" + key + "\t" + clean(text(field,"title")) + "\t" + clean(text(field,"description")) + "\t" + text(field,"type") + "\t" + display(json.has(values,key) ? json.get(values,key) : json.get(field,"default")) + "\t" + optional(field,"min") + "\t" + optional(field,"max") + "\t" + yes(flag(field,"integer"))
+        }
+    }
+    return out
+}
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action")
+    if strings.equal(action,"list") { return listFrame(root) }
+    let id = text(request,"id")
+    if !prefs.validId(id) { return failure("Extension ID must be namespaced, lowercase, and contain no path separators") }
+    let item = find(root,id)
+    if strings.equal(json.kind(item.manifest),"null") || dedicated(id) { return failure("Unknown extension " + id) }
+    if strings.equal(action,"form") { return formFrame(item) }
+    if strings.equal(action,"save") {
+        let enabled = json.has(request,"enabled") && strings.equal(json.kind(json.get(request,"enabled")),"bool") ? json.bool(json.get(request,"enabled")) : true
+        let reason = prefs.write(directory(),id,item.manifest,enabled,json.has(request,"values") ? json.get(request,"values") : json.object())
+        if !strings.equal(reason,"") { return failure(reason) }
+        return formFrame(item)
+    }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

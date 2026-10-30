@@ -1,0 +1,16 @@
+use "../../src/system/org.devos.background/scene.dev" as s
+use "../../src/system/org.devos.background/design.dev" as design
+fn main():i32 {unsafe {
+    let cache=s.cache()
+    for phase in 0..4 {for mode in 0..2 {for style in 0..24 {
+        if phase>0 && style<9 {continue}
+        let surface=s.cairo_image_surface_create(0,640,360);let cr=s.cairo_create(surface)
+        let base=mode==0 ? s.Color(32.0/255.0,32.0/255.0,32.0/255.0) : s.Color(231.0/255.0,232.0/255.0,236.0/255.0)
+        let times=Vec<f64>(0.8,7.3,83.25,1000.25)
+        design.render(cr,style as i32,640.0,360.0,times[phase],s.palette(base,s.Color(0.0,170.0/255.0,1.0)),&cache)
+        let code=s.cairo_surface_write_to_png(surface,"build/background-native-parity/native-${mode}-${style}-${phase}.png")
+        s.cairo_destroy(cr);s.cairo_surface_destroy(surface);if code!=0 {return 1}
+    }}}
+    s.freeCache(&cache);print("PASS native static and motion designs");return 0
+}}
+return main()

@@ -1,0 +1,109 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_open_device_page():i32
+
+# Native Accounts page: the current profile, GitHub sign-in (device flow) and the people on this device. The worker (accounts-page.dev)
+# runs bin/dev-os-accounts. Creating users is not here: it needs the login screen's secure password prompt.
+# Frame A: clientId provider name login id available currentUser bindingId bindingLogin firstSetup code url interval pending, then U records
+# (username, name, uid, home, github, githubId).
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn protectedUser(name:ui.Text):bool { return k.isText(name,"devos") || k.isText(name,"root") || k.isText(name,"devos-greeter") }
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"accounts-page.dev","{\"action\":\"get\"}")
+    let step = ui.useRef(context,0); let polling = ui.useRef(context,0); let remembered = ui.useText(context,ui.emptyText())
+    # While a GitHub code is shown, ask the helper again every `interval` seconds until it is no longer pending.
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() > 0 {
+            let pending = k.isText(field(f,14),"1")
+            if field(f,11).bytes.len() > 0 { remembered.set(field(f,11)) } else if !pending { remembered.set(ui.emptyText()) }
+            let waiting = pending && (field(f,11).bytes.len() > 0 || remembered.get().bytes.len() > 0)
+            if waiting && polling.get() == 0 {
+                polling.set(1); let seconds = sp.number(field(f,13)); if seconds < 5 { seconds = 5 }
+                channel.interval(l.pipe.get(),(seconds * 1000) as i32); channel.send(l.pipe.get(),ui.text("{\"action\":\"poll\"}")); channel.pause(l.pipe.get(),false)
+            } else if !waiting && polling.get() == 1 { polling.set(0); channel.pause(l.pipe.get(),true) }
+        }
+        if ui.text(environment("DEVOS_ACCOUNTS_SMOKE")).bytes.len() > 0 && f.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"accounts-switch-2") }
+        }
+        return ui.noop
+    },Vec<i64>(l.frame.revision))
+    ui.useEffect(context,fn():fn():void { if polling.get() == 1 { polling.set(0); channel.pause(l.pipe.get(),true) }; return ui.noop },Vec<i64>(l.failure.revision))
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_ACCOUNTS_SMOKE")).bytes.len() > 0 && step.get() == 1 && l.failure.value.bytes.len() == 0 && l.waiting.get() == 0 { print("PASS native Accounts page switched user"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    if l.frame.value.bytes.len() == 0 { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0
+    let available = k.isText(field(f,6),"1"); let current = field(f,7)
+    let bindingLogin = field(f,9); let linked = bindingLogin.bytes.len() > 0
+    let code = field(f,11).bytes.len() > 0 ? field(f,11) : k.isText(field(f,14),"1") ? remembered.value : ui.emptyText()
+    let nodes = Vec<ui.Node>()
+    # Profile hero.
+    let profileName = current
+    for record in sp.records(f) {
+        if sp.kindOf(record,85) { let parts = sp.cells(record); if ui.equalText(sp.cell(parts,1),current) { profileName = sp.cell(parts,2) } }
+    }
+    if profileName.bytes.len() == 0 { profileName = field(f,3).bytes.len() > 0 ? field(f,3) : ui.text("Guest") }
+    let who = linked ? ui.concatText(Vec<ui.Text>(ui.text("@"),bindingLogin,ui.text(" · "),current)) : current
+    let badge = ui.props(); badge.className = ui.text(linked ? "accounts-status accounts-status-connected" : "accounts-status"); badge.valign = 1
+    nodes.push(ext.row(18,Vec<ui.Node>(ui.Icon(ui.props(),"avatar-default-symbolic"),
+        ext.expand(ext.column(7,Vec<ui.Node>(k.note("CURRENT PROFILE","accounts-overline"),ext.named(k.caption(profileName,"accounts-profile-name"),"accounts-name"),k.caption(who,"settings-description")))),
+        ui.withProps(ui.Label(linked ? "GITHUB LINKED" : "LOCAL ACCOUNT"),badge))))
+    # GitHub sign-in.
+    let canConnect = !busy && code.bytes.len() == 0 && field(f,1).bytes.len() > 0 && (!available || !protectedUser(current))
+    let github = ui.named("accounts-github"); github.sensitive = canConnect; github.className = ui.text(linked ? "" : "settings-primary")
+    let buttons = Vec<ui.Node>(ui.Button(github,linked ? "Reconnect GitHub" : available ? "Connect GitHub" : "Sign in with GitHub",fn() { sp.send(l,ui.text("{\"action\":\"begin\"}")) }))
+    if linked { let unlink = ui.named("accounts-unlink"); unlink.sensitive = !busy && code.bytes.len() == 0; buttons.push(ui.Button(unlink,"Unlink account",fn() { sp.send(l,ui.text("{\"action\":\"unlink\"}")) })) }
+    let card = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(4,Vec<ui.Node>(k.note("GitHub sign-in","section-heading"),k.note("Connect your online identity to this OS profile.","settings-description")))))),
+        k.caption(linked ? ui.concatText(Vec<ui.Text>(ui.text("Signed in with @"),bindingLogin,ui.text(". You can use GitHub or your local password at the DevOs login screen."))) : ui.text("Sign in through your browser to link GitHub. DevOs uses your public profile to identify you."),"settings-description"),
+        ext.row(10,buttons))
+    if k.isText(current,"devos") { card.push(k.note("Create a personal user to connect GitHub. The public Guest profile stays separate.","settings-description")) }
+    if field(f,1).bytes.len() == 0 { card.push(k.note("GitHub sign-in is not configured: no OAuth App client ID is set.","settings-description")) }
+    if code.bytes.len() > 0 {
+        let open = ui.named("accounts-open-browser"); let cancel = ui.named("accounts-cancel"); cancel.sensitive = !busy
+        card.push(ext.column(12,Vec<ui.Node>(k.note("VERIFY IN YOUR BROWSER","settings-eyebrow"),ext.named(k.caption(code,"login-code"),"accounts-code"),
+            k.note("Enter this code at github.com/login/device. Waiting for your approval…","settings-description"),
+            ext.row(10,Vec<ui.Node>(ui.Button(open,"Open GitHub in browser",fn() { unsafe { rd_open_device_page() } }),ui.Button(cancel,"Cancel",fn() { sp.send(l,ui.text("{\"action\":\"cancel\"}")) }))))))
+    }
+    if k.isText(field(f,2),"github") {
+        let signout = ui.named("accounts-signout"); signout.sensitive = !busy && code.bytes.len() == 0
+        card.push(ext.row(10,Vec<ui.Node>(ext.expand(k.note("Online sign-out keeps your OS login link. Use Unlink to remove it.","settings-description")),ui.Button(signout,"Sign out online",fn() { sp.send(l,ui.text("{\"action\":\"signout\"}")) }))))
+    }
+    let cardOptions = ui.props(); cardOptions.spacing = 14; cardOptions.className = ui.text("settings-card")
+    nodes.push(ui.Box(cardOptions,card))
+    # People on this device.
+    let people = Vec<ui.Node>(); let count = 0
+    for record in sp.records(f) {
+        if !sp.kindOf(record,85) { continue }
+        count = count + 1
+        let parts = sp.cells(record); let name = sp.cell(parts,1); let isYou = ui.equalText(name,current)
+        let rowNodes = Vec<ui.Node>(ui.Icon(ui.props(),"avatar-default-symbolic"),
+            ext.expand(ext.column(5,Vec<ui.Node>(ext.row(10,Vec<ui.Node>(k.caption(sp.cell(parts,2),"section-heading"),isYou ? k.note("YOU","accounts-you") : ui.Fragment(ui.props(),Vec<ui.Node>()))),
+                k.caption(sp.cell(parts,5).bytes.len() > 0 ? ui.concatText(Vec<ui.Text>(ui.text("@"),sp.cell(parts,5),ui.text(" · "),name)) : name,"settings-description")))))
+        if !isYou && !k.isText(name,"devos") {
+            let switcher = ui.named("accounts-switch-" + "${count}"); switcher.sensitive = !busy && code.bytes.len() == 0
+            rowNodes.push(ui.Button(switcher,"Switch user",fn() { sp.send(l,ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"switch\",\"username\":"),channel.quote(name),ui.text("}")))) }))
+        }
+        let rowOptions = ui.props(); rowOptions.vertical = false; rowOptions.spacing = 14; rowOptions.className = ui.text("accounts-user-row")
+        people.push(ui.Box(rowOptions,rowNodes))
+    }
+    let peopleCard = Vec<ui.Node>(k.note("People on this device","section-heading"),k.note("${count} profiles · Separate files and settings for each person.","settings-description"))
+    for item in people { peopleCard.push(item) }
+    if !available { peopleCard.push(k.note("User management is unavailable in this session.","settings-description")) }
+    else { peopleCard.push(k.note("Switch profiles here or from the account button on your panel. To add a person, use New user on the login screen.","settings-description")) }
+    let peopleOptions = ui.props(); peopleOptions.spacing = 12; peopleOptions.className = ui.text("settings-card accounts-users")
+    nodes.push(ui.Box(peopleOptions,peopleCard))
+    nodes.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"changes-allow-symbolic"),ext.expand(ext.column(5,Vec<ui.Node>(k.note("Your local password stays with you","section-heading"),k.note("Use it for offline login and screen lock. Changing users or GitHub links never changes your local password.","settings-description")))))))
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"accounts-error")) }
+    let refresh = ui.named("accounts-refresh"); refresh.sensitive = !busy && code.bytes.len() == 0
+    nodes.push(ui.Button(refresh,"Refresh",fn() { sp.send(l,ui.text("{\"action\":\"get\"}")) }))
+    return ext.column(18,nodes)
+}
+fn page():ui.Node { return ui.component(9360,ui.keyed(920),render) }

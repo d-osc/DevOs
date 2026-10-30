@@ -1,0 +1,5 @@
+use "react_devlang/ui" as r
+struct CardProps { value: r.Text }
+fn Card(context: *r.Context, props: CardProps): r.Node {
+    return <Box><TextLabel id="imported-card">{props.value}</TextLabel></Box>
+}

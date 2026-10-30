@@ -1,0 +1,2 @@
+version: '0.4.0'
+package: { name: 'react_devlang', entry: 'src/ui.dev', modules: 'src' }

@@ -1,0 +1,51 @@
+# Clock and color rules of the Theme page that the .devx UI needs directly. No std imports so the native window can use it;
+# input is UTF-8 bytes. model.dev (used by the worker and tests) wraps the same functions for `str`.
+
+fn trimmed(bytes:Vec<u8>):Vec<u8> {
+    let out = Vec<u8>(); let start = 0; let end = bytes.len() as i64
+    while start < end && bytes[start] == 32 { start = start + 1 }
+    while end > start && bytes[end - 1] == 32 { end = end - 1 }
+    for i in start..end { out.push(bytes[i]) }
+    return out
+}
+# Minutes after midnight for a strict 24-hour HH:MM (surrounding spaces ignored), or -1.
+fn parse(value:Vec<u8>):i64 {
+    let text = trimmed(value)
+    if text.len() != 5 || text[2] != 58 { return -1 }
+    let hours = 0; let minutes = 0
+    for i in 0..5 {
+        if i == 2 { continue }
+        if text[i] < 48 || text[i] > 57 { return -1 }
+        let digit = (text[i] - 48) as i64
+        if i < 2 { hours = hours * 10 + digit } else { minutes = minutes * 10 + digit }
+    }
+    if hours > 23 || minutes > 59 { return -1 }
+    return hours * 60 + minutes
+}
+fn problem(light:Vec<u8>, dark:Vec<u8>):str {
+    let a = parse(light); let b = parse(dark)
+    if a < 0 || b < 0 { return "Enter times as HH:MM in 24-hour time, for example 07:00." }
+    if a == b { return "Light and Dark must start at different times." }
+    return ""
+}
+# "dark" or "light": "dark"/"light" modes are fixed; anything else is Auto at `minute` (minutes after local midnight).
+# An invalid schedule uses 07:00 / 19:00.
+fn resolve(mode:Vec<u8>, minute:i64, lightFrom:Vec<u8>, darkFrom:Vec<u8>):str {
+    if mode.len() == 4 && mode[0] == 100 { return "dark" }
+    if mode.len() == 5 && mode[0] == 108 { return "light" }
+    let light = parse(lightFrom); let dark = parse(darkFrom)
+    if light < 0 || dark < 0 || light == dark { light = 420; dark = 1140 }
+    let lit = light < dark ? minute >= light && minute < dark : minute >= light || minute < dark
+    return lit ? "light" : "dark"
+}
+fn nibble(byte:u8):f64 {
+    if byte >= 48 && byte <= 57 { return (byte - 48) as f64 }
+    if byte >= 97 && byte <= 102 { return (byte - 87) as f64 }
+    if byte >= 65 && byte <= 70 { return (byte - 55) as f64 }
+    return 0.0
+}
+# One 0..1 channel of "#rrggbb" starting at byte `at` (1, 3 or 5).
+fn channel(color:Vec<u8>, at:i64):f64 {
+    if color.len() != 7 { return 0.0 }
+    return (nibble(color[at]) * 16.0 + nibble(color[at + 1])) / 255.0
+}

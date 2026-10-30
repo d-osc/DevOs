@@ -1,0 +1,5 @@
+use "../../packages/react-devlang/src/ui.dev" as ui
+fn App(context: *ui.Context): ui.Node {
+    return ui.Box(ui.props(), Vec<ui.Node>(ui.withProps(ui.Label("one"), ui.keyed(1)), ui.withProps(ui.Label("two"), ui.keyed(1))))
+}
+ui.run("Invalid keys", 100, 100, App)

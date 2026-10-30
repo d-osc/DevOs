@@ -1,0 +1,59 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+# Shared widgets and parsers of the native Settings pages.
+fn field(fields:Vec<ui.Text>,index:i64):ui.Text { return index < fields.len() as i64 ? fields[index] : ui.emptyText() }
+fn on(fields:Vec<ui.Text>,index:i64):bool { let value = field(fields,index); return value.bytes.len() > 0 && value.bytes[0] == 49 }
+fn same(fields:Vec<ui.Text>,index:i64,expected:str):bool { return ui.equalText(field(fields,index),ui.text(expected)) }
+fn styled(name:str):ui.Props { let options = ui.props(); options.className = ui.text(name); return options }
+fn caption(value:ui.Text,name:str):ui.Node {
+    let options = styled(name); options.xalign = 0.0; options.wrap = true
+    return ui.withProps(ui.TextLabel(value),options)
+}
+fn note(value:str,name:str):ui.Node { return caption(ui.text(value),name) }
+fn heading(icon:str,title:str):ui.Node {
+    let row = ui.props(); row.vertical = false; row.spacing = 10; let image = ui.props(); image.iconSize = 23
+    return ui.Box(row,Vec<ui.Node>(ui.Icon(image,icon),caption(ui.text(title),"section-heading")))
+}
+fn intro(icon:str,title:str,children:Vec<ui.Node>):ui.Node {
+    let options = ui.props(); options.spacing = 8; options.width = 260
+    let all = Vec<ui.Node>(heading(icon,title)); for child in children { all.push(child) }
+    return ui.Box(options,all)
+}
+fn card(id:str,left:ui.Node,right:ui.Node):ui.Node {
+    let options = ui.named(id); options.vertical = false; options.spacing = 28; options.className = ui.text("settings-card system-card")
+    let body = ui.props(); body.expand = true; body.spacing = 14
+    return ui.Box(options,Vec<ui.Node>(left,ui.Box(body,Vec<ui.Node>(right))))
+}
+fn stack(spacing:i32,children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = spacing; options.expand = true; return ui.Box(options,children) }
+fn switchRow(id:str,active:bool,usable:bool,state:str,changed:fn(bool):void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable
+    let row = ui.props(); row.vertical = false; row.spacing = 12
+    return ui.Box(row,Vec<ui.Node>(ui.Switch(options,active,fn(next:bool) { if next != active { changed(next) } }),note(state,"settings-description")))
+}
+fn radio(id:str,selected:bool,usable:bool,title:str,detail:str,chosen:fn():void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable; options.className = ui.text(selected ? "power-mode power-mode-selected" : "power-mode")
+    let row = ui.props(); row.vertical = false; row.spacing = 14; let image = ui.props(); image.iconSize = 18
+    let texts = ui.props(); texts.spacing = 3; texts.expand = true
+    return ui.WidgetButton(options,ui.Box(row,Vec<ui.Node>(ui.Icon(image,selected ? "radio-checked-symbolic" : "radio-symbolic"),
+        ui.Box(texts,Vec<ui.Node>(note(title,"settings-field-title"),note(detail,"settings-description"))))),chosen)
+}
+fn isText(value:ui.Text,expected:str):bool { return ui.equalText(value,ui.text(expected)) }
+fn entries(value:ui.Text):Vec<Vec<ui.Text>> {
+    let out = Vec<Vec<ui.Text>>(); if value.bytes.len() == 0 { return out }
+    for item in channel.split(value,44) { out.push(channel.split(item,61)) }
+    return out
+}
+fn choice(options:Vec<Vec<ui.Text>>,selected:ui.Text):i64 {
+    for i in 0..(options.len() as i64) { if ui.equalText(options[i][0],selected) { return i } }
+    return 0
+}
+fn titles(options:Vec<Vec<ui.Text>>):Vec<ui.Text> {
+    let out = Vec<ui.Text>(); for item in options { out.push(item.len() > 1 ? item[1] : item[0]) }; return out
+}
+fn number(fields:Vec<ui.Text>,index:i64):i64 { return channel.integer(field(fields,index)) }
+fn percentOf(fields:Vec<ui.Text>,index:i64):i64 { return same(fields,index,"-1") ? -1 : number(fields,index) }
+fn signedNumber(value:ui.Text):i64 {
+    if value.bytes.len() == 0 || value.bytes[0] != 45 { return channel.integer(value) }
+    let rest = Vec<u8>(); for i in 1..(value.bytes.len() as i64) { rest.push(value.bytes[i]) }
+    return 0 - channel.integer(ui.Text(rest))
+}

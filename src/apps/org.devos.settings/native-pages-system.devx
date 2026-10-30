@@ -1,0 +1,287 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./swap-logic.dev" as swaps
+# System pages: Memory & Swap, Speaker, Language, Display Care.
+struct SwapDraft { type:ui.TextState, percent:ui.State, mib:ui.State, algorithm:ui.TextState, swappiness:ui.State, dirty:ui.State, gigabytes:ui.TextState }
+fn swapTypeTitle(id:str):str { return id == "file" ? "Swap file on disk" : id == "off" ? "Off" : "Compressed RAM (zram)" }
+fn swapTypeDetail(id:str):str {
+    return id == "file" ? "Moves rarely used memory to a file on the system disk. Slower, and only on an installed system." : id == "off" ? "No swap. Programs are closed when memory runs out." : "Keeps rarely used memory compressed in RAM. Fast, needs no disk and is the default."
+}
+fn plainText(value:str):ui.Text { return ui.text(value) }
+# Swap: fileAllowed, fileReason, mem, min, max, maxFile, type, percent, sizeMiB, algorithm, swappiness, activeType, sizeBytes, usedBytes,
+# dataBytes, compressedBytes, memoryBytes
+fn swapPage(fields:Vec<ui.Text>,busy:bool,draft:SwapDraft,sendMany:fn(str,Vec<ui.Text>):void):Vec<ui.Node> {
+    let mem = k.number(fields,4); let minimum = k.number(fields,5); let maximum = k.number(fields,6); let maximumFile = k.number(fields,7)
+    let fileAllowed = k.on(fields,2); let kind = k.isText(draft.type.value,"file") ? "file" : k.isText(draft.type.value,"off") ? "off" : "zram"
+    let percent = draft.percent.value; let custom = percent < 0
+    let size = swaps.mibOf(mem,percent,draft.mib.value)
+    let issue = swaps.problem(kind,fileAllowed,mem,minimum,maximum,maximumFile,percent,draft.mib.value)
+    let saved = k.same(fields,8,kind) && k.percentOf(fields,9) == percent && (percent >= 0 || k.number(fields,10) == draft.mib.value) && k.isText(k.field(fields,11),algorithmName(draft.algorithm.value)) && k.number(fields,12) == draft.swappiness.value
+    let dirty = draft.dirty.value != 0 && !saved
+    let activeKind = k.same(fields,13,"zram") ? "zram" : k.same(fields,13,"file") ? "file" : k.same(fields,13,"other") ? "other" : "none"
+    let sizeBytes = k.number(fields,14); let usedBytes = k.number(fields,15); let ratioData = k.number(fields,16); let ratioCompressed = k.number(fields,17)
+    let usage = activeKind == "none" ? "No swap is active." : activeKind == "other" ? "Swap from another source is active." : "${swaps.formatSize(usedBytes)} used of ${swaps.formatSize(sizeBytes)} (${activeKind == "zram" ? "compressed RAM" : "disk file"})"
+    let edit = fn(next:fn():void) { draft.dirty.set(1); next() }
+    let left = Vec<ui.Node>(k.note("Swap gives programs more room when memory is full. By default it is as large as your RAM, kept compressed in RAM.","settings-description"),
+        k.note("Installed memory: ${swaps.formatSize(mem * 1048576)}","settings-description"))
+    let usageBox = Vec<ui.Node>(k.note(usage,"settings-field-title"))
+    if sizeBytes > 0 { let bar = ui.named("swap-usage-bar"); bar.className = ui.text("power-charge-bar"); usageBox.push(ui.Progress(bar,(usedBytes as f64) / (sizeBytes as f64))) }
+    if activeKind == "zram" && ratioData > 0 && ratioCompressed > 0 {
+        let tenths = (ratioData * 10 + ratioCompressed / 2) / ratioCompressed
+        usageBox.push(k.note("Compressed ${tenths / 10}.${tenths % 10}:1, taking ${swaps.formatSize(k.number(fields,18) > 0 ? k.number(fields,18) : ratioCompressed)} of RAM","settings-description"))
+    }
+    let right = Vec<ui.Node>(k.stack(6,usageBox))
+    let types = Vec<ui.Node>()
+    for id in Vec<str>("zram","file","off") {
+        let blocked = id == "file" && !fileAllowed
+        types.push(k.radio("swap-type-"+id,kind == id,!busy && !blocked,swapTypeTitle(id),swapTypeDetail(id),fn() { draft.dirty.set(1); draft.type.set(ui.text(id)) }))
+    }
+    right.push(k.stack(9,types))
+    if kind != "off" {
+        let presets = ui.props(); presets.vertical = false; presets.spacing = 8; let buttons = Vec<ui.Node>()
+        for preset in Vec<i64>(25,50,100,150,200) {
+            let options = ui.named("swap-size-${preset}"); let fits = mem * preset / 100 <= (kind == "file" && maximumFile < maximum ? maximumFile : maximum)
+            options.sensitive = !busy && fits; options.className = ui.text(!custom && percent == preset ? "power-mode power-mode-selected" : "power-mode")
+            buttons.push(ui.Button(options,"${preset}%",fn() { draft.dirty.set(1); draft.percent.set(preset); draft.gigabytes.set(ui.emptyText()) }))
+        }
+        let customOptions = ui.named("swap-size-custom"); customOptions.sensitive = !busy; customOptions.className = ui.text(custom ? "power-mode power-mode-selected" : "power-mode")
+        buttons.push(ui.Button(customOptions,"Custom",fn() { draft.dirty.set(1); draft.mib.set(size); draft.percent.set(-1); draft.gigabytes.set(ui.text("${size / 1024}.${(size % 1024) * 100 / 1024}")) }))
+        let sizeBox = Vec<ui.Node>(k.note("Size","settings-field-title"),ui.Box(presets,buttons))
+        if custom {
+            let entry = ui.named("swap-custom-gb"); entry.widthChars = 7; entry.sensitive = !busy
+            let row = ui.props(); row.vertical = false; row.spacing = 8
+            sizeBox.push(ui.Box(row,Vec<ui.Node>(k.note("Size in GB","settings-description"),ui.Entry(entry,draft.gigabytes.value,fn(value:ui.Text) {
+                draft.dirty.set(1); draft.gigabytes.set(value); let mib = swaps.gigabytesToMiB(value.bytes); draft.mib.set(mib < 0 ? 0 : mib)
+            }))))
+        }
+        sizeBox.push(k.note("${swaps.formatSize(size * 1048576)}${percent >= 0 ? " (${percent}% of RAM)" : ""}","settings-description"))
+        right.push(k.stack(8,sizeBox))
+    }
+    if kind == "zram" {
+        let names = Vec<ui.Text>(ui.text("zstd (recommended)"),ui.text("lz4 (fastest)")); let pick = ui.named("swap-algorithm"); pick.sensitive = !busy
+        let row = ui.props(); row.vertical = false; row.spacing = 12; let words = ui.props(); words.spacing = 3; words.expand = true
+        right.push(ui.Box(row,Vec<ui.Node>(ui.Box(words,Vec<ui.Node>(k.note("Compression","settings-field-title"),k.note("zstd stores more in less RAM; lz4 is lighter on the processor.","settings-description"))),
+            ui.Select(pick,names,k.isText(draft.algorithm.value,"lz4") ? 1 : 0,fn(index:i64) { draft.dirty.set(1); draft.algorithm.set(ui.text(index == 1 ? "lz4" : "zstd")) }))))
+    }
+    if kind != "off" {
+        right.push(k.stack(4,Vec<ui.Node>(k.note("Swappiness","settings-field-title"),
+            k.note("Higher values move idle memory to swap sooner and keep more file cache. 100 suits compressed RAM; use a lower value for a disk file.","settings-description"),
+            k.caption(ui.text("${draft.swappiness.value}"),"settings-description"),
+            ui.Scale(ui.named("swap-swappiness"),1,200,draft.swappiness.value,fn(next:i64) { if next != draft.swappiness.value { draft.dirty.set(1); draft.swappiness.set(next) } }))))
+    }
+    if issue == "no-file" { right.push(k.caption(k.same(fields,3,"") ? ui.text("A swap file is not available on this system.") : k.field(fields,3),"settings-description")) }
+    else if issue != "" { right.push(k.note(issue,"settings-description")) }
+    let apply = ui.named("swap-apply"); apply.className = ui.text("settings-primary"); apply.sensitive = !busy && dirty && issue == ""
+    let args = Vec<ui.Text>(ui.text("type=${kind}"))
+    if kind != "off" { args.push(ui.text(percent >= 0 ? "percent=${percent}" : "mib=${draft.mib.value}")); args.push(ui.text("algorithm=${k.isText(draft.algorithm.value,"lz4") ? "lz4" : "zstd"}")) }
+    args.push(ui.text("swappiness=${draft.swappiness.value}"))
+    let footer = ui.props(); footer.vertical = false; footer.spacing = 12
+    right.push(ui.Box(footer,Vec<ui.Node>(k.note(dirty ? "Apply to use the new swap setting." : "","settings-description"),ui.Button(apply,busy ? "Applying…" : "Apply",fn() { sendMany("set",args) }))))
+    return Vec<ui.Node>(k.card("swap-card",k.intro("drive-harddisk-symbolic","Memory & swap",left),k.stack(14,right)))
+}
+fn algorithmName(value:ui.Text):str { return k.isText(value,"lz4") ? "lz4" : "zstd" }
+
+fn soundTitle(id:str):str {
+    return id == "game" ? "Game" : id == "movie" ? "Movie" : id == "music" ? "Music" : id == "voice" ? "Voice" : id == "custom1" ? "Custom 1" : id == "custom2" ? "Custom 2" : id == "custom3" ? "Custom 3" : "Dynamic"
+}
+fn soundDetail(id:str):str {
+    return id == "game" ? "Lifts the upper mids and treble so footsteps and effects stand out." : id == "movie" ? "Fuller bass and clearer highs for film soundtracks." : id == "music" ? "A balanced curve with warmer bass and brighter highs." : id == "voice" ? "Pulls back the bass and lifts the voice range so every word is clear." : id == "dynamic" ? "No sound processing. Audio plays as it is." : "Your own bass, mid and treble levels."
+}
+# Speaker: supported, reason, voice, boost, mode, smart, effective, filtersAvailable, filtersReason, warning, device, speakers, custom1..3
+fn speaker(fields:Vec<ui.Text>,ready:bool,busy:bool,send:fn(str,str):void,sendValue:fn(str,ui.Text):void,sendMany:fn(str,Vec<ui.Text>):void):Vec<ui.Node> {
+    let supported = k.on(fields,2); let usable = ready && supported && !busy; let effects = supported && k.on(fields,9)
+    let mode = effects ? k.field(fields,6) : ui.text("dynamic"); let speakers = k.entries(k.field(fields,13))
+    let voice = effects && k.on(fields,4); let boost = effects && k.on(fields,5)
+    let deviceBlock = Vec<ui.Node>(k.note("Filter out all sounds except human voices from the laptop speaker","settings-description"),k.note("Choose your output device","settings-field-title"))
+    if speakers.len() > 0 {
+        let pick = ui.named("speaker-device"); pick.sensitive = usable
+        deviceBlock.push(ui.Select(pick,k.titles(speakers),k.choice(speakers,k.field(fields,12)),fn(index:i64) { if index < speakers.len() as i64 && !ui.equalText(speakers[index][0],k.field(fields,12)) { sendValue("device",speakers[index][0]) } }))
+    } else { deviceBlock.push(k.note(ready ? "No audio output is available." : "Finding outputs…","settings-description")) }
+    let voiceRight = Vec<ui.Node>(k.note("Switch on to enable AI Noise-Canceling Speaker.","settings-description"),k.switchRow("speaker-voice-switch",voice,usable && effects,voice ? "On" : "Off",fn(next:bool) { send("voice",next ? "on" : "off") }),
+        k.note("This keeps the voice range (300 Hz to 3.4 kHz) with a filter and cuts everything outside it. It is not an AI model, so noise inside the voice range stays.","settings-description"))
+    let boostRight = Vec<ui.Node>(k.note("Switch on to enable Volume Booster.","settings-description"),k.switchRow("speaker-boost-switch",boost,usable && effects,boost ? "On" : "Off",fn(next:bool) { send("boost",next ? "on" : "off") }),
+        k.note("Adds about 9.5 dB of gain and rounds off loud peaks instead of letting them clip. It is not a full limiter, so very loud music can still sound compressed.","settings-description"))
+    let modes = Vec<ui.Node>()
+    for id in Vec<str>("dynamic","game","movie","music","voice","custom1","custom2","custom3") {
+        modes.push(k.radio("speaker-mode-"+id,supported && k.isText(mode,id),usable && (id == "dynamic" || effects),soundTitle(id),soundDetail(id),fn() { if !k.isText(mode,id) { send("mode",id) } }))
+    }
+    for slot in Vec<str>("custom1","custom2","custom3") {
+        if effects && k.isText(mode,slot) {
+            let index = slot == "custom1" ? 14 : slot == "custom2" ? 15 : 16; let current = channel.split(k.field(fields,index),59); let names = Vec<str>("Bass","Mid","Treble")
+            for band in 0..3 {
+                let row = ui.props(); row.vertical = false; row.spacing = 12; let value = band < current.len() as i64 ? k.signedNumber(current[band]) : 0
+                let shown = value + 10 < 0 ? 0 : value + 10
+                modes.push(ui.Box(row,Vec<ui.Node>(k.note(names[band],"settings-description"),
+                    ui.Scale(ui.named("speaker-custom-"+slot+"-${band}"),0,20,shown,fn(next:i64) {
+                        if next - 10 != value {
+                            let levels = Vec<ui.Text>(ui.text(slot)); for other in 0..3 { levels.push(ui.text("${other == band ? next - 10 : (other < current.len() as i64 ? k.signedNumber(current[other]) : 0)}")) }
+                            sendMany("custom",levels)
+                        }
+                    }),k.note("${value} dB","settings-description"))))
+            }
+        }
+    }
+    modes.push(k.note("Voice Mode Smart Switch","settings-field-title"))
+    modes.push(k.note("When enabled, Voice mode is used while an app is recording audio, for example during a call.","settings-description"))
+    let smart = k.on(fields,7)
+    modes.push(k.switchRow("speaker-smart-switch",smart,usable && effects,smart ? "Enable" : "Disable",fn(next:bool) { send("smart",next ? "on" : "off") }))
+    if effects && smart && !k.same(fields,8,"") && !ui.equalText(k.field(fields,8),mode) { modes.push(k.note("An app is recording, so Voice mode is in use for now.","settings-description")) }
+    let out = Vec<ui.Node>(
+        k.card("speaker-voice-card",k.intro("audio-speakers-symbolic","AI Noise-Canceling Speaker",deviceBlock),k.stack(10,voiceRight)),
+        k.card("speaker-boost-card",k.intro("audio-volume-high-symbolic","Volume Booster",Vec<ui.Node>(k.note("Makes all the sounds on your device much louder, with minimum distortion.","settings-description"))),k.stack(10,boostRight)),
+        k.card("speaker-modes-card",k.intro("multimedia-volume-control-symbolic","Sound Modes",Vec<ui.Node>(k.note("Select your own sound modes","settings-description"),k.note("These are equalizer curves. Dolby Atmos is not available on this system.","settings-description"))),k.stack(9,modes)))
+    if ready && supported && !k.on(fields,9) { out.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Sound effects are not available. "),k.field(fields,10))),"settings-description")) }
+    if ready && effects && k.field(fields,11).bytes.len() > 0 { out.push(k.caption(k.field(fields,11),"settings-description")) }
+    if ready && !supported { out.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not available. "),k.same(fields,3,"") ? ui.text("The audio server is not running.") : k.field(fields,3))),"settings-description")) }
+    return out
+}
+
+struct LanguageDraft { layouts:ui.TextState, shortcut:ui.TextState, adding:ui.State, dirty:ui.State }
+fn joinIds(items:Vec<ui.Text>):ui.Text {
+    let bytes = Vec<u8>(); for i in 0..(items.len() as i64) { if i > 0 { bytes.push(44) }; for byte in items[i].bytes { bytes.push(byte) } }
+    return ui.Text(bytes)
+}
+fn idList(value:ui.Text):Vec<ui.Text> { let out = Vec<ui.Text>(); if value.bytes.len() > 0 { for item in channel.split(value,44) { out.push(item) } }; return out }
+fn hasId(items:Vec<ui.Text>,id:ui.Text):bool { for item in items { if ui.equalText(item,id) { return true } }; return false }
+fn iconButton(id:str,icon:str,usable:bool,clicked:fn():void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable; let image = ui.props(); image.iconSize = 16
+    return ui.WidgetButton(options,ui.Icon(image,icon),clicked)
+}
+# Language: warning, shortcut, layouts, catalog (id=name=sample), shortcuts (id=name), applied
+fn languagePage(fields:Vec<ui.Text>,busy:bool,draft:LanguageDraft,sendMany:fn(str,Vec<ui.Text>):void):Vec<ui.Node> {
+    let catalog = k.entries(k.field(fields,5)); let shortcuts = k.entries(k.field(fields,6)); let chosen = idList(draft.layouts.value); let ready = fields.len() > 6
+    let available = Vec<Vec<ui.Text>>(); for item in catalog { if !hasId(chosen,item[0]) { available.push(item) } }
+    let saved = ui.equalText(draft.layouts.value,k.field(fields,4)) && ui.equalText(draft.shortcut.value,k.field(fields,3))
+    let rows = Vec<ui.Node>()
+    rows.push(ui.Box(ui.props(),Vec<ui.Node>(k.note("Add up to four languages. The first language is used when a session starts.","settings-description"))))
+    for index in 0..(chosen.len() as i64) {
+        let id = chosen[index]; let name = id; let sample = ui.emptyText()
+        for item in catalog { if ui.equalText(item[0],id) { name = item.len() > 1 ? item[1] : id; sample = item.len() > 2 ? item[2] : ui.emptyText() } }
+        let texts = ui.props(); texts.spacing = 3; texts.expand = true; let row = ui.props(); row.vertical = false; row.spacing = 10
+        let moveUp = fn() {
+            let next = Vec<ui.Text>(); for i in 0..(chosen.len() as i64) { next.push(chosen[i]) }
+            next[index - 1] = chosen[index]; next[index] = chosen[index - 1]; draft.dirty.set(1); draft.layouts.set(joinIds(next))
+        }
+        let remove = fn() { let next = Vec<ui.Text>(); for i in 0..(chosen.len() as i64) { if i != index { next.push(chosen[i]) } }; draft.dirty.set(1); draft.layouts.set(joinIds(next)) }
+        rows.push(ui.Box(row,Vec<ui.Node>(ui.Box(texts,Vec<ui.Node>(k.caption(name,"settings-field-title"),index == 0 ? k.note("Default keyboard","settings-description") : k.caption(sample,"settings-description"))),
+            iconButton("language-up-"+"${index}","go-up-symbolic",!busy && index > 0,moveUp),iconButton("language-remove-"+"${index}","list-remove-symbolic",!busy && chosen.len() > 1,remove))))
+    }
+    let pickNames = Vec<ui.Text>(ui.text("Choose a language…")); for item in available { pickNames.push(item.len() > 1 ? item[1] : item[0]) }
+    let pick = ui.named("language-add-choice"); pick.sensitive = !busy && chosen.len() < 4; pick.expand = true
+    let addOptions = ui.named("language-add"); addOptions.sensitive = !busy && chosen.len() < 4 && draft.adding.value > 0 && draft.adding.value <= available.len() as i64
+    let addRow = ui.props(); addRow.vertical = false; addRow.spacing = 10
+    rows.push(ui.Box(addRow,Vec<ui.Node>(ui.Select(pick,pickNames,draft.adding.value,fn(index:i64) { draft.adding.set(index) }),
+        ui.Button(addOptions,"Add language",fn() {
+            if draft.adding.value > 0 && draft.adding.value <= available.len() as i64 {
+                let next = Vec<ui.Text>(); for item in chosen { next.push(item) }; next.push(available[draft.adding.value - 1][0])
+                draft.dirty.set(1); draft.layouts.set(joinIds(next)); draft.adding.set(0)
+            }
+        }))))
+    let shortcutNames = Vec<ui.Text>(); let shortcutIndex = 0
+    for i in 0..(shortcuts.len() as i64) { shortcutNames.push(shortcuts[i].len() > 1 ? shortcuts[i][1] : shortcuts[i][0]); if ui.equalText(shortcuts[i][0],draft.shortcut.value) { shortcutIndex = i } }
+    let shortcutPick = ui.named("language-shortcut"); shortcutPick.sensitive = !busy
+    let hint = chosen.len() < 2 ? "Add a second keyboard language to switch languages." : ui.equalText(draft.shortcut.value,ui.text("super-space")) ? "Super + Space switches languages. Open Applications with Super or the panel button." : ui.equalText(draft.shortcut.value,ui.text("caps-lock")) ? "Caps Lock switches languages instead of toggling uppercase." : "Press the shortcut to cycle through your keyboard languages."
+    let typing = ui.named("language-test-input"); typing.placeholder = ui.text("Test your keyboard language here…")
+    let footer = ui.props(); footer.vertical = false; footer.spacing = 10
+    let discard = ui.named("language-reset"); discard.sensitive = !busy && ready && !saved
+    let apply = ui.named("language-apply"); apply.className = ui.text("suggested-action"); apply.sensitive = !busy && ready && !saved && chosen.len() > 0
+    let out = Vec<ui.Node>()
+    if ready && k.field(fields,2).bytes.len() > 0 { out.push(k.caption(k.field(fields,2),"settings-error-banner")) }
+    out.push(k.card("language-layouts",k.intro("input-keyboard-symbolic","Keyboard languages",Vec<ui.Node>()),k.stack(14,rows)))
+    out.push(k.card("language-shortcut-card",k.intro("preferences-system-time-symbolic","Switch language shortcut",Vec<ui.Node>()),k.stack(12,Vec<ui.Node>(
+        ui.Select(shortcutPick,shortcutNames,shortcutIndex,fn(index:i64) { if index < shortcuts.len() as i64 { draft.dirty.set(1); draft.shortcut.set(shortcuts[index][0]) } }),k.note(hint,"settings-description")))))
+    out.push(k.card("language-try",k.intro("input-keyboard-symbolic","Try typing",Vec<ui.Node>()),k.stack(10,Vec<ui.Node>(ui.Entry(typing,ui.emptyText(),fn(value:ui.Text) {}),
+        k.note("Apply your changes, then type here to test switching languages. These settings change keyboard input; the desktop interface remains in English.","settings-description")))))
+    if k.same(fields,7,"1") { out.push(k.note("Keyboard languages and shortcut applied to this session.","settings-description")) }
+    if k.same(fields,7,"0") { out.push(k.note("Saved. Start a new DevOs session to apply these settings.","settings-description")) }
+    out.push(ui.Box(footer,Vec<ui.Node>(k.note(busy ? "Loading / applying…" : saved ? "Keyboard preferences" : "Unsaved changes","settings-description"),
+        ui.Button(discard,"Discard",fn() { draft.dirty.set(0); draft.layouts.set(k.field(fields,4)); draft.shortcut.set(k.field(fields,3)); draft.adding.set(0) }),
+        ui.Button(apply,"Apply",fn() { sendMany("save",Vec<ui.Text>(draft.layouts.value,draft.shortcut.value)) }))))
+    return out
+}
+
+fn onOffText(value:bool):str { return value ? "On" : "Off" }
+fn careToggle(id:str,title:str,detail:str,notice:str,key:str,active:bool,usable:bool,extra:ui.Text,sendTwo:fn(str,str,str):void):ui.Node {
+    let children = Vec<ui.Node>(k.note(title,"settings-field-title"),k.note(detail,"settings-description"))
+    if notice != "" { children.push(k.note(notice,"settings-notice")) }
+    children.push(k.switchRow(id+"-switch",active,usable,onOffText(active),fn(next:bool) { sendTwo("set",key,next ? "on" : "off") }))
+    if extra.bytes.len() > 0 { children.push(k.caption(extra,"settings-description")) }
+    return k.stack(8,children)
+}
+fn careSlider(id:str,low:i64,high:i64,value:i64,usable:bool,key:str,offset:i64,sendTwo:fn(str,str,str):void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable
+    return ui.Scale(options,low + offset,high + offset,value + offset,fn(next:i64) { if next - offset != value { sendTwo("set",key,"${next - offset}") } })
+}
+fn unsupportedNote(ready:bool,available:bool,reason:ui.Text,fallback:str):ui.Node {
+    if !ready || available { return ui.Box(ui.props(),Vec<ui.Node>()) }
+    return k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),reason.bytes.len() > 0 ? reason : ui.text(fallback),ui.text(" Controls stay off rather than pretending to work."))),"settings-description")
+}
+fn splendidTitle(id:str):str { return id == "vivid" ? "Vivid" : id == "manual" ? "Manual" : id == "eyecare" ? "Eye Care" : "Normal" }
+fn splendidDetail(id:str):str {
+    return id == "vivid" ? "Adjusts the contrast of the image making it more vivid and vibrant." : id == "manual" ? "Adjusts the color temperature value to your personal needs, ranging from -50 to +50." : id == "eyecare" ? "Eye Care mode reduces blue light emission by up to 30%, which helps in protecting your eyes." : "Through Gamma and Color temperature correction, the image output from the panel is as close as possible to what your eye can naturally see."
+}
+# Display Care: pixelRefresh, autoHidePanel, panelTransparency, dimming, splendid, temperature, eyeCare, targetMode, edgeBrightness, gammaAvailable,
+# gammaReason, idleAvailable, idleReason, ereadingReason, gamutReason, batteryPresent, onBattery, resetNote
+fn displayCare(fields:Vec<ui.Text>,ready:bool,busy:bool,send:fn(str,str):void,sendTwo:fn(str,str,str):void):Vec<ui.Node> {
+    let usable = ready && !busy; let colour = ready && k.on(fields,11); let splendid = k.field(fields,6)
+    let idleNote = ready && !k.on(fields,13) ? k.caption(ui.concatText(Vec<ui.Text>(ui.text("Not supported on this device. "),k.same(fields,14,"") ? ui.text("The compositor does not report idle time.") : k.field(fields,14))),"settings-description") : ui.Box(ui.props(),Vec<ui.Node>())
+    let oled = k.card("oled-care-card",k.intro("video-display-symbolic","OLED Care",Vec<ui.Node>(
+            k.note("OLED Care includes a set of optimization settings that's proven to protect your OLED display and maximize display lifespan.","settings-description"),
+            k.note("Notice: Avoid displaying static images at maximum brightness for extended periods; otherwise, it might cause permanent burn-in damage to your OLED display.","settings-notice"),
+            k.note("To preserve long-term screen quality, Pixel Shift is permanently enabled and cannot be disabled: the panel moves by up to 2 pixels every few minutes.","settings-notice"))),
+        k.stack(18,Vec<ui.Node>(
+            careToggle("pixel-refresh","Pixel refresh","Launch a special screen saver after being idle for 30 minutes. This screen saver refreshes your screen pixels and optimizes picture quality.","*To prevent permanent burn-in damage to your OLED display, we strongly suggest that you always leave this feature enabled.","pixelRefresh",k.on(fields,2),usable && k.on(fields,13),ui.emptyText(),sendTwo),
+            idleNote,
+            careToggle("panel-autohide","Automatically hide the panel in desktop mode","Automatically hide the panel in desktop mode when not in use to avoid consistently showing static images. Move the pointer to the screen edge to bring it back.","","autoHidePanel",k.on(fields,3),usable,ui.emptyText(),sendTwo),
+            careToggle("panel-transparency","Panel transparency effect","Enable a semi-transparent effect on the panel.","","panelTransparency",k.on(fields,4),usable,ui.emptyText(),sendTwo))))
+    let flicker = k.card("flicker-card",k.intro("display-brightness-symbolic","OLED Flicker-Free Dimming",Vec<ui.Node>(
+            k.note("For a better visual experience and to reduce the possibility of OLED flickering at low brightness levels, use Flicker-Free Dimming to adjust the display brightness.","settings-description"),
+            k.note("Notice","settings-notice"),
+            k.note("*To enjoy high-fidelity images while protecting your eyes, please make sure your system brightness is set above 60%, then adjust the Flicker-Free Dimming slider on the right-hand side to a level that suits your needs.","settings-notice"),
+            k.note("*Image quality may be slightly affected when this feature is in use. This is normal and does not affect use of the display.","settings-notice"))),
+        k.stack(10,Vec<ui.Node>(k.note("Drag to adjust the dimming level of your OLED panel","settings-description"),
+            careSlider("dimming-scale",0,100,channel.integer(k.field(fields,5)),colour,"dimming",0,sendTwo),
+            k.note("Dimming lowers the value of every pixel through the compositor's gamma table, so the panel never pulses. It is applied on top of the brightness keys and never goes fully black.","settings-description"),
+            unsupportedNote(ready,k.on(fields,11),k.field(fields,12),"The compositor does not offer gamma control."))))
+    let modes = Vec<ui.Node>()
+    for id in Vec<str>("normal","vivid","manual","eyecare") {
+        let texts = Vec<ui.Node>(k.note(splendidTitle(id),"settings-field-title"),k.note(splendidDetail(id),"settings-description"))
+        if id == "vivid" { texts.push(k.note("This panel path cannot raise saturation per colour, so Vivid is a contrast boost with fixed black and white points.","settings-description")) }
+        modes.push(k.radio("splendid-"+id,k.isText(splendid,id),colour && !busy,splendidTitle(id),splendidDetail(id),fn() { if !k.isText(splendid,id) { sendTwo("set","splendid",id) } }))
+    }
+    let temperature = k.signedNumber(k.field(fields,7))
+    let splendidRight = Vec<ui.Node>()
+    for item in modes { splendidRight.push(item) }
+    splendidRight.push(k.note("Manual color temperature (-50 warm … +50 cool)","settings-description"))
+    splendidRight.push(careSlider("splendid-temperature-scale",-50,50,temperature,colour && k.isText(splendid,"manual"),"temperature",50,sendTwo))
+    splendidRight.push(k.note("Eye Care strength (1 … 5)","settings-description"))
+    splendidRight.push(careSlider("splendid-eyecare-scale",1,5,channel.integer(k.field(fields,8)),colour && k.isText(splendid,"eyecare"),"eyeCare",0,sendTwo))
+    splendidRight.push(k.radio("splendid-ereading",false,false,"E-Reading","Switches the display to black and white to minimize color impact, enhance readability, and reduce eye strain during prolonged reading sessions.",fn() {}))
+    splendidRight.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("E-Reading is not supported on this device. "),k.same(fields,15,"") ? ui.text("A gamma table cannot remove colour.") : k.field(fields,15))),"settings-description"))
+    splendidRight.push(k.note("Color Gamut","settings-field-title"))
+    splendidRight.push(k.note("Select the screen color gamut that best meets your requirements.","settings-description"))
+    let gamut = ui.named("gamut-select"); gamut.sensitive = false
+    splendidRight.push(ui.Select(gamut,Vec<ui.Text>(ui.text("Native - Default vivid colors")),0,fn(index:i64) {}))
+    splendidRight.push(k.caption(ui.concatText(Vec<ui.Text>(ui.text("sRGB and DCI-P3 are not available. "),k.same(fields,16,"") ? ui.text("The compositor has no colour management.") : k.field(fields,16))),"settings-description"))
+    splendidRight.push(unsupportedNote(ready,k.on(fields,11),k.field(fields,12),"The compositor does not offer gamma control."))
+    let reset = ui.named("splendid-reset"); reset.className = ui.text("settings-primary"); reset.sensitive = usable
+    let resetBlock = Vec<ui.Node>(k.note("Optimize the color of your screen with Gamma and Color temperature correction.","settings-description"),k.note("Display Settings","settings-field-title"),
+        k.note("Restore the display settings, which include Splendid, Color Gamut, OLED Flicker-Free Dimming and Brightness to the recommended settings.","settings-description"),
+        ui.Button(reset,"Reset to recommended settings",fn() { send("reset","") }))
+    if k.field(fields,19).bytes.len() > 0 { resetBlock.push(k.caption(k.field(fields,19),"settings-description")) }
+    let splendidCard = k.card("splendid-card",k.intro("preferences-color-symbolic","Splendid",resetBlock),k.stack(12,splendidRight))
+    let target = k.card("target-card",k.intro("view-fullscreen-symbolic","Target Mode",Vec<ui.Node>(
+            k.note("When enabled, the brightness of the active window will remain unchanged, whereas non-active areas will be dimmed for power saving.","settings-description"),
+            k.note("Note: The dimming layer never blocks clicks and never covers the panel. With the panel hidden, the whole screen except the active window is dimmed.","settings-notice"))),
+        k.stack(18,Vec<ui.Node>(careToggle("target-mode","Switch on to enable Target Mode.","Everything except the active window is covered by a translucent dark layer. On an OLED panel darker pixels draw less power, but a lower backlight saves more.","","targetMode",k.on(fields,9),usable,ui.emptyText(),sendTwo))))
+    let edgeRight = Vec<ui.Node>(k.note("Adjust the brightness of the screen edges (0 = off)","settings-description"),
+        careSlider("edge-scale",0,4,channel.integer(k.field(fields,10)),ready && k.on(fields,17),"edgeBrightness",0,sendTwo))
+    if ready && k.on(fields,17) { edgeRight.push(k.note(k.on(fields,18) ? "Running on battery: the edges are dimmed." : "Plugged in: the edges stay at full brightness until you unplug.","settings-description")) }
+    if ready && !k.on(fields,17) { edgeRight.push(k.note("Not supported on this device. No battery was found, so there is no battery mode.","settings-description")) }
+    let edge = k.card("edge-card",k.intro("battery-good-symbolic","Adaptive Edge Brightness",Vec<ui.Node>(
+            k.note("Save battery power by automatically dimming the edges of your screen. This reduces power consumption without significantly impacting image quality (brightness only; contrast is not changed).","settings-description"),
+            k.note("This feature is only supported in DC mode.","settings-notice"))),k.stack(10,edgeRight))
+    return Vec<ui.Node>(oled,flicker,splendidCard,target,edge)
+}
+

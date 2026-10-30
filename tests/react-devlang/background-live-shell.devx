@@ -1,0 +1,32 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.background/native-view.devx" as view
+use "../../src/system/org.devos.background/native-widget-board.dev" as board
+use "../../src/system/org.devos.background/native-shell.dev" as shell
+use "../../src/system/org.devos.background/native-theme.dev" as theme
+use "../../src/system/org.devos.background/scene.dev" as scene
+extern fn rd_window(root:*void):*void
+extern fn gtk_layer_set_layer(window:*void,layer:i32)
+extern fn gtk_widget_get_mapped(widget:*void):i32
+extern fn bg_flush_stdout()
+extern fn rd_widget_live_count():i64
+fn main():i32 {unsafe {
+    let cache=scene.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new();let ready=0;let accepted=&ready
+    let ok=ui.runStyled("Native live shell test",960,620,board.previewCss(),fn(context:*ui.Context):ui.Node {
+        theme.useTheme(context);let announced=ui.useRef(context,0)
+        ui.useEffect(context,fn():fn():void {unsafe {if view.bg_prepare((*context).native,1,0)==0 {ui.rd_fail("Live shell test needs layer-shell")};gtk_layer_set_layer(rd_window((*context).native),2);return ui.noop}},Vec<i64>())
+        let controls=board.useBoard(context,"desktop-widgets",board.configuration(ui.text("{\"style\":\"radar\",\"widgetClock\":true}"),ui.emptyText()),fn(value:ui.Text) {})
+        shell.useShell(context,controls,0)
+        ui.useEffect(context,fn():fn():void {unsafe {
+            let tick=callback_context(fn() {unsafe {
+                let clock=ui.find(context,"desktop-widget-clock")
+                if announced.get()==0 && clock!=null && gtk_widget_get_mapped(clock)!=0 && (*image).style==22 && (*image).revision>3 {announced.set(1);(*accepted)=1;print("LIVE SHELL READY");bg_flush_stdout()}
+            }})
+            let timer=view.bg_timer(50,tick.call,tick.data);return fn() {unsafe {view.bg_untimer(timer,tick.data)}}
+        }},Vec<i64>())
+        let overlay=ui.named("desktop-widgets");overlay.expand=true
+        return ui.Overlay(overlay,view.AppWithRuntime(context,painter,image,photo,true,controls.appearance,controls.appearanceRevision,controls.paused,controls.interval))
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);view.bg_picture_free(photo)
+    return ok && ready==1 && rd_widget_live_count()==0 ? 0 : 1
+}}
+return main()

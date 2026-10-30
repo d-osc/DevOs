@@ -1,0 +1,84 @@
+#!/usr/bin/env d
+# Data worker of the native Theme settings page. One JSON request per line on stdin:
+#   {"action":"get"}
+#   {"action":"set","mode":"dark","family":"github","lightFrom":"07:00","darkFrom":"19:00"}
+# One tab-separated frame per request on stdout:
+#   T <error|""> mode family lightFrom darkFrom minute  then 12 colors for each of vscode dark, vscode light, github dark,
+#   github light (tokens in `tokens()` order), or `E <message>`.
+# Values are saved through lib/ext-prefs.dev in the existing Theme preferences file, so the JS shell keeps following them.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/ext-prefs.dev" as prefs
+use "../../../lib/hw.dev" as hw
+use "./model.dev" as model
+
+fn tokens():Vec<str> { return Vec<str>("s0","s1","s3","s4","line0","line1","fg","fgStrong","fgMuted","accent","accentFg","onAccent") }
+fn directory():str {
+    if process.hasEnv("DEVOS_PREFERENCES_DIR") { return process.getenv("DEVOS_PREFERENCES_DIR") }
+    let config = process.hasEnv("XDG_CONFIG_HOME") ? process.getenv("XDG_CONFIG_HOME") : process.getenv("HOME") + "/.config"
+    return config + "/dev-os/extensions"
+}
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\n"," "); return strings.replaceAll(out,"\r"," ")
+}
+fn text(value:json.Value, key:str, fallback:str):str {
+    return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : fallback
+}
+# Minutes after local midnight; the shell date keeps the local time zone rules in one place.
+fn minute():i64 {
+    let ran = hw.run(Vec<str>("date","+%H:%M"),2000)
+    let at = model.parseClock(strings.trim(ran.out))
+    return ran.code == 0 && at >= 0 ? at : 0
+}
+fn colors(root:str):str {
+    let data = json.parse(fs.readFileSync(root+"/data/themes/palettes.json","utf8"))
+    let families = json.get(data,"familyPalettes"); let out = ""
+    for family in Vec<str>("vscode","github") {
+        for name in Vec<str>("dark","light") {
+            let palette = json.get(json.get(families,family),name)
+            for token in tokens() { out = out + "\t" + json.string(json.get(palette,token)) }
+        }
+    }
+    return out
+}
+fn frame(root:str, manifest:json.Value):str {
+    let state = prefs.read(directory(),"org.devos.theme",manifest)
+    let values = json.get(state,"values")
+    let problem = json.has(state,"error") ? json.string(json.get(state,"error")) : ""
+    return "T\t" + clean(problem) + "\t" + text(values,"mode","auto") + "\t" + text(values,"family","vscode") + "\t" + text(values,"lightFrom","07:00") + "\t" + text(values,"darkFrom","19:00") + "\t${minute()}" + colors(root)
+}
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn handle(root:str, manifest:json.Value, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action","")
+    if strings.equal(action,"get") { return frame(root,manifest) }
+    if !strings.equal(action,"set") { return failure("Unsupported action") }
+    let mode = text(request,"mode",""); let family = text(request,"family","")
+    let light = strings.trim(text(request,"lightFrom","")); let dark = strings.trim(text(request,"darkFrom",""))
+    if !model.validMode(mode) { return failure("Choose Auto, Dark or Light.") }
+    if !model.validFamily(family) { return failure("Choose one of the listed color themes.") }
+    let problem = model.scheduleError(light,dark)
+    if !strings.equal(problem,"") { return failure(problem) }
+    let saved = {mode:mode,family:family,lightFrom:model.formatClock(model.parseClock(light)),darkFrom:model.formatClock(model.parseClock(dark))}
+    let reason = prefs.write(directory(),"org.devos.theme",manifest,true,saved)
+    if !strings.equal(reason,"") { return failure(reason) }
+    return frame(root,manifest)
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    let manifest = json.parse(fs.readFileSync(root+"/src/apps/org.devos.theme/extension.json","utf8"))
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,manifest,line))
+    }
+    return 0
+}
+return main()

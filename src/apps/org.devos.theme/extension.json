@@ -1,0 +1,19 @@
+{
+  "id": "org.devos.theme",
+  "name": "Theme",
+  "description": "Dark and Light themes from VS Code 2026, with an Auto mode that follows the time of day.",
+  "version": "2.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.theme.js",
+  "order": 0,
+  "settingsVersion": 2,
+  "enabledByDefault": true,
+  "settings": [{"id": "appearance", "title": "Appearance", "fields": [
+    {"key": "mode", "title": "Theme", "description": "auto, dark or light", "type": "string", "default": "auto"},
+    {"key": "family", "title": "Color theme", "description": "vscode or github", "type": "string", "default": "vscode"},
+    {"key": "lightFrom", "title": "Light theme starts", "description": "HH:MM, used by Auto", "type": "string", "default": "07:00"},
+    {"key": "darkFrom", "title": "Dark theme starts", "description": "HH:MM, used by Auto", "type": "string", "default": "19:00"}
+  ]}]
+}

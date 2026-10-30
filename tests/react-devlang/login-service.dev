@@ -1,0 +1,23 @@
+# Test-only backend: never calls PAM, creates accounts, uses GitHub, or powers off.
+use "std/io"
+use "std/json"
+use "std/strings"
+use "../../lib/desktop.dev" as util
+use "../../lib/greeter-wire.dev" as wire
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let data=json.parse(line);let action=util.text(util.get(data,"action"));let value=json.value({ok:true})
+    if strings.equal(action,"get") {value=json.value({ok:true,users:[{username:"devos",name:"Guest"},{username:"alice",name:"Alice"},{username:"bob",name:"Bob"},{username:"octo",name:"Octo",github:"octocat",githubId:1}]})}
+    else if strings.equal(action,"password") {
+        let valid=strings.equal(util.text(util.get(data,"username")),"octo") && strings.equal(util.text(util.get(data,"password")),"pass-123")
+        value=json.value({ok:valid,started:valid,error:"Sign-in failed."})
+    }
+    else if strings.equal(action,"guest") {value=json.value({ok:true,started:true})}
+    else if strings.equal(action,"begin") || strings.equal(action,"enroll-begin") {value=json.value({ok:true,code:"TEST-CODE",interval:5})}
+    else if strings.equal(action,"enroll-poll") {value=json.value({ok:true,verified:true,github:"octocat",githubId:1,username:"octo"})}
+    else if strings.equal(action,"enroll-create") {
+        let valid=strings.equal(util.text(util.get(data,"password")),"pass-123")
+        value=json.value({ok:valid,created:valid,username:util.text(util.get(data,"username")),error:"Invalid test enrollment"})
+    } else if !strings.equal(action,"cancel") {value=json.value({ok:false,error:"Unexpected test action"})}
+    print(wire.reply(action,value))
+}

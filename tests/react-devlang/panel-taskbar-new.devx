@@ -1,0 +1,19 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let clicks=ui.useRef(context,0)
+    let frame=ui.concatText(Vec<ui.Text>(ui.text("B"),ui.Text(Vec<u8>(30)),ui.text("T\tterminal\tpanel-terminal\tTerminal\tutilities-terminal-symbolic\t\t"),phase.value==0 ? ui.text("terminal") : ui.emptyText(),ui.text("\t1\t0\t0\tTerminal\t1,2\tpicker"),ui.Text(Vec<u8>(30)),ui.text("V\tterminal\t1\tOne\tOne\t0\t0\t1\t\tMaximize\twindow-maximize-symbolic"),ui.Text(Vec<u8>(30)),ui.text("V\tterminal\t2\tTwo\tTwo\t0\t0\t1\t\tMaximize\twindow-maximize-symbolic")))
+    if phase.value>=2 {frame=ui.concatText(Vec<ui.Text>(ui.text("B"),ui.Text(Vec<u8>(30)),ui.text("T\tterminal\tpanel-terminal\tTerminal\tutilities-terminal-symbolic\t\tterminal\t0\t0\t0\tTerminal\t\tlaunch")))}
+    let bar=tasks.render(frame,16,2,true,fn(group:ui.Text) {})
+    let popup=tasks.picker(frame,ui.text("terminal"),fn(id:ui.Text,action:ui.Text) {unsafe {if id.bytes.len()!=0 || !ui.equalText(action,ui.text("launch")) {ui.rd_fail("New window sent a window toggle")}};clicks.set(clicks.get()+1);phase.set(phase.value+1)},ui.noop)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if phase.value==0 {if !ui.click(context,"panel-window-new") {ui.rd_fail("Pinned picker lacks New window")}}
+        else if phase.value==1 {if clicks.get()!=1 || ui.find(context,"panel-window-new")!=null {ui.rd_fail("Launch action repeated or survived pin removal")};phase.set(2)}
+        else if phase.value==2 {if !ui.click(context,"panel-window-new") {ui.rd_fail("Empty pin context lacks New window")}}
+        else {if clicks.get()!=2 {ui.rd_fail("Empty pin context repeated launch")};ui.close(context)}
+        return ui.noop
+    }},Vec<i64>(phase.value))
+    let root=ui.props();root.vertical=false;return ui.Box(root,Vec<ui.Node>(bar,popup))
+}
+fn main():i32 {if !ui.run("Native picker New window",640,64,App) {return 1};print("PASS pinned New window and live capability removal");return 0}
+return main()

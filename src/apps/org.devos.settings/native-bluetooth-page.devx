@@ -1,0 +1,87 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+
+# Native Bluetooth page (read and control). The worker (bluetooth-page.dev) wraps bin/dev-os-devices-linux: it lists adapters, devices and
+# USB / input devices, scans, switches an adapter, and connects, disconnects or forgets a paired device. Pairing a new device needs a BlueZ
+# agent (org.bluez.Agent1) that only the JS page provides today, so "Pair…" is shown but disabled here.
+# Frame V: host bluetoothError message; then A (id name powered), D (id adapter name named address icon paired connected), U / I (name vendor).
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_BLUETOOTH_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn request(action:str, id:ui.Text):ui.Text { return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"id\":"),channel.quote(id),plain("}"))) }
+fn stateOf(device:Vec<ui.Text>):ui.Text { return sp.flag(sp.cell(device,8)) ? plain("Connected") : sp.flag(sp.cell(device,7)) ? plain("Paired · Not connected") : plain("Available to pair") }
+fn symbolic(icon:ui.Text):str {
+    let known = Vec<str>("audio-headphones","audio-headset","audio-speakers","audio-card","input-keyboard","input-mouse","input-gaming","input-tablet","phone","computer","printer","camera-photo","video-display")
+    for name in known { if k.isText(icon,name) { return name + "-symbolic" } }
+    return "bluetooth-symbolic"
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"bluetooth-page.dev","{\"action\":\"get\"}")
+    let forgetting = ui.useText(context,ui.emptyText()); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if smoke() && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"bluetooth-device-1") }
+            else if step.get() == 1 { print("PASS native Bluetooth page connected"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    if l.frame.value.bytes.len() == 0 && l.failure.value.bytes.len() == 0 { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let windows = k.isText(field(f,1),"Windows")
+    let adapters = Vec<Vec<ui.Text>>(); let devices = Vec<Vec<ui.Text>>(); let others = Vec<Vec<ui.Text>>(); let powered = false
+    for record in sp.records(f) {
+        let n = sp.cells(record)
+        if sp.kindOf(record,65) { adapters.push(n); if sp.flag(sp.cell(n,3)) { powered = true } }
+        else if sp.kindOf(record,68) { devices.push(n) }
+        else if sp.kindOf(record,85) || sp.kindOf(record,73) { others.push(n) }
+    }
+    let nodes = Vec<ui.Node>()
+    let status = adapters.len() == 0 ? plain(busy ? "Checking adapters…" : "No Bluetooth adapter available to Linux") : powered ? plain(busy ? "Working…" : "On · Ready to connect") : plain("Off")
+    let refresh = ui.named("bluetooth-refresh"); refresh.sensitive = !busy
+    let scan = ui.named("bluetooth-scan"); scan.sensitive = powered && !busy
+    nodes.push(ext.row(14,Vec<ui.Node>(ext.expand(ext.column(6,Vec<ui.Node>(k.note("CONNECTED DEVICES","settings-eyebrow"),k.note("Bluetooth & Devices","heading"),ext.named(k.caption(status,"settings-description"),"bluetooth-status")))),
+        ui.Button(scan,busy ? "Working…" : "Scan nearby",fn() { sp.send(l,plain("{\"action\":\"scan\"}")) }),
+        ui.Button(refresh,"Refresh",fn() { sp.send(l,plain("{\"action\":\"get\"}")) }))))
+    for i in 0..(adapters.len() as i64) {
+        let a = adapters[i]; let on = sp.flag(sp.cell(a,3))
+        let toggle = ui.named("bluetooth-power-${i}"); toggle.sensitive = !busy; toggle.valign = 3
+        nodes.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"bluetooth-symbolic"),ext.expand(k.caption(sp.cell(a,2),"settings-field-title")),
+            ui.Switch(toggle,on,fn(next:bool) { if next != on { sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"power\",\"id\":"),channel.quote(sp.cell(a,1)),plain(",\"powered\":" + (next ? "true" : "false") + "}")))) } }))))
+    }
+    if windows { nodes.push(ext.named(k.note("Windows manages the host Bluetooth adapter. Devices not passed through to WSL are managed in Windows settings.","settings-description"),"bluetooth-wsl-notice")) }
+    if has(field(f,2)) && !windows { nodes.push(k.caption(field(f,2),"settings-description")) }
+    if has(l.failure.value) { nodes.push(ext.named(k.caption(l.failure.value,"error"),"bluetooth-error")) }
+    nodes.push(k.note("To pair a new device, use Pair in the current Settings: pairing needs the Bluetooth agent, which is not part of this page yet.","settings-description"))
+    let list = Vec<ui.Node>(k.note(devices.len() == 0 ? "Bluetooth devices" : "Bluetooth devices · ${devices.len()} found","section-heading"))
+    for i in 0..(devices.len() as i64) {
+        let d = devices[i]; let paired = sp.flag(sp.cell(d,7)); let connected = sp.flag(sp.cell(d,8))
+        let main = ui.named("bluetooth-device-${i}"); main.sensitive = !busy && paired
+        let forget = ui.named("bluetooth-forget-${i}"); forget.sensitive = !busy
+        let row = Vec<ui.Node>(ui.Icon(ui.props(),symbolic(sp.cell(d,6))),ext.expand(ext.column(5,Vec<ui.Node>(k.caption(sp.cell(d,3),"settings-field-title"),k.caption(stateOf(d),"settings-description")))))
+        row.push(ui.Button(main,paired ? (connected ? "Disconnect" : "Connect") : "Pair…",fn() { if paired { sp.send(l,request(connected ? "disconnect" : "connect",sp.cell(d,1))) } }))
+        if paired { row.push(ui.Button(forget,"Forget…",fn() { forgetting.set(sp.cell(d,1)) })) }
+        if ui.equalText(forgetting.value,sp.cell(d,1)) {
+            let cancel = ui.named("bluetooth-forget-cancel-${i}"); let confirm = ui.named("bluetooth-forget-confirm-${i}"); confirm.sensitive = !busy
+            row.push(ui.Button(cancel,"Cancel",fn() { forgetting.set(ui.emptyText()) }))
+            row.push(ui.Button(confirm,"Confirm forget",fn() { forgetting.set(ui.emptyText()); sp.send(l,request("forget",sp.cell(d,1))) }))
+        }
+        list.push(ext.row(12,row))
+    }
+    if devices.len() == 0 { list.push(k.note(powered ? "No devices listed. Put your accessory in pairing mode, then scan nearby." : "Turn on Bluetooth to discover nearby accessories.","settings-description")) }
+    let box = ui.props(); box.spacing = 12; box.className = ui.text("settings-card bluetooth-card")
+    nodes.push(ui.Box(box,list))
+    let usb = Vec<ui.Node>(k.note("USB & input devices","section-heading"))
+    for n in others { usb.push(ext.row(10,Vec<ui.Node>(ext.expand(k.caption(sp.cell(n,1),"settings-field-title")),k.note(k.isText(sp.cell(n,0),"U") ? "USB" : "Input","settings-description")))) }
+    if others.len() == 0 { usb.push(k.note("No USB or input devices are exposed to this Linux session.","settings-description")) }
+    let box2 = ui.props(); box2.spacing = 12; box2.className = ui.text("settings-card bluetooth-card")
+    nodes.push(ui.Box(box2,usb))
+    return ext.column(18,nodes)
+}
+fn page():ui.Node { return ui.component(9396,ui.keyed(956),render) }

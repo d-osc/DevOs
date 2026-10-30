@@ -1,0 +1,68 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../lib/ext-prefs.dev" as prefs
+use "./lib/react-devlang.dev" as t
+
+fn manifest():json.Value {
+    return json.parse("{\"id\":\"org.devos.sample\",\"system\":true,\"enabledByDefault\":true,\"settingsVersion\":2,\"settings\":[{\"id\":\"a\",\"title\":\"A\",\"fields\":[{\"key\":\"mode\",\"title\":\"Mode\",\"type\":\"string\",\"default\":\"auto\"},{\"key\":\"size\",\"title\":\"Size\",\"type\":\"number\",\"integer\":true,\"min\":1,\"max\":10,\"default\":4},{\"key\":\"on\",\"title\":\"On\",\"type\":\"boolean\",\"default\":true},{\"key\":\"tint\",\"title\":\"Tint\",\"type\":\"color\",\"default\":\"#aabbcc\"}]}]}")
+}
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",directory)
+    return t.out(tool.run(Vec<str>("d",t.root()+"/src/services/prefs.dev","--",t.root()),env,input,60000))
+}
+
+test.case("extension ids are namespaced and cannot escape the directory",fn() {
+    test.expect(prefs.validId("org.devos.theme"),"Valid id refused")
+    test.expect(!prefs.validId("theme"),"Id without a separator accepted")
+    test.expect(!prefs.validId("../org.devos.theme"),"Path traversal accepted")
+    test.expect(!prefs.validId("org/devos.theme"),"Slash accepted")
+    test.expect(!prefs.validId("Org.devos.theme"),"Uppercase accepted")
+    test.expect(!prefs.validId("org..devos"),"Doubled separator accepted")
+})
+test.case("values are completed with defaults and validated like the TypeScript schema",fn() {
+    let ok = prefs.complete(manifest(),json.parse("{\"mode\":\"dark\"}"))
+    test.expect(strings.equal(ok.reason,"") && json.int(json.get(ok.values,"size")) == 4 && json.bool(json.get(ok.values,"on")),"Defaults not applied")
+    test.expect(!strings.equal(prefs.complete(manifest(),json.parse("{\"nope\":1}")).reason,""),"Unknown key accepted")
+    test.expect(!strings.equal(prefs.complete(manifest(),json.parse("{\"size\":2.5}")).reason,""),"Fraction accepted for integer")
+    test.expect(!strings.equal(prefs.complete(manifest(),json.parse("{\"size\":11}")).reason,""),"Above max accepted")
+    test.expect(!strings.equal(prefs.complete(manifest(),json.parse("{\"tint\":\"red\"}")).reason,""),"Bad color accepted")
+    test.expect(!strings.equal(prefs.complete(manifest(),json.parse("{\"on\":\"yes\"}")).reason,""),"Wrong type accepted")
+    test.expect(strings.equal(prefs.complete(manifest(),json.parse("{\"tint\":\"#AABB0f\"}")).reason,""),"Upper-case hex refused")
+})
+test.case("save, read back, keep the envelope and refuse damaged files",fn() {
+    let directory = temporary()
+    let before = prefs.read(directory,"org.devos.sample",manifest())
+    test.expect(json.int(json.get(before,"version")) == 2 && !json.has(before,"error"),"Missing file must give defaults")
+    test.expect(strings.equal(prefs.write(directory,"org.devos.sample",manifest(),true,json.parse("{\"mode\":\"light\",\"size\":7}")),""),"Save failed")
+    let after = prefs.read(directory,"org.devos.sample",manifest())
+    test.expect(strings.equal(json.string(json.get(json.get(after,"values"),"mode")),"light") && json.int(json.get(json.get(after,"values"),"size")) == 7,"Saved values lost")
+    test.expect(!strings.equal(prefs.write(directory,"org.devos.sample",manifest(),false,json.object()),""),"System UI was disabled")
+    test.expect(!strings.equal(prefs.write(directory,"org.devos.sample",manifest(),true,json.parse("{\"size\":0}")),""),"Out of range value saved")
+    fs.writeFileSync(directory+"/org.devos.sample.json","{\"version\":1,\"enabled\":true,\"values\":{}}")
+    let old = prefs.read(directory,"org.devos.sample",manifest())
+    test.expect(json.has(old,"error"),"Old version must report an error")
+    test.expect(!strings.equal(prefs.write(directory,"org.devos.sample",manifest(),true,json.object()),""),"Invalid file was overwritten")
+    test.expect(strings.contains(fs.readFileSync(directory+"/org.devos.sample.json","utf8"),"\"version\":1"),"Invalid file changed")
+    fs.writeFileSync(directory+"/org.devos.sample.json","{broken")
+    test.expect(json.has(prefs.read(directory,"org.devos.sample",manifest()),"error"),"Broken JSON must report an error")
+    tool.exec(Vec<str>("rm","-rf",directory))
+})
+test.case("worker serves the real Theme manifest and refuses bad requests",fn() {
+    let directory = temporary()
+    let input = "{\"action\":\"get\",\"id\":\"org.devos.theme\"}\n{\"action\":\"set\",\"id\":\"org.devos.theme\",\"enabled\":true,\"values\":{\"mode\":\"dark\"}}\n{\"action\":\"get\",\"id\":\"org.devos.theme\"}\n{\"action\":\"set\",\"id\":\"org.devos.theme\",\"values\":{\"bogus\":1}}\n{\"action\":\"get\",\"id\":\"../x\"}\n{\"action\":\"get\",\"id\":\"org.devos.nothing\"}\nnot json\n"
+    let lines = strings.split(strings.trim(worker(directory,input)),"\n")
+    test.expect(lines.len() == 7,"Expected one answer per request")
+    test.expect(strings.contains(lines[0],"\"mode\":\"auto\"") && strings.contains(lines[0],"\"family\":\"vscode\""),"Theme defaults missing")
+    test.expect(strings.contains(lines[1],"\"ok\":true") && strings.contains(lines[2],"\"mode\":\"dark\""),"Saved Theme mode missing")
+    test.expect(strings.contains(lines[3],"\"ok\":false") && strings.contains(lines[3],"Unknown extension setting"),"Unknown key not refused")
+    test.expect(strings.contains(lines[4],"\"ok\":false"),"Traversal id not refused")
+    test.expect(strings.contains(lines[5],"Unknown extension"),"Unknown extension not refused")
+    test.expect(strings.contains(lines[6],"Invalid service request"),"Bad JSON not refused")
+    test.expect(fs.existsSync(directory+"/org.devos.theme.json"),"Preferences file not written")
+    tool.exec(Vec<str>("rm","-rf",directory))
+})
+return t.finish()

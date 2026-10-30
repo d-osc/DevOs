@@ -1,0 +1,148 @@
+# Extension preferences in the existing ExtensionManager envelope `{version,enabled,values}` stored at
+# <config>/dev-os/extensions/<id>.json. Same rules as packages/extensions/schema.ts (validateValues/validateState): every
+# manifest field is present, unknown keys and wrong types are refused, system UI stays enabled. Writes re-read under a
+# sidecar lock and replace the file atomically. Version migrations (Theme v1) are not done here: an old version is an error
+# the caller shows, and the file is never overwritten while it is invalid.
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "./desktop.dev" as util
+extern fn open(path:str,flags:i32,mode:u32):i32
+extern fn flock(fd:i32,operation:i32):i32
+extern fn close(fd:i32):i32
+
+fn validId(id:str):bool {
+    let length = strings.charLength(id)
+    if length < 3 || length > 128 { return false }
+    let letters = "abcdefghijklmnopqrstuvwxyz"; let digits = "0123456789"
+    let previous = ""; let separators = 0
+    for i in 0..(length as i64) {
+        let ch = strings.substring(id,i,i+1)
+        let letter = strings.contains(letters,ch); let digit = strings.contains(digits,ch)
+        let separator = strings.equal(ch,".") || strings.equal(ch,"-")
+        if i == 0 && !letter { return false }
+        if !letter && !digit && !separator { return false }
+        if separator { if strings.equal(previous,".") || strings.equal(previous,"-") { return false }; separators = separators + 1 }
+        previous = ch
+    }
+    return separators > 0 && !strings.equal(previous,".") && !strings.equal(previous,"-")
+}
+fn fields(manifest:json.Value):Vec<json.Value> {
+    let out = Vec<json.Value>()
+    let sections = util.get(manifest,"settings")
+    if !strings.equal(json.kind(sections),"array") { return out }
+    for i in 0..(json.len(sections) as i64) {
+        let list = util.get(json.at(sections,i),"fields")
+        if !strings.equal(json.kind(list),"array") { continue }
+        for j in 0..(json.len(list) as i64) { out.push(json.at(list,j)) }
+    }
+    return out
+}
+fn title(field:json.Value):str { return util.text(util.get(field,"title")) + " (" + util.text(util.get(field,"key")) + ")" }
+fn hexColor(value:str):bool {
+    if strings.charLength(value) != 7 || !strings.equal(strings.substring(value,0,1),"#") { return false }
+    let hex = "0123456789abcdef"
+    for i in 1..7 { if !strings.contains(hex,strings.toLowerCase(strings.substring(value,i,i+1))) { return false } }
+    return true
+}
+# Empty when `value` suits the field, otherwise the reason.
+fn checkValue(field:json.Value, value:json.Value):str {
+    let type = util.text(util.get(field,"type")); let kind = json.kind(value)
+    let bad = "Invalid value for " + title(field)
+    if strings.equal(type,"string") { return strings.equal(kind,"string") ? "" : bad }
+    if strings.equal(type,"color") { return strings.equal(kind,"string") && hexColor(json.string(value)) ? "" : bad }
+    if strings.equal(type,"boolean") { return strings.equal(kind,"bool") ? "" : bad }
+    if strings.equal(type,"number") {
+        if !strings.equal(kind,"number") { return bad }
+        let number = json.float(value)
+        if json.has(field,"integer") && util.boolean(json.get(field,"integer")) && ((number as i64) as f64) != number { return bad }
+        if json.has(field,"min") && number < json.float(json.get(field,"min")) { return bad }
+        if json.has(field,"max") && number > json.float(json.get(field,"max")) { return bad }
+        return ""
+    }
+    return "Unsupported field type " + type
+}
+fn defaults(manifest:json.Value):json.Value {
+    let out = json.object()
+    for field in fields(manifest) { out = json.set(out,util.text(util.get(field,"key")),util.get(field,"default")) }
+    return out
+}
+# `values` completed with defaults, or null with `reason` set when something is unknown or invalid.
+struct Checked { values: json.Value, reason: str }
+fn complete(manifest:json.Value, input:json.Value):Checked {
+    if !strings.equal(json.kind(input),"object") { return Checked(json.null_value(),"Settings values must be an object") }
+    let list = fields(manifest)
+    for key in json.keys(input) {
+        let known = false
+        for field in list { if strings.equal(util.text(util.get(field,"key")),key) { known = true } }
+        if !known { return Checked(json.null_value(),"Unknown extension setting") }
+    }
+    let out = json.object()
+    for field in list {
+        let key = util.text(util.get(field,"key"))
+        let value = json.has(input,key) ? json.get(input,key) : util.get(field,"default")
+        let reason = checkValue(field,value)
+        if !strings.equal(reason,"") { return Checked(json.null_value(),reason) }
+        out = json.set(out,key,value)
+    }
+    return Checked(out,"")
+}
+fn file(directory:str, id:str):str { return directory + "/" + id + ".json" }
+fn version(manifest:json.Value):i64 { let value = util.get(manifest,"settingsVersion"); return strings.equal(json.kind(value),"number") ? json.int(value) : 1 }
+fn system(manifest:json.Value):bool { return util.boolean(util.get(manifest,"system")) }
+# Validates a stored envelope; `reason` is empty when it is usable.
+fn state(manifest:json.Value, raw:json.Value):Checked {
+    if !strings.equal(json.kind(raw),"object") { return Checked(json.null_value(),"Extension settings must be an object") }
+    for key in json.keys(raw) { if !strings.equal(key,"version") && !strings.equal(key,"enabled") && !strings.equal(key,"values") { return Checked(json.null_value(),"Unknown extension state key") } }
+    let stored = util.get(raw,"version")
+    if !strings.equal(json.kind(stored),"number") || json.int(stored) != version(manifest) { return Checked(json.null_value(),"Extension settings version requires migration") }
+    let enabled = util.get(raw,"enabled")
+    if !strings.equal(json.kind(enabled),"bool") { return Checked(json.null_value(),"Extension enabled must be boolean") }
+    if system(manifest) && !json.bool(enabled) { return Checked(json.null_value(),"System UI cannot be disabled") }
+    let values = complete(manifest,util.get(raw,"values"))
+    if !strings.equal(values.reason,"") { return values }
+    return Checked({version:version(manifest),enabled:json.bool(enabled),values:values.values},"")
+}
+fn load(name:str):Checked {
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(name,"utf8")) })
+    if result.isErr(parsed) { return Checked(json.null_value(),"Settings file is not valid JSON") }
+    return Checked(result.unwrap(parsed),"")
+}
+# Saved state, or the defaults when nothing is saved. A damaged file gives the defaults plus `error`
+# (system UI stays enabled) so the caller can offer repair instead of overwriting it.
+fn read(directory:str, id:str, manifest:json.Value):json.Value {
+    let fallback = {version:version(manifest),enabled:util.boolean(util.get(manifest,"enabledByDefault")) || system(manifest),values:defaults(manifest)}
+    let name = file(directory,id)
+    if !fs.existsSync(name) { return fallback }
+    let raw = load(name)
+    if !strings.equal(raw.reason,"") { return json.set(fallback,"error",raw.reason) }
+    let checked = state(manifest,raw.values)
+    if !strings.equal(checked.reason,"") { return json.set(fallback,"error",checked.reason) }
+    return checked.values
+}
+# Saves `values` (completed with defaults). Empty on success, otherwise the reason; never replaces an invalid file.
+fn write(directory:str, id:str, manifest:json.Value, enabled:bool, values:json.Value):str { unsafe {
+    if !validId(id) { return "Extension ID must be namespaced, lowercase, and contain no path separators" }
+    if system(manifest) && !enabled { return "System UI cannot be disabled" }
+    let checked = complete(manifest,values)
+    if !strings.equal(checked.reason,"") { return checked.reason }
+    if !fs.mkdirSync(directory,true) { return "Cannot create the preferences directory" }
+    let name = file(directory,id)
+    let fd = open(name+".native.lock",66,384)
+    if fd < 0 { return "Cannot open the preferences lock" }
+    let locked = false
+    for i in 0..80 { if flock(fd,6) == 0 { locked = true; break }; time.sleep_ms(25) }
+    if !locked { close(fd); return "Preferences are busy" }
+    let message = ""
+    if fs.existsSync(name) {
+        let raw = load(name)
+        if !strings.equal(raw.reason,"") { message = "Cannot overwrite invalid settings: " + raw.reason }
+        else { let existing = state(manifest,raw.values); if !strings.equal(existing.reason,"") { message = "Cannot overwrite invalid settings: " + existing.reason } }
+    }
+    if strings.equal(message,"") && !util.atomic(name,{version:version(manifest),enabled:enabled,values:checked.values}) { message = "Cannot save the preferences" }
+    flock(fd,8); close(fd)
+    return message
+} }

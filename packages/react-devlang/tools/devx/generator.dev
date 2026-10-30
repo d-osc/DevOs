@@ -1,0 +1,383 @@
+use "std/strings"
+use "std/json"
+use "std/crypto"
+use "./base.dev" as b
+use "./parser.dev" as p
+
+fn cat(code: b.Code, value: str, origin: i64): b.Code { return b.add(code, b.gen(value, origin)) }
+fn wrap(before: str, code: b.Code, after: str, origin: i64): b.Code { return cat(b.add(b.gen(before, origin), code), after, origin) }
+fn transform(source: b.Source, start: i64, end: i64, serial: i64, imports: json.Value): b.Generated {
+    let code = b.empty()
+    let previous = start
+    let tokens = p.lex(source, start, end, false, 0).tokens
+    for token in tokens {
+        let replace = false
+        let replacement = b.empty()
+        if token.kind == 3 { let generated = emit(source, token.node, serial); serial = generated.next; replacement = generated.code; replace = true }
+        else if json.has(imports, "${token.start}") { replacement = b.gen(b.quote(b.text(json.get(imports, "${token.start}"))), token.start); replace = true }
+        if replace { code = b.add(b.add(code, b.original(source, previous, token.start)), replacement); previous = token.end }
+    }
+    return b.Generated(b.add(code, b.original(source, previous, end)), serial)
+}
+fn attrCode(source: b.Source, attr: json.Value, serial: i64): b.Generated {
+    let origin = b.n(attr, "start")
+    if json.has(attr, "bound") { return b.Generated(b.gen(b.s(attr, "bound"), origin), serial) }
+    if b.eq(b.s(attr, "kind"), "expr") { return transform(source, b.n(attr, "begin"), b.n(attr, "end"), serial, json.object()) }
+    return b.Generated(b.gen(b.eq(b.s(attr, "kind"), "bool") ? "true" : b.quote(b.s(attr, "value")), origin), serial)
+}
+fn handler(source: b.Source, attr: json.Value, argument: str, origin: i64, serial: i64): b.Generated {
+    if json.is_null(attr) { return b.Generated(b.gen("fn(" + (b.eq(argument, "") ? "" : "value: " + argument) + ") {}", origin), serial) }
+    if !b.eq(b.s(attr, "kind"), "expr") { b.fail(source, b.n(attr, "start"), "Event handlers must be {DevLang functions} or {arrow functions}") }
+    let begin = b.n(attr, "begin")
+    let end = b.n(attr, "end")
+    let tokens = p.lex(source, begin, end, false, 0).tokens
+    let arrow = -1
+    let param = ""
+    if tokens.len() >= 3 && b.eq(tokens[0].text, "(") {
+        if b.eq(tokens[1].text, ")") && b.eq(tokens[2].text, "=>") { arrow = 2 }
+        else if tokens.len() >= 4 && tokens[1].kind == 1 && b.eq(tokens[2].text, ")") && b.eq(tokens[3].text, "=>") { arrow = 3; param = tokens[1].text }
+    } else if tokens.len() >= 2 && tokens[0].kind == 1 && b.eq(tokens[1].text, "=>") { arrow = 1; param = tokens[0].text }
+    if arrow < 0 { return attrCode(source, attr, serial) }
+    if !b.eq(argument, "") && b.eq(param, "") { b.fail(source, origin, "onChange arrow functions require one parameter") }
+    if b.eq(argument, "") && !b.eq(param, "") { b.fail(source, origin, "onClick arrow functions do not accept parameters") }
+    let body = p.skipSpace(source, tokens[arrow].end)
+    let generated = transform(source, body, end, serial, json.object())
+    let code = b.gen("fn(" + (b.eq(argument, "") ? "" : param + ": " + argument) + ") ", origin)
+    if b.eq(b.char(source, body), "{") { code = b.add(code, generated.code) }
+    else { code = cat(b.add(cat(code, "{ ", origin), generated.code), "; }", origin) }
+    return b.Generated(code, generated.next)
+}
+fn textContent(source: b.Source, child: json.Value): str {
+    let raw = b.slice(source, b.n(child, "start"), b.n(child, "end"))
+    raw = strings.replaceAll(strings.replaceAll(raw, "\r\n", "\n"), "\t", " ")
+    let lines = strings.split(raw, "\n")
+    if lines.len() == 1 { return b.entities(raw, source.entities) }
+    let values = Vec<str>()
+    for i in 0..(lines.len() as i64) {
+        let line = lines[i]
+        if i > 0 { while strings.startsWith(line, " ") { line = b.sub(line, 1, b.length(line)) } }
+        if i < lines.len() as i64 - 1 { while strings.endsWith(line, " ") { line = b.sub(line, 0, b.length(line) - 1) } }
+        if !b.eq(line, "") { values.push(line) }
+    }
+    return b.entities(strings.join(values, " "), source.entities)
+}
+fn meaningful(source: b.Source, children: json.Value): bool {
+    for i in 0..(json.len(children) as i64) { let child = json.at(children, i); if !b.eq(b.s(child, "kind"), "text") || !b.eq(textContent(source, child), "") { return true } }
+    return false
+}
+fn label(source: b.Source, node: json.Value, explicit: json.Value, owned: bool, serial: i64): b.Generated {
+    let origin = b.n(node, "start")
+    let children = b.get(node, "children")
+    if !json.is_null(explicit) {
+        if meaningful(source, children) { b.fail(source, b.n(explicit, "start"), "Use a label value or children, not both") }
+        let value = attrCode(source, explicit, serial)
+        if !owned { value.code = wrap(source.ui + ".scalarText(", value.code, ")", b.n(explicit, "start")) }
+        return value
+    }
+    let code = b.gen(source.ui + ".concatText(Vec<" + source.ui + ".Text>(", origin)
+    let count = 0
+    for i in 0..(json.len(children) as i64) {
+        let child = json.at(children, i)
+        let kind = b.s(child, "kind")
+        let piece = b.empty()
+        if b.eq(kind, "text") {
+            let value = textContent(source, child)
+            if b.eq(value, "") { continue }
+            piece = b.gen(source.ui + ".text(" + b.quote(value) + ")", b.n(child, "start"))
+        } else if b.eq(kind, "element") { b.fail(source, b.n(child, "start"), "<" + b.s(node, "name") + "> requires text children") }
+        else {
+            let value = transform(source, b.n(child, "start"), b.n(child, "end"), serial, json.object())
+            serial = value.next
+            piece = owned ? value.code : wrap(source.ui + ".scalarText(", value.code, ")", b.n(child, "start"))
+        }
+        if count > 0 { code = cat(code, ", ", origin) }
+        code = b.add(code, piece); count = count + 1
+    }
+    return b.Generated(cat(code, "))", origin), serial)
+}
+fn childStatement(source: b.Source, child: json.Value, variable: str, serial: i64): b.Generated {
+    let origin = b.n(child, "start")
+    let kind = b.s(child, "kind")
+    if b.eq(kind, "text") {
+        let value = textContent(source, child)
+        return b.Generated(b.gen(b.eq(value, "") ? "" : variable + ".push(" + source.ui + ".Label(" + b.quote(value) + ")); ", origin), serial)
+    }
+    if b.eq(kind, "element") { let value = emit(source, child, serial); return b.Generated(wrap(variable + ".push(", value.code, "); ", origin), value.next) }
+    let end = b.n(child, "end")
+    let raw = strings.trim(b.slice(source, origin, end))
+    if b.contains(Vec<str>("false", "true", "null"), raw) { return b.Generated(b.empty(), serial) }
+    let tokens = p.lex(source, origin, end, false, 0).tokens
+    let depth = 0
+    for index in 0..(tokens.len() as i64) {
+        let token = tokens[index]
+        if b.contains(Vec<str>("(", "[", "{"), token.text) { depth = depth + 1 }
+        if b.contains(Vec<str>(")", "]", "}"), token.text) { depth = depth - 1 }
+        if depth == 0 && b.eq(token.text, "&&") {
+            let condition = transform(source, origin, token.start, serial, json.object())
+            let body = childStatement(source, b.node("expr", token.end, end), variable, condition.next)
+            return b.Generated(cat(b.add(wrap("if (", condition.code, ") { ", origin), body.code), "} ", origin), body.next)
+        }
+        if depth == 0 && b.eq(token.text, "?") {
+            let nested = 0
+            let bracket = 0
+            let colon = -1
+            for j in (index + 1)..(tokens.len() as i64) {
+                let current = tokens[j]
+                if b.contains(Vec<str>("(", "[", "{"), current.text) { bracket = bracket + 1 }
+                if b.contains(Vec<str>(")", "]", "}"), current.text) { bracket = bracket - 1 }
+                if bracket == 0 && b.eq(current.text, "?") { nested = nested + 1 }
+                if bracket == 0 && b.eq(current.text, ":") { if nested == 0 { colon = j; break }; nested = nested - 1 }
+            }
+            if colon >= 0 {
+                let condition = transform(source, origin, token.start, serial, json.object())
+                let yes = childStatement(source, b.node("expr", token.end, tokens[colon].start), variable, condition.next)
+                let no = childStatement(source, b.node("expr", tokens[colon].end, end), variable, yes.next)
+                let code = b.add(wrap("if (", condition.code, ") { ", origin), yes.code)
+                return b.Generated(cat(b.add(cat(code, "} else { ", origin), no.code), "} ", origin), no.next)
+            }
+        }
+    }
+    let begin = p.skipSpace(source, origin)
+    let vector = false
+    if b.at(source, begin, "...") { begin = p.skipSpace(source, begin + 3); vector = true }
+    if strings.startsWith(raw, "Vec") { let after = p.skipSpace(source, origin + 3); if b.eq(b.char(source, after), "<") { vector = true } }
+    depth = 0
+    for i in 0..(tokens.len() as i64) {
+        if depth == 0 && b.eq(tokens[i].text, "map") && i > 0 && b.eq(tokens[i - 1].text, ".") { vector = true }
+        if b.contains(Vec<str>("(", "[", "{"), tokens[i].text) { depth = depth + 1 }
+        if b.contains(Vec<str>(")", "]", "}"), tokens[i].text) { depth = depth - 1 }
+    }
+    let value = transform(source, begin, end, serial, json.object())
+    if vector {
+        let name = "__rdx_items_${value.next}"
+        let code = wrap("let " + name + " = (", value.code, "); for __rdx_index in 0..(" + name + ".len() as i64) { " + variable + ".push(" + name + "[__rdx_index]); } ", origin)
+        return b.Generated(code, value.next + 1)
+    }
+    return b.Generated(wrap(variable + ".push(", value.code, "); ", origin), value.next)
+}
+fn children(source: b.Source, node: json.Value, variable: str, explicit: json.Value, serial: i64): b.Generated {
+    let origin = b.n(node, "start")
+    if !json.is_null(explicit) {
+        if meaningful(source, b.get(node, "children")) { b.fail(source, b.n(explicit, "start"), "Use children={...} or nested children, not both") }
+        let value = attrCode(source, explicit, serial)
+        return b.Generated(wrap("let " + variable + ": Vec<" + source.ui + ".Node> = ", value.code, "; ", b.n(explicit, "start")), value.next)
+    }
+    let code = b.gen("let " + variable + " = Vec<" + source.ui + ".Node>(); ", origin)
+    let list = b.get(node, "children")
+    for i in 0..(json.len(list) as i64) { let value = childStatement(source, json.at(list, i), variable, serial); code = b.add(code, value.code); serial = value.next }
+    return b.Generated(code, serial)
+}
+fn special(tag: str): Vec<str> {
+    if b.contains(Vec<str>("Box", "Fragment", "Scroll"), tag) { return Vec<str>("children") }
+    if b.eq(tag, "Stack") { return Vec<str>("children", "active") }
+    if b.eq(tag, "Label") { return Vec<str>("text", "value") }
+    if b.eq(tag, "TextLabel") { return Vec<str>("value") }
+    if b.eq(tag, "Button") { return Vec<str>("text", "onClick", "children") }
+    if b.contains(Vec<str>("Entry","PasswordEntry","SearchEntry"),tag) { return Vec<str>("value", "onChange","onActivate") }
+    if b.eq(tag,"TextArea") {return Vec<str>("value","onChange")}
+    if b.eq(tag,"Switch") {return Vec<str>("active","onChange")}
+    if b.eq(tag,"Icon") {return Vec<str>("name")}
+    if b.eq(tag, "CheckBox") { return Vec<str>("text", "active", "onClick", "onChange") }
+    if b.eq(tag, "Progress") { return Vec<str>("fraction") }
+    return Vec<str>()
+}
+fn emit(source: b.Source, node: json.Value, serial: i64): b.Generated {
+    serial = serial + 1
+    let suffix = serial
+    let ui = source.ui
+    let options = "__rdx_props_${suffix}"
+    let native = "__rdx_node_${suffix}"
+    let kids = "__rdx_children_${suffix}"
+    let origin = b.n(node, "start")
+    let tag = b.s(node, "name")
+    if strings.startsWith(tag, ui + ".") { tag = b.sub(tag, b.length(ui) + 1, b.length(tag)) }
+    if b.eq(tag, "") { tag = "Fragment" }
+    if !b.contains(Vec<str>("Box", "Fragment", "Label", "TextLabel", "Button", "Entry", "PasswordEntry", "SearchEntry", "TextArea", "Switch", "Icon", "CheckBox", "Scroll", "Stack", "Progress", "Separator"), tag) { return custom(source, node, suffix) }
+    let code = b.gen("(fn(): " + ui + ".Node { let " + options + " = " + ui + ".props(); ", origin)
+    if b.eq(tag, "Fragment") { code = cat(code, options + ".spacing = 0; ", origin) }
+    let aliases = {widthRequest: "width", heightRequest: "height", onClicked: "onClick", onChanged: "onChange", checked: "active",iconName:"name",pixelSize:"iconSize"}
+    let layout = Vec<str>("key", "id", "className", "vertical", "spacing", "expand", "sensitive", "visible", "width", "height", "disabled", "orientation", "xalign", "widthChars", "wrap", "ellipsize", "placeholder","halign","valign","margin","iconSize")
+    let values = json.object()
+    let attrs = b.get(node, "attrs")
+    for i in 0..(json.len(attrs) as i64) {
+        let attr = json.at(attrs, i)
+        let name = b.s(attr, "name")
+        if json.has(aliases, name) { name = b.text(json.get(aliases, name)) }
+        let at = b.n(attr, "start")
+        if b.eq(name, "...") { let value = attrCode(source, attr, serial); serial = value.next; code = b.add(code, wrap(options + " = (", value.code, "); ", at)); continue }
+        if !b.contains(layout, name) && !b.contains(special(tag), name) { b.fail(source, at, "Unsupported <" + tag + "> attribute " + b.s(attr, "name")) }
+        if json.has(values, name) { b.fail(source, at, "Duplicate attribute alias for " + name) }
+        values = json.set(values, name, attr)
+        if b.contains(layout, name) {
+            let value = attrCode(source, attr, serial); serial = value.next
+            if b.eq(name, "id") || b.eq(name, "className") || b.eq(name,"placeholder") { value.code = wrap(ui + ".text(", value.code, ")", at) }
+            if b.eq(name, "disabled") { name = "sensitive"; value.code = wrap("!(", value.code, ")", at) }
+            if b.eq(name, "orientation") {
+                if !b.eq(b.s(attr, "kind"), "text") || !b.contains(Vec<str>("vertical", "horizontal"), b.s(attr, "value")) { b.fail(source, at, "orientation must be \"vertical\" or \"horizontal\"; use vertical={...} for a dynamic value") }
+                name = "vertical"; value.code = b.gen(b.eq(b.s(attr, "value"), "vertical") ? "true" : "false", at)
+            }
+            if (b.eq(name,"halign") || b.eq(name,"valign")) && b.eq(b.s(attr,"kind"),"text") {
+                let positions=Vec<str>("fill","start","end","center","baseline");let index=-1
+                for i in 0..(positions.len() as i64) {if b.eq(positions[i],b.s(attr,"value")) {index=i}}
+                if index<0 {b.fail(source,at,"Alignment must be fill, start, end, center or baseline")}
+                value.code=b.gen("${index}",at)
+            }
+            code = b.add(code, wrap(options + "." + name + " = (", value.code, "); ", at))
+        } else {
+            let variable = b.eq(name, "children") ? "__rdx_attribute_children_${suffix}" : "__rdx_${name}_${suffix}"
+            if b.eq(name, "onClick") || b.eq(name, "onChange") || b.eq(name,"onActivate") {
+                let argument = b.eq(name, "onClick") || b.eq(name,"onActivate") ? "" : b.contains(Vec<str>("CheckBox","Switch"),tag) ? "bool" : ui + ".Text"
+                let value = handler(source, attr, argument, at, serial); serial = value.next
+                code = b.add(code, wrap("let " + variable + ": fn(" + argument + "): void = ", value.code, "; ", at))
+            } else {
+                let value = attrCode(source, attr, serial); serial = value.next
+                if b.eq(name, "value") && b.contains(Vec<str>("Entry", "PasswordEntry", "SearchEntry", "TextArea", "TextLabel"), tag) && b.eq(b.s(attr, "kind"), "text") { value.code = wrap(ui + ".text(", value.code, ")", at) }
+                let annotation = b.eq(name, "fraction") ? ": f64" : ""
+                code = b.add(code, wrap("let " + variable + annotation + " = (", value.code, "); ", at))
+                attr = json.set(attr, "bound", variable)
+                values = json.set(values, name, attr)
+            }
+        }
+    }
+    let expression = b.empty()
+    if b.contains(Vec<str>("Box", "Fragment", "Scroll", "Stack"), tag) {
+        let list = children(source, node, kids, b.get(values, "children"), serial); serial = list.next; code = b.add(code, list.code)
+        expression = b.gen(b.eq(tag, "Stack") ? ui + ".Stack(" + options + ", (" + (json.has(values, "active") ? "__rdx_active_${suffix}" : "0") + ") as i64, " + kids + ")" : b.eq(tag, "Scroll") ? ui + ".Scroll(" + options + ", " + ui + ".Fragment(" + ui + ".props(), " + kids + "))" : ui + ".Box(" + options + ", " + kids + ")", origin)
+    } else if b.eq(tag, "Label") || b.eq(tag, "TextLabel") {
+        if json.has(values, "text") && json.has(values, "value") { b.fail(source, origin, "Label accepts text or value, not both") }
+        let explicit = json.has(values, "text") ? b.get(values, "text") : b.get(values, "value")
+        let value = label(source, node, explicit, b.eq(tag, "TextLabel"), serial); serial = value.next
+        expression = wrap(ui + ".TextLabel(", value.code, ")", origin)
+    } else if b.eq(tag, "Button") {
+        let clicked = json.has(values, "onClick") ? "__rdx_onClick_${suffix}" : ui + ".noop"
+        let widgets = json.has(values, "children")
+        let list = b.get(node, "children")
+        for i in 0..(json.len(list) as i64) { if b.eq(b.s(json.at(list, i), "kind"), "element") { widgets = true } }
+        if widgets {
+            if json.has(values, "text") { b.fail(source, origin, "Button text cannot be combined with widget children") }
+            let value = children(source, node, kids, b.get(values, "children"), serial); serial = value.next; code = b.add(code, value.code)
+            expression = b.gen(ui + ".WidgetButton(" + options + ", " + ui + ".Fragment(" + ui + ".props(), " + kids + "), " + clicked + ")", origin)
+        } else { let value = label(source, node, b.get(values, "text"), false, serial); serial = value.next; expression = wrap(ui + ".TextButton(" + options + ", ", value.code, ", " + clicked + ")", origin) }
+    } else if b.eq(tag,"Switch") {
+        if meaningful(source,b.get(node,"children")) {b.fail(source,origin,"Switch cannot contain children")}
+        let active=json.has(values,"active") ? "__rdx_active_${suffix}" : "false";let changed=handler(source,json.null_value(),"bool",origin,serial)
+        if json.has(values,"onChange") {changed.code=b.gen("__rdx_onChange_${suffix}",origin)}
+        expression=b.add(b.gen(ui+".Switch("+options+", "+active+", ",origin),cat(changed.code,")",origin))
+    } else if b.eq(tag, "CheckBox") {
+        let active = json.has(values, "active") ? "__rdx_active_${suffix}" : "false"
+        let clicked = json.has(values, "onClick") ? "__rdx_onClick_${suffix}" : ui + ".noop"
+        let changed = handler(source, json.null_value(), "bool", origin, serial)
+        if json.has(values, "onChange") { changed.code = b.gen("__rdx_onChange_${suffix}", origin) }
+        let value = label(source, node, b.get(values, "text"), false, serial); serial = value.next
+        expression = b.add(wrap(ui + ".TextCheckBox(" + options + ", ", value.code, ", " + active + ", " + clicked + ", ", origin), cat(changed.code, ")", origin))
+    } else if b.contains(Vec<str>("Entry","PasswordEntry","SearchEntry","TextArea"),tag) {
+        if meaningful(source, b.get(node, "children")) { b.fail(source, origin,tag+" cannot contain children") }
+        let value = b.Generated(b.gen(ui + ".emptyText()", origin), serial)
+        if json.has(values, "value") { value = attrCode(source, b.get(values, "value"), serial) }
+        serial = value.next
+        let changed = handler(source, json.null_value(), ui + ".Text", origin, serial)
+        if json.has(values, "onChange") { changed.code = b.gen("__rdx_onChange_${suffix}", origin) }
+        expression = b.add(wrap(ui + "."+tag+"(" + options + ", ", value.code, ", ", origin), cat(changed.code, ")", origin))
+    } else if b.eq(tag,"Icon") {
+        if meaningful(source,b.get(node,"children")) {b.fail(source,origin,"Icon cannot contain children")}
+        expression=b.gen(ui+".Icon("+options+", "+(json.has(values,"name") ? "__rdx_name_${suffix}" : "\"\"")+")",origin)
+    } else if b.eq(tag, "Progress") {
+        if meaningful(source, b.get(node, "children")) { b.fail(source, origin, "Progress cannot contain children") }
+        expression = b.gen(ui + ".Progress(" + options + ", " + (json.has(values, "fraction") ? "__rdx_fraction_${suffix}" : "0.0") + ")", origin)
+    } else {
+        if meaningful(source, b.get(node, "children")) { b.fail(source, origin, "Separator cannot contain children") }
+        expression = b.gen(ui + ".Separator()", origin)
+    }
+    code = b.add(cat(code, "let " + native + " = ", origin), expression)
+    if json.has(values,"onActivate") {code=cat(code,"; "+native+".clicked = __rdx_onActivate_${suffix}",origin)}
+    return b.Generated(cat(code, "; return " + ui + ".withProps(" + native + ", " + options + "); })()", origin), serial)
+}
+fn fieldMap(fields: json.Value): json.Value { let result = json.object(); if json.is_null(fields) { return result }; for i in 0..(json.len(fields) as i64) { let value = json.at(fields, i); result = json.set(result, b.s(value, "name"), b.s(value, "type")) }; return result }
+fn custom(source: b.Source, node: json.Value, suffix: i64): b.Generated {
+    let name = b.s(node, "name")
+    let origin = b.n(node, "start")
+    let metadata = b.get(source.components, name)
+    if json.is_null(metadata) {
+        if strings.contains(name, ".") { metadata = {type: "", fields: json.null_value(), identity: name} }
+        else { b.fail(source, origin, "Unknown component " + name + "; declare fn " + name + "(context: *" + source.ui + ".Context, props: Props): " + source.ui + ".Node") }
+    }
+    let propType = b.s(metadata, "type")
+    let fields = b.get(metadata, "fields")
+    let names = fieldMap(fields)
+    let serial = suffix
+    let wrapper = "__rdx_wrapper_${suffix}"
+    let props = "__rdx_custom_${suffix}"
+    let kids = "__rdx_children_${suffix}"
+    let code = b.gen("(fn(): " + source.ui + ".Node { let " + wrapper + " = " + source.ui + ".props(); ", origin)
+    let attrs = b.get(node, "attrs")
+    let values = json.object()
+    let base = json.null_value()
+    let first = json.null_value()
+    for i in 0..(json.len(attrs) as i64) {
+        let attr = json.at(attrs, i)
+        if !b.eq(b.s(attr, "name"), "key") {
+            if json.is_null(first) { first = attr }
+            values = json.set(values, b.s(attr, "name"), attr)
+            if b.contains(Vec<str>("props", "..."), b.s(attr, "name")) {
+                if !json.is_null(base) { b.fail(source, origin, "Choose props={...} or {...props}, not both") }
+                base = attr
+            }
+        }
+    }
+    if !json.is_null(base) {
+        if b.n(first, "start") != b.n(base, "start") { b.fail(source, b.n(base, "start"), "Custom component props/spread must precede field overrides") }
+        for i in 0..(json.len(attrs) as i64) {
+            let attr = json.at(attrs, i)
+            let value = attrCode(source, attr, serial); serial = value.next
+            let at = b.n(attr, "start")
+            if b.eq(b.s(attr, "name"), "key") { code = b.add(code, wrap(wrapper + ".key = ", value.code, "; ", at)) }
+            else if at == b.n(base, "start") { code = b.add(code, wrap("let " + props + " = (", value.code, "); ", at)) }
+            else {
+                if !json.is_null(fields) && !json.has(names, b.s(attr, "name")) { b.fail(source, at, "Unknown " + name + " prop " + b.s(attr, "name")) }
+                code = b.add(code, wrap(props + "." + b.s(attr, "name") + " = (", value.code, "); ", at))
+            }
+        }
+        if meaningful(source, b.get(node, "children")) {
+            if json.has(values, "children") { b.fail(source, origin, "Use children={...} or nested children, not both") }
+            if !json.is_null(fields) && !json.has(names, "children") { b.fail(source, origin, name + " props do not declare children") }
+            let value = children(source, node, kids, json.null_value(), serial); serial = value.next
+            code = cat(b.add(code, value.code), props + ".children = " + kids + "; ", origin)
+        }
+    } else if !b.eq(propType, "") {
+        if json.is_null(fields) { b.fail(source, origin, "Use props={...} for " + name + "; its props schema is outside this module") }
+        for field in json.keys(values) { if !json.has(names, field) { b.fail(source, b.n(json.get(values, field), "start"), "Unknown " + name + " prop " + field) } }
+        if !json.has(names, "children") && meaningful(source, b.get(node, "children")) { b.fail(source, origin, name + " props do not declare children") }
+        let evaluated = json.object()
+        for i in 0..(json.len(attrs) as i64) {
+            let attr = json.at(attrs, i)
+            let at = b.n(attr, "start")
+            let value = attrCode(source, attr, serial); serial = value.next
+            if b.eq(b.s(attr, "name"), "key") { code = b.add(code, wrap(wrapper + ".key = ", value.code, "; ", at)); continue }
+            let variable = "__rdx_argument_${suffix}_${i}"
+            code = b.add(code, wrap("let " + variable + ": " + b.text(json.get(names, b.s(attr, "name"))) + " = (", value.code, "); ", at))
+            evaluated = json.set(evaluated, b.s(attr, "name"), variable)
+        }
+        if json.has(names, "children") {
+            if json.has(evaluated, "children") { if meaningful(source, b.get(node, "children")) { b.fail(source, origin, "Use children={...} or nested children, not both") }; kids = b.s(evaluated, "children") }
+            else { let value = children(source, node, kids, json.null_value(), serial); serial = value.next; code = b.add(code, value.code) }
+        }
+        let ordered = Vec<str>()
+        for i in 0..(json.len(fields) as i64) {
+            let field = b.s(json.at(fields, i), "name")
+            if b.eq(field, "children") { ordered.push(kids) }
+            else if json.has(evaluated, field) { ordered.push(b.s(evaluated, field)) }
+            else { b.fail(source, origin, "Missing required " + name + " prop " + field) }
+        }
+        code = cat(code, "let " + props + " = " + propType + "(" + strings.join(ordered, ", ") + "); ", origin)
+    } else {
+        if json.len(values) > 0 || meaningful(source, b.get(node, "children")) { b.fail(source, origin, name + " has no local typed props; use props={...} for an imported component") }
+        for i in 0..(json.len(attrs) as i64) { let attr = json.at(attrs, i); let value = attrCode(source, attr, serial); serial = value.next; code = b.add(code, wrap(wrapper + ".key = ", value.code, "; ", b.n(attr, "start"))) }
+    }
+    let hash = crypto.hashText("sha256", b.s(metadata, "identity"))
+    let tag: i64 = 0
+    for i in 0..14 { tag = tag * 16 + strings.indexOf("0123456789abcdef", strings.charAt(hash, i)) }
+    if tag == 0 { tag = 1 }
+    let argument = !json.is_null(base) || !b.eq(propType, "") ? ", " + props : ""
+    let tail = "return " + source.ui + ".component(${tag}, " + wrapper + ", fn(__rdx_context: *" + source.ui + ".Context): " + source.ui + ".Node { return " + name + "(__rdx_context" + argument + "); }); })()"
+    return b.Generated(cat(code, tail, origin), serial)
+}

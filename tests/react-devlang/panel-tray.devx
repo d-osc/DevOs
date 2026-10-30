@@ -1,0 +1,21 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-tray.dev" as tray
+extern fn gtk_widget_get_style_context(widget:*void):*void
+extern fn gtk_style_context_has_class(style:*void,name:str):i32
+extern fn gtk_widget_get_tooltip_text(widget:*void):*u8
+extern fn g_free(value:*void)
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let clicked=ui.useRef(context,0)
+    let frame=ui.concatText(Vec<ui.Text>(ui.text("D\tnetwork-wired-symbolic\taudio-volume-high-symbolic\tไทย%09100%25\tEthernet connected\t60%\t50%\taudio-volume-high-symbolic\tMute\t1\t1\tOn\tOff\t1\t1\t1\t0\t60\t50"),ui.Text(Vec<u8>(30)),ui.text(phase.value==0 ? "B\t1\tbattery-low-symbolic\t15%\tBattery · 15% · Discharging\tpanel-battery-low\t1\t1" : "B\t0\tbattery-unknown-symbolic\tNo battery data\tNo data\tpanel-battery-unknown\t0\t0")))
+    let node=tray.render(frame,fn() {clicked.set(clicked.get()+1)},true)
+    ui.useEffect(context,fn():fn():void {unsafe {tray.decorate(context,frame)
+        if phase.value==0 {let battery=ui.find(context,"panel-battery");check(battery!=null,"Battery indicator missing");check(gtk_style_context_has_class(gtk_widget_get_style_context(battery),"panel-battery-low")!=0,"Prepared battery class missing");check(ui.equalText(ui.readText(context,"panel-battery-label"),ui.text("15%")),"Battery label changed")
+            let tooltip=gtk_widget_get_tooltip_text(ui.find(context,"panel-devices"));let bytes=Vec<u8>();if tooltip!=null {let i=0;while tooltip[i]!=0 {bytes.push(tooltip[i]);i=i+1};g_free(tooltip as *void)};check(ui.equalText(ui.Text(bytes),ui.text("ไทย\t100%")),"Tray tooltip decoding failed");check(ui.click(context,"panel-devices"),"Tray click failed");phase.set(1)
+        } else {check(clicked.get()==1,"Tray click duplicated");check(ui.find(context,"panel-battery")==null,"Missing battery retained stale widget");ui.close(context)};return ui.noop
+    }},Vec<i64>(phase.value))
+    return node
+}
+fn main():i32 {check(ui.run("Native tray renderer",640,64,App),"Tray renderer failed");unsafe {check(rd_widget_live_count()==0,"Tray widgets leaked")};print("PASS native tray icons, prepared battery, tooltip, click and cleanup");return 0}
+return main()

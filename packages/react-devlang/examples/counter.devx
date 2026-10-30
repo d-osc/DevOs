@@ -1,0 +1,32 @@
+use "react_devlang/ui" as ui
+
+struct CounterProps { initial: i64, title: str }
+
+fn Counter(context: *ui.Context, props: CounterProps): ui.Node {
+    let count = ui.useState(context, props.initial)
+    let name = ui.useText(context, ui.text("DevLang"))
+    let enabled = ui.useBool(context, true)
+    return <Box spacing={16} className="counter">
+        <Label>{props.title}</Label>
+        <TextLabel>{name.value}</TextLabel>
+        <Entry id="name" value={name.value} onChange={value => name.set(value)} />
+        <Label id="count">Count: {count.value}</Label>
+        <Button id="increment" disabled={!enabled.value}
+            onClick={() => count.set(count.get() + 1)}>
+            Increment
+        </Button>
+        <CheckBox id="enabled" checked={enabled.value}
+            onChange={value => enabled.set(value)}>Enabled</CheckBox>
+        <Progress fraction={(count.value % 11) as f64 / 10.0} />
+    </Box>
+}
+
+fn App(context: *ui.Context): ui.Node {
+    return <Counter initial={0} title="react-devlang · JSX + native GTK" />
+}
+
+fn main(): i32 {
+    let css = ".counter { padding: 24px; background: #15181e; } .counter label { color: #e4e8ef; font-size: 18px; } .counter button { padding: 10px; }"
+    return ui.runStyled("React DevLang JSX", 480, 420, css, App) ? 0 : 1
+}
+return main()

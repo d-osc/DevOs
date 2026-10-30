@@ -1,0 +1,26 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-battery-care.dev" as care
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_switch_set_active(widget:*void,active:i32)
+extern fn gtk_switch_get_active(widget:*void):i32
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let present=ui.useState(context,1);let phase=ui.useRef(context,0);let ticks=ui.useRef(context,0)
+    let node=care.View(context,present.value!=0,fn() {unsafe {ui.rd_fail("Battery care transport failed")}})
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>500 {ui.rd_fail("Timed out waiting for full-charge controls")};let widget=ui.find(context,"panel-full-charge");let detail=ui.readText(context,"panel-full-charge-detail")
+            if phase.get()==0 && widget!=null && gtk_widget_get_sensitive(widget)!=0 {check(gtk_switch_get_active(widget)==0,"Initial switch state incorrect");phase.set(1);gtk_switch_set_active(widget,1)}
+            else if phase.get()==1 && ui.equalText(detail,ui.text("Charging to 100% · Battery Care returns in 1 h 2 min")) && gtk_widget_get_sensitive(widget)!=0 {check(gtk_switch_get_active(widget)!=0,"Successful full-charge did not update switch");phase.set(2);gtk_switch_set_active(widget,0)}
+            else if phase.get()==2 && ui.equalText(detail,ui.text("Battery Care limits charging to 80%")) && gtk_widget_get_sensitive(widget)!=0 {phase.set(3);gtk_switch_set_active(widget,1)}
+            else if phase.get()==3 && ui.find(context,"panel-battery-care-error")!=null {check(ui.equalText(ui.readText(context,"panel-battery-care-error"),ui.text("Battery permission denied by fixture")),"Authorization error was hidden");check(gtk_switch_get_active(widget)==0 && gtk_widget_get_sensitive(widget)!=0,"Denied switch did not restore last state");phase.set(4);present.set(0)}
+            else if phase.get()==4 && widget==null {ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return node
+}
+fn main():i32 {check(ui.run("Native battery care",640,160,App),"Native battery care failed");unsafe {check(rd_widget_live_count()==0,"Battery-care widgets leaked")};print("PASS native full-charge switch, countdown, denied rollback, removal and cleanup");return 0}
+return main()

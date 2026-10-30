@@ -1,0 +1,67 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+# A stand-in for bin/dev-os-printers: logs each request (last.<action>), answers reply.<action> or reply.list. It never talks to CUPS.
+fn fake(directory:str) {
+    fs.writeFileSync(directory + "/dev-os-printers","use \"std/io\"\nuse \"std/fs\"\nuse \"std/json\"\nuse \"std/process\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    let action = json.string(json.get(json.parse(raw),\"action\"))\n    fs.writeFileSync(dir + \"/last.\" + action,raw)\n    let own = dir + \"/reply.\" + action\n    print(fs.readFileSync(fs.existsSync(own) ? own : dir + \"/reply.list\",\"utf8\"))\n    return 0\n}\nreturn main()\n")
+}
+fn rig():str {
+    let d = temporary(); fake(d)
+    fs.writeFileSync(d + "/reply.list","{\"ok\":true,\"available\":true,\"printers\":[{\"name\":\"Office\",\"uri\":\"ipps://office.local/ipp/print\"},{\"name\":\"Lab_2\",\"uri\":\"ipp://10.0.0.9/ipp/print\"}],\"default\":\"Office\",\"message\":\"\",\"jobs\":[]}")
+    return d
+}
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory)
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/printers-page.dev","--",t.root()),env,input,90000)))
+}
+fn sent(directory:str, action:str):json.Value { return json.parse(fs.readFileSync(directory + "/last." + action,"utf8")) }
+
+test.case("the printer list becomes one frame with the default queue and its addresses",fn() {
+    let d = rig()
+    let all = strings.split(worker(d,"{\"action\":\"list\"}\n"),rs())
+    test.expect(strings.equal(all[0],"K\t1\tOffice\t") && strings.equal(all[1],"L\tOffice\tipps://office.local/ipp/print") && strings.equal(all[2],"L\tLab_2\tipp://10.0.0.9/ipp/print") && all.len() == 3,"Frame wrong: " + strings.join(all,"|"))
+    fs.writeFileSync(d + "/reply.list","{\"ok\":true,\"available\":false,\"printers\":[],\"default\":\"\",\"message\":\"The CUPS printing service is not running.\",\"jobs\":[]}")
+    test.expect(strings.equal(worker(d,"{\"action\":\"list\"}\n"),"K\t0\t\tThe CUPS printing service is not running."),"An unavailable service is not described")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("add, default and remove are forwarded exactly, and bad names or addresses never reach CUPS",fn() {
+    let d = rig()
+    let good = strings.split(worker(d,"{\"action\":\"add\",\"name\":\"Front_Desk-1\",\"uri\":\"ipps://printer.local/ipp/print\"}\n{\"action\":\"default\",\"name\":\"Lab_2\"}\n{\"action\":\"remove\",\"name\":\"Office\"}\n"),"\n")
+    test.expect(good.len() == 3 && strings.startsWith(good[0],"K\t1\t") && strings.startsWith(good[1],"K\t") && strings.startsWith(good[2],"K\t"),"Valid requests were refused")
+    test.expect(strings.equal(json.string(json.get(sent(d,"add"),"name")),"Front_Desk-1") && strings.equal(json.string(json.get(sent(d,"add"),"uri")),"ipps://printer.local/ipp/print") && strings.equal(json.string(json.get(sent(d,"default"),"name")),"Lab_2") && strings.equal(json.string(json.get(sent(d,"remove"),"name")),"Office"),"Payloads wrong")
+    let e = rig()
+    let long = strings.replaceAll("0123456789","0123456789","01234567890123456789012345678901234567890123456789012345678901234")
+    let bad = strings.split(worker(e,"{\"action\":\"add\",\"name\":\"-lead\",\"uri\":\"ipp://a/b\"}\n{\"action\":\"add\",\"name\":\"has space\",\"uri\":\"ipp://a/b\"}\n{\"action\":\"add\",\"name\":\"" + long + "\",\"uri\":\"ipp://a/b\"}\n{\"action\":\"add\",\"name\":\"\",\"uri\":\"ipp://a/b\"}\n{\"action\":\"add\",\"name\":\"ok\",\"uri\":\"http://a/b\"}\n{\"action\":\"add\",\"name\":\"ok\",\"uri\":\"ipp://user:pw@a/b\"}\n{\"action\":\"add\",\"name\":\"ok\",\"uri\":\"ipp://a b/c\"}\n{\"action\":\"add\",\"name\":\"ok\",\"uri\":\"ipp:///nohost\"}\n{\"action\":\"add\",\"name\":\"ok\",\"uri\":\"ipp://a/b#frag\"}\n{\"action\":\"add\",\"name\":\"ok\",\"uri\":\"ipp://a\\\\b\"}\n{\"action\":\"default\",\"name\":\"$(rm)\"}\n{\"action\":\"remove\"}\n{\"action\":\"cups\"}\nnot json\n"),"\n")
+    test.expect(bad.len() == 14,"Expected one frame per request: ${bad.len()}")
+    for i in 0..14 { test.expect(strings.startsWith(bad[i],"E\t"),"Request ${i} was accepted: " + bad[i]) }
+    for action in Vec<str>("add","default","remove") { test.expect(!fs.existsSync(e + "/last." + action),action + " reached the helper") }
+    tool.exec(Vec<str>("rm","-rf",d,e))
+})
+test.case("helper failures are explained, and the real helper answers without CUPS",fn() {
+    let d = rig()
+    fs.writeFileSync(d + "/reply.add","{\"ok\":false,\"error\":\"Printing command failed. Check the printer address.\"}")
+    test.expect(strings.equal(worker(d,"{\"action\":\"add\",\"name\":\"x\",\"uri\":\"ipp://a/b\"}\n"),"E\tPrinting command failed. Check the printer address."),"A helper error was not passed on")
+    fs.writeFileSync(d + "/reply.list","garbage")
+    test.expect(strings.contains(worker(d,"{\"action\":\"list\"}\n"),"did not answer"),"A silent helper was not reported")
+    let real = strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/printers-page.dev","--",t.root()),Map<str,str>(),"{\"action\":\"list\"}\n",90000)))
+    test.expect(strings.startsWith(real,"K\t") || strings.startsWith(real,"E\t"),"The real helper did not answer: " + real)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("native Settings adds a printer from typed name and address under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/printers-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_PRINTERS_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","printers-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Printers page added a printer"),"Printers page: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.equal(json.string(json.get(sent(d,"add"),"name")),"Office") && strings.equal(json.string(json.get(sent(d,"add"),"uri")),"ipps://printer.local/ipp/print"),"The page sent the wrong printer")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

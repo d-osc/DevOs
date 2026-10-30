@@ -1,0 +1,182 @@
+#!/usr/bin/env d
+# Data worker of the native Wi-Fi page. On Linux it runs bin/dev-os-network-linux (NetworkManager over D-Bus); inside WSL it runs
+# bin/dev-os-wifi.ps1 through the Windows PowerShell of the host, which can only list networks and connect to saved profiles. It checks the
+# shape of every request, keeps passwords out of every answer and turns the scan into a frame. One JSON request per line on stdin:
+#   {"action":"scan"}   {"action":"radio","enabled":true}   {"action":"disconnect","interfaceId":"uuid"}   {"action":"settings"}
+#   {"action":"connect","interfaceId":"uuid","profile":"","ssid":"Cafe","security":"psk","secure":true,"password":"..."}
+# After radio, connect and disconnect the worker scans again and answers with the new list. Frame (records separated by ASCII 30):
+#   V host wirelessEnabled(1/0/"") message    then   N ssid profile adapter interfaceId signal secure connected connectable security
+#   E message
+# Test hooks (only with DEVOS_SETTINGS_TEST=1): DEVOS_SETTINGS_HELPERS, DEVOS_WIFI_MODE=linux|windows, DEVOS_WIFI_POWERSHELL.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
+    return strings.replaceAll(out,rs()," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
+fn failure(message:str):str {
+    let marker = "std/result.raise: "
+    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
+    return "E\t" + clean(shown)
+}
+fn testing():bool { return process.hasEnv("DEVOS_SETTINGS_TEST") }
+fn windows():bool {
+    if testing() && process.hasEnv("DEVOS_WIFI_MODE") { return strings.equal(process.getenv("DEVOS_WIFI_MODE"),"windows") }
+    let release = fs.existsSync("/proc/sys/kernel/osrelease") ? fs.readFileSync("/proc/sys/kernel/osrelease","utf8") : ""
+    return strings.contains(strings.toLowerCase(release),"microsoft")
+}
+struct Answer { error: str, value: json.Value, denied: bool }
+fn bad(message:str):Answer { return Answer(message,json.null_value(),false) }
+# `body` through a fixed shell pipeline on its standard input (the data is never part of a command line).
+fn pipe(script:str, body:str):str { return strings.trim(hw.runInput(Vec<str>("sh","-c",script),body,10000).out) }
+fn parse(out:str, fallback:str):Answer {
+    let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(strings.replaceAll(out,encoding.decode(Vec<u8>(239,187,191),"utf8"),""))) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return bad(fallback) }
+    let value = result.unwrap(parsed)
+    if !bool(value,"ok") { return Answer(text(value,"error") == "" ? "The Wi-Fi request failed." : text(value,"error"),json.null_value(),bool(value,"accessDenied")) }
+    return Answer("",value,false)
+}
+fn linuxRequest(root:str, payload:json.Value, seconds:i64):Answer {
+    let directory = testing() && process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
+    let ran = hw.runInput(Vec<str>("d",directory + "/dev-os-network-linux"),json.stringify(payload),seconds * 1000)
+    if ran.code == 127 { return bad("The Linux Wi-Fi request timed out. Check NetworkManager and the Wi-Fi driver.") }
+    return parse(ran.out,"The Linux Wi-Fi helper returned no valid data. Check NetworkManager and the installed desktop package.")
+}
+fn windowsRequest(root:str, payload:json.Value):Answer {
+    let powershell = testing() && process.hasEnv("DEVOS_WIFI_POWERSHELL") ? process.getenv("DEVOS_WIFI_POWERSHELL") : "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    if !fs.is_file(powershell) { return bad("Windows interop is unavailable. Enable WSL interop to read Wi-Fi.") }
+    let scriptFile = root + "/bin/dev-os-wifi.ps1"
+    if !fs.is_file(scriptFile) { return bad("The Windows Wi-Fi script is missing.") }
+    let encoded = pipe("base64 -w0",json.stringify(payload))
+    let command = "& {\n" + fs.readFileSync(scriptFile,"utf8") + "\n} -RequestBase64 '" + encoded + "'"
+    let utf16 = pipe("iconv -f UTF-8 -t UTF-16LE | base64 -w0",command)
+    if strings.equal(encoded,"") || strings.equal(utf16,"") { return bad("Could not prepare the Windows Wi-Fi request.") }
+    let ran = hw.run(Vec<str>(powershell,"-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",utf16),15000)
+    return parse(ran.out,"Windows Wi-Fi request failed.")
+}
+fn request(root:str, payload:json.Value):Answer {
+    if windows() { return windowsRequest(root,payload) }
+    return linuxRequest(root,payload,strings.equal(text(payload,"action"),"connect") ? 50 : 20)
+}
+fn uuid(value:str):bool {
+    let parts = strings.split(value,"-")
+    if parts.len() != 5 { return false }
+    let sizes = Vec<i64>(8,4,4,4,12)
+    for i in 0..5 {
+        if (strings.charLength(parts[i]) as i64) != sizes[i] { return false }
+        for j in 0..(sizes[i]) { if !strings.contains("0123456789abcdefABCDEF",strings.substring(parts[i],j,j + 1)) { return false } }
+    }
+    return true
+}
+# The networks of a scan: invalid entries are an error, hidden ones (empty name) are dropped, duplicates merge, strongest/connected first.
+struct Network { ssid: str, profile: str, adapter: str, interfaceId: str, signal: i64, secure: bool, connected: bool, connectable: bool, security: str }
+struct Networks { error: str, list: Vec<Network> }
+fn normalize(raw:json.Value):Networks {
+    let none = Vec<Network>()
+    if !strings.equal(json.kind(raw),"array") { return Networks("Invalid Wi-Fi network list.",none) }
+    let list = Vec<Network>(); let keys = Vec<str>()
+    for i in 0..(json.len(raw) as i64) {
+        let n = json.at(raw,i)
+        if !strings.equal(json.kind(n),"object") { return Networks("Invalid Wi-Fi network.",none) }
+        let signalOk = json.has(n,"signal") && strings.equal(json.kind(json.get(n,"signal")),"number")
+        for key in Vec<str>("secure","connected","connectable") { if !(json.has(n,key) && strings.equal(json.kind(json.get(n,key)),"bool")) { return Networks("Invalid Wi-Fi network data.",none) } }
+        for key in Vec<str>("ssid","profile","adapter","interfaceId") { if !(json.has(n,key) && strings.equal(json.kind(json.get(n,key)),"string")) { return Networks("Invalid Wi-Fi network data.",none) } }
+        if !signalOk || !uuid(text(n,"interfaceId")) { return Networks("Invalid Wi-Fi network data.",none) }
+        if text(n,"ssid") == "" { continue }
+        let signal = json.int(json.get(n,"signal")); if signal < 0 { signal = 0 }; if signal > 100 { signal = 100 }
+        let next = Network(text(n,"ssid"),text(n,"profile"),text(n,"adapter"),text(n,"interfaceId"),signal,bool(n,"secure"),bool(n,"connected"),bool(n,"connectable"),text(n,"security"))
+        let key = next.interfaceId + "/" + next.ssid + "/" + (next.secure ? "1" : "0"); let at = -1
+        for j in 0..(keys.len() as i64) { if strings.equal(keys[j],key) { at = j } }
+        if at < 0 { keys.push(key); list.push(next) }
+        else {
+            let old = list[at]
+            if next.connected || (!old.connected && old.profile == "" && next.profile != "") { list[at] = next }
+            else if next.signal > old.signal { old.signal = next.signal; list[at] = old }
+        }
+    }
+    # Connected first, then by signal (strongest first), then by name.
+    let order = Vec<str>()
+    for i in 0..(list.len() as i64) { let n = list[i]; let rank = (n.connected ? 0 : 1) * 1000 + (100 - n.signal); order.push("${rank + 100000}" + strings.toLowerCase(n.ssid) + "\n${i}") }
+    order.sort()
+    let sorted = Vec<Network>()
+    for item in order { sorted.push(list[json.int(json.parse(strings.split(item,"\n")[1]))]) }
+    return Networks("",sorted)
+}
+fn frame(root:str, scan:json.Value, message:str):str {
+    let found = normalize(json.has(scan,"networks") ? json.get(scan,"networks") : json.array())
+    if !strings.equal(found.error,"") { return failure(found.error) }
+    let radio = json.has(scan,"wirelessEnabled") && strings.equal(json.kind(json.get(scan,"wirelessEnabled")),"bool") ? (json.bool(json.get(scan,"wirelessEnabled")) ? "1" : "0") : ""
+    let out = "V\t" + (windows() ? "Windows" : "Linux") + "\t" + radio + "\t" + clean(message)
+    for n in found.list { out = out + rs() + "N\t" + clean(n.ssid) + "\t" + clean(n.profile) + "\t" + clean(n.adapter) + "\t" + n.interfaceId + "\t${n.signal}\t" + (n.secure ? "1" : "0") + "\t" + (n.connected ? "1" : "0") + "\t" + (n.connectable ? "1" : "0") + "\t" + clean(n.security) }
+    return out
+}
+fn noControl(value:str):bool { return !strings.contains(value,"\n") && !strings.contains(value,"\r") && !strings.contains(value,"\t") }
+fn explain(answer:Answer):str { return failure(answer.denied ? answer.error + " Allow location access for desktop apps in Windows Privacy settings, then refresh." : answer.error) }
+fn scan(root:str, message:str):str {
+    let answer = request(root,{action:"scan"})
+    if !strings.equal(answer.error,"") { return explain(answer) }
+    return frame(root,answer.value,message)
+}
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return failure("Expected an object request") }
+    let action = text(r,"action")
+    if strings.equal(action,"scan") { return scan(root,"") }
+    if strings.equal(action,"settings") {
+        if !windows() { return failure("Manage Wi-Fi inside DevOs Settings.") }
+        let opened = request(root,{action:"settings",page:"wifi"})
+        if !strings.equal(opened.error,"") { return explain(opened) }
+        return scan(root,"")
+    }
+    if strings.equal(action,"radio") {
+        if windows() { return failure("Turn Wi-Fi on or off in Windows.") }
+        if !(json.has(r,"enabled") && strings.equal(json.kind(json.get(r,"enabled")),"bool")) { return failure("Invalid Wi-Fi state.") }
+        let answer = request(root,{action:"radio",enabled:bool(r,"enabled")})
+        if !strings.equal(answer.error,"") { return explain(answer) }
+        return scan(root,"")
+    }
+    if strings.equal(action,"disconnect") {
+        if windows() { return failure("Disconnect in Windows.") }
+        if !uuid(text(r,"interfaceId")) { return failure("Choose a Wi-Fi network first.") }
+        let answer = request(root,{action:"disconnect",interfaceId:text(r,"interfaceId")})
+        if !strings.equal(answer.error,"") { return explain(answer) }
+        return scan(root,"")
+    }
+    if strings.equal(action,"connect") {
+        let id = text(r,"interfaceId"); let profile = text(r,"profile")
+        if !uuid(id) || !noControl(profile) || strings.charLength(profile) > 256 { return failure("Choose a Wi-Fi network first.") }
+        let payload = {action:"connect",interfaceId:id,profile:profile}
+        if !windows() {
+            let ssid = text(r,"ssid"); let password = text(r,"password"); let security = text(r,"security")
+            if ssid == "" || (encoding.encode(ssid,"utf8").len() as i64) > 32 || !noControl(ssid) { return failure("Choose a Wi-Fi network first.") }
+            if !noControl(password) || strings.charLength(password) > 128 || !noControl(security) || strings.charLength(security) > 16 { return failure("Invalid Wi-Fi password.") }
+            payload = {action:"connect",interfaceId:id,profile:profile,ssid:ssid,security:security,secure:bool(r,"secure"),password:password}
+        }
+        let answer = request(root,payload)
+        if !strings.equal(answer.error,"") { return explain(answer) }
+        return scan(root,"Connected to " + text(r,"ssid") + ".")
+    }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

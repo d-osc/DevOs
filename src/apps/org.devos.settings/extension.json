@@ -1,0 +1,18 @@
+{
+  "id": "org.devos.settings",
+  "name": "Settings",
+  "description": "Base settings window and extension preferences.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "entry": "org.devos.settings.js",
+  "order": 20,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": [{"id": "window", "title": "Settings window", "fields": [
+    {"key": "compactNavigation", "title": "Compact navigation", "type": "boolean", "default": false},
+    {"key": "rememberPage", "title": "Continue where you left off", "type": "boolean", "default": false},
+    {"key": "closeOnEscape", "title": "Close with Esc", "type": "boolean", "default": true}
+  ]}]
+}

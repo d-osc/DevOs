@@ -1,0 +1,273 @@
+#!/usr/bin/env d
+# Data worker of the native Updates page. One JSON request per line on stdin:
+#   {"action":"state"}   what is known without the network (running/installed versions, source settings, last check)
+#   {"action":"check"}   asks GitHub Releases for the latest stable package and compares it with the installed version
+#   {"action":"source","repository":"owner/repo","checkOnOpen":false,"periodicCheck":false}   saves the update source settings
+#   {"action":"install"}   downloads, verifies and installs the latest release (install.dev); the page asks for confirmation first
+#   {"action":"installFile","path":"/abs/dev-os-linux-arm64.tar.gz"}   installs an update file the user has (full package or patch)
+#   {"action":"rollback"}   selects the previous version again
+#   {"action":"useInstalled"}   asks the session manager to start the installed version and restarts the shell
+#   {"action":"installSystem"}, {"action":"rollbackSystem"}, {"action":"cancelSystem"}, {"action":"restart"}   system updates through the helper
+# One tab-separated frame per request (see `frame` for the field order), or `E <message>`.
+# System updates run through dev-os-system-update, which asks for administrator approval; fields 25.. of the frame describe them.
+# Test hooks: DEVOS_UPDATES_ROOT (update directory), DEVOS_UPDATES_API (only http://127.0.0.1:<port>), DEVOS_PREFERENCES_DIR.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/http"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/ext-prefs.dev" as prefs
+use "../../../lib/hw.dev" as hw
+use "./protocol.dev" as proto
+use "./manifest.dev" as pm
+use "./install.dev" as inst
+
+fn live():str { return "Live USB is not updated in place: its system image is read-only and changes in memory are lost at shutdown. Write a newer Dev OS image to the USB stick instead." }
+fn prefsDirectory():str {
+    if process.hasEnv("DEVOS_PREFERENCES_DIR") { return process.getenv("DEVOS_PREFERENCES_DIR") }
+    let config = process.hasEnv("XDG_CONFIG_HOME") ? process.getenv("XDG_CONFIG_HOME") : process.getenv("HOME") + "/.config"
+    return config + "/dev-os/extensions"
+}
+fn updateRoot():str {
+    if process.hasEnv("DEVOS_UPDATES_ROOT") { return process.getenv("DEVOS_UPDATES_ROOT") }
+    let data = process.hasEnv("XDG_DATA_HOME") ? process.getenv("XDG_DATA_HOME") : process.getenv("HOME") + "/.local/share"
+    return data + "/dev-os-updates"
+}
+fn apiBase():str {
+    if process.hasEnv("DEVOS_UPDATES_API") && strings.startsWith(process.getenv("DEVOS_UPDATES_API"),"http://127.0.0.1:") { return process.getenv("DEVOS_UPDATES_API") }
+    return "https://api.github.com"
+}
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r",""); return strings.replaceAll(out,"\n",encodingRecord())
+}
+# Multi-line text (release notes) travels with ASCII 30 instead of newlines.
+fn encodingRecord():str { return hw.decode(Vec<u8>(30)) }
+fn yes(value:bool):str { return value ? "1" : "0" }
+fn text(value:json.Value, key:str, fallback:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : fallback }
+fn flag(value:json.Value, key:str, fallback:bool):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") ? json.bool(json.get(value,key)) : fallback }
+
+struct Session { status: str, message: str, error: str, offline: bool, release: proto.Release, patchless: bool, swInstalled: str, swLatest: str, swError: str, trust: str, patched: bool, sys: inst.SysState, sysSet: bool, restart: bool }
+fn runningVersion(root:str):str {
+    let file = root + "/package.json"
+    if !fs.existsSync(file) { return "unknown" }
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(file,"utf8")) })
+    if result.isErr(parsed) { return "unknown" }
+    let found = proto.version(text(result.unwrap(parsed),"version",""))
+    return strings.equal(found,"") ? "unknown" : found
+}
+fn checkedAt():str {
+    let file = updateRoot() + "/last-check.json"
+    if !fs.existsSync(file) { return "" }
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(file,"utf8")) })
+    return result.isErr(parsed) ? "" : text(result.unwrap(parsed),"at","")
+}
+fn frame(root:str, manifest:json.Value, session:Session):str {
+    let state = prefs.read(prefsDirectory(),"org.devos.updates",manifest)
+    let values = json.get(state,"values")
+    let problem = json.has(state,"error") ? json.string(json.get(state,"error")) : ""
+    let running = runningVersion(root); let history = proto.history(updateRoot())
+    let installed = strings.equal(history.current,"") ? running : history.current
+    let managed = !strings.equal(history.current,"")
+    let blocked = fs.is_dir("/run/devos-live") ? live() : ""
+    let selectedRoot = managed ? updateRoot() + "/releases/" + history.currentKey : ""
+    let useInstalled = managed && (!strings.equal(installed,running) || !strings.equal(selectedRoot,process.hasEnv("DEV_OS_ROOT") ? process.getenv("DEV_OS_ROOT") : ""))
+    let status = session.status; let message = session.message; let error = session.error
+    if strings.equal(status,"idle") {
+        if !strings.equal(history.error,"") { status = "error"; error = "Cannot read installed updates: " + history.error; message = "The update could not be completed." }
+        else if useInstalled { status = "ready"; message = "Dev OS " + installed + " is installed. Restart the shell to use it." }
+        else { message = strings.equal(blocked,"") ? "Check for the latest stable release." : blocked }
+    }
+    let release = session.release
+    let available = !strings.equal(release.version,"") && strings.equal(blocked,"") && (proto.newer(release.version,installed) || (!managed && strings.equal(release.version,running)))
+    let out = "U\t" + status + "\t" + clean(message) + "\t" + clean(error) + "\t" + running + "\t" + installed + "\t" + yes(managed) + "\t" + history.previous + "\t" + checkedAt() + "\t" + clean(blocked) + "\t" + yes(session.offline) + "\t" + yes(available)
+    out = out + "\t" + release.version + "\t" + clean(release.published) + "\t${release.size}\t" + clean(release.notes)
+    out = out + "\t" + session.swInstalled + "\t" + session.swLatest + "\t" + clean(session.swError)
+    out = out + "\t" + text(values,"repository","d-osc/DevOs") + "\t" + yes(flag(values,"checkOnOpen",false)) + "\t" + yes(flag(values,"periodicCheck",false)) + "\t" + clean(problem) + "\t" + session.trust + "\t" + yes(session.patched)
+    # 25..: system updates (kernel, firmware, boot image) from the privileged helper's status and the release's system bundle.
+    let sys = session.sysSet ? session.sys : inst.systemState(context(root))
+    out = out + "\t" + yes(sys.supported) + "\t" + clean(sys.reason) + "\t" + sys.version + "\t" + sys.kernel + "\t" + yes(sys.safeBoot) + "\t" + yes(sys.signed) + "\t" + sys.pending + "\t" + yes(sys.canRollback) + "\t" + clean(sys.lastError)
+    out = out + "\t" + yes(session.restart || !strings.equal(sys.pending,"")) + "\t" + sys.offer.version + "\t" + sys.offer.components + "\t" + sys.offer.kernel + "\t${sys.offer.size}"
+    return out
+}
+fn idle():Session { return Session("idle","","",false,proto.Release("","","","","",0,"","","",""),false,"","","","",false,inst.noSysState(""),false,false) }
+
+# GET `path` on the API; offline is true when the connection itself failed.
+struct Reply { offline: bool, reason: str, status: i64, body: str }
+fn get(url:str):Reply {
+    let headers = Map<str,str>(); headers.set("Accept","application/vnd.github+json"); headers.set("User-Agent","DevOS-Updater")
+    let attempt = result.attempt(fn():Reply {
+        let response = http.request("GET",url,headers,"",20000)
+        return Reply(false,"",response.status as i64,response.body)
+    })
+    if result.isErr(attempt) { return Reply(true,result.message(attempt),0,"") }
+    return result.unwrap(attempt)
+}
+fn failed(session:Session, message:str):Session { session.status = "error"; session.error = message; session.message = "The update could not be completed."; return session }
+fn swaylock(session:Session):Session {
+    let installed = ""
+    let located = hw.run(Vec<str>("sh","-c","command -v swaylock"),5000)
+    if located.code == 0 && !strings.equal(strings.trim(located.out),"") {
+        let ran = hw.run(Vec<str>("swaylock","--version"),10000)
+        installed = ran.code == 0 ? proto.parseSwaylockVersion(ran.out) : ""
+        if strings.equal(installed,"") { session.swError = "Cannot determine installed swaylock version"; return session }
+    }
+    let answer = get(apiBase() + "/repos/swaywm/swaylock/releases/latest")
+    session.swInstalled = installed
+    if answer.offline { session.swError = answer.reason; return session }
+    if answer.status != 200 { session.swError = "swaylock releases returned HTTP ${answer.status}"; return session }
+    let parsed = result.attempt(fn():json.Value { return json.parse(answer.body) })
+    if result.isErr(parsed) { session.swError = "Invalid swaylock release response"; return session }
+    let latest = proto.parseSwaylockRelease(result.unwrap(parsed))
+    if !strings.equal(latest.error,"") { session.swError = latest.error; return session }
+    session.swLatest = latest.version
+    return session
+}
+fn check(root:str, manifest:json.Value):Session {
+    let session = idle()
+    let state = prefs.read(prefsDirectory(),"org.devos.updates",manifest)
+    let repo = text(json.get(state,"values"),"repository","d-osc/DevOs")
+    let history = proto.history(updateRoot())
+    if !strings.equal(history.error,"") { return failed(session,history.error) }
+    let running = runningVersion(root)
+    let installed = strings.equal(history.current,"") ? running : history.current
+    let managed = !strings.equal(history.current,"")
+    if !proto.validRepository(repo) { return failed(session,"Use a GitHub repository in owner/repo format.") }
+    let machine = hw.run(Vec<str>("uname","-m"),5000)
+    let target = proto.platform(strings.trim(machine.out))
+    if strings.equal(target,"") { return failed(session,"No Dev OS release package is available for " + strings.trim(machine.out)) }
+    let answer = get(apiBase() + "/repos/" + repo + "/releases/latest")
+    if answer.offline {
+        session.offline = true; session.status = "error"
+        session.error = "Cannot reach GitHub (" + answer.reason + "). Check your internet connection and try again."
+        session.message = "No internet connection. You can apply an update file from a USB stick or the Downloads folder instead."
+        return session
+    }
+    if answer.status == 404 {
+        let project = get(apiBase() + "/repos/" + repo)
+        if project.offline || project.status != 200 { return failed(session,"Repository is unavailable or private. Use a public GitHub repository.") }
+        session.status = "empty"; session.message = "No published releases yet. Publish a stable release with a Dev OS package."
+    } else if answer.status != 200 {
+        return failed(session, answer.status == 403 || answer.status == 429 ? "GitHub rate limit reached. Try again later." : "GitHub returned HTTP ${answer.status}")
+    } else {
+        let parsed = result.attempt(fn():json.Value { return json.parse(answer.body) })
+        if result.isErr(parsed) { return failed(session,"Invalid GitHub release response") }
+        let release = proto.parseRelease(result.unwrap(parsed),repo,target)
+        if !strings.equal(release.error,"") { return failed(session,release.error) }
+        session.release = release
+        let extras = pm.releaseExtras(result.unwrap(parsed),repo,target,managed ? installed : "")
+        session.sys = inst.checkSystem(context(root),extras); session.sysSet = true
+        let blocked = fs.is_dir("/run/devos-live")
+        let available = proto.newer(release.version,installed) || (!managed && strings.equal(release.version,running))
+        let useInstalled = managed && !strings.equal(installed,running)
+        session.status = available ? "available" : useInstalled ? "ready" : "current"
+        session.message = available ? (blocked ? "Dev OS " + release.version + " is available. " + live() : "Dev OS " + release.version + " is available.") : useInstalled ? "Dev OS " + installed + " is installed. Restart the shell to use it." : "You have the latest stable version."
+    }
+    # Same stamp the JS updater keeps for its optional daily check.
+    if fs.mkdirSync(updateRoot(),true) { fs.writeFileSync(updateRoot() + "/last-check.json",json.stringify({at:strings.trim(hw.run(Vec<str>("date","-u","+%Y-%m-%dT%H:%M:%SZ"),5000).out)})) }
+    return swaylock(session)
+}
+# The privileged helper: the installed dev-os-system-update, or this checkout's bin/ copy. Tests may name another command (and
+# restart command) as JSON arrays, but only when the loopback test API is also set.
+fn commandList(name:str, fallback:Vec<str>):Vec<str> {
+    if !process.hasEnv("DEVOS_UPDATES_API") || !strings.startsWith(process.getenv("DEVOS_UPDATES_API"),"http://127.0.0.1:") || !process.hasEnv(name) { return fallback }
+    let parsed = result.attempt(fn():json.Value { return json.parse(process.getenv(name)) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"array") { return fallback }
+    let out = Vec<str>(); let list = result.unwrap(parsed)
+    for i in 0..(json.len(list) as i64) { if strings.equal(json.kind(json.at(list,i)),"string") { out.push(json.string(json.at(list,i))) } }
+    return out
+}
+fn systemHelper(root:str):inst.Sys {
+    let found = strings.trim(hw.run(Vec<str>("sh","-c","command -v dev-os-system-update"),5000).out)
+    let program = strings.equal(found,"") ? root + "/bin/dev-os-system-update" : found
+    return inst.Sys(commandList("DEVOS_UPDATES_SYSTEM_COMMAND",Vec<str>(program)),commandList("DEVOS_UPDATES_REBOOT_COMMAND",inst.noSystem().reboot))
+}
+fn context(root:str):inst.Ctx {
+    let hint = process.hasEnv("DEVOS_UPDATES_API") ? process.getenv("DEVOS_UPDATES_API") : ""
+    let installRoot = process.hasEnv("DEV_OS_ROOT") ? process.getenv("DEV_OS_ROOT") : ""
+    return inst.Ctx(updateRoot(),root + "/data/update-keys",runningVersion(root),installRoot,-1,fs.is_dir("/run/devos-live"),hint,systemHelper(root))
+}
+# The answer to an install, update-file or rollback request.
+fn settle(outcome:inst.Outcome):Session {
+    let session = idle()
+    if !strings.equal(outcome.error,"") { return failed(session,outcome.error) }
+    session.status = "ready"; session.message = outcome.message; session.trust = outcome.trust; session.patched = outcome.patched; session.restart = outcome.restart
+    return session
+}
+# Fetches the latest release again (the page sends no URLs) and installs it.
+fn installLatest(root:str, manifestJson:json.Value, kind:str):Session {
+    let session = idle()
+    if fs.is_dir("/run/devos-live") { return failed(session,live()) }
+    let state = prefs.read(prefsDirectory(),"org.devos.updates",manifestJson)
+    let repo = text(json.get(state,"values"),"repository","d-osc/DevOs")
+    if !proto.validRepository(repo) { return failed(session,"Use a GitHub repository in owner/repo format.") }
+    let history = proto.history(updateRoot())
+    if !strings.equal(history.error,"") { return failed(session,history.error) }
+    let target = proto.platform(strings.trim(hw.run(Vec<str>("uname","-m"),5000).out))
+    if strings.equal(target,"") { return failed(session,"No Dev OS release package is available for this processor") }
+    let answer = get(apiBase() + "/repos/" + repo + "/releases/latest")
+    if answer.offline { return failed(session,"Cannot reach GitHub (" + answer.reason + "). Check your internet connection and try again.") }
+    if answer.status != 200 { return failed(session,"GitHub returned HTTP ${answer.status}") }
+    let parsed = result.attempt(fn():json.Value { return json.parse(answer.body) })
+    if result.isErr(parsed) { return failed(session,"Invalid GitHub release response") }
+    let release = proto.parseRelease(result.unwrap(parsed),repo,target)
+    if !strings.equal(release.error,"") { return failed(session,release.error) }
+    let running = runningVersion(root)
+    let installed = strings.equal(history.current,"") ? running : history.current
+    let extras = pm.releaseExtras(result.unwrap(parsed),repo,target,strings.equal(history.current,"") ? "" : installed)
+    if strings.equal(kind,"system") { return settle(inst.installSystem(context(root),extras)) }
+    return settle(inst.install(context(root),release,extras))
+}
+# Switches the running session to the installed version: the session manager reads the request file, the shell restarts.
+fn switchSession(root:str):Session {
+    let runtime = process.hasEnv("XDG_RUNTIME_DIR") ? process.getenv("XDG_RUNTIME_DIR") : ""
+    let request = process.hasEnv("DEV_OS_VERSION_REQUEST") ? process.getenv("DEV_OS_VERSION_REQUEST") : ""
+    let running = process.hasEnv("DEV_OS_ROOT") ? process.getenv("DEV_OS_ROOT") : root
+    let outcome = inst.useInstalled(context(root),request,runtime,commandList("DEVOS_UPDATES_SHELL_COMMAND",Vec<str>("sh",running + "/bin/dev-os-shell","session.restart")))
+    let session = idle()
+    if !strings.equal(outcome.error,"") { return failed(session,outcome.error) }
+    session.status = "ready"; session.message = outcome.message
+    return session
+}
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn handle(root:str, manifest:json.Value, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action","")
+    if strings.equal(action,"state") { return frame(root,manifest,idle()) }
+    if strings.equal(action,"check") { return frame(root,manifest,check(root,manifest)) }
+    if strings.equal(action,"source") {
+        let repo = text(request,"repository","")
+        if !proto.validRepository(repo) { return failure("Use a GitHub repository in owner/repo format.") }
+        let saved = {repository:repo,checkOnOpen:flag(request,"checkOnOpen",false),periodicCheck:flag(request,"periodicCheck",false)}
+        let reason = prefs.write(prefsDirectory(),"org.devos.updates",manifest,true,saved)
+        if !strings.equal(reason,"") { return failure(reason) }
+        return frame(root,manifest,idle())
+    }
+    if strings.equal(action,"install") { return frame(root,manifest,installLatest(root,manifest,"release")) }
+    if strings.equal(action,"installFile") { return frame(root,manifest,settle(inst.installFile(context(root),text(request,"path","")))) }
+    if strings.equal(action,"rollback") { return frame(root,manifest,settle(inst.rollback(context(root)))) }
+    if strings.equal(action,"useInstalled") { return frame(root,manifest,switchSession(root)) }
+    if strings.equal(action,"installSystem") { return frame(root,manifest,installLatest(root,manifest,"system")) }
+    if strings.equal(action,"rollbackSystem") { return frame(root,manifest,settle(inst.systemAction(context(root),"rollback"))) }
+    if strings.equal(action,"cancelSystem") { return frame(root,manifest,settle(inst.systemAction(context(root),"cancel"))) }
+    if strings.equal(action,"restart") {
+        let reason = inst.restartComputer(context(root))
+        return frame(root,manifest,strings.equal(reason,"") ? idle() : failed(idle(),reason))
+    }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    let manifest = json.parse(fs.readFileSync(root+"/src/apps/org.devos.updates/extension.json","utf8"))
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,manifest,line))
+    }
+    return 0
+}
+return main()

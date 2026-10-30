@@ -1,0 +1,81 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+fn adapter():str { return "/org/bluez/hci0" }
+fn dev(n:str):str { return "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_0" + n }
+fn device(n:str, name:str, named:str, paired:str, connected:str):str {
+    return "{\"id\":\"" + dev(n) + "\",\"adapter\":\"" + adapter() + "\",\"name\":\"" + name + "\",\"named\":" + named + ",\"address\":\"AA:BB:CC:DD:EE:0" + n + "\",\"icon\":\"audio-headphones\",\"paired\":" + paired + ",\"connected\":" + connected + "}"
+}
+fn state():str {
+    return "{\"ok\":true,\"state\":{\"adapters\":[{\"id\":\"" + adapter() + "\",\"name\":\"hci0\",\"powered\":true}],\"devices\":[" + device("1","Buds","true","true","true") + "," + device("2","Speaker","true","true","false") + "," + device("3","Unknown device","false","false","false") + "],\"usb\":[{\"id\":\"1\",\"name\":\"Hub\",\"vendor\":\"ACME\"}],\"inputs\":[{\"id\":\"2\",\"name\":\"Keyboard\",\"vendor\":\"\"}],\"bluetoothError\":\"\"}}"
+}
+# Stand-in for bin/dev-os-devices-linux: logs the request as last.<action> and answers reply.<action> or reply.get. It never touches BlueZ.
+fn rig():str {
+    let d = temporary()
+    fs.writeFileSync(d + "/dev-os-devices-linux","use \"std/io\"\nuse \"std/fs\"\nuse \"std/json\"\nuse \"std/process\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    let action = json.string(json.get(json.parse(raw),\"action\"))\n    fs.writeFileSync(dir + \"/last.\" + action,raw)\n    let own = dir + \"/reply.\" + action\n    print(fs.readFileSync(fs.existsSync(own) ? own : dir + \"/reply.get\",\"utf8\"))\n    return 0\n}\nreturn main()\n")
+    fs.writeFileSync(d + "/reply.get",state())
+    return d
+}
+fn worker(directory:str, mode:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_BLUETOOTH_MODE",mode)
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/bluetooth-page.dev","--",t.root()),env,input,120000)))
+}
+fn sent(directory:str, action:str):json.Value { return json.parse(fs.readFileSync(directory + "/last." + action,"utf8")) }
+
+test.case("the helper state becomes a frame with adapters, devices, USB and input records",fn() {
+    let d = rig()
+    let all = records(worker(d,"linux","{\"action\":\"get\"}\n")); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],"Linux") && strings.equal(h[2],"") && all.len() == 7,"Header or count wrong: " + strings.join(all,"|"))
+    let a = cells(all[1]); let buds = cells(all[2]); let unknown = cells(all[4])
+    test.expect(strings.equal(a[0],"A") && strings.equal(a[1],adapter()) && strings.equal(a[3],"1"),"Adapter record wrong")
+    test.expect(strings.equal(buds[2],adapter()) && strings.equal(buds[3],"Buds") && strings.equal(buds[4],"1") && strings.equal(buds[7],"1") && strings.equal(buds[8],"1"),"Connected device wrong")
+    test.expect(strings.equal(unknown[4],"0") && strings.equal(unknown[7],"0"),"Unnamed, unpaired device wrong")
+    test.expect(strings.equal(cells(all[5])[0],"U") && strings.equal(cells(all[5])[2],"ACME") && strings.equal(cells(all[6])[0],"I"),"USB or input record wrong")
+    test.expect(strings.equal(cells(records(worker(d,"windows","{\"action\":\"get\"}\n"))[0])[1],"Windows"),"The Windows host is not reported")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("power, connect, disconnect, forget and scan are forwarded exactly and answer with the new state",fn() {
+    let d = rig()
+    let lines = strings.split(worker(d,"linux","{\"action\":\"power\",\"id\":\"" + adapter() + "\",\"powered\":false}\n{\"action\":\"connect\",\"id\":\"" + dev("2") + "\"}\n{\"action\":\"disconnect\",\"id\":\"" + dev("1") + "\"}\n{\"action\":\"forget\",\"id\":\"" + dev("2") + "\"}\n{\"action\":\"scan\"}\n{\"action\":\"settings\",\"page\":\"mouse\"}\n"),"\n")
+    test.expect(lines.len() == 6,"Expected one frame per request: ${lines.len()}")
+    for i in 0..6 { test.expect(strings.startsWith(lines[i],"V\tLinux"),"Request ${i} answer wrong: " + lines[i]) }
+    test.expect(strings.equal(json.string(json.get(sent(d,"power"),"id")),adapter()) && !json.bool(json.get(sent(d,"power"),"powered")),"Power payload wrong")
+    test.expect(strings.equal(json.string(json.get(sent(d,"connect"),"id")),dev("2")) && strings.equal(json.string(json.get(sent(d,"disconnect"),"id")),dev("1")) && strings.equal(json.string(json.get(sent(d,"forget"),"id")),dev("2")),"Device payload wrong")
+    test.expect(strings.equal(json.string(json.get(sent(d,"settings"),"page")),"mouse") && fs.existsSync(d + "/last.scan"),"Settings or scan did not reach the helper")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad Bluetooth requests never reach the helper, and helper failures are reported",fn() {
+    let d = rig()
+    let input = "{\"action\":\"power\",\"id\":\"/etc/passwd\",\"powered\":true}\n{\"action\":\"power\",\"id\":\"" + dev("1") + "\",\"powered\":true}\n{\"action\":\"power\",\"id\":\"" + adapter() + "\",\"powered\":\"on\"}\n{\"action\":\"connect\",\"id\":\"" + adapter() + "\"}\n{\"action\":\"forget\",\"id\":\"/org/bluez/hci0/dev_x;rm\"}\n{\"action\":\"settings\",\"page\":\"../x\"}\n{\"action\":\"pair\",\"id\":\"" + dev("3") + "\"}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,"linux",input),"\n")
+    test.expect(lines.len() == 9,"Expected one frame per request: ${lines.len()}")
+    for i in 0..9 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    for action in Vec<str>("power","connect","forget","settings","pair") { test.expect(!fs.existsSync(d + "/last." + action),action + " reached the helper") }
+    fs.writeFileSync(d + "/reply.get","{\"ok\":false,\"error\":\"Bluetooth service unavailable.\"}")
+    test.expect(strings.equal(worker(d,"linux","{\"action\":\"get\"}\n"),"E\tBluetooth service unavailable."),"A helper error was not passed on")
+    fs.writeFileSync(d + "/reply.get","{\"ok\":true,\"state\":{\"adapters\":[{\"id\":\"bad\",\"name\":\"x\",\"powered\":true}],\"devices\":[],\"usb\":[],\"inputs\":[]}}")
+    test.expect(strings.startsWith(worker(d,"linux","{\"action\":\"get\"}\n"),"E\tInvalid Bluetooth adapter"),"A malformed adapter was accepted")
+    fs.writeFileSync(d + "/reply.get","garbage")
+    test.expect(strings.contains(worker(d,"linux","{\"action\":\"get\"}\n"),"returned no valid data"),"A silent helper was not reported")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("native Settings connects a paired device from the Bluetooth page under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/bluetooth-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_BLUETOOTH_MODE","linux"); env.set("DEVOS_BLUETOOTH_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","bluetooth-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Bluetooth page connected"),"Bluetooth page: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.equal(json.string(json.get(sent(d,"connect"),"id")),dev("2")),"The page connected the wrong device: " + json.stringify(sent(d,"connect")))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

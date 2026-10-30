@@ -1,0 +1,71 @@
+# Font Awesome pack/style rules, glyph fallback and SVG output of the Icons settings (same behavior as fa-icons.ts and
+# material.ts). Used by service.dev and its tests; the native window only displays the SVG text the worker returns.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "./rules.dev" as rules
+
+fn packs():Vec<str> { return rules.packs() }
+fn styles():Vec<str> { return rules.styles() }
+fn packTitle(pack:str):str { return rules.packTitle(pack) }
+fn contains(list:Vec<str>, value:str):bool { return rules.contains(list,value) }
+fn isPack(value:str):bool { return rules.isPack(value) }
+fn isStyle(value:str):bool { return rules.isStyle(value) }
+fn packStyles(pack:str):Vec<str> { return rules.packStyles(pack) }
+fn hasCombination(pack:str, style:str):bool { return rules.hasCombination(pack,style) }
+# Empty when the pair is usable, otherwise why not (strict, used when saving).
+fn choiceError(pack:str, style:str):str {
+    if !isPack(pack) { return "Unknown icon pack: " + pack }
+    if !isStyle(style) { return "Unknown icon style: " + style }
+    return ""
+}
+fn nearest(style:str):Vec<str> { return rules.nearest(style) }
+struct Glyph { found: bool, width: f64, upm: f64, d: str, d2: str }
+fn glyphOf(root:str, pack:str, style:str, fa:str):Glyph {
+    let none = Glyph(false,0.0,0.0,"","")
+    if !hasCombination(pack,style) { return none }
+    let file = root + "/data/icons/fa/" + pack + "-" + style + ".json"
+    if !fs.existsSync(file) { return none }
+    let set = json.parse(fs.readFileSync(file,"utf8")); let icons = json.get(set,"icons")
+    if !json.has(icons,fa) { return none }
+    let glyph = json.get(icons,fa)
+    return Glyph(true,json.float(json.get(glyph,"w")),json.float(json.get(set,"upm")),json.string(json.get(glyph,"d")),json.has(glyph,"d2") ? json.string(json.get(glyph,"d2")) : "")
+}
+fn faName(mapping:json.Value, name:str):str {
+    let base = strings.endsWith(name,"-symbolic") ? strings.substring(name,0,strings.charLength(name) - 9) : name
+    return json.has(mapping,base) ? json.string(json.get(mapping,base)) : ""
+}
+fn number(value:f64):str { return (value as i64) as f64 == value ? "${value as i64}" : "${value}" }
+# SVG of `name` for pack/style/color ("#rrggbb"), or "" when the icon is unmapped or no glyph matches (the caller then
+# falls back to the GTK icon theme). pack+style, nearest other style of the pack, Classic in the same style, Classic solid.
+fn svg(root:str, mapping:json.Value, name:str, pack:str, style:str, color:str):str {
+    let fa = faName(mapping,name)
+    if strings.equal(fa,"") { return "" }
+    let attempts = Vec<Vec<str>>(Vec<str>(pack,style))
+    for other in nearest(style) { attempts.push(Vec<str>(pack,other)) }
+    attempts.push(Vec<str>("classic",style)); attempts.push(Vec<str>("classic","solid"))
+    for attempt in attempts {
+        let glyph = glyphOf(root,attempt[0],attempt[1],fa)
+        if !glyph.found { continue }
+        let side = glyph.width > glyph.upm ? glyph.width : glyph.upm; let offset = 0.0 - (side - glyph.width) / 2.0
+        let second = strings.equal(glyph.d2,"") ? "" : "<path d=\"" + glyph.d2 + "\" fill-opacity=\".4\"/>"
+        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"" + number(offset) + " 0 " + number(side) + " " + number(side) + "\"><g fill=\"" + color + "\">" + second + "<path d=\"" + glyph.d + "\"/></g></svg>"
+    }
+    return ""
+}
+fn lookup(map:json.Value, key:str):str { return json.has(map,key) ? json.string(json.get(map,key)) : "" }
+# Material icon name for a file or folder name (path's last part), as in material.ts.
+fn material(mapping:json.Value, name:str, directory:bool):str {
+    let lower = strings.toLowerCase(name)
+    if directory { let folder = lookup(json.get(mapping,"folders"),lower); return strings.equal(folder,"") ? "dev-os-material-folder" : folder }
+    let exact = lookup(json.get(mapping,"names"),lower)
+    if !strings.equal(exact,"") { return exact }
+    let parts = strings.split(lower,".")
+    for index in 1..(parts.len() as i64) {
+        let rest = Vec<str>(); for j in index..(parts.len() as i64) { rest.push(parts[j]) }
+        let key = strings.join(rest,".")
+        let found = lookup(json.get(mapping,"extensions"),key)
+        if !strings.equal(found,"") { return found }
+    }
+    return "dev-os-material-file"
+}

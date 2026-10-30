@@ -1,0 +1,149 @@
+use "std/fs"
+use "std/encoding"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.settings/model.dev" as model
+use "../src/apps/org.devos.settings/swap-logic.dev" as swaps
+use "./lib/react-devlang.dev" as t
+
+fn helper(log:str):str {
+    return "echo \"$@\" >> '" + log + "'\ncase \"$1\" in\n get) echo '{\"ok\":true,\"supported\":true,\"care\":false,\"full\":false,\"remaining\":0,\"limit\":80,\"quick\":true,\"reason\":\"\"}' ;;\n care) echo '{\"ok\":true,\"supported\":true,\"care\":true,\"full\":false,\"remaining\":0,\"limit\":80,\"quick\":true,\"reason\":\"\"}' ;;\n quick) printf '%s\n' '{\"ok\":false,\"error\":\"Denied\\tby\\npolicy\"}'; exit 1 ;;\n full) echo 'not json' ;;\nesac\n"
+}
+fn lines(text:str):Vec<str> {
+    let out = Vec<str>(); for line in strings.split(text,"\n") { if strings.len(line) > 0 { out.push(line) } }; return out
+}
+
+test.case("requests are limited to known pages, actions and arguments",fn() {
+    test.expect(strings.equal(model.validate("battery-care","get",Vec<str>()),""),"get must be allowed")
+    test.expect(strings.equal(model.validate("battery-care","care",Vec<str>("on")),""),"care on must be allowed")
+    test.expect(strings.equal(model.validate("fan-profile","set",Vec<str>("ac","whisper")),""),"fan set must be allowed")
+    test.expect(strings.equal(model.validate("connectivity","taskfirst",Vec<str>("games")),""),"taskfirst must be allowed")
+    test.expect(strings.equal(model.validate("touchpad-gestures","launch",Vec<str>("files")),""),"gesture launch must be allowed")
+    test.expect(strings.equal(model.validate("microphone","device",Vec<str>("alsa_input.pci-0")),""),"microphone device must be allowed")
+    test.expect(strings.equal(model.validate("keyboard","set",Vec<str>("sleep-both","120")),""),"keyboard timeout must be allowed")
+    test.expect(!strings.equal(model.validate("keyboard","set",Vec<str>("sleep-both","1;rm")),""),"Non-numeric timeout accepted")
+    test.expect(!strings.equal(model.validate("keyboard","set",Vec<str>("fn","turbo")),""),"Unknown Fn mode accepted")
+    test.expect(!strings.equal(model.validate("microphone","device",Vec<str>("--help")),""),"Option-looking device accepted")
+    test.expect(!strings.equal(model.validate("touchpad-gestures","launch",Vec<str>("rm")),""),"Unknown gesture target accepted")
+    test.expect(!strings.equal(model.validate("fan-profile","set",Vec<str>("ac","turbo")),""),"Unknown fan mode accepted")
+    test.expect(!strings.equal(model.validate("fan-profile","set",Vec<str>("--help","whisper")),""),"Option-looking source accepted")
+    test.expect(!strings.equal(model.validate("battery-care","care",Vec<str>("on","extra")),""),"Extra argument accepted")
+    test.expect(!strings.equal(model.validate("get; rm","get",Vec<str>()),""),"Unknown page accepted")
+    test.expect(!strings.equal(model.validate("connectivity","get",Vec<str>("x")),""),"Arguments to get accepted")
+})
+test.case("language requests, catalog frame and save flow",fn() {
+    test.expect(strings.equal(model.validate("language","save",Vec<str>("us,th","alt-shift")),""),"language save must be allowed")
+    test.expect(!strings.equal(model.validate("language","save",Vec<str>("us,th,gb,de,fr","alt-shift")),""),"Five languages accepted")
+    test.expect(!strings.equal(model.validate("language","save",Vec<str>("us;rm","alt-shift")),""),"Injected layout accepted")
+    test.expect(!strings.equal(model.validate("language","save",Vec<str>("us","win")),""),"Unknown shortcut accepted")
+    let frame = model.language(json.parse("{\"settings\":{\"layouts\":[\"us\",\"th\"],\"shortcut\":\"caps-lock\"},\"warning\":\"\",\"layouts\":[{\"id\":\"us\",\"name\":\"English, US\",\"sample\":\"Hi\"}],\"shortcuts\":[{\"id\":\"caps-lock\",\"name\":\"Caps Lock\"}]}"),"1")
+    t.equal(frame,"S	language		caps-lock	us,th	us=English; US=Hi	caps-lock=Caps Lock	1")
+    tool.scope("devos-settings-language-",fn(dir:str) {
+        tool.exec(Vec<str>("mkdir","-p",dir+"/bin"))
+        tool.copy(t.root()+"/tests/fixtures/settings-language-helper.dev",dir+"/bin/dev-os-language")
+        let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",dir+"/bin")
+        let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/apps/org.devos.settings/service.dev","--",dir),env,"{\"page\":\"language\",\"action\":\"get\",\"args\":[]}\n{\"page\":\"language\",\"action\":\"save\",\"args\":[\"us,th\",\"caps-lock\"]}\n",60000)
+        t.success(done)
+        let out = lines(t.out(done))
+        test.expect(out.len() == 2,"Two answers expected: "+t.out(done))
+        t.contains(out[0],"S	language		alt-shift	us")
+        t.contains(out[1],"	1")
+    })
+})
+test.case("display care requests and frame",fn() {
+    test.expect(strings.equal(model.validate("display-care","set",Vec<str>("temperature","-50")),""),"minimum temperature must be allowed")
+    test.expect(!strings.equal(model.validate("display-care","set",Vec<str>("temperature","51")),""),"Temperature above 50 accepted")
+    test.expect(!strings.equal(model.validate("display-care","set",Vec<str>("dimming","101")),""),"Dimming above 100 accepted")
+    test.expect(!strings.equal(model.validate("display-care","set",Vec<str>("eyeCare","0")),""),"Eye care 0 accepted")
+    test.expect(strings.equal(model.validate("display-care","set",Vec<str>("splendid","vivid")),""),"vivid must be allowed")
+    test.expect(!strings.equal(model.validate("display-care","set",Vec<str>("splendid","ereading")),""),"E-reading accepted")
+    test.expect(!strings.equal(model.validate("display-care","set",Vec<str>("gamut","srgb")),""),"Unknown key accepted")
+    test.expect(strings.equal(model.validate("display-care","reset",Vec<str>()),""),"reset must be allowed")
+    let frame = model.frame("display-care",json.parse("{\"settings\":{\"dimming\":80,\"splendid\":\"manual\",\"temperature\":-20,\"targetMode\":true},\"gamma\":{\"available\":true,\"reason\":\"\"},\"battery\":{\"present\":true,\"onBattery\":true},\"brightness\":{\"ok\":false,\"reason\":\"no backlight\"}}"))
+    t.equal(frame,"S	display-care	1	0	1	80	manual	-20	3	1	0	1		0				1	1	The brightness could not be restored: no backlight")
+})
+test.case("speaker requests and frames",fn() {
+    test.expect(strings.equal(model.validate("speaker","custom",Vec<str>("custom2","-3","0","10")),""),"custom levels must be allowed")
+    test.expect(!strings.equal(model.validate("speaker","custom",Vec<str>("custom2","11","0","0")),""),"Level above 10 dB accepted")
+    test.expect(!strings.equal(model.validate("speaker","custom",Vec<str>("custom9","0","0","0")),""),"Unknown slot accepted")
+    test.expect(!strings.equal(model.validate("speaker","custom",Vec<str>("custom1","1.5","0","0")),""),"Fractional level accepted")
+    test.expect(strings.equal(model.validate("speaker","mode",Vec<str>("movie")),""),"movie mode must be allowed")
+    test.expect(!strings.equal(model.validate("speaker","mode",Vec<str>("custom4")),""),"Unknown mode accepted")
+    let frame = model.frame("speaker",json.parse("{\"supported\":true,\"voice\":true,\"mode\":\"custom1\",\"smart\":true,\"effective\":\"voice\",\"filters\":{\"available\":true,\"reason\":\"\"},\"device\":\"a\",\"speakers\":[{\"name\":\"a\",\"title\":\"Built-in\"}],\"custom\":{\"custom1\":[-2.4,0.0,9.6]}}"))
+    t.equal(frame,"S	speaker	1		1	0	custom1	1	voice	1			a	a=Built-in	-2;0;10	0;0;0	0;0;0")
+})
+test.case("swap drafts follow the helper limits",fn() {
+    t.equal(swaps.formatSize(1610612736),"1.5 GB")
+    t.equal(swaps.formatSize(536870912),"512 MB")
+    test.expect(swaps.gigabytesToMiB(encoding.encode("6.5","utf8")) == 6656,"6.5 GB")
+    test.expect(swaps.gigabytesToMiB(encoding.encode("2,25","utf8")) == 2304,"2,25 GB")
+    test.expect(swaps.gigabytesToMiB(encoding.encode("1.234","utf8")) == -1,"Three decimals accepted")
+    test.expect(swaps.gigabytesToMiB(encoding.encode("abc","utf8")) == -1,"Letters accepted")
+    test.expect(swaps.gigabytesToMiB(encoding.encode("","utf8")) == -1,"Empty accepted")
+    t.equal(swaps.problem("zram",true,8000,256,16000,16000,100,0),"")
+    t.equal(swaps.problem("zram",true,8000,256,16000,16000,-1,100),"The size must be at least 256 MB.")
+    t.equal(swaps.problem("zram",true,8000,256,16000,16000,250,0),"The size can be at most twice the RAM (15.6 GB).")
+    t.equal(swaps.problem("file",false,8000,256,16000,16000,100,0),"no-file")
+    t.equal(swaps.problem("file",true,8000,256,16000,4000,100,0),"There is only room for 3.9 GB of swap on the disk (a reserve stays free).")
+    t.equal(swaps.problem("off",false,8000,256,16000,16000,-1,0),"")
+    test.expect(strings.equal(model.validate("swap","set",Vec<str>("type=zram","percent=100","algorithm=zstd","swappiness=100")),""),"swap apply must be allowed")
+    test.expect(!strings.equal(model.validate("swap","set",Vec<str>("type=zram;rm")),""),"Injected swap type accepted")
+    test.expect(!strings.equal(model.validate("swap","set",Vec<str>("percent=1x")),""),"Non-numeric percent accepted")
+    test.expect(!strings.equal(model.validate("swap","set",Vec<str>("foo=1")),""),"Unknown swap key accepted")
+})
+test.case("frames are tab separated and sanitize helper text",fn() {
+    t.equal(model.remainingText(30),"1 min")
+    t.equal(model.remainingText(3600),"1 h 0 min")
+    t.equal(model.remainingText(5400),"1 h 30 min")
+    let frame = model.frame("battery-care",json.parse("{\"supported\":true,\"care\":true,\"remaining\":7260,\"limit\":60,\"reason\":\"a\\tb\\nc\"}"))
+    t.equal(frame,"S\tbattery-care\t1\ta b c\t1\t0\t2 h 1 min\t60\t1")
+    let fan = model.frame("fan-profile",json.parse("{\"supported\":true,\"modes\":[\"performance\",\"standard\"],\"current\":\"standard\",\"source\":\"battery\",\"ac\":\"\",\"battery\":\"whisper\",\"rpm\":2400,\"sync\":false,\"syncAvailable\":true}"))
+    t.equal(fan,"S\tfan-profile\t1\t\t0\tstandard\tbattery\t\twhisper\t0\t1\t0\t2400\tperformance,standard")
+    let pad = model.frame("touchpad-gestures",json.parse("{\"supported\":true,\"locked\":true,\"enabled\":false,\"launch\":\"files\",\"gesturesAvailable\":true,\"backends\":{\"volume\":true,\"seek\":true},\"targets\":[{\"id\":\"files\",\"title\":\"Files\"},{\"id\":\"none\",\"title\":\"Nothing\"}]}"))
+    t.equal(pad,"S	touchpad-gestures	1		1	0	files	1	1	0	1	0	files=Files,none=Nothing")
+    let mic = model.frame("microphone",json.parse("{\"supported\":true,\"mode\":\"general\",\"noise\":{\"available\":true,\"reason\":\"\"},\"device\":\"a\",\"sources\":[{\"name\":\"a\",\"title\":\"Mic, one\"}]}"))
+    t.equal(mic,"S	microphone	1		general	1			a	a=Mic; one")
+    let missing = model.frame("connectivity",json.parse("[]"))
+    t.equal(missing,"S\tconnectivity\t0\t\toff\t0\t\t0\t\t0\t")
+})
+test.case("service runs helpers without a shell, refuses bad requests and caches polls",fn() {
+    tool.scope("devos-settings-service-",fn(dir:str) {
+        tool.write(dir+"/bin/dev-os-battery-care",helper(dir+"/calls.log"))
+        let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",dir+"/bin")
+        let input = "{\"page\":\"battery-care\",\"action\":\"get\",\"args\":[]}\n{\"page\":\"battery-care\",\"action\":\"get\",\"args\":[]}\n{\"page\":\"battery-care\",\"action\":\"care\",\"args\":[\"on\"]}\n{\"page\":\"battery-care\",\"action\":\"quick\",\"args\":[\"off\"]}\n{\"page\":\"battery-care\",\"action\":\"full\",\"args\":[\"on\"]}\n{\"page\":\"battery-care\",\"action\":\"care\",\"args\":[\"$(touch "+dir+"/pwned)\"]}\n{\"page\":\"../x\",\"action\":\"get\"}\nnot json\n[]\n"
+        let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/apps/org.devos.settings/service.dev","--",dir),env,input,60000)
+        t.success(done)
+        let out = lines(t.out(done))
+        test.expect(out.len() == 9,"One answer per request, got "+t.out(done))
+        t.contains(out[0],"S\tbattery-care\t1\t\t0\t0")
+        t.equal(out[1],out[0])
+        t.contains(out[2],"S\tbattery-care\t1\t\t1\t0")
+        t.equal(out[3],"E\tDenied by policy")
+        t.equal(out[4],"E\tThe battery-care helper did not answer.")
+        t.equal(out[5],"E\tUnsupported settings action")
+        t.equal(out[6],"E\tUnknown settings page")
+        t.equal(out[7],"E\tInvalid service request")
+        t.equal(out[8],"E\tExpected an object request")
+        let calls = lines(tool.read(dir+"/calls.log"))
+        test.expect(calls.len() == 4,"Cached poll or refused request reached the helper: "+tool.read(dir+"/calls.log"))
+        test.expect(!fs.existsSync(dir+"/pwned"),"Argument was run by a shell")
+    })
+})
+test.case("native Settings renders the helper frames, navigates and exits",fn() {
+    let root = t.root(); let binary = root + "/build/react-devlang/apps/settings"
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/src/apps/org.devos.settings/native-main.devx",binary),Map<str,str>(),"",180000)
+    tool.scope("devos-settings-ui-",fn(base:str) {
+        tool.write(base+"/bin/dev-os-battery-care",helper(base+"/battery.log"))
+        tool.write(base+"/bin/dev-os-fan-profile","echo '{\"ok\":true,\"supported\":true,\"modes\":[\"performance\",\"standard\",\"whisper\"],\"current\":\"standard\",\"source\":\"ac\",\"ac\":\"standard\",\"battery\":\"\",\"sync\":true,\"syncAvailable\":true,\"hotkey\":true,\"rpm\":1800}'\n")
+        let env = Map<str,str>(); env.set("DEV_OS_ROOT",root); env.set("DEVOS_SETTINGS_HELPERS",base+"/bin"); env.set("DEVOS_NATIVE_SMOKE","1"); env.set("XDG_RUNTIME_DIR",base)
+        env.set("NO_AT_BRIDGE","1"); env.set("GTK_USE_PORTAL","0"); env.set("GSETTINGS_BACKEND","memory"); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_NATIVE_ID","org.devos.App.settings.Test")
+        let done = tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",binary),env,"",60000)
+        t.success(done)
+        t.contains(t.out(done),"PASS native Settings hardware pages, helper service and navigation")
+        test.expect(fs.existsSync(base+"/battery.log"),"Battery helper was not used")
+    })
+})
+return t.finish()

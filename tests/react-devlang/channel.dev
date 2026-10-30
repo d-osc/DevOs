@@ -1,0 +1,30 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn rd_fail(message:str)
+fn check(ok:bool,message:str) { if !ok { unsafe { rd_fail(message) } } }
+fn App(context:*ui.Context):ui.Node {
+    let pipe = ui.useRef(context,0); let count = ui.useState(context,0); let phase = ui.useRef(context,0)
+    let value = ui.useText(context,ui.emptyText())
+    ui.useEffect(context,fn():fn():void {
+        let root = ""; unsafe { root = rc_env("DEV_OS_ROOT") }
+        return channel.connect(context,"d","${root}/tests/react-devlang/channel-worker.dev",root,fn(text:ui.Text) {
+            value.set(text); count.set(count.get()+1)
+        },fn(opened:i64) { pipe.set(opened); channel.send(opened,ui.text("poll0")) })
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        if count.value == 1 {
+            check(ui.equalText(value.value,ui.text("poll0:0")),"Unexpected initial response")
+            channel.command(pipe.get(),ui.text("command1")); channel.command(pipe.get(),ui.text("command2"))
+            channel.send(pipe.get(),ui.text("pollA")); channel.send(pipe.get(),ui.text("pollB")); phase.set(1)
+        } else if phase.get() == 1 && ui.equalText(value.value,ui.text("pollB:2")) { phase.set(2) }
+        else if phase.get() == 2 {
+            check(ui.equalText(value.value,ui.text("pollB:2")),"A one-shot command was repeated by the poll timer")
+            print("PASS native async channel coalesces polls, preserves commands and closes pending reads")
+            ui.close(context)
+        }
+        return ui.noop
+    },Vec<i64>(count.value))
+    return ui.TextLabel(value.value)
+}
+return ui.run("Channel lifecycle",300,120,App) ? 0 : 1

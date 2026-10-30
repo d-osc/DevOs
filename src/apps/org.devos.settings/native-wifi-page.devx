@@ -1,0 +1,138 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+use "./native-icons-page.devx" as helpers
+extern fn rc_env(name:str):str
+
+# Native Wi-Fi page. The worker (wifi-page.dev) scans, connects and disconnects through NetworkManager on Linux and through the host's
+# Windows PowerShell inside WSL (saved profiles only there); passwords go to the worker once and never come back.
+# Frame V: host wirelessEnabled message, then N records (ssid profile adapter interfaceId signal secure connected connectable security).
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():Vec<u8> { return ui.text(environment("DEVOS_WIFI_SMOKE")).bytes }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn signalIcon(signal:i64):str { return signal >= 75 ? "network-wireless-signal-excellent-symbolic" : signal >= 45 ? "network-wireless-signal-good-symbolic" : "network-wireless-signal-weak-symbolic" }
+fn signalLabel(signal:i64):str { return signal >= 75 ? "Excellent signal" : signal >= 45 ? "Good signal" : "Weak signal" }
+fn keyOf(n:Vec<ui.Text>):ui.Text { return join(Vec<ui.Text>(sp.cell(n,4),plain("/"),sp.cell(n,1),plain("/"),sp.cell(n,6))) }
+fn connectRequest(n:Vec<ui.Text>, password:ui.Text, native:bool):ui.Text {
+    let parts = Vec<ui.Text>(plain("{\"action\":\"connect\",\"interfaceId\":"),channel.quote(sp.cell(n,4)),plain(",\"profile\":"),channel.quote(sp.cell(n,2)))
+    if native {
+        parts.push(plain(",\"ssid\":")); parts.push(channel.quote(sp.cell(n,1))); parts.push(plain(",\"security\":")); parts.push(channel.quote(sp.cell(n,9)))
+        parts.push(plain(",\"secure\":" + (sp.flag(sp.cell(n,6)) ? "true" : "false") + ",\"password\":")); parts.push(channel.quote(password))
+    }
+    parts.push(plain("}")); return join(parts)
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"wifi-page.dev","{\"action\":\"scan\"}")
+    let query = ui.useText(context,ui.emptyText()); let joining = ui.useText(context,ui.emptyText()); let password = ui.useText(context,ui.emptyText()); let reveal = ui.useBool(context,false)
+    let step = ui.useRef(context,0); let acted = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        # A successful answer after Connect closes the form.
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { joining.set(ui.emptyText()); password.set(ui.emptyText()) } }
+        let mode = smoke()
+        if mode.len() > 0 && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 && mode[0] == 115 { step.set(2); acted.set(1); ui.click(context,"wifi-connect-0") }
+            else if step.get() == 0 && mode[0] == 106 { step.set(1); ui.click(context,"wifi-connect-1") }
+            else if step.get() == 2 { print("PASS native Wi-Fi page connected"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        let mode = smoke()
+        if mode.len() > 0 && mode[0] == 106 {
+            if step.get() == 1 && joining.value.bytes.len() > 0 { step.set(3); ui.change(context,"wifi-password","correct horse battery") }
+            else if step.get() == 3 && password.value.bytes.len() >= 8 { step.set(2); acted.set(1); ui.click(context,"wifi-join-confirm") }
+        }
+        return ui.noop
+    },Vec<i64>(joining.revision,password.revision))
+    if l.frame.value.bytes.len() == 0 && l.failure.value.bytes.len() == 0 { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let native = k.isText(field(f,1),"Linux"); let radio = field(f,2)
+    let radioOff = native && k.isText(radio,"0")
+    let connected = Vec<ui.Text>(); let others = Vec<Vec<ui.Text>>(); let have = false
+    for record in sp.records(f) {
+        if !sp.kindOf(record,78) { continue }
+        let n = sp.cells(record)
+        if sp.flag(sp.cell(n,7)) && !have { connected = Vec<ui.Text>(); for item in n { connected.push(item) }; have = true } else { others.push(n) }
+    }
+    let nodes = Vec<ui.Node>()
+    let status = have ? join(Vec<ui.Text>(plain("Connected to "),sp.cell(connected,1))) : radioOff ? plain("Wi-Fi is turned off") : plain("Find a network. Make yourself at home.")
+    let refresh = ui.named("wifi-refresh"); refresh.sensitive = !busy
+    nodes.push(ext.row(14,Vec<ui.Node>(ext.expand(ext.column(6,Vec<ui.Node>(k.note("CONNECTIONS","settings-eyebrow"),k.note("Wi-Fi","heading"),ext.named(k.caption(status,"settings-description"),"wifi-status")))),
+        ui.Button(refresh,busy ? "Scanning…" : "Refresh",fn() { sp.send(l,plain("{\"action\":\"scan\"}")) }))))
+    if native {
+        let toggle = ui.named("wifi-radio"); toggle.sensitive = !busy && has(radio); toggle.valign = 3
+        nodes.push(ext.row(14,Vec<ui.Node>(ui.Icon(ui.props(),"network-wireless-symbolic"),ext.expand(ext.column(4,Vec<ui.Node>(k.note("Wi-Fi","section-heading"),k.note(k.isText(radio,"0") ? "Turn on to discover nearby networks." : "Discover and connect to wireless networks.","settings-description")))),
+            ui.Switch(toggle,!k.isText(radio,"0"),fn(next:bool) { if has(radio) && next != !k.isText(radio,"0") { sp.send(l,plain(next ? "{\"action\":\"radio\",\"enabled\":true}" : "{\"action\":\"radio\",\"enabled\":false}")) } }))))
+    }
+    if !radioOff {
+        let card = Vec<ui.Node>(ext.row(14,Vec<ui.Node>(ui.Icon(ui.props(),have ? signalIcon(number(connected)) : "network-wireless-offline-symbolic"),
+            ext.expand(ext.column(6,Vec<ui.Node>(k.note(have ? "CURRENT NETWORK" : "YOUR CONNECTION","wifi-overline"),k.caption(have ? sp.cell(connected,1) : plain("Not connected to Wi-Fi"),"wifi-network-title")))),
+            k.note(have ? "●  Connected" : "Offline","wifi-status-badge"))))
+        if have {
+            let disconnect = ui.named("wifi-disconnect"); disconnect.sensitive = !busy
+            let details = Vec<ui.Node>(k.caption(plain(signalLabel(number(connected)) + " · " + "${number(connected)}%"),"settings-description"),
+                ext.expand(k.note(sp.flag(sp.cell(connected,6)) ? "Secured connection" : "Open network","settings-description")))
+            if native { details.push(ui.Button(disconnect,"Disconnect",fn() { sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"disconnect\",\"interfaceId\":"),channel.quote(sp.cell(connected,4)),plain("}")))) })) }
+            card.push(ext.row(20,details))
+        }
+        let box = ui.props(); box.spacing = 16; box.className = ui.text(have ? "wifi-connection wifi-connection-active" : "wifi-connection")
+        nodes.push(ui.Box(box,card))
+    } else {
+        nodes.push(ext.column(10,Vec<ui.Node>(ui.Icon(ui.props(),"network-wireless-offline-symbolic"),ext.named(k.note("Wi-Fi is off","section-heading"),"wifi-off"),k.note("Turn Wi-Fi on with the switch above to see nearby networks.","settings-description"))))
+    }
+    if has(l.failure.value) { nodes.push(ext.named(k.caption(l.failure.value,"error"),"wifi-error")) }
+    if has(field(f,3)) { nodes.push(ext.named(k.caption(field(f,3),"settings-description"),"wifi-message")) }
+    # Password form for a new secured network (Linux).
+    for n in others {
+        if !ui.equalText(keyOf(n),joining.value) { continue }
+        let wpa3 = k.isText(sp.cell(n,9),"sae"); let needed = wpa3 ? 1 : 8
+        let entry = ui.named("wifi-password"); entry.expand = true; entry.sensitive = !busy; entry.placeholder = plain("Wi-Fi password")
+        let cancel = ui.named("wifi-join-cancel"); cancel.sensitive = !busy
+        let confirm = ui.named("wifi-join-confirm"); confirm.className = ui.text("settings-primary"); confirm.sensitive = !busy && (password.value.bytes.len() as i64) >= needed
+        let eye = ui.named("wifi-password-reveal")
+        let input = reveal.value ? ui.Entry(entry,password.value,fn(value:ui.Text) { password.set(value) }) : ui.PasswordEntry(entry,password.value,fn(value:ui.Text) { password.set(value) })
+        nodes.push(ext.column(12,Vec<ui.Node>(ext.named(k.caption(join(Vec<ui.Text>(plain("Connect to "),sp.cell(n,1))),"section-heading"),"wifi-join-form"),
+            k.note(wpa3 ? "This network uses WPA3. Enter its password." : "Enter the network password (at least 8 characters).","settings-description"),
+            ext.row(8,Vec<ui.Node>(input,ui.Button(eye,reveal.value ? "Hide" : "Show",fn() { reveal.set(!reveal.value) }))),
+            ext.row(10,Vec<ui.Node>(ui.Button(cancel,"Cancel",fn() { joining.set(ui.emptyText()); password.set(ui.emptyText()); reveal.set(false) }),
+                ui.Button(confirm,busy ? "Connecting…" : "Connect",fn() { let secret = password.get(); password.set(ui.emptyText()); acted.set(1); sp.send(l,connectRequest(n,secret,native)) }))))))
+    }
+    if !radioOff {
+        let list = Vec<ui.Node>(); let shown = 0
+        for n in others {
+            if has(query.value) && !helpers.foldContains(sp.cell(n,1),query.value) { continue }
+            let connect = ui.named("wifi-connect-${shown}"); shown = shown + 1
+            connect.sensitive = !busy && sp.flag(sp.cell(n,8)); connect.className = ui.text(has(sp.cell(n,2)) ? "wifi-connect-button" : "wifi-setup-button")
+            let detail = join(Vec<ui.Text>(plain(signalWord(number(n)) + " · ${number(n)}% · " + (sp.flag(sp.cell(n,6)) ? "Secured" : "Open")),has(sp.cell(n,2)) ? plain(" · Saved") : ui.emptyText()))
+            list.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),signalIcon(number(n))),ext.expand(ext.column(5,Vec<ui.Node>(k.caption(sp.cell(n,1),"wifi-row-name"),k.caption(detail,"wifi-row-detail")))),
+                ui.Button(connect,has(sp.cell(n,2)) || native ? "Connect" : "Set up",fn() {
+                    if native && !has(sp.cell(n,2)) && sp.flag(sp.cell(n,6)) && !k.isText(sp.cell(n,9),"owe") { joining.set(keyOf(n)); password.set(ui.emptyText()); reveal.set(false) }
+                    else if !native && !has(sp.cell(n,2)) { sp.send(l,plain("{\"action\":\"settings\"}")) }
+                    else { joining.set(ui.emptyText()); acted.set(1); sp.send(l,connectRequest(n,ui.emptyText(),native)) }
+                }))))
+        }
+        if shown == 0 {
+            list.push(ext.column(10,Vec<ui.Node>(ext.named(k.note(busy ? "Looking for networks…" : has(query.value) ? "No matching networks" : "No nearby networks found","section-heading"),"wifi-empty"),
+                k.note(busy ? "This only takes a moment." : has(query.value) ? "Try another network name." : native ? "Move closer to a router, then refresh." : "Check Wi-Fi in Windows, then refresh.","settings-description"))))
+        }
+        let search = ui.named("wifi-search"); search.placeholder = plain("Find a network…")
+        let all = Vec<ui.Node>(ext.row(10,Vec<ui.Node>(ext.expand(k.note("Nearby networks","section-heading")),k.note("${others.len()} available","wifi-count"))),
+            ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) }))
+        let box = ui.props(); box.spacing = 8; box.className = ui.text("wifi-network-list")
+        all.push(ui.Box(box,list)); nodes.push(ext.column(12,all))
+    }
+    if !native {
+        let manage = ui.named("wifi-windows-settings"); manage.sensitive = !busy
+        nodes.push(ext.column(10,Vec<ui.Node>(k.note("More connection options","wifi-manage-title"),k.note("Add a new password, manage saved networks, or turn Wi-Fi on and off in Windows.","settings-description"),
+            ui.Button(manage,"Open Windows Wi-Fi settings",fn() { sp.send(l,plain("{\"action\":\"settings\"}")) }))))
+    }
+    return ext.column(20,nodes)
+}
+fn signalWord(signal:i64):str { return signal >= 75 ? "Excellent" : signal >= 45 ? "Good" : "Weak" }
+fn number(n:Vec<ui.Text>):i64 { return sp.number(sp.cell(n,5)) }
+fn page():ui.Node { return ui.component(9390,ui.keyed(950),render) }

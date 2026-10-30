@@ -1,0 +1,156 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../lib/hw.dev" as hw
+use "../src/apps/org.devos.updates/manifest.dev" as m
+use "../src/apps/org.devos.updates/package.dev" as pkg
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn sh(script:str) { tool.checked(Vec<str>("sh","-c",script),Map<str,str>(),"",120000) }
+fn put(file:str, content:str, executable:bool) {
+    sh("mkdir -p \"$(dirname '" + file + "')\"")
+    fs.writeFileSync(file,content)
+    if executable { tool.exec(Vec<str>("chmod","755",file)) }
+}
+fn names():Vec<str> { return Vec<str>("dist/main.js","dist/supervisor.js","dist/react-gtk.js","bin/dev-os-session","bin/dev-os-shell","bin/dev-os-start","native/dev-os-window-tracker","release.json","data/same.txt") }
+fn isExecutable(name:str):bool { return strings.startsWith(name,"bin/") || strings.startsWith(name,"native/") }
+fn contentOf(version:str, name:str):str { return strings.equal(name,"data/same.txt") ? "same\n" : strings.equal(name,"release.json") ? "{\"v\":\"" + version + "\"}" : "// " + version + " " + name + "\n" }
+# A release tree whose manifest.json is built from the real file contents; `extra` adds a file, `without` drops one.
+fn tree(directory:str, version:str, extra:str, without:str) {
+    let files = json.array()
+    let all = names(); if !strings.equal(extra,"") { all.push(extra) }
+    for name in all {
+        if strings.equal(name,without) { continue }
+        put(directory + "/" + name,contentOf(version,name),isExecutable(name))
+        files = json.push(files,{path:name,sha256:pkg.sha256(directory + "/" + name),size:strings.charLength(contentOf(version,name)),mode:isExecutable(name) ? "755" : "644"})
+    }
+    put(directory + "/manifest.json",json.stringify({format:1,version:version,platform:"linux-arm64",minCompatible:"0.0.0",postInstall:json.parse("[\"restart-shell\"]"),rollback:{strategy:"keep-previous"},files:files}),false)
+}
+fn rawManifest():json.Value {
+    return json.parse("{\"format\":1,\"version\":\"0.3.0\",\"platform\":\"linux-x64\",\"minCompatible\":\"0.0.0\",\"postInstall\":[\"restart-shell\"],\"rollback\":{\"strategy\":\"keep-previous\"},\"files\":[{\"path\":\"bin/a\",\"sha256\":\"" + strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","a") + "\",\"size\":3,\"mode\":\"755\"}]}")
+}
+
+test.case("manifests reject unsafe or inconsistent content",fn() {
+    let ok = m.parseManifest(rawManifest(),"","")
+    test.expect(strings.equal(ok.error,"") && ok.files.len() == 1 && strings.equal(ok.postInstall[0],"restart-shell") && strings.equal(ok.minCompatible,"0.0.0"),"Valid manifest refused")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"postInstall",json.parse("[\"rm -rf /\"]")),"","").error,""),"Unknown post-install action accepted")
+    for path in Vec<str>("../escape","/etc/passwd","a//b","a/./b","a/..","dir/") {
+        let entry = json.at(json.get(rawManifest(),"files"),0)
+        test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"files",json.parse("[" + json.stringify(json.set(entry,"path",path)) + "]")),"","").error,""),"Accepted path " + path)
+    }
+    let entry = json.at(json.get(rawManifest(),"files"),0)
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"files",json.parse("[" + json.stringify(entry) + "," + json.stringify(entry) + "]")),"","").error,""),"Duplicate accepted")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"files",json.parse("[" + json.stringify(json.set(entry,"sha256","xyz")) + "]")),"","").error,""),"Bad checksum accepted")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"files",json.parse("[" + json.stringify(json.set(entry,"mode","777")) + "]")),"","").error,""),"Bad mode accepted")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"files",json.parse("[" + json.stringify(json.set(entry,"size",-1)) + "]")),"","").error,""),"Negative size accepted")
+    let a = json.set(entry,"path","a"); let ab = json.set(entry,"path","a/b")
+    test.expect(strings.contains(m.parseManifest(json.set(rawManifest(),"files",json.parse("[" + json.stringify(a) + "," + json.stringify(ab) + "]")),"","").error,"share a path"),"File/directory clash accepted")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"format",2),"","").error,""),"Unsupported format accepted")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"rollback",json.parse("{\"strategy\":\"delete\"}")),"","").error,""),"Unknown rollback accepted")
+    test.expect(strings.contains(m.parseManifest(rawManifest(),"9.9.9","").error,"does not match") && strings.contains(m.parseManifest(rawManifest(),"","linux-arm64").error,"does not match"),"Expected version/platform not enforced")
+    test.expect(!strings.equal(m.parseManifest(json.set(rawManifest(),"version","v1.2.3"),"","").error,""),"Prefixed version accepted")
+})
+test.case("SHA256SUMS, asset names and release extras",fn() {
+    let sha = strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","a")
+    test.expect(m.parseSums(sha + "  dev-os-linux-x64.tar.gz\n").names.len() == 1 && strings.equal(m.parseSums(sha + " *dev-os-linux-x64.tar.gz\n").error,""),"SHA256SUMS refused")
+    test.expect(strings.contains(m.parseSums(sha + "  ../x\n").error,"invalid line") && strings.contains(m.parseSums(sha + "  a\n" + sha + "  a\n").error,"twice"),"Bad SHA256SUMS accepted")
+    test.expect(strings.equal(m.patchAssetName("0.3.0","0.4.0","linux-x64"),"dev-os-patch-0.3.0-to-0.4.0-linux-x64.tar.gz"),"Patch asset name wrong")
+    let asset = fn(name:str, size:i64):json.Value { return {name:name,state:"uploaded",size:size,digest:"sha256:" + sha,browser_download_url:"https://github.com/o/r/releases/download/v0.4.0/" + name} }
+    let release = {tag_name:"v0.4.0",assets:json.parse("[" + json.stringify(asset("SHA256SUMS",100)) + "," + json.stringify(asset("SHA256SUMS.sig",64)) + "," + json.stringify(asset("dev-os-patch-0.3.0-to-0.4.0-linux-x64.tar.gz",5000)) + "]")}
+    let extras = m.releaseExtras(release,"o/r","linux-x64","0.3.0")
+    test.expect(extras.sums.found && extras.signature.found && extras.patch.found && strings.equal(extras.patchFrom,"0.3.0") && extras.patch.size == 5000 && strings.equal(extras.patch.sha256,sha) && !extras.system.found,"Release extras wrong")
+    test.expect(!m.releaseExtras(release,"o/r","linux-x64","0.2.0").patch.found && !m.releaseExtras(release,"o/r","linux-x64","").patch.found,"A patch for another base was offered")
+    test.expect(!m.releaseExtras(release,"other/repo","linux-x64","0.3.0").sums.found,"Assets of another repository accepted")
+    test.expect(!m.releaseExtras({tag_name:"v0.4.0",assets:json.array()},"o/r","linux-x64","0.3.0").patch.found,"No patch asset, no patch")
+})
+test.case("archive listings are checked before anything is unpacked",fn() {
+    let required = Vec<str>("dev-os/","dev-os/release.json","dev-os/dist/main.js","dev-os/dist/supervisor.js","dev-os/dist/react-gtk.js","dev-os/bin/dev-os-session","dev-os/bin/dev-os-shell","dev-os/bin/dev-os-start","dev-os/native/dev-os-window-tracker")
+    let namesText = strings.join(required,"\n"); let rows = Vec<str>(); for name in required { rows.push((strings.endsWith(name,"/") ? "drwxr-xr-x" : "-rw-r--r--") + " 0/0 12 2026-01-01 00:00 " + name) }
+    let details = strings.join(rows,"\n")
+    test.expect(strings.equal(m.validateArchive(namesText,details),""),"Valid archive refused")
+    test.expect(!strings.equal(m.validateArchive(strings.replaceAll(namesText,"dev-os/release.json","dev-os/../outside"),details),""),"Path traversal accepted")
+    test.expect(!strings.equal(m.validateArchive(strings.replaceAll(namesText,"dev-os/release.json","other/release.json"),details),""),"Foreign root accepted")
+    test.expect(!strings.equal(m.validateArchive(namesText,strings.replaceAll(details,"-rw-r--r--","lrwxrwxrwx")),""),"Symlink accepted")
+    test.expect(strings.contains(m.validateArchive(strings.replaceAll(namesText,"dev-os/dist/main.js","dev-os/dist/other.js"),details),"missing dev-os/dist/main.js"),"Missing required file accepted")
+    test.expect(!strings.equal(m.validateArchive(namesText,strings.replaceAll(details," 12 "," 2000000000 ")),""),"Oversized expansion accepted")
+    test.expect(!strings.equal(m.validateArchive(namesText,details + "\n-rw-r--r-- 0/0 1 x y"),""),"Mismatched listing accepted")
+    test.expect(strings.equal(m.validatePatchArchive("dev-os-patch/\ndev-os-patch/patch.json\ndev-os-patch/manifest.json\ndev-os-patch/tree/a","drwxr-xr-x 0/0 0 d\n-rw-r--r-- 0/0 1 p\n-rw-r--r-- 0/0 1 m\n-rw-r--r-- 0/0 1 a"),""),"Valid patch listing refused")
+    test.expect(!strings.equal(m.validatePatchArchive("dev-os-patch/patch.json","-rw-r--r-- 0/0 1 p"),"") && !strings.equal(m.validatePatchArchive("dev-os-patch/patch.json\ndev-os-patch/manifest.json\ndev-os-patch/../x","-rw-r--r-- 0/0 1 p\n-rw-r--r-- 0/0 1 m\n-rw-r--r-- 0/0 1 x"),""),"Bad patch listing accepted")
+})
+test.case("verifyTree accepts exactly the manifest and nothing else",fn() {
+    let base = temporary()
+    tree(base + "/ok","0.3.0","","")
+    let good = pkg.readManifest(base + "/ok")
+    test.expect(strings.equal(good.error,"") && strings.equal(good.version,"0.3.0") && strings.equal(pkg.verifyTree(base + "/ok",good.files),""),"A correct tree was refused")
+    test.expect(strings.equal(pkg.readManifest(base + "/nothing").version,""),"A missing manifest must report no version")
+    sh("cp -a '" + base + "/ok' '" + base + "/changed'"); fs.writeFileSync(base + "/changed/dist/main.js","tampered\n")
+    test.expect(strings.contains(pkg.verifyTree(base + "/changed",good.files),"does not match"),"A modified file passed")
+    sh("cp -a '" + base + "/ok' '" + base + "/extra'"); put(base + "/extra/bin/evil","x",true)
+    test.expect(strings.contains(pkg.verifyTree(base + "/extra",good.files),"Unexpected file bin/evil"),"An extra file passed")
+    sh("cp -a '" + base + "/ok' '" + base + "/missing'"); tool.exec(Vec<str>("rm","-f",base + "/missing/data/same.txt"))
+    test.expect(strings.contains(pkg.verifyTree(base + "/missing",good.files),"missing files"),"A missing file passed")
+    sh("cp -a '" + base + "/ok' '" + base + "/mode'"); tool.exec(Vec<str>("chmod","644",base + "/mode/bin/dev-os-shell"))
+    test.expect(strings.contains(pkg.verifyTree(base + "/mode",good.files),"Wrong permissions on bin/dev-os-shell"),"Lost executable bit passed")
+    sh("cp -a '" + base + "/ok' '" + base + "/link'"); tool.exec(Vec<str>("ln","-s","/etc/passwd",base + "/link/data/link"))
+    test.expect(strings.contains(pkg.verifyTree(base + "/link",good.files),"Unexpected file data/link"),"A symlink passed")
+    test.expect(pkg.freeBytes(base) > 0 && pkg.treeBytes(base + "/ok") > 0,"Disk space helpers wrong")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+test.case("release signatures are Ed25519 checks against keys shipped with this version",fn() {
+    let base = temporary()
+    sh("cd '" + base + "' && openssl genpkey -algorithm ed25519 -out priv.pem && openssl pkey -in priv.pem -pubout -out keys.pub && mkdir keys && mv keys.pub keys/release.pub && printf 'abc  file\\n' > SHA256SUMS && openssl pkeyutl -sign -inkey priv.pem -rawin -in SHA256SUMS -out SHA256SUMS.sig && printf 'abd  file\\n' > OTHER")
+    let keys = pkg.trustedKeys(base + "/keys")
+    test.expect(keys.len() == 1 && pkg.trustedKeys(base + "/none").len() == 0,"Keys are read from the shipped directory")
+    test.expect(strings.equal(pkg.checkSignature(base + "/SHA256SUMS",base + "/SHA256SUMS.sig",keys).trust,"verified"),"A valid signature was refused")
+    test.expect(strings.equal(pkg.checkSignature(base + "/SHA256SUMS","",Vec<str>()).trust,"unsigned"),"Without a key the release is hash-only")
+    test.expect(strings.contains(pkg.checkSignature(base + "/SHA256SUMS","",keys).error,"only installs signed"),"A missing signature passed with a key installed")
+    test.expect(strings.contains(pkg.checkSignature(base + "/OTHER",base + "/SHA256SUMS.sig",keys).error,"signature is invalid"),"A signature over other content passed")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+# Builds the patch from release 0.3.0 to 0.4.0 the way make-patch does: the changed files plus the target manifest.
+fn makePatch(base:str, from:str, to:str, output:str, tamper:str) {
+    let a = pkg.readManifest(from); let b = pkg.readManifest(to); let d = m.diff(a,b)
+    let root = base + "/dev-os-patch"
+    sh("mkdir -p '" + root + "/tree'")
+    for item in d.add { sh("cd '" + to + "' && cp --parents -a '" + item.path + "' '" + root + "/tree/'") }
+    for item in d.replace { sh("cd '" + to + "' && cp --parents -a '" + item.path + "' '" + root + "/tree/'") }
+    let add = json.array(); for item in d.add { add = json.push(add,{path:item.path,sha256:item.sha256,size:item.size,mode:item.mode}) }
+    let replace = json.array(); for item in d.replace { replace = json.push(replace,{path:item.path,sha256:item.sha256,size:item.size,mode:item.mode}) }
+    let remove = json.array(); for path in d.remove { remove = json.push(remove,path) }
+    sh("cp '" + to + "/manifest.json' '" + root + "/manifest.json'")
+    let meta = {format:1,kind:"patch",from:a.version,to:b.version,platform:"linux-arm64",baseManifestSha256:pkg.sha256(from + "/manifest.json"),targetManifestSha256:pkg.sha256(to + "/manifest.json"),add:add,replace:replace,remove:remove}
+    if strings.equal(tamper,"base") { meta = json.set(meta,"baseManifestSha256",strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","b")) }
+    if strings.equal(tamper,"smuggle") { put(root + "/tree/bin/evil","x",true); meta = json.set(meta,"add",json.push(add,{path:"bin/evil",sha256:pkg.sha256(root + "/tree/bin/evil"),size:1,mode:"755"})) }
+    if strings.equal(tamper,"drop") { meta = json.set(meta,"remove",json.array()) }
+    fs.writeFileSync(root + "/patch.json",json.stringify(meta))
+    sh("tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf '" + output + "' -C '" + base + "' dev-os-patch && rm -rf '" + root + "'")
+}
+test.case("a patch yields exactly the full package, leaves the base alone and refuses tampering",fn() {
+    let base = temporary()
+    tree(base + "/v1","0.3.0","","")
+    sh("cp -a '" + base + "/v1' '" + base + "/v1-copy'")
+    tree(base + "/v2","0.4.0","data/new.txt","data/same.txt")
+    sh("mkdir -p '" + base + "/p1' '" + base + "/p2' '" + base + "/p3' '" + base + "/p4'")
+    makePatch(base + "/p1",base + "/v1",base + "/v2",base + "/good.tar.gz","")
+    makePatch(base + "/p2",base + "/v1",base + "/v2",base + "/basemismatch.tar.gz","base")
+    makePatch(base + "/p3",base + "/v1",base + "/v2",base + "/smuggle.tar.gz","smuggle")
+    makePatch(base + "/p4",base + "/v1",base + "/v2",base + "/drop.tar.gz","drop")
+    let before = tool.exec(Vec<str>("sh","-c","cd '" + base + "/v1' && find . -type f | sort | xargs sha256sum"))
+    test.expect(strings.equal(pkg.applyPatch(base + "/good.tar.gz",base + "/v1",base + "/applied"),""),"A valid patch was refused")
+    let applied = pkg.readManifest(base + "/applied"); let full = pkg.readManifest(base + "/v2")
+    test.expect(strings.equal(applied.version,"0.4.0") && strings.equal(pkg.verifyTree(base + "/applied",full.files),""),"The patched tree is not the target release")
+    test.expect(strings.equal(tool.exec(Vec<str>("diff","-r",base + "/applied",base + "/v2")),""),"Patched tree differs from the full package")
+    test.expect(strings.equal(tool.exec(Vec<str>("sh","-c","cd '" + base + "/v1' && find . -type f | sort | xargs sha256sum")),before),"The installed base was modified")
+    test.expect(!fs.existsSync(base + "/applied.patch"),"Staging was left behind")
+    test.expect(strings.contains(pkg.applyPatch(base + "/basemismatch.tar.gz",base + "/v1",base + "/a2"),"differ from the version this patch was made for") && !fs.existsSync(base + "/a2"),"A patch for other files was applied")
+    test.expect(strings.contains(pkg.applyPatch(base + "/smuggle.tar.gz",base + "/v1",base + "/a3"),"does not match its target manifest") && !fs.existsSync(base + "/a3"),"A patch smuggling a file was applied")
+    test.expect(strings.contains(pkg.applyPatch(base + "/drop.tar.gz",base + "/v1",base + "/a4"),"does not match its target manifest") && !fs.existsSync(base + "/a4"),"A patch that keeps removed files was applied")
+    tool.exec(Vec<str>("rm","-f",base + "/v2/manifest.json"))
+    test.expect(strings.contains(pkg.applyPatch(base + "/good.tar.gz",base + "/v2",base + "/a5"),"no manifest") && !fs.existsSync(base + "/a5"),"A patch was applied to a tree without a manifest")
+    test.expect(strings.contains(pkg.applyPatch(base + "/missing.tar.gz",base + "/v1",base + "/a6"),"update archive") && !fs.existsSync(base + "/a6"),"A missing archive was not reported")
+    tool.exec(Vec<str>("rm","-rf",base))
+})
+return t.finish()

@@ -1,0 +1,54 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.background/native-view.devx" as view
+use "../../src/system/org.devos.background/scene.dev" as s
+extern fn bg_picture_live_count():i32
+extern fn bg_picture_load_count():i32
+extern fn g_main_context_iteration(context:*void,block:i32):i32
+extern fn g_usleep(microseconds:u64)
+extern fn rd_fail(message:str)
+extern fn rd_widget_live_count():i64
+extern fn bg_flush_stdout()
+fn check(ok:bool,message:str) {if !ok {unsafe {rd_fail(message)}}}
+fn make(path:str,width:i32,height:i32) {unsafe {
+    let surface=s.cairo_image_surface_create(0,width,height);let cr=s.cairo_create(surface);s.rgb(cr,s.Color(17.0/255.0,34.0/255.0,51.0/255.0));s.cairo_paint(cr);check(s.cairo_surface_write_to_png(surface,path)==0,"Cannot write image fixture");s.cairo_destroy(cr);s.cairo_surface_destroy(surface)
+}}
+fn load(photo:*void,value:ui.Text) {unsafe {let text=ui.nativeText(value);view.bg_picture_load(photo,text,value.bytes.len() as i64);ui.rd_buffer_free(text as *void)}}
+fn pixel(frame:*view.Frame,corner:bool):u32 {unsafe {
+    if (*frame).surface==0 {return 0};let surface=(*frame).surface as *void;s.cairo_surface_flush(surface);let data=s.cairo_image_surface_get_data(surface) as *u32;let stride=(s.cairo_image_surface_get_stride(surface)/4) as i64
+    let x=corner ? 2 : ((*frame).width as i64)*((*frame).scale as i64)/2;let y=corner ? 2 : ((*frame).height as i64)*((*frame).scale as i64)/2
+    return data[y*stride+x]
+}}
+fn main():i32 {unsafe {
+    let root=view.rc_env("DEV_OS_ROOT");let a="${root}/build/react-devlang/background/à¸ à¸²à¸ž large.png";let b="${root}/build/react-devlang/background/à¸ à¸²à¸ž small.png"
+    make(a,6000,64);make(b,64,32)
+    let cache=s.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new();let stage=0;let step=&stage
+    let ok=ui.run("Native picture test",800,640,fn(context:*ui.Context):ui.Node {
+        let content=view.App(context,painter,image,photo,false)
+        let attempts=ui.useRef(context,0)
+        ui.useEffect(context,fn():fn():void {unsafe {
+            let callback=callback_context(fn() {unsafe {
+                attempts.set(attempts.get()+1)
+                if attempts.get()%40==0 {print("Picture stage ${(*step)} image ${view.bg_picture_width(photo)}x${view.bg_picture_height(photo)} fit ${(*image).fit} pixel ${pixel(image,false)} corner ${pixel(image,true)}");bg_flush_stdout()}
+                check(attempts.get()<320,"Native picture flow stalled")
+                if (*image).surface==0 {return}
+                let current=(*step)
+                if current==0 {(*step)=1;check(ui.select(context,"wallpaper-mode",2),"Picture mode missing")}
+                if current==1 && ui.find(context,"wallpaper-path")!=null {(*step)=2;check(ui.change(context,"wallpaper-path",b),"Path entry missing")}
+                if current==2 && view.bg_picture_width(photo)==64 && pixel(image,false)==0xff112233 {(*step)=3;check(ui.select(context,"wallpaper-fit",1),"Contain missing")}
+                if current==3 && (*image).fit==1 && pixel(image,true)==0xff202020 {(*step)=4;check(ui.select(context,"wallpaper-fit",2),"Stretch missing")}
+                if current==4 && (*image).fit==2 && pixel(image,true)!=0xff202020 && pixel(image,false)==0xff112233 {(*step)=5;load(photo,ui.text(a))}
+                if current==5 && view.bg_picture_width(photo)==4096 {check(view.bg_picture_height(photo)<64,"Decode did not preserve aspect");(*step)=6;load(photo,ui.text(a));load(photo,ui.text(b))}
+                if current==6 && view.bg_picture_width(photo)==64 && bg_picture_load_count()==0 && ui.readText(context,"wallpaper-image-status").bytes.len()==0 {(*step)=7;load(photo,ui.text("relative.png"))}
+                if current==7 && view.bg_picture_width(photo)==0 && ui.equalText(ui.readText(context,"wallpaper-image-status"),ui.text("Choose an absolute local picture path.")) {(*step)=8;load(photo,ui.text("${root}/build/react-devlang/background/missing-image.png"))}
+                if current==8 && bg_picture_load_count()==0 && ui.readText(context,"wallpaper-image-status").bytes.len()>0 {(*step)=9;check(ui.click(context,"wallpaper-choose-picture"),"Native chooser missing");load(photo,ui.text(a));ui.close(context)}
+            }})
+            let timer=view.bg_timer(25,callback.call,callback.data);return fn() {unsafe {view.bg_untimer(timer,callback.data)}}
+        }},Vec<i64>())
+        return content
+    })
+    if frame.surface!=0 {s.cairo_surface_destroy(frame.surface as *void)};s.freeCache(&cache);view.bg_picture_free(photo)
+    for i in 0..2000 {if bg_picture_load_count()==0 {break};g_main_context_iteration(null,0);g_usleep(1000)}
+    check(ok && stage==9,"Picture UI flow incomplete");check(bg_picture_live_count()==0 && bg_picture_load_count()==0,"Canceled image request leaked");check(rd_widget_live_count()==0,"Picture widgets leaked")
+    print("PASS native Unicode picture, fit, bounded decode, stale request rejection and close cancellation");return 0
+}}
+return main()

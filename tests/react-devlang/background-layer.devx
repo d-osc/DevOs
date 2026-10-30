@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.background/native-view.devx" as view
+use "../../src/system/org.devos.background/scene.dev" as scene
+extern fn bg_monitor_index(root:*void):i32
+extern fn rd_fail(message:str)
+extern fn bg_flush_stdout()
+fn main():i32 {unsafe {
+    let index=view.monitorIndex(ui.text(view.rc_env("DEVOS_BACKGROUND_MONITOR")));let ready=0;let prepared=&ready
+    let cache=scene.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new()
+    let ok=ui.run("Native background layer test",960,620,fn(context:*ui.Context):ui.Node {
+        ui.useEffect(context,fn():fn():void {unsafe {
+            if view.bg_prepare((*context).native,1,-1)!=0 {rd_fail("Invalid monitor was accepted")}
+            (*prepared)=view.bg_prepare((*context).native,1,index) as i64
+            if (*prepared)==0 {ui.close(context)};return ui.noop
+        }},Vec<i64>())
+        let content=view.App(context,painter,image,photo,true);let announced=ui.useRef(context,0)
+        ui.useEffect(context,fn():fn():void {unsafe {
+            let callback=callback_context(fn() {unsafe {
+                if (*image).surface==0 || announced.get()!=0 {return}
+                if bg_monitor_index((*context).native)!=index {rd_fail("Layer targeted wrong monitor")}
+                announced.set(1);print("LAYER READY monitor=${index} ${(*image).width}x${(*image).height}");bg_flush_stdout()
+            }})
+            let timer=view.bg_timer(50,callback.call,callback.data);return fn() {unsafe {view.bg_untimer(timer,callback.data)}}
+        }},Vec<i64>())
+        return content
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);view.bg_picture_free(photo)
+    if !ok || ready==0 || frame.surface==0 {return 1}
+    print("PASS native background layer shutdown");return 0
+}}
+return main()

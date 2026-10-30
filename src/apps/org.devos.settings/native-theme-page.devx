@@ -1,0 +1,144 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "../org.devos.theme/clock.dev" as clock
+extern fn rc_env(name:str):str
+extern fn cairo_set_source_rgb(cr:*void,r:f64,g:f64,b:f64)
+extern fn cairo_rectangle(cr:*void,x:f64,y:f64,w:f64,h:f64)
+extern fn cairo_fill(cr:*void)
+extern fn cairo_select_font_face(cr:*void,family:str,slant:i32,weight:i32)
+extern fn cairo_set_font_size(cr:*void,size:f64)
+extern fn cairo_move_to(cr:*void,x:f64,y:f64)
+extern fn cairo_show_text(cr:*void,text:str)
+
+# Native Theme settings page. The worker (org.devos.theme/service.dev) owns the saved values, validation and palettes; this
+# page keeps the draft, draws the two previews and sends Apply. Frame: T, error, mode, family, lightFrom, darkFrom, minute, then
+# 12 colors for vscode dark, vscode light, github dark, github light (index 7 + 12 * (2 * family + light)).
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn channelValue(frame:ui.Text, index:i64):ui.Text { let fields = channel.split(frame,9); return index < fields.len() as i64 ? fields[index] : ui.emptyText() }
+
+fn fill(cr:*void, color:Vec<u8>, x:f64, y:f64, w:f64, h:f64) { unsafe { cairo_set_source_rgb(cr,clock.channel(color,1),clock.channel(color,3),clock.channel(color,5)); cairo_rectangle(cr,x,y,w,h); cairo_fill(cr) } }
+fn label(cr:*void, text:str, x:f64, y:f64, size:f64, color:Vec<u8>) { unsafe {
+    cairo_set_source_rgb(cr,clock.channel(color,1),clock.channel(color,3),clock.channel(color,5)); cairo_select_font_face(cr,"Sans",0,0); cairo_set_font_size(cr,size)
+    cairo_move_to(cr,x,y); cairo_show_text(cr,text)
+} }
+# A miniature workspace painted with one palette (same layout as drawThemePreview in the JS page).
+# Palette order: s0 s1 s3 s4 line0 line1 fg fgStrong fgMuted accent accentFg onAccent.
+fn preview(cr:*void, width:f64, height:f64, p:Vec<Vec<u8>>) {
+    fill(cr,p[0],0.0,0.0,width,height)
+    fill(cr,p[1],0.0,0.0,width,22.0); fill(cr,p[4],0.0,21.0,width,1.0)
+    label(cr,"Dev OS",10.0,15.0,11.0,p[7]); label(cr,"12:30",width - 42.0,15.0,10.0,p[6])
+    fill(cr,p[1],0.0,22.0,74.0,height - 22.0); fill(cr,p[4],74.0,22.0,1.0,height - 22.0)
+    fill(cr,p[3],6.0,32.0,62.0,20.0); fill(cr,p[9],6.0,32.0,3.0,20.0)
+    label(cr,"Appearance",14.0,46.0,9.5,p[7]); label(cr,"Wallpaper",14.0,70.0,9.5,p[6]); label(cr,"Terminal",14.0,90.0,9.5,p[8])
+    label(cr,"Theme",90.0,48.0,14.0,p[7]); label(cr,"Follows the time of day.",90.0,64.0,9.5,p[8])
+    fill(cr,p[2],90.0,74.0,width - 106.0,34.0); fill(cr,p[5],90.0,74.0,width - 106.0,1.0)
+    label(cr,"Coordinated colors",100.0,95.0,10.0,p[6])
+    fill(cr,p[9],width - 82.0,height - 34.0,66.0,22.0); label(cr,"Apply",width - 66.0,height - 19.0,10.0,p[11])
+    label(cr,"Link",90.0,height - 18.0,10.0,p[10])
+}
+fn palette(frame:ui.Text, family:ui.Text, name:str):Vec<Vec<u8>> {
+    let out = Vec<Vec<u8>>(); let base = 7 + 12 * ((k.isText(family,"github") ? 1 : 0) * 2 + (name == "light" ? 1 : 0))
+    let fields = channel.split(frame,9)
+    for i in 0..12 { out.push(base + i < fields.len() as i64 ? fields[base + i].bytes : ui.text("#000000").bytes) }
+    return out
+}
+fn modeTitle(mode:str):str { return mode == "auto" ? "Auto" : mode == "dark" ? "Dark" : "Light" }
+fn modeDetail(mode:str):str { return mode == "auto" ? "Light by day, Dark by night" : mode == "dark" ? "Easy on the eyes at night" : "Bright and clear by day" }
+fn familyTitle(family:str):str { return family == "github" ? "GitHub" : "VS Code 2026" }
+fn familyDetail(family:str):str { return family == "github" ? "GitHub Dark Default and Light Default" : "Default Dark and Light of Visual Studio Code" }
+
+fn choice(id:str, selected:bool, title:str, detail:str, chosen:fn():void):ui.Node {
+    let options = ui.named(id); options.expand = true; options.className = ui.text(selected ? "theme-palette theme-palette-selected" : "theme-palette")
+    let texts = ui.props(); texts.spacing = 6
+    return ui.WidgetButton(options,ui.Box(texts,Vec<ui.Node>(k.note(title,"settings-field-title"),k.note(detail,"settings-description"))),chosen)
+}
+fn row(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = 10; return ui.Box(options,children) }
+fn column(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = spacing; return ui.Box(options,children) }
+fn previewCard(name:str, frame:ui.Text, family:ui.Text, showing:str, selected:bool):ui.Node {
+    let colors = palette(frame,family,name)
+    let canvas = ui.named("theme-preview-"+name); canvas.height = 150; canvas.expand = true
+    let title = modeTitle(name) + (selected ? " · in use" : "")
+    let box = ui.props(); box.spacing = 6; box.expand = true
+    return ui.Box(box,Vec<ui.Node>(ui.DrawingArea(canvas,fn(cr:*void,width:i32,height:i32) { preview(cr,width as f64,150.0,colors) }),k.note(title,selected ? "settings-field-title" : "settings-description")))
+}
+fn timeRow(id:str, title:str, value:ui.Text, usable:bool, changed:fn(ui.Text):void):ui.Node {
+    let entry = ui.named(id); entry.sensitive = usable; entry.width = 90
+    let grow = ui.props(); grow.expand = true; grow.xalign = 0.0
+    return row(Vec<ui.Node>(ui.withProps(ui.Label(title),withClass(grow,"settings-field-title")),ui.Entry(entry,value,changed)))
+}
+fn withClass(options:ui.Props, name:str):ui.Props { options.className = ui.text(name); return options }
+
+fn render(context:*ui.Context):ui.Node {
+    let frame = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText()); let status = ui.useText(context,ui.emptyText())
+    let mode = ui.useText(context,ui.text("auto")); let family = ui.useText(context,ui.text("vscode"))
+    let light = ui.useText(context,ui.text("07:00")); let dark = ui.useText(context,ui.text("19:00"))
+    let pipe = ui.useRef(context,0); let loaded = ui.useRef(context,0); let applying = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.theme/service.dev",root,fn(value:ui.Text) {
+            if value.bytes.len() > 0 && value.bytes[0] == 69 {
+                let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; applying.set(0); return
+            }
+            frame.set(value); failure.set(ui.emptyText())
+            if loaded.get() == 0 || applying.get() == 1 {
+                mode.set(channelValue(value,2)); family.set(channelValue(value,3)); light.set(channelValue(value,4)); dark.set(channelValue(value,5))
+                if applying.get() == 1 { status.set(ui.text("Theme updated.")) }
+                loaded.set(1); applying.set(0)
+            }
+        },fn(value:i64) { pipe.set(value); channel.send(value,ui.text("{\"action\":\"get\"}")) })
+    },Vec<i64>())
+    let step = ui.useRef(context,0)
+    # Diagnostic drive (DEVOS_THEME_SMOKE): choose Dark, Apply, wait for the saved state, report and close.
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_THEME_SMOKE")).bytes.len() == 0 { return ui.noop }
+        if loaded.get() == 1 && step.get() == 0 { step.set(1); ui.click(context,"theme-mode-dark") }
+        else if step.get() == 1 && k.isText(mode.get(),"dark") { step.set(2); ui.click(context,"theme-settings-apply") }
+        else if step.get() == 2 && k.isText(status.get(),"Theme updated.") && k.isText(channelValue(frame.get(),2),"dark") { print("PASS native Theme page applied Dark"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(frame.revision,mode.revision,status.revision,loaded.get()))
+    let savedMode = channelValue(frame.value,2); let savedFamily = channelValue(frame.value,3); let savedLight = channelValue(frame.value,4); let savedDark = channelValue(frame.value,5)
+    let ready = frame.value.bytes.len() > 0 && loaded.get() == 1
+    if !ready { let wait = Vec<ui.Node>(); if failure.value.bytes.len() > 0 { wait.push(k.caption(failure.value,"settings-error-banner")) } else { wait.push(ui.Label("Loading…")) }; return column(12,wait) }
+    let problem = clock.problem(light.value.bytes,dark.value.bytes)
+    let dirty = !ui.equalText(mode.value,savedMode) || !ui.equalText(family.value,savedFamily) || !ui.equalText(light.value,savedLight) || !ui.equalText(dark.value,savedDark)
+    let minute = channel.integer(channelValue(frame.value,6))
+        let usedLight = problem == "" ? light.value.bytes : savedLight.bytes; let usedDark = problem == "" ? dark.value.bytes : savedDark.bytes
+    let showing = clock.resolve(mode.value.bytes,minute,usedLight,usedDark)
+    let edit = fn(change:fn():void) { change(); failure.set(ui.emptyText()); status.set(ui.emptyText()) }
+    let familyName = family.value
+    let showingOptions = ui.named("theme-showing"); showingOptions.className = ui.text("settings-description")
+    let stage = ui.props(); stage.spacing = 12; stage.className = ui.text("theme-settings-stage")
+    let nodes = Vec<ui.Node>()
+    nodes.push(ui.Box(stage,Vec<ui.Node>(
+        row(Vec<ui.Node>(withExpand(k.note("PREVIEW","settings-eyebrow")),ui.withProps(ui.Label("Showing " + modeTitle(showing)),showingOptions))),
+        row(Vec<ui.Node>(previewCard("dark",frame.value,familyName,showing,showing == "dark"),previewCard("light",frame.value,familyName,showing,showing == "light"))),
+        k.note("Preview only · Apply changes every window without restarting your apps.","settings-description"))))
+    let families = Vec<ui.Node>(); for name in Vec<str>("vscode","github") { families.push(choice("theme-family-"+name,k.isText(familyName,name),familyTitle(name),familyDetail(name),fn() { edit(fn() { family.set(ui.text(name)) }) })) }
+    nodes.push(column(10,Vec<ui.Node>(k.note("Color theme","section-heading"),row(families))))
+    let modes = Vec<ui.Node>(); for name in Vec<str>("auto","dark","light") { modes.push(choice("theme-mode-"+name,k.isText(mode.value,name),modeTitle(name),modeDetail(name),fn() { edit(fn() { mode.set(ui.text(name)) }) })) }
+    nodes.push(column(10,Vec<ui.Node>(k.note("Appearance","section-heading"),row(modes))))
+    let auto = k.isText(mode.value,"auto")
+    let card = Vec<ui.Node>(k.note("Auto schedule","section-heading"),k.note("Auto uses your local time. Light is shown from the first time until the second; Dark the rest of the day.","settings-description"),
+        timeRow("theme-light-from","Light theme starts",light.value,auto,fn(value:ui.Text) { if !ui.equalText(value,light.get()) { edit(fn() { light.set(value) }) } }),
+        timeRow("theme-dark-from","Dark theme starts",dark.value,auto,fn(value:ui.Text) { if !ui.equalText(value,dark.get()) { edit(fn() { dark.set(value) }) } }))
+    if problem != "" { card.push(ui.withProps(k.note(problem,"error"),ui.named("theme-schedule-error"))) }
+    let cardOptions = ui.props(); cardOptions.spacing = 14; cardOptions.className = ui.text("settings-card theme-settings-card")
+    nodes.push(ui.Box(cardOptions,card))
+    nodes.push(k.note("Wallpapers, icon packs and terminal fonts have their own settings pages. The terminal and editor follow this theme.","settings-description"))
+    if failure.value.bytes.len() > 0 { nodes.push(ui.withProps(k.caption(failure.value,"error"),ui.named("theme-error"))) }
+    let reset = ui.named("theme-settings-reset"); reset.sensitive = dirty
+    let apply = ui.named("theme-settings-apply"); apply.sensitive = dirty && problem == "" && channelValue(frame.value,1).bytes.len() == 0; apply.className = ui.text("settings-primary")
+    let message = status.value.bytes.len() > 0 ? status.value : ui.text(dirty ? "Unsaved changes · Preview only" : "A consistent look across your workspace.")
+    let bar = ui.props(); bar.vertical = false; bar.spacing = 12; bar.className = ui.text("settings-action-bar")
+    nodes.push(ui.Box(bar,Vec<ui.Node>(withExpand(k.caption(message,"settings-description")),
+        ui.Button(reset,"Reset",fn() { mode.set(savedMode); family.set(savedFamily); light.set(savedLight); dark.set(savedDark); failure.set(ui.emptyText()); status.set(ui.emptyText()) }),
+        ui.Button(apply,"Apply",fn() {
+            applying.set(1); status.set(ui.emptyText())
+            let request = ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"set\",\"mode\":"),channel.quote(mode.get()),ui.text(",\"family\":"),channel.quote(family.get()),ui.text(",\"lightFrom\":"),channel.quote(light.get()),ui.text(",\"darkFrom\":"),channel.quote(dark.get()),ui.text("}")))
+            channel.command(pipe.get(),request)
+        }))))
+    return column(18,nodes)
+}
+fn withExpand(node:ui.Node):ui.Node { let options = node.props; options.expand = true; return ui.withProps(node,options) }
+fn page():ui.Node { return ui.component(9300,ui.keyed(900),render) }

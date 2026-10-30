@@ -1,0 +1,217 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+extern fn rc_env(name:str):str
+
+# Native Updates page: checks GitHub Releases, installs the latest release or an update file the user has (after a second click),
+# selects the previous version again, and runs system updates (kernel, firmware, boot image) through the privileged helper, which
+# asks for administrator approval. "Restart shell" asks the session manager to start the installed version. The worker (org.devos.updates/service.dev) does
+# all parsing and network access. Frame U, see service.dev: 1 status, 2 message, 3 error, 4 running, 5 installed, 6 managed,
+# 23 trust (verified/unsigned), 24 patched, 25 system supported, 26 reason, 27 system version, 28 kernel, 29 safe boot, 30 signed,
+# 31 pending version, 32 can roll back, 33 last error, 34 restart needed, 35-38 offered system update (version, components, kernel, size). 7 previous, 8 checked, 9 blocked, 10 offline, 11 available, 12 release version, 13 published, 14 size, 15 notes (ASCII 30 for
+# newlines), 16 swaylock installed, 17 swaylock latest, 18 swaylock error, 19 repository, 20 checkOnOpen, 21 periodicCheck, 22 prefs error.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn field(frame:ui.Text, index:i64):ui.Text { let fields = channel.split(frame,9); return index < fields.len() as i64 ? fields[index] : ui.emptyText() }
+fn flag(value:ui.Text):bool { return value.bytes.len() > 0 && value.bytes[0] == 49 }
+fn row(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = spacing; return ui.Box(options,children) }
+fn column(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = spacing; return ui.Box(options,children) }
+fn expand(node:ui.Node):ui.Node { let options = node.props; options.expand = true; return ui.withProps(node,options) }
+fn named(node:ui.Node, id:str):ui.Node { let options = node.props; options.id = ui.text(id); return ui.withProps(node,options) }
+fn card(id:str, children:Vec<ui.Node>):ui.Node { let options = ui.named(id); options.spacing = 12; options.className = ui.text("settings-card"); return ui.Box(options,children) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn megabytes(bytes:i64):ui.Text { let tenths = (bytes * 10 + 524288) / 1048576; return ui.text("${tenths / 10}.${tenths % 10} MB") }
+fn lines(value:ui.Text):ui.Text { let out = Vec<u8>(); for byte in value.bytes { out.push(byte == 30 ? (10 as u8) : byte) }; return ui.Text(out) }
+fn toggle(id:str, title:str, active:bool, usable:bool, changed:fn(bool):void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable
+    return row(16,Vec<ui.Node>(expand(k.note(title,"settings-field-title")),ui.Switch(options,active,fn(next:bool) { if next != active { changed(next) } })))
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let latest = ui.useText(context,ui.emptyText()); let checked = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText())
+    let source = ui.useText(context,ui.emptyText()); let editing = ui.useRef(context,0)
+    let file = ui.useText(context,ui.emptyText()); let confirm = ui.useState(context,0)
+    let restartSeen = ui.useRef(context,0); let hideRestart = ui.useState(context,0); let hideShell = ui.useState(context,0)
+    let waiting = ui.useRef(context,0); let pipe = ui.useRef(context,0); let autoChecked = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.updates/service.dev",root,fn(value:ui.Text) {
+            let kind = waiting.get(); waiting.set(0)
+            if value.bytes.len() > 0 && value.bytes[0] == 69 { let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; return }
+            failure.set(ui.emptyText()); latest.set(value)
+            if flag(field(value,34)) { restartSeen.set(1) }
+            if kind == 1 || kind == 3 { checked.set(value) }
+            if editing.get() == 0 { source.set(field(value,19)) }
+        },fn(value:i64) { pipe.set(value); channel.pause(value,true); channel.command(value,ui.text("{\"action\":\"state\"}")) })
+    },Vec<i64>())
+    let busy = waiting.get() != 0
+    let check = fn() {
+        if waiting.get() != 0 { return }
+        waiting.set(1); failure.set(ui.emptyText()); channel.command(pipe.get(),ui.text("{\"action\":\"check\"}"))
+    }
+    # Check when opening, only if the user turned that on (the JS page does the same).
+    ui.useEffect(context,fn():fn():void {
+        if latest.value.bytes.len() > 0 && autoChecked.get() == 0 && flag(field(latest.value,20)) { autoChecked.set(1); check() }
+        return ui.noop
+    },Vec<i64>(latest.revision))
+    # Diagnostic drive (DEVOS_UPDATES_SMOKE): press Check, wait for the answer, report and close.
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_UPDATES_SMOKE")).bytes.len() == 0 { return ui.noop }
+        if latest.value.bytes.len() > 0 && step.get() == 0 { step.set(1); ui.click(context,"updates-check") }
+        else if step.get() == 1 && checked.value.bytes.len() > 0 { print("PASS native Updates page checked: ${ui.equalText(field(checked.value,1),ui.text("available")) ? "available" : "other"}"); ui.close(context) }
+        else if step.get() == 1 && failure.value.bytes.len() > 0 { print("FAIL native Updates page"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(latest.revision,checked.revision,failure.revision))
+    # Diagnostic drive (DEVOS_UPDATES_SMOKE_FILE): type the path, press the install button twice, report the result.
+    ui.useEffect(context,fn():fn():void {
+        let path = environment("DEVOS_UPDATES_SMOKE_FILE")
+        if ui.text(path).bytes.len() == 0 { return ui.noop }
+        if latest.value.bytes.len() > 0 && step.get() == 0 { step.set(1); ui.change(context,"updates-file",path) }
+        else if step.get() == 1 && file.value.bytes.len() > 0 { step.set(2); ui.click(context,"updates-install-file") }
+        else if step.get() == 2 && confirm.value == 2 { step.set(3); ui.click(context,"updates-install-file") }
+        else if step.get() == 3 && checked.value.bytes.len() > 0 { print("PASS native Updates page installed a file: ${k.isText(field(checked.value,1),"ready") ? "ready" : "other"} ${ui.equalText(field(checked.value,3),ui.emptyText()) ? "no-error" : "error"} pending=${k.isText(field(checked.value,31),"0.4.0") ? "0.4.0" : "none"} restart=${flag(field(checked.value,34)) ? "yes" : "no"}"); ui.close(context) }
+        else if step.get() == 3 && failure.value.bytes.len() > 0 { print("FAIL native Updates page"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(latest.revision,checked.revision,failure.revision,file.revision,confirm.value))
+    if latest.value.bytes.len() == 0 { let wait = Vec<ui.Node>(); if failure.value.bytes.len() > 0 { wait.push(k.caption(failure.value,"settings-error-banner")) } else { wait.push(ui.Label("Loading…")) }; return column(12,wait) }
+    let shown = checked.value.bytes.len() > 0 ? checked.value : latest.value
+    let repositoryText = field(latest.value,19)
+    let dirty = !ui.equalText(source.value,repositoryText)
+    let nodes = Vec<ui.Node>()
+    let status = Vec<ui.Node>(named(k.caption(field(shown,2),"section-heading"),"updates-status"),
+        k.caption(join(Vec<ui.Text>(ui.text("Running "),field(shown,4),ui.text("  ·  Installed "),field(shown,5))),"settings-description"))
+    if field(shown,3).bytes.len() > 0 { status.push(named(k.caption(field(shown,3),"error"),"updates-error")) }
+    if field(shown,9).bytes.len() > 0 { status.push(named(k.caption(field(shown,9),"settings-description"),"updates-live")) }
+    let checkOptions = ui.named("updates-check"); checkOptions.sensitive = !busy && !dirty
+    let blockedNow = field(shown,9).bytes.len() > 0
+    let send = fn(body:ui.Text) {
+        if waiting.get() != 0 { return }
+        waiting.set(3); confirm.set(0); failure.set(ui.emptyText()); channel.command(pipe.get(),body)
+    }
+    status.push(ui.Button(checkOptions,waiting.get() == 1 ? "Checking…" : "Check for updates",check))
+    if flag(field(shown,11)) && !blockedNow && !dirty {
+        let buttons = Vec<ui.Node>()
+        if confirm.value == 1 {
+            buttons.push(named(k.caption(join(Vec<ui.Text>(ui.text("Dev OS "),field(shown,12),ui.text(" is downloaded, checked against its checksums and installed next to the current version. Nothing changes until you restart the desktop, and Use previous version goes back."))),"settings-description"),"updates-install-warning"))
+            let confirmOptions = ui.named("updates-install-confirm"); confirmOptions.className = ui.text("settings-primary"); confirmOptions.sensitive = !busy
+            let cancelOptions = ui.named("updates-install-cancel"); cancelOptions.sensitive = !busy
+            buttons.push(row(8,Vec<ui.Node>(ui.Button(confirmOptions,"Install this update",fn() { send(ui.text("{\"action\":\"install\"}")) }),ui.Button(cancelOptions,"Cancel",fn() { confirm.set(0) }))))
+        } else {
+            let installOptions = ui.named("updates-install"); installOptions.className = ui.text("settings-primary"); installOptions.sensitive = !busy
+            buttons.push(ui.Button(installOptions,"Install update",fn() { confirm.set(1) }))
+        }
+        for item in buttons { status.push(item) }
+    }
+    if field(shown,7).bytes.len() > 0 && !blockedNow {
+        let rollbackOptions = ui.named("updates-rollback"); rollbackOptions.sensitive = !busy
+        status.push(ui.Button(rollbackOptions,"Use previous version",fn() { send(ui.text("{\"action\":\"rollback\"}")) }))
+    }
+    if waiting.get() == 3 { status.push(named(k.note("Working… downloading and installing can take several minutes.","settings-description"),"updates-working")) }
+    if field(shown,8).bytes.len() > 0 { status.push(k.caption(join(Vec<ui.Text>(ui.text("Last checked "),field(shown,8))),"settings-description")) }
+    nodes.push(card("updates-summary",status))
+    if !ui.equalText(field(shown,5),field(shown,4)) && hideShell.value == 0 {
+        let shellNodes = Vec<ui.Node>(k.caption(join(Vec<ui.Text>(ui.text("Ready to use Dev OS "),field(shown,5))),"section-heading"),
+            k.note("Installation is complete. Switch the desktop to the installed version when you are ready; your preferences are kept.","settings-description"))
+        if confirm.value == 5 { shellNodes.push(named(k.note("Save your work first. This closes the built-in desktop apps and restarts the shell.","settings-description"),"updates-switch-warning")) }
+        let useOptions = ui.named("updates-use-version"); useOptions.className = ui.text("settings-primary"); useOptions.sensitive = !busy && !blockedNow
+        let laterOptions = ui.named("updates-restart-later"); laterOptions.sensitive = !busy
+        let shellButtons = Vec<ui.Node>(ui.Button(useOptions,confirm.value == 5 ? "Restart and use this version" : "Restart shell now",fn() {
+            if confirm.value != 5 { confirm.set(5); return }
+            send(ui.text("{\"action\":\"useInstalled\"}"))
+        }))
+        if confirm.value == 5 { let cancelOptions = ui.named("updates-cancel-switch"); cancelOptions.sensitive = !busy; shellButtons.push(ui.Button(cancelOptions,"Cancel",fn() { confirm.set(0) })) }
+        else { shellButtons.push(ui.Button(laterOptions,"Restart later",fn() { hideShell.set(1) })) }
+        shellNodes.push(row(8,shellButtons))
+        shellNodes.push(named(k.note("dev-os-updated-session --nested","updates-command"),"updates-restart-command"))
+        nodes.push(card("updates-restart-card",shellNodes))
+    }
+    if field(shown,12).bytes.len() > 0 {
+        let size = channel.integer(field(shown,14))
+        nodes.push(card("updates-release",Vec<ui.Node>(k.caption(join(Vec<ui.Text>(ui.text("Dev OS "),field(shown,12))),"section-heading"),
+            named(k.caption(join(Vec<ui.Text>(ui.text("linux package  ·  "),megabytes(size),ui.text("  ·  published "),field(shown,13))),"settings-description"),"updates-release-info"),
+            k.caption(field(shown,15).bytes.len() > 0 ? lines(field(shown,15)) : ui.text("This release has no release notes."),""))))
+    }
+    let swaylock = Vec<ui.Node>(named(k.caption(join(Vec<ui.Text>(ui.text("Installed: "),field(shown,16).bytes.len() > 0 ? field(shown,16) : ui.text(field(shown,17).bytes.len() > 0 ? "Not installed" : "Unknown"),ui.text("  ·  Latest upstream: "),field(shown,17).bytes.len() > 0 ? field(shown,17) : ui.text("Unknown"))),"settings-description"),"updates-swaylock-version"))
+    if field(shown,18).bytes.len() > 0 { swaylock.push(k.caption(field(shown,18),"error")) }
+    swaylock.push(k.note("Manage swaylock through your Linux distribution. Upstream releases are shown for reference.","settings-description"))
+    nodes.push(card("updates-swaylock",Vec<ui.Node>(k.note("swaylock · Lock screen","section-heading"),column(10,swaylock))))
+    let versions = Vec<ui.Node>(row(10,Vec<ui.Node>(expand(k.caption(field(shown,4),"settings-field-title")),k.note("RUNNING","settings-badge"))))
+    if !ui.equalText(field(shown,5),field(shown,4)) { versions.push(row(10,Vec<ui.Node>(expand(k.caption(field(shown,5),"settings-field-title")),k.note("SELECTED FOR NEXT START","settings-badge")))) }
+    if field(shown,7).bytes.len() > 0 { versions.push(row(10,Vec<ui.Node>(expand(k.caption(field(shown,7),"settings-field-title")),k.note("PREVIOUS","settings-badge")))) }
+    let fileCard = Vec<ui.Node>(k.note("Apply an update file (desktop or patch)","section-heading"),
+        k.note("No internet? Copy dev-os-linux-<arch>.tar.gz (or a dev-os-patch-… file) from a GitHub release to a USB stick or Downloads and type its full path here. Put SHA256SUMS and SHA256SUMS.sig from the same release next to it.","settings-description"))
+    let fileEntry = ui.named("updates-file"); fileEntry.sensitive = !busy && !blockedNow; fileEntry.expand = true; fileEntry.placeholder = ui.text("/path/to/dev-os-linux-arm64.tar.gz")
+    fileCard.push(ui.Entry(fileEntry,file.value,fn(value:ui.Text) { file.set(value); confirm.set(0) }))
+    if confirm.value == 2 { fileCard.push(named(k.note("Only install files you trust: an update runs as part of your desktop. Click again to install.","settings-description"),"updates-file-warning")) }
+    let fileButton = ui.named("updates-install-file"); fileButton.sensitive = !busy && !blockedNow && file.value.bytes.len() > 0
+    fileCard.push(ui.Button(fileButton,confirm.value == 2 ? "Install this file" : "Apply update file",fn() {
+        if confirm.value != 2 { confirm.set(2); return }
+        send(join(Vec<ui.Text>(ui.text("{\"action\":\"installFile\",\"path\":"),channel.quote(file.get()),ui.text("}"))))
+    }))
+    nodes.push(card("updates-file-card",fileCard))
+    # System updates: kernel, initramfs, bootloader stub, firmware and system files, installed by the privileged helper.
+    let supported = flag(field(shown,25))
+    let system = Vec<ui.Node>(row(10,Vec<ui.Node>(expand(k.note("System · kernel, firmware, boot image","section-heading")),k.caption(supported ? join(Vec<ui.Text>(ui.text("INSTALLED "),field(shown,27))) : ui.text("NOT AVAILABLE"),"settings-badge"))))
+    if !supported {
+        system.push(named(k.caption(field(shown,26).bytes.len() > 0 ? field(shown,26) : ui.text("Checking the system update helper…"),"settings-description"),"updates-system-reason"))
+    } else {
+        system.push(named(k.caption(join(Vec<ui.Text>(ui.text("Running kernel "),field(shown,28),ui.text(". Updates replace the boot image (kernel, initramfs, bootloader stub), firmware and system files; they start after a restart."))),"settings-description"),"updates-system-info"))
+        if field(shown,35).bytes.len() > 0 && field(shown,31).bytes.len() == 0 {
+            system.push(named(k.caption(join(Vec<ui.Text>(ui.text("System update "),field(shown,35),ui.text(": "),field(shown,36),field(shown,37).bytes.len() > 0 ? join(Vec<ui.Text>(ui.text(" · kernel "),field(shown,37))) : ui.emptyText())),"section-heading"),"updates-system-offer"))
+            system.push(k.note(flag(field(shown,29)) ? "The new boot image starts once. If it does not boot, the next start returns to the current system automatically." : "This computer cannot try the new boot image once (no UEFI boot manager): the old image is kept as a copy only. Keep a Live USB at hand.","settings-description"))
+            if confirm.value == 3 {
+                system.push(named(k.note("Your computer asks for administrator approval, installs the system update next to the running system and applies it after a restart. Click again to continue.","settings-description"),"updates-system-warning"))
+            }
+            let systemInstall = ui.named("updates-install-system"); systemInstall.className = ui.text("settings-primary"); systemInstall.sensitive = !busy && !blockedNow
+            system.push(ui.Button(systemInstall,confirm.value == 3 ? "Install system update now" : "Install system update",fn() {
+                if confirm.value != 3 { confirm.set(3); return }
+                send(ui.text("{\"action\":\"installSystem\"}"))
+            }))
+        }
+        if field(shown,31).bytes.len() > 0 { system.push(named(k.caption(join(Vec<ui.Text>(ui.text("System update "),field(shown,31),ui.text(" is installed and waits for a restart."))),"settings-description"),"updates-system-pending")) }
+        if field(shown,33).bytes.len() > 0 { system.push(named(k.caption(field(shown,33),"error"),"updates-system-error")) }
+        let systemButtons = Vec<ui.Node>()
+        if field(shown,31).bytes.len() > 0 {
+            let cancelSystem = ui.named("updates-system-cancel"); cancelSystem.sensitive = !busy
+            systemButtons.push(ui.Button(cancelSystem,"Cancel system update",fn() { send(ui.text("{\"action\":\"cancelSystem\"}")) }))
+        } else if flag(field(shown,32)) {
+            let rollbackSystem = ui.named("updates-system-rollback"); rollbackSystem.sensitive = !busy
+            systemButtons.push(ui.Button(rollbackSystem,"Restore previous system",fn() { send(ui.text("{\"action\":\"rollbackSystem\"}")) }))
+        }
+        if systemButtons.len() > 0 { system.push(row(8,systemButtons)) }
+    }
+    nodes.push(card("updates-system",system))
+    if restartSeen.get() == 1 && hideRestart.value == 0 {
+        let now = ui.named("updates-restart-computer"); now.className = ui.text("settings-primary"); now.sensitive = !busy
+        let later = ui.named("updates-restart-computer-later"); later.sensitive = !busy
+        let restartNodes = Vec<ui.Node>(k.note("Restart the computer to finish the system update","section-heading"),
+            k.note("Save your work first: the computer restarts and all apps close. Your files and preferences are kept.","settings-description"))
+        if confirm.value == 4 { restartNodes.push(named(k.note("Click again to restart the computer now.","settings-description"),"updates-restart-warning")) }
+        restartNodes.push(row(8,Vec<ui.Node>(ui.Button(now,confirm.value == 4 ? "Restart now" : "Restart…",fn() {
+            if confirm.value != 4 { confirm.set(4); return }
+            send(ui.text("{\"action\":\"restart\"}"))
+        }),ui.Button(later,"Restart later",fn() { hideRestart.set(1) }))))
+        nodes.push(card("updates-restart-computer-card",restartNodes))
+    }
+    nodes.push(card("updates-versions",Vec<ui.Node>(k.note("Versions on this computer","section-heading"),column(8,versions))))
+    let entry = ui.named("updates-repository"); entry.sensitive = !busy; entry.expand = true
+    let save = ui.named("updates-save-source"); save.sensitive = dirty && !busy
+    let saveSource = fn() {
+        if waiting.get() != 0 { return }
+        waiting.set(2); editing.set(0)
+        channel.command(pipe.get(),join(Vec<ui.Text>(ui.text("{\"action\":\"source\",\"repository\":"),channel.quote(source.get()),ui.text(",\"checkOnOpen\":" + (flag(field(latest.get(),20)) ? "true" : "false") + ",\"periodicCheck\":" + (flag(field(latest.get(),21)) ? "true" : "false") + "}"))))
+    }
+    let saveToggles = fn(open:bool, periodic:bool) {
+        if waiting.get() != 0 { return }
+        waiting.set(2)
+        channel.command(pipe.get(),join(Vec<ui.Text>(ui.text("{\"action\":\"source\",\"repository\":"),channel.quote(repositoryText),ui.text(",\"checkOnOpen\":" + (open ? "true" : "false") + ",\"periodicCheck\":" + (periodic ? "true" : "false") + "}"))))
+    }
+    let sourceCard = Vec<ui.Node>(k.note("Update source","section-heading"),k.note("Public GitHub repository · owner/repo","settings-description"),
+        row(8,Vec<ui.Node>(ui.Entry(entry,source.value,fn(value:ui.Text) { editing.set(1); source.set(value); failure.set(ui.emptyText()) }),ui.Button(save,"Save source",saveSource))))
+    if failure.value.bytes.len() > 0 { sourceCard.push(named(k.caption(failure.value,"error"),"updates-source-error")) }
+    sourceCard.push(toggle("updates-auto-check","Check when opening Updates",flag(field(latest.value,20)),!busy,fn(next:bool) { saveToggles(next,flag(field(latest.value,21))) }))
+    sourceCard.push(toggle("updates-periodic","Check for updates daily in the background (sends a request to GitHub)",flag(field(latest.value,21)),!busy,fn(next:bool) { saveToggles(flag(field(latest.value,20)),next) }))
+    nodes.push(card("updates-source",sourceCard))
+    nodes.push(named(k.note("Windows / WSL: .\\dev.ps1 updated","settings-description"),"updates-readonly"))
+    return column(16,nodes)
+}
+fn page():ui.Node { return ui.component(9320,ui.keyed(902),render) }

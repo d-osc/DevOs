@@ -1,0 +1,50 @@
+# Native GTK-thread asynchronous service channel. The service owns data processing.
+use "./ui.dev" as ui
+extern fn rd_window(root: *void): *void
+extern fn rc_open(window: *void, program: str, script: str, root: str, receive: callback(*u8, i64, *void): void, context: *void): *void
+extern fn rc_open_ffi(window:*void,program:str,script:str,root:str,library:str,receive:callback(*u8,i64,*void):void,context:*void):*void
+extern fn rc_request(channel: *void, text: *u8, length: i64)
+extern fn rc_command(channel: *void, text: *u8, length: i64)
+extern fn rc_pause(channel: *void, paused: i32)
+extern fn rc_interval(channel:*void,milliseconds:i32)
+extern fn rc_failed(channel:*void):i32
+extern fn rc_close(channel: *void, keep: *void)
+
+fn connect(context: *ui.Context, program: str, script: str, root: str, receive: fn(ui.Text):void, opened: fn(i64):void): fn():void { unsafe {
+    return connectWithLibrary(context,program,script,root,"",receive,opened)
+} }
+fn connectWithLibrary(context:*ui.Context,program:str,script:str,root:str,library:str,receive:fn(ui.Text):void,opened:fn(i64):void):fn():void {unsafe {
+    let handler = callback_context(fn(bytes:*u8, length:i64) { unsafe {
+        let owned = Vec<u8>(); for i in 0..length { owned.push(bytes[i]) }; receive(ui.Text(owned))
+    } })
+    let channel = rc_open_ffi(rd_window((*context).native), program, script, root,library, handler.call, handler.data)
+    opened(channel as i64)
+    return fn() { unsafe { rc_close(channel, handler.data) } }
+} }
+fn send(channel:i64, message:ui.Text) { unsafe {
+    if channel == 0 { return }
+    let native = ui.nativeText(message); rc_request(channel as *void, native, message.bytes.len() as i64); rd_buffer_free(native as *void)
+} }
+extern fn rd_buffer_free(buffer:*void)
+fn command(channel:i64,message:ui.Text) { unsafe {
+    if channel == 0 { return }
+    let native = ui.nativeText(message); rc_command(channel as *void,native,message.bytes.len() as i64); rd_buffer_free(native as *void)
+} }
+fn pause(channel:i64, paused:bool) { unsafe { if channel != 0 { rc_pause(channel as *void, paused ? 1 : 0) } } }
+fn interval(channel:i64,milliseconds:i32) {unsafe {if channel!=0 {rc_interval(channel as *void,milliseconds)}}}
+fn failed(channel:i64):bool {unsafe {return channel!=0 && rc_failed(channel as *void)!=0}}
+fn split(value:ui.Text, separator:u8): Vec<ui.Text> {
+    let out = Vec<ui.Text>(); let current = Vec<u8>()
+    for byte in value.bytes { if byte == separator { out.push(ui.Text(current)); current = Vec<u8>() } else { current.push(byte) } }
+    out.push(ui.Text(current)); return out
+}
+fn integer(value:ui.Text):i64 { let number = 0; for ch in value.bytes { if ch < 48 || ch > 57 { break }; number = number * 10 + (ch - 48) as i64 }; return number }
+fn quote(value:ui.Text):ui.Text {
+    let out = Vec<u8>(34); let hex = ui.text("0123456789abcdef").bytes
+    for byte in value.bytes {
+        if byte == 34 || byte == 92 { out.push(92); out.push(byte) }
+        else if byte < 32 { out.push(92); out.push(117); out.push(48); out.push(48); out.push(hex[(byte / 16) as i64]); out.push(hex[(byte % 16) as i64]) }
+        else { out.push(byte) }
+    }
+    out.push(34); return ui.Text(out)
+}

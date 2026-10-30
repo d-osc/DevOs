@@ -1,0 +1,29 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn gtk_widget_get_style_context(widget:*void):*void
+extern fn gtk_style_context_has_class(style:*void,name:str):i32
+extern fn gtk_widget_get_tooltip_text(widget:*void):*u8
+extern fn gtk_image_get_storage_type(widget:*void):i32
+extern fn g_free(value:*void)
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useRef(context,0);let ticks=ui.useRef(context,0)
+    let node=tasks.Bar(context,false,16,2,fn() {unsafe {ui.rd_fail("Native taskbar action transport failed")}})
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>400 {ui.rd_fail("Timed out waiting for native taskbar actions")}
+            let widget=ui.find(context,"panel-task-1");if widget==null {return}
+            let style=gtk_widget_get_style_context(widget)
+            if phase.get()==0 && gtk_style_context_has_class(style,"task-active")!=0 {
+                let tooltip=gtk_widget_get_tooltip_text(widget);let bytes=Vec<u8>();if tooltip!=null {let i=0;while tooltip[i]!=0 {bytes.push(tooltip[i]);i=i+1};g_free(tooltip as *void)}
+                if !ui.equalText(ui.Text(bytes),ui.text("Catalog App · 1 window · Active")) || gtk_image_get_storage_type(ui.find(context,"panel-task-1-icon"))!=6 {ui.rd_fail("Native catalog title or serialized GIcon did not reach GTK")}
+                phase.set(1);if !ui.click(context,"panel-task-1") {ui.rd_fail("Could not click active task")}
+            }
+            else if phase.get()==1 && gtk_style_context_has_class(style,"task-minimized")!=0 {phase.set(2);if !ui.click(context,"panel-task-1") {ui.rd_fail("Could not click minimized task")}}
+            else if phase.get()==2 && gtk_style_context_has_class(style,"task-active")!=0 {ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return node
+}
+fn main():i32 {if !ui.run("Native taskbar action test",640,64,App) {return 1};print("PASS native taskbar clicks deliver minimize and activate through the source worker");return 0}
+return main()

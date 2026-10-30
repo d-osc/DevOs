@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-settings.devx" as settings
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn rc_env(name:str):str
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_switch_set_active(widget:*void,active:i32)
+extern fn gtk_switch_get_active(widget:*void):i32
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn sensitive(context:*ui.Context,name:str):bool {unsafe {let widget=ui.find(context,name);return widget!=null && gtk_widget_get_sensitive(widget)!=0}}
+fn App(context:*ui.Context):ui.Node {unsafe {
+    let content=settings.App(context,ui.text(rc_env("DEVOS_PANEL_PREFERENCES")));let phase=ui.useRef(context,0);let ticks=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>600 {ui.rd_fail("Panel settings timed out at stage ${phase.get()}")};let stage=phase.get()
+            if stage==0 && ui.find(context,"panel-showDate")!=null {check(ui.click(context,"panel-preset-comfortable"),"Preset missing");phase.set(1)}
+            else if stage==1 && ui.equalText(ui.readText(context,"panel-height"),ui.text("44")) {gtk_switch_set_active(ui.find(context,"panel-showDate"),0);phase.set(2)}
+            else if stage==2 && ui.find(context,"panel-preview-date")==null && sensitive(context,"panel-settings-apply") {check(ui.change(context,"panel-custom-title","ไทย"),"Custom title missing");check(ui.change(context,"panel-custom-command","echo 'literal;$(false)'"),"Custom command missing");phase.set(3)}
+            else if stage==3 && sensitive(context,"panel-custom-save") {check(ui.click(context,"panel-custom-save"),"Add custom action missing");phase.set(4)}
+            else if stage==4 && ui.find(context,"panel-custom-edit")!=null {check(ui.click(context,"panel-settings-apply"),"Apply missing");phase.set(5)}
+            else if stage==5 && ui.equalText(ui.readText(context,"panel-settings-status"),ui.text("Panel updated on all displays.")) && !sensitive(context,"panel-settings-apply") {check(ui.change(context,"panel-iconSize","99"),"Numeric entry missing");phase.set(6)}
+            else if stage==6 && ui.equalText(ui.readText(context,"panel-settings-error"),ui.text("Enter a whole number from 14 to 28")) {check(ui.click(context,"panel-preset-spacious"),"Spacious preset missing");phase.set(7)}
+            else if stage==7 && ui.equalText(ui.readText(context,"panel-height"),ui.text("56")) && sensitive(context,"panel-settings-reset") {check(ui.click(context,"panel-settings-reset"),"Reset missing");phase.set(8)}
+            else if stage==8 && ui.equalText(ui.readText(context,"panel-height"),ui.text("44")) && !sensitive(context,"panel-settings-apply") {check(gtk_switch_get_active(ui.find(context,"panel-showDate"))==0,"Reset lost applied visibility");ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return content
+}}
+fn main():i32 {check(ui.run("Native panel settings",900,820,App),"Panel settings UI failed");unsafe {check(rd_widget_live_count()==0,"Settings widgets leaked")};print("PASS native panel settings, preview, custom actions, validation, Apply and Reset");return 0}
+return main()

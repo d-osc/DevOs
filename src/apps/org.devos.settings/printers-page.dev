@@ -1,0 +1,79 @@
+#!/usr/bin/env d
+# Data worker of the native Printers page. It runs bin/dev-os-printers (the DevLang helper around CUPS' lpstat, lpadmin and lpoptions)
+# after checking each request the same way the helper does, and answers with a frame. One JSON request per line on stdin:
+#   {"action":"list"}   {"action":"add","name":"Office","uri":"ipps://printer.local/ipp/print"}
+#   {"action":"default","name":"Office"}   {"action":"remove","name":"Office"}
+# Frame: K available default message, then records  L name uri      or  E message
+# Test hook: DEVOS_SETTINGS_HELPERS names the directory with bin/dev-os-printers.
+use "std/args"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
+    return strings.replaceAll(out,rs()," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn failure(message:str):str {
+    let marker = "std/result.raise: "
+    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
+    return "E\t" + clean(shown)
+}
+# 1-63 characters: letters, digits, hyphen and underscore, not starting with a hyphen (the helper's queue name rule).
+fn queueName(value:str):bool {
+    let count = strings.charLength(value)
+    if count < 1 || count > 63 || strings.startsWith(value,"-") { return false }
+    for i in 0..(count as i64) { if !strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",strings.substring(value,i,i + 1)) { return false } }
+    return true
+}
+# ipp:// or ipps:// with a host, no credentials, spaces, backslashes or fragments.
+fn printerUri(value:str):bool {
+    if !(strings.startsWith(value,"ipp://") || strings.startsWith(value,"ipps://")) || strings.charLength(value) > 2048 { return false }
+    let host = strings.split(value,"://")[1]
+    if host == "" || strings.startsWith(host,"/") { return false }
+    for invalid in Vec<str>(" ","\t","\n","\r","@","\\","#") { if strings.contains(value,invalid) { return false } }
+    return true
+}
+fn frame(state:json.Value):str {
+    let out = "K\t" + (json.has(state,"available") && strings.equal(json.kind(json.get(state,"available")),"bool") && json.bool(json.get(state,"available")) ? "1" : "0") + "\t" + clean(text(state,"default")) + "\t" + clean(text(state,"message"))
+    let list = json.has(state,"printers") ? json.get(state,"printers") : json.array()
+    for i in 0..(json.len(list) as i64) { let p = json.at(list,i); out = out + rs() + "L\t" + clean(text(p,"name")) + "\t" + clean(text(p,"uri")) }
+    return out
+}
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action"); let payload = {action:"list"}
+    if strings.equal(action,"add") {
+        if !queueName(text(request,"name")) { return failure("Use a printer name with letters, digits, hyphens or underscores (1–63 characters).") }
+        if !printerUri(text(request,"uri")) { return failure("Enter an ipp:// or ipps:// printer address without credentials or spaces.") }
+        payload = {action:"add",name:text(request,"name"),uri:text(request,"uri")}
+    } else if strings.equal(action,"default") || strings.equal(action,"remove") {
+        if !queueName(text(request,"name")) { return failure("Use a printer name with letters, digits, hyphens or underscores (1–63 characters).") }
+        payload = {action:action,name:text(request,"name")}
+    } else if !strings.equal(action,"list") { return failure("Unsupported action") }
+    let directory = process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
+    let ran = hw.runInput(Vec<str>("d",directory + "/dev-os-printers"),json.stringify(payload),30000)
+    let answer = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
+    if result.isErr(answer) || !strings.equal(json.kind(result.unwrap(answer)),"object") { return failure("The printer helper did not answer.") }
+    let value = result.unwrap(answer)
+    if !(json.has(value,"ok") && strings.equal(json.kind(json.get(value,"ok")),"bool") && json.bool(json.get(value,"ok"))) { return failure(text(value,"error") == "" ? "The printer helper failed." : text(value,"error")) }
+    return frame(value)
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

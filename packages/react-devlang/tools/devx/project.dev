@@ -1,0 +1,224 @@
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/strings"
+use "std/json"
+use "std/encoding"
+use "std/crypto"
+use "std/result"
+use "std/regex"
+use "std/child_process"
+use "std/io"
+use "./base.dev" as b
+use "./parser.dev" as parser
+use "./generator.dev" as generator
+
+extern fn realpath(file: str, resolved: *void): *u8
+extern fn free(pointer: *void)
+extern fn strlen(pointer: *u8): usize
+extern fn write(descriptor: i32, text: str, length: usize): isize
+struct Project { sources: Vec<b.Source>, outputs: Map<str, str> }
+fn absolute(file: str): str { return path.resolve(process.cwd(), file) }
+fn canonical(file: str): str {
+    let resolved = absolute(file)
+    if strings.equal(process.platform(), "win32") { return resolved }
+    unsafe {
+        let pointer = realpath(resolved, null)
+        if pointer == null { return resolved }
+        let size = strlen(pointer) as i64
+        let bytes = Vec<u8>()
+        for i in 0..size { bytes.push(pointer[i]) }
+        free(pointer as *void)
+        return encoding.decode(bytes, "utf8")
+    }
+}
+fn stderr(message: str) { unsafe { write(2, message, strings.len(message)) } }
+fn sourceIndex(project: Project, file: str): i64 { for i in 0..(project.sources.len() as i64) { if b.eq(project.sources[i].file, file) { return i } }; return -1 }
+fn relativeImport(value: str): bool { return strings.startsWith(value, ".") || path.isAbsolute(value) }
+fn dependency(source: b.Source, imported: str): str {
+    let target = canonical(path.resolve(path.dirname(source.file), imported))
+    if b.eq(path.extname(target), "") { target = target + ".dev" }
+    return target
+}
+fn load(project: Project, file: str, output: str, data: json.Value, uiFile: str): Project {
+    file = canonical(file)
+    if sourceIndex(project, file) >= 0 { return project }
+    if project.sources.len() >= 256 { result.raise("JSX dependency graph exceeds 256 modules") }
+    if !fs.is_file(file) { result.raise("Missing source file: " + file) }
+    if fs.size(file) > 2 * 1024 * 1024 { result.raise(file + ": source file exceeds 2 MiB") }
+    let text = fs.readFileSync(file, "utf8")
+    let source = b.bare(text, file, data, b.eq(path.extname(file), ".devx"))
+    if !b.eq(file, uiFile) { source = parser.parse(text, file, data, b.eq(path.extname(file), ".devx")) }
+    project.sources.push(source)
+    let hash = b.sub(crypto.hashText("sha256", file), 0, 12)
+    let name = path.basename(file)
+    let stem = b.sub(name, 0, b.length(name) - b.length(path.extname(file)))
+    project.outputs.set(file, path.resolve(output, hash + "." + stem + ".dev"))
+    for i in 0..(json.len(source.imports) as i64) {
+        let imported = b.s(json.at(source.imports, i), "path")
+        if relativeImport(imported) {
+            let target = dependency(source, imported)
+            if b.contains(Vec<str>(".dev", ".devx"), path.extname(target)) && fs.is_file(target) { project = load(project, target, output, data, uiFile) }
+        }
+    }
+    return project
+}
+fn qualify(kind: str, alias: str, module: b.Source, parent: b.Source): str {
+    kind = strings.replaceAll(kind, module.ui + ".", parent.ui + ".")
+    let source = b.bare(kind, "<type>", json.null_value(), false)
+    let output = ""
+    let i = 0
+    while i < source.chars.len() as i64 {
+        if b.alpha(b.char(source, i)) {
+            let end = parser.nameEnd(source, i, false, false)
+            let word = b.slice(source, i, end)
+            if json.has(module.structs, word) && !b.eq(b.char(source, i - 1), ".") { output = output + alias + "." }
+            output = output + word; i = end
+        } else { output = output + b.char(source, i); i = i + 1 }
+    }
+    return output
+}
+fn prepare(project: Project): Project {
+    let original = project.sources
+    for i in 0..(original.len() as i64) {
+        let source = original[i]
+        for j in 0..(json.len(source.imports) as i64) {
+            let imported = json.at(source.imports, j)
+            if !relativeImport(b.s(imported, "path")) { continue }
+            let index = sourceIndex(project, dependency(source, b.s(imported, "path")))
+            if index < 0 { continue }
+            let module = original[index]
+            let alias = b.s(imported, "alias")
+            if b.eq(alias, "") { alias = path.parse(module.file).name }
+            for name in json.keys(module.components) {
+                let component = json.get(module.components, name)
+                let fields = b.get(component, "fields")
+                let rewritten = json.array()
+                for k in 0..(json.is_null(fields) ? 0 : json.len(fields) as i64) {
+                    let field = json.at(fields, k)
+                    rewritten = json.push(rewritten, {name: b.s(field, "name"), type: qualify(b.s(field, "type"), alias, module, source)})
+                }
+                let propType = b.s(component, "type")
+                component = json.set(component, "type", b.eq(propType, "") ? "" : alias + "." + propType)
+                component = json.set(component, "fields", json.is_null(fields) ? json.null_value() : rewritten)
+                source.components = json.set(source.components, alias + "." + name, component)
+            }
+        }
+        project.sources[i] = source
+    }
+    let needed = Map<str, bool>()
+    for source in project.sources { if source.jsx { needed.set(source.file, true) } }
+    let changed = true
+    while changed {
+        changed = false
+        for source in project.sources {
+            if needed.contains(source.file) { continue }
+            for i in 0..(json.len(source.imports) as i64) {
+                let imported = b.s(json.at(source.imports, i), "path")
+                if relativeImport(imported) && needed.contains(dependency(source, imported)) { needed.set(source.file, true); changed = true; break }
+            }
+        }
+    }
+    for source in project.sources { if !needed.contains(source.file) { project.outputs.set(source.file, source.file) } }
+    return project
+}
+fn mappings(source: b.Source, code: b.Code): json.Value {
+    let lines = json.array()
+    let chars = strings.split(code.text, "")
+    let offset = 0
+    while offset < chars.len() as i64 {
+        let end = offset
+        while end < chars.len() as i64 && !b.eq(chars[end], "\n") { end = end + 1 }
+        if end < chars.len() as i64 { end = end + 1 }
+        let runs = json.array()
+        let i = offset
+        while i < end {
+            let origin = code.origins[i]
+            let linear = i + 1 < end && code.origins[i + 1] == origin + 1
+            let j = i + 1
+            while j < end && code.origins[j] == origin + (linear ? j - i : 0) { j = j + 1 }
+            let pos = b.position(source, origin)
+            runs = json.push(runs, json.value(Vec<json.Value>(json.value(i - offset + 1), json.value(j - offset + 1), b.get(pos, "row"), b.get(pos, "column"), json.value(linear))))
+            i = j
+        }
+        lines = json.push(lines, runs); offset = end
+    }
+    return lines
+}
+fn emit(entry: str, output: str, library: str): str {
+    if !b.eq(path.extname(entry), ".devx") { result.raise(entry + ": JSX entry files must use .devx") }
+    fs.mkdirSync(output, true)
+    output = canonical(output)
+    entry = canonical(entry)
+    let data = json.parse(fs.readFileSync(path.resolve(library, "tools/devx/entities.json"), "utf8"))
+    let project = prepare(load(Project(Vec<b.Source>(), Map<str, str>()), entry, output, data, canonical(path.resolve(library, "src/ui.dev"))))
+    let files = json.array()
+    for source in project.sources {
+        let generated = project.outputs.get(source.file)
+        if b.eq(generated, source.file) { continue }
+        let imports = json.object()
+        for i in 0..(json.len(source.imports) as i64) {
+            let imported = json.at(source.imports, i)
+            if relativeImport(b.s(imported, "path")) {
+                let target = dependency(source, b.s(imported, "path"))
+                imports = json.set(imports, "${b.n(imported, "start")}", project.outputs.contains(target) ? project.outputs.get(target) : target)
+            }
+        }
+        let code = generator.transform(source, 0, source.chars.len() as i64, 0, imports).code
+        if !fs.writeFileSync(generated, code.text) { result.raise("Could not write " + generated) }
+        files = json.push(files, {generated: generated, source: source.file, lines: mappings(source, code)})
+    }
+    let generated = project.outputs.get(entry)
+    if !fs.writeFileSync(generated + ".manifest.json", json.stringify({version: 1, files: files})) { result.raise("Could not write JSX source map") }
+    return generated
+}
+fn byteSlice(value: str, start: i64, end: i64): str {
+    let bytes = encoding.encode(value, "utf8")
+    let slice = Vec<u8>()
+    for i in start..end { slice.push(bytes[i]) }
+    return encoding.decode(slice, "utf8")
+}
+fn remap(value: str, manifest: json.Value): str {
+    let files = b.get(manifest, "files")
+    for i in 0..(json.len(files) as i64) {
+        let file = json.at(files, i)
+        let pattern = regex.compile(regex.escape(b.s(file, "generated")) + ":([0-9]+):([0-9]+)", "")
+        let remaining = value
+        let output = ""
+        while true {
+            let found = pattern.find(remaining)
+            if !found.matched { output = output + remaining; break }
+            let groups = pattern.captures(found.text)
+            let row = b.integer(groups[1])
+            let column = b.integer(groups[2])
+            let replacement = found.text
+            let lines = b.get(file, "lines")
+            if row > 0 && row <= json.len(lines) as i64 {
+                let runs = json.at(lines, row - 1)
+                for k in 0..(json.len(runs) as i64) {
+                    let run = json.at(runs, k)
+                    let start = b.number(json.at(run, 0))
+                    if column >= start && column < b.number(json.at(run, 1)) {
+                        let mapped = b.number(json.at(run, 3)) + (json.bool(json.at(run, 4)) ? column - start : 0)
+                        replacement = b.s(file, "source") + ":${b.number(json.at(run, 2))}:${mapped}"
+                        break
+                    }
+                }
+            }
+            output = output + byteSlice(remaining, 0, found.start) + replacement
+            remaining = byteSlice(remaining, found.end, strings.len(remaining) as i64)
+        }
+        pattern.close()
+        value = output
+    }
+    return value
+}
+fn compile(command: Vec<str>, manifest: json.Value): i64 {
+    if command.len() == 0 { result.raise("compile requires a command after --") }
+    let args = Vec<str>()
+    for i in 1..(command.len() as i64) { args.push(command[i]) }
+    let output = child_process.execFileSync(command[0], args, child_process.Options("", 300000, 8388608, Vec<u8>()))
+    io.write(remap(encoding.decode(output.stdout, "utf8"), manifest))
+    stderr(remap(encoding.decode(output.stderr, "utf8"), manifest))
+    return output.code
+}

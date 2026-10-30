@@ -1,0 +1,140 @@
+#!/usr/bin/env d
+# Data worker of the native Network pages (VPN, Mobile hotspot, Airplane mode, Advanced network settings). It runs
+# bin/dev-os-network-settings (the DevLang helper that talks to NetworkManager and asks for administrator rights where needed) with
+# the JSON that helper already reads, after checking the shape of every request, and answers with frames so the window never parses
+# JSON. Connection secrets are never part of an answer. One JSON request per line on stdin:
+#   {"action":"list"}  {"action":"radios"}  {"action":"connectivity-check"}  {"action":"airplane","enabled":true}
+#   {"action":"vpn-import","type":"wireguard|openvpn","file":"/abs/path"}  {"action":"vpn-connect","id":"uuid","username":"","password":""}
+#   {"action":"vpn-disconnect","id":"uuid"}  {"action":"vpn-remove","id":"uuid"}
+#   {"action":"hotspot-start","device":"/org/...","ssid":"..","password":".."}  {"action":"hotspot-stop","id":"uuid"}
+#   {"action":"adapter-connect|adapter-disconnect","device":"/org/..."}
+# Frame (records inside it are separated by ASCII 30):
+#   W available airplane radioError connectivity suggestedPassphrase    then
+#     R id type device soft hard | A path name type state managed mtu mac driver ap v4 v4gateway v4dns v6 v6gateway v6dns | P id name type activePath active hotspot ownHotspot
+#   E message
+# Test hook: DEVOS_SETTINGS_HELPERS names the directory with bin/dev-os-network-settings.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); out = strings.replaceAll(out,"\n"," ")
+    return strings.replaceAll(out,rs()," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn number(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"number") ? json.stringify(json.get(value,key)) : "" }
+fn yes(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) ? "1" : "0" }
+fn failure(message:str):str {
+    let marker = "std/result.raise: "
+    let shown = strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
+    return "E\t" + clean(shown)
+}
+struct Answer { error: str, value: json.Value }
+fn ask(root:str, payload:json.Value):Answer {
+    let directory = process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
+    let ran = hw.runInput(Vec<str>("d",directory + "/dev-os-network-settings"),json.stringify(payload),100000)
+    let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return Answer("The network helper did not answer.",json.null_value()) }
+    let value = result.unwrap(parsed)
+    if !(json.has(value,"ok") && strings.equal(json.kind(json.get(value,"ok")),"bool") && json.bool(json.get(value,"ok"))) {
+        return Answer(text(value,"error") == "" ? "The network helper failed." : text(value,"error"),json.null_value())
+    }
+    return Answer("",value)
+}
+# A random WPA2 passphrase of 12 characters without look-alike symbols, from the kernel's entropy pool.
+fn passphrase():str {
+    let ran = hw.run(Vec<str>("sh","-c","tr -dc 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789' < /dev/urandom | head -c 12"),5000)
+    return ran.code == 0 ? strings.trim(ran.out) : ""
+}
+fn listOf(value:json.Value, key:str):str {
+    let out = Vec<str>(); let list = json.has(value,key) ? json.get(value,key) : json.array()
+    for i in 0..(json.len(list) as i64) { if strings.equal(json.kind(json.at(list,i)),"string") { out.push(clean(json.string(json.at(list,i)))) } }
+    return strings.join(out,", ")
+}
+fn isLink(type:i64):bool { return type == 1 || type == 2 }
+fn frame(state:json.Value):str {
+    let out = "W\t" + yes(state,"available") + "\t" + yes(state,"airplane") + "\t" + clean(text(state,"radioError")) + "\t" + number(state,"connectivity") + "\t" + passphrase()
+    let radios = json.has(state,"radios") ? json.get(state,"radios") : json.array()
+    for i in 0..(json.len(radios) as i64) {
+        let r = json.at(radios,i)
+        out = out + rs() + "R\t" + number(r,"id") + "\t" + clean(text(r,"type")) + "\t" + clean(text(r,"device")) + "\t" + clean(text(r,"soft")) + "\t" + clean(text(r,"hard"))
+    }
+    # Wired and Wi-Fi adapters first, then by name (like the JS page).
+    let adapters = json.has(state,"adapters") ? json.get(state,"adapters") : json.array()
+    let keys = Vec<str>()
+    for i in 0..(json.len(adapters) as i64) { let a = json.at(adapters,i); keys.push((isLink(json.has(a,"type") ? json.int(json.get(a,"type")) : 0) ? "0" : "1") + strings.toLowerCase(text(a,"name")) + "\n${i}") }
+    keys.sort()
+    for key in keys {
+        let index = json.int(json.parse(strings.split(key,"\n")[1])); let a = json.at(adapters,index)
+        let v4 = json.has(a,"ipv4") ? json.get(a,"ipv4") : json.object(); let v6 = json.has(a,"ipv6") ? json.get(a,"ipv6") : json.object()
+        out = out + rs() + "A\t" + clean(text(a,"path")) + "\t" + clean(text(a,"name")) + "\t" + number(a,"type") + "\t" + number(a,"state") + "\t" + yes(a,"managed") + "\t" + number(a,"mtu") + "\t" + clean(text(a,"mac")) + "\t" + clean(text(a,"driver")) + "\t" + yes(a,"ap")
+        out = out + "\t" + listOf(v4,"addresses") + "\t" + clean(text(v4,"gateway")) + "\t" + listOf(v4,"dns") + "\t" + listOf(v6,"addresses") + "\t" + clean(text(v6,"gateway")) + "\t" + listOf(v6,"dns")
+    }
+    let profiles = json.has(state,"profiles") ? json.get(state,"profiles") : json.array()
+    for i in 0..(json.len(profiles) as i64) {
+        let p = json.at(profiles,i)
+        out = out + rs() + "P\t" + clean(text(p,"id")) + "\t" + clean(text(p,"name")) + "\t" + clean(text(p,"type")) + "\t" + clean(text(p,"activePath")) + "\t" + yes(p,"active") + "\t" + yes(p,"hotspot") + "\t" + yes(p,"ownHotspot")
+    }
+    return out
+}
+fn member(list:Vec<str>, value:str):bool { for item in list { if strings.equal(item,value) { return true } }; return false }
+fn noControl(value:str):bool { return !strings.contains(value,"\n") && !strings.contains(value,"\r") && !strings.contains(value,"\t") }
+# Printable ASCII only (hotspot passphrases are 8 to 63 ASCII characters).
+fn printable(value:str):bool {
+    for i in 0..(strings.charLength(value) as i64) {
+        let ch = strings.substring(value,i,i + 1)
+        if !strings.contains(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",ch) { return false }
+    }
+    return true
+}
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action"); let payload = json.null_value()
+    if member(Vec<str>("list","radios","connectivity-check"),action) { payload = {action:action} }
+    else if strings.equal(action,"airplane") {
+        if !(json.has(request,"enabled") && strings.equal(json.kind(json.get(request,"enabled")),"bool")) { return failure("Invalid airplane mode state.") }
+        payload = {action:"airplane",enabled:json.bool(json.get(request,"enabled"))}
+    } else if strings.equal(action,"vpn-import") {
+        let type = text(request,"type"); let file = text(request,"file")
+        if !member(Vec<str>("wireguard","openvpn"),type) { return failure("Choose WireGuard or OpenVPN.") }
+        if !strings.startsWith(file,"/") || !noControl(file) || strings.charLength(file) > 4096 { return failure("Choose a readable VPN configuration file.") }
+        payload = {action:"vpn-import",type:type,file:file}
+    } else if strings.equal(action,"vpn-connect") {
+        let username = text(request,"username"); let password = text(request,"password")
+        if text(request,"id") == "" || !noControl(username) || !noControl(password) || strings.charLength(username) > 256 || strings.charLength(password) > 1024 { return failure("Invalid VPN request.") }
+        payload = {action:"vpn-connect",id:text(request,"id"),username:username,password:password}
+    } else if member(Vec<str>("vpn-disconnect","vpn-remove","hotspot-stop"),action) {
+        if text(request,"id") == "" { return failure("Choose a connection first.") }
+        payload = {action:action,id:text(request,"id")}
+    } else if strings.equal(action,"hotspot-start") {
+        let ssid = text(request,"ssid"); let password = text(request,"password")
+        if text(request,"device") == "" || ssid == "" || strings.charLength(ssid) > 32 || !noControl(ssid) { return failure("Enter a network name of 1 to 32 characters.") }
+        if strings.charLength(password) < 8 || strings.charLength(password) > 63 || !printable(password) { return failure("The password must be 8 to 63 ASCII characters.") }
+        payload = {action:"hotspot-start",device:text(request,"device"),ssid:ssid,password:password}
+    } else if member(Vec<str>("adapter-connect","adapter-disconnect"),action) {
+        if text(request,"device") == "" { return failure("Choose an adapter first.") }
+        payload = {action:action,device:text(request,"device")}
+    } else { return failure("Unsupported action") }
+    let answer = ask(root,payload)
+    if !strings.equal(answer.error,"") { return failure(answer.error) }
+    return frame(answer.value)
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

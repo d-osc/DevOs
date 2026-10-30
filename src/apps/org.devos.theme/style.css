@@ -1,0 +1,1051 @@
+window#task-view { background: linear-gradient(125deg, @dv_accent_t1, @dv_s1 50%, @dv_s2); color: @dv_fg; }
+#task-view .task-view-content { padding: 12px 24px; }
+#task-view .task-view-header { padding-bottom: 2px; }
+#task-view .task-view-eyebrow { color: @dv_accent_fg; font-size: 9px; font-weight: 700; letter-spacing: 2px; }
+#task-view .task-view-heading { color: @dv_fg_strong; font-size: 30px; font-weight: 700; }
+#task-view .task-view-description { color: @dv_fg_muted; font-size: 11px; }
+#task-view .task-view-section-title { color: @dv_fg; font-size: 13px; font-weight: 600; }
+#task-view .task-view-summary { background: alpha(@dv_accent, 0.06); color: @dv_fg_muted; border: 1px solid alpha(@dv_accent, 0.12); border-radius: 20px; padding: 10px 16px; font-size: 11px; }
+#task-view .task-view-count { background: alpha(@dv_accent, 0.12); color: @dv_accent_fg; padding: 3px 8px; border-radius: 9px; font-size: 10px; font-weight: 700; }
+#task-view flowboxchild { padding: 3px; }
+#task-view .task-view-card { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 16px; box-shadow: 0 8px 22px alpha(@dv_shadow, 0.22); }
+#task-view .task-view-active { border-color: alpha(@dv_accent, 0.75); }
+#task-view .task-view-card-header { padding: 6px 13px; background: alpha(@dv_shade, 0.45); border-bottom: 1px solid alpha(@dv_fg, 0.08); border-radius: 16px 16px 0 0; }
+#task-view .task-view-app { color: @dv_fg; font-size: 11px; font-weight: 600; }
+#task-view button { color: @dv_fg; background: transparent; border: 1px solid transparent; border-radius: 8px; box-shadow: none; padding: 5px; transition: background-color 120ms ease, border-color 120ms ease; }
+#task-view button:hover { background-color: alpha(@dv_fg, 0.10); }
+#task-view button:focus { border-color: @dv_accent; background-color: alpha(@dv_accent, 0.09); }
+#task-view button:disabled { color: @dv_fg_dim; }
+#task-view button.task-view-close { padding: 5px; color: @dv_fg_muted; }
+#task-view button.task-view-close:hover, #task-view button.task-view-remove-desktop:hover { background: alpha(@dv_error, 0.16); color: @dv_error; }
+#task-view .task-view-window { border-radius: 0; padding: 0; }
+#task-view .task-view-card-body { padding: 14px 18px; }
+#task-view .task-view-app-emblem { border-radius: 16px; background: linear-gradient(145deg, alpha(@dv_accent, 0.16), alpha(@dv_info, 0.10)); border: 1px solid alpha(@dv_fg, 0.10); }
+#task-view .task-view-window-title { color: @dv_fg_strong; font-size: 13px; font-weight: 600; }
+#task-view .task-view-window-state { color: @dv_fg_muted; font-size: 10px; }
+#task-view .task-view-state-active { color: @dv_accent_fg; }
+#task-view .task-view-empty-emblem { background: alpha(@dv_accent, 0.06); border: 1px solid alpha(@dv_accent, 0.16); border-radius: 26px; color: @dv_accent_fg; }
+#task-view .task-view-empty-title { color: @dv_fg; font-size: 22px; font-weight: 600; }
+#task-view .task-view-desktops { padding: 14px 18px; background: alpha(@dv_shade, 0.48); border: 1px solid alpha(@dv_info, 0.14); border-radius: 20px; }
+#task-view button.task-view-new-desktop { background: alpha(@dv_accent, 0.12); border-color: alpha(@dv_accent, 0.25); color: @dv_accent_fg; padding: 9px 12px; font-size: 11px; }
+#task-view button.task-view-new-desktop:hover { background: alpha(@dv_accent, 0.20); }
+#task-view button.task-view-remove-desktop { padding: 9px 10px; color: @dv_fg_muted; font-size: 11px; }
+#task-view button.task-view-desktop { padding: 10px; background: @dv_s2; border: 1px solid @dv_line1; border-radius: 12px; }
+#task-view button.task-view-desktop:hover { background: @dv_s4; border-color: @dv_accent; }
+#task-view button.task-view-desktop-current { background: @dv_accent_t3; border-color: @dv_accent; box-shadow: inset 0 -2px @dv_accent; }
+#task-view .task-view-desktop-canvas { padding: 6px 10px; border-radius: 7px; background: linear-gradient(125deg, @dv_accent_t3, @dv_s5); }
+#task-view .task-view-canvas-1 { background: linear-gradient(125deg, @dv_accent_t3, @dv_s6); }
+#task-view .task-view-canvas-2 { background: linear-gradient(125deg, @dv_s6, @dv_s6); }
+#task-view .task-view-desktop-number { color: alpha(@dv_fg_strong, 0.45); font-size: 18px; font-weight: 700; }
+#task-view .task-view-desktop-app { padding: 4px; border-radius: 6px; background: alpha(@dv_shade, 0.35); }
+#task-view .task-view-desktop-name { color: @dv_fg; font-size: 12px; font-weight: 600; }
+#task-view .task-view-move { padding: 10px 12px; border-top: 1px solid alpha(@dv_fg, 0.12); }
+#task-view combobox button { background: @dv_s1; border-color: @dv_line1; color: @dv_fg; padding: 5px 8px; font-size: 11px; }
+#task-view combobox menu { background: @dv_s3; color: @dv_fg; }
+#task-view .task-view-footer { padding: 0 4px; }
+#task-view .task-view-keycap { border: 1px solid alpha(@dv_fg, 0.24); border-radius: 5px; background: alpha(@dv_fg, 0.04); color: @dv_fg; padding: 4px 8px; font-size: 10px; }
+#settings .files-settings-stage { padding: 18px; border: 1px solid @dv_line2; border-radius: 16px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); }
+#settings .files-menu-preview { padding: 8px; border: 1px solid @dv_line2; border-radius: 10px; background: @dv_s1; }
+#settings .files-preview-menu-row { padding: 7px 8px; }
+#settings .files-preview-menu-row label { font-size: 12px; }
+#settings .files-settings-card { padding: 18px; }
+#settings .files-custom-item { padding: 12px; border: 1px solid @dv_line2; border-radius: 8px; }
+#settings .files-custom-editor { padding-top: 14px; border-top: 1px solid @dv_line2; }
+#settings .files-custom-editor combobox button { background: @dv_s3; color: @dv_fg; border-color: @dv_line2; box-shadow: none; }
+#settings .files-custom-editor combobox menu { background: @dv_s3; color: @dv_fg; }
+menu.files-context-menu, menu.desktop-context-menu { background: @dv_s1; color: @dv_fg; border: 1px solid @dv_line2; padding: 6px; }
+menu.files-context-menu menuitem, menu.desktop-context-menu menuitem { padding: 8px 12px; color: @dv_fg; }
+menu.files-context-menu menuitem:hover, menu.desktop-context-menu menuitem:hover { background: @dv_s5; }
+menu.files-context-menu menuitem:disabled, menu.desktop-context-menu menuitem:disabled { color: @dv_fg_muted; }
+#settings .icons-settings-stage { padding: 20px 18px; border: 1px solid @dv_line2; border-radius: 16px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); }
+#settings .icons-preview-item { padding: 8px 2px; }
+#settings .icons-preview-files { padding-top: 14px; border-top: 1px solid @dv_line2; }
+#settings .icons-settings-card { padding: 18px; }
+#settings button.icons-theme-choice { padding: 11px 12px; background: @dv_s3; border-radius: 8px; }
+#settings button.icons-theme-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .theme-settings-stage { padding: 18px; border: 1px solid @dv_line2; border-radius: 16px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); }
+#settings .theme-settings-card { padding: 18px; }
+#settings button.theme-palette { padding: 16px; border-radius: 12px; background: @dv_s3; }
+#settings button.theme-palette-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .terminal-settings-stage { padding: 18px; border: 1px solid @dv_line2; border-radius: 16px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); }
+#settings .terminal-preview-title { padding: 10px; background: @dv_s3; border-radius: 8px; color: @dv_accent_fg; }
+#settings .terminal-settings-card { padding: 18px; }
+#settings button.terminal-scheme { padding: 14px 12px; background: @dv_s3; border-radius: 10px; }
+#settings button.terminal-scheme-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .terminal-settings-page spinbutton { color: @dv_fg; background: @dv_s1; border: 1px solid @dv_line2; border-radius: 8px; box-shadow: none; }
+#settings .terminal-settings-page spinbutton entry { color: @dv_fg; background: transparent; border: none; box-shadow: none; }
+#settings .terminal-settings-page spinbutton button { color: @dv_fg; background: @dv_s4; border-color: @dv_line2; padding: 6px 10px; box-shadow: none; }
+#settings .settings-app-stage { padding: 18px; border: 1px solid @dv_line2; border-radius: 16px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); }
+#settings .settings-app-preview { border: 1px solid @dv_line2; border-radius: 10px; background: @dv_s2; }
+#settings .settings-preview-navigation { padding: 14px; background: @dv_s1; border-radius: 10px 0 0 10px; }
+#settings .settings-preview-row { padding: 9px 10px; border-radius: 7px; }
+#settings .settings-preview-compact .settings-preview-row { padding: 4px 10px; }
+#settings .settings-preview-active { background: @dv_accent_t2; color: @dv_accent_fg; }
+#settings .settings-app-card { padding: 22px 18px; }
+#settings .settings-sidebar-compact button.settings-nav { padding: 4px 10px; }
+window#panel.panel-top { border-top: none; border-bottom: 1px solid @dv_line1; }
+window#panel.panel-translucent { background: alpha(@dv_s1, 0.72); }
+window#panel.panel-opaque { background: @dv_s1; }
+#panel .clock-single-line .clock-time { font-size: 12px; }
+#settings .panel-settings-stage { padding: 18px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s3); border: 1px solid @dv_line1; border-radius: 16px; }
+#settings .panel-preview-desktop { background: linear-gradient(135deg, @dv_accent_t3, @dv_s4 70%, @dv_s5); border: 1px solid @dv_line2; border-radius: 10px; }
+#settings .panel-preview-bar { padding: 0 12px; }
+window#panel, #settings .panel-preview-bar { background: alpha(@dv_s1, 0.97); color: @dv_fg; border-radius: 8px; }
+#settings .panel-preview-time { font-size: 11px; font-weight: bold; }
+#settings .panel-preview-date { font-size: 9px; color: @dv_fg_muted; }
+#settings .panel-settings-card { padding: 18px; }
+#settings button.panel-position { padding: 16px; background: @dv_s3; border-radius: 12px; }
+#settings button.panel-position-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .panel-settings-page spinbutton { color: @dv_fg; background: @dv_s1; border: 1px solid @dv_line2; border-radius: 8px; box-shadow: none; }
+#settings .panel-settings-page spinbutton entry { color: @dv_fg; background: transparent; border: none; box-shadow: none; }
+#settings .panel-settings-page spinbutton button { color: @dv_fg; background: @dv_s4; border-color: @dv_line2; padding: 6px 10px; box-shadow: none; }
+#settings .bluetooth-card { padding: 16px; }
+#settings .background-settings-card { padding: 18px; }
+#settings .background-preview-frame { border: 1px solid @dv_line2; border-radius: 10px; background: @dv_s0; }
+#settings .clock-preview-card { padding: 22px 24px; border: 1px solid @dv_accent_t4; border-radius: 16px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s2 70%, @dv_s3); }
+#settings .clock-preview-eyebrow { font-size: 10px; font-weight: bold; color: @dv_accent_fg; }
+#settings .clock-live-dot { background: @dv_accent; border-radius: 20px; min-width: 7px; min-height: 7px; }
+#settings .clock-zone { font-size: 11px; color: @dv_fg_muted; }
+#settings .clock-preview-time { font-size: 58px; font-weight: 600; color: @dv_fg_strong; }
+#settings .clock-period { font-size: 13px; font-weight: bold; padding: 6px 10px; border-radius: 8px; background: @dv_s5; color: @dv_accent_fg; }
+#settings .clock-preview-date { font-size: 14px; color: @dv_fg; }
+#settings .clock-panel-preview { margin-top: 6px; padding: 12px 14px; border: 1px solid @dv_line1; border-radius: 10px; background: alpha(@dv_s1, 0.9); }
+#settings .clock-panel-example { font-size: 13px; font-weight: 600; color: @dv_accent_fg; }
+#settings .clock-settings-card { padding: 18px; }
+#settings .clock-notice { font-size: 12px; color: @dv_fg_muted; }
+#settings button.clock-preset { padding: 15px 16px; border: 1px solid @dv_line1; border-radius: 12px; background: @dv_s3; box-shadow: none; }
+#settings button.clock-preset:hover { background: @dv_s4; border-color: @dv_line3; }
+#settings button.clock-preset-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .clock-preset-title { font-size: 12px; font-weight: 600; color: @dv_fg; }
+#settings .clock-preset-time { font-size: 19px; font-weight: 600; color: @dv_fg_strong; }
+#settings .clock-custom-section { padding-top: 14px; border-top: 1px solid @dv_line1; }
+#settings .launcher-settings-stage { padding: 18px; background: linear-gradient(125deg, @dv_accent_t2, @dv_s2); border: 1px solid @dv_line1; border-radius: 16px; }
+#settings .launcher-settings-width { font-size: 11px; color: @dv_accent_fg; background: @dv_accent_t3; padding: 4px 8px; border-radius: 6px; }
+#settings .launcher-settings-preview { padding: 16px; background: @dv_s1; border: 1px solid @dv_line2; border-radius: 14px; }
+#settings .launcher-settings-brand { background: @dv_accent_t3; border-radius: 8px; color: @dv_accent_fg; }
+#settings .launcher-preview-search { padding: 10px 12px; background: @dv_s0; border: 1px solid @dv_line1; border-radius: 8px; }
+#settings .launcher-preview-shortcut { padding: 9px 7px; background: @dv_s3; border: 1px solid @dv_line1; border-radius: 8px; }
+#settings .launcher-preview-shortcut-label { font-size: 10px; font-weight: 600; }
+#settings .launcher-preview-row { padding: 8px; border: 1px solid transparent; border-radius: 8px; }
+#settings .launcher-preview-selected { background: @dv_accent_t3; border-color: @dv_accent_t4; }
+#settings .launcher-preview-compact { padding: 4px 8px; }
+#settings .launcher-preview-icon { background: @dv_s4; border-radius: 7px; }
+#settings .launcher-preview-name { font-size: 12px; font-weight: 600; }
+#settings .launcher-preview-footer { border-top: 1px solid @dv_line1; padding-top: 10px; }
+#settings .launcher-settings-card { padding: 18px; }
+#settings .launcher-settings-page spinbutton { color: @dv_fg; background: @dv_s1; border: 1px solid @dv_line2; border-radius: 8px; box-shadow: none; }
+#settings .launcher-settings-page spinbutton entry { color: @dv_fg; background: transparent; border: none; box-shadow: none; }
+#settings .launcher-settings-page spinbutton button { color: @dv_fg; background: @dv_s4; border-color: @dv_line2; padding: 6px 10px; box-shadow: none; }
+#settings .launcher-settings-page spinbutton:focus { border-color: @dv_accent; box-shadow: none; }
+#settings button.launcher-density { padding: 16px; background: @dv_s3; border-radius: 12px; }
+#settings button.launcher-density-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .launcher-settings-keys { padding: 10px 0; }
+#settings .bluetooth-device { padding: 8px 0; }
+* {
+  font-family: "Inter", "Noto Sans", sans-serif;
+  font-size: 13px;
+}
+window#panel {
+  border-top: 1px solid @dv_line1;
+}
+#panel .panel-content { padding: 0; }
+#panel button {
+  color: @dv_fg; background: transparent; border: 1px solid transparent;
+  box-shadow: none; text-shadow: none; padding: 1px 4px;
+  border-radius: 5px; min-height: 22px; min-width: 0;
+}
+#panel button:hover { background: @dv_s4; border-color: @dv_line1; }
+#panel button:active { background: @dv_s5; }
+#panel .panel-app { min-width: 18px; padding: 1px 4px; }
+#panel .panel-app image { -gtk-icon-transform: scale(0.85); }
+#panel .panel-task { padding: 1px 5px; }
+#panel .task-running, #panel .task-active, #panel .task-minimized { box-shadow: none; }
+#panel .task-status-dot { min-width: 4px; min-height: 4px; border-radius: 50%; background: transparent; }
+#panel .task-running .task-status-dot { background: @dv_fg_muted; }
+#panel .task-minimized .task-status-dot { background: @dv_s7; }
+#panel .task-active .task-status-dot { background: @dv_accent; }
+#panel .menu-button image { color: @dv_accent_fg; }
+#panel #panel-terminal image { color: @dv_fg; }
+#panel .panel-battery { padding: 2px 3px; }
+#panel .panel-battery-label { font-size: 11px; font-weight: 600; }
+#panel .panel-battery-normal label, #panel .panel-battery-normal image { color: @dv_fg; }
+#panel .panel-battery-charging label, #panel .panel-battery-charging image { color: @dv_accent_fg; }
+#panel .panel-battery-low label, #panel .panel-battery-low image { color: @dv_warning; }
+#panel .panel-battery-unknown label, #panel .panel-battery-unknown image { color: @dv_fg_muted; }
+#panel #panel-files image { color: @dv_warning; }
+#panel .tray-button { padding: 1px 5px; }
+#panel .clock-button { padding: 0 5px; min-height: 0; }
+#panel .clock-time { font-size: 10px; color: @dv_fg_strong; }
+#panel .clock-date { font-size: 9px; color: @dv_fg_muted; }
+#panel .alert-button { padding: 1px 4px; }
+#panel .has-alerts image { color: @dv_accent_fg; }
+#panel .alert-count { background: @dv_accent; color: @dv_on_accent; border-radius: 9px; padding: 1px 5px; font-size: 10px; font-weight: bold; }
+.panel-popup, #panel .panel-popup { background: @dv_s2; color: @dv_fg; border: 1px solid @dv_line2; border-radius: 14px; box-shadow: none; }
+.panel-popup label, #panel .panel-popup label { color: @dv_fg; }
+.panel-popup .popup-title, #panel .panel-popup .popup-title { font-size: 15px; font-weight: bold; }
+.panel-popup .popup-muted, .panel-popup .tile-detail, #panel .panel-popup .popup-muted, #panel .panel-popup .tile-detail { color: @dv_fg_muted; font-size: 11px; }
+.panel-popup .calendar-date, #panel .panel-popup .calendar-date { font-size: 20px; }
+.panel-popup button, #panel .panel-popup button { background: @dv_s4; color: @dv_fg; border: 1px solid @dv_line2; border-radius: 7px; box-shadow: none; text-shadow: none; padding: 6px 10px; }
+.panel-popup button:hover, #panel .panel-popup button:hover { background: @dv_s5; }
+.panel-popup .task-window-title { padding: 6px; border-color: transparent; }
+.panel-popup .task-window-action { padding: 6px; min-width: 14px; }
+.panel-popup .task-window-close:hover { background: @dv_red; color: @dv_on_accent; }
+.panel-popup button:disabled, #panel .panel-popup button:disabled { color: @dv_fg_muted; background: @dv_s3; border-color: @dv_line1; }
+.panel-popup .device-tile, #panel .panel-popup .device-tile { padding: 14px 8px; }
+.panel-popup .device-on, #panel .panel-popup .device-on { background: @dv_accent; border-color: @dv_accent; }
+.panel-popup .device-on label, .panel-popup .device-on image, #panel .panel-popup .device-on label, #panel .panel-popup .device-on image { color: @dv_on_accent; }
+.panel-popup .popup-icon, #panel .panel-popup .popup-icon { padding: 5px 7px; }
+.panel-popup .alert-card, #panel .panel-popup .alert-card { background: @dv_s3; border-radius: 9px; }
+.panel-popup .alerts-empty image, #panel .panel-popup .alerts-empty image { color: @dv_fg_muted; }
+.panel-popup .error, #panel .panel-popup .error { color: @dv_error; }
+.panel-popup scale, #panel .panel-popup scale { padding: 8px 0; }
+.panel-popup scale trough, #panel .panel-popup scale trough { background: @dv_s6; min-height: 5px; border-radius: 3px; border: none; }
+.panel-popup scale highlight, #panel .panel-popup scale highlight { background: @dv_accent; border: none; border-radius: 3px; }
+.panel-popup scale slider, #panel .panel-popup scale slider { background: @dv_accent; border: 3px solid @dv_fg_muted; min-width: 10px; min-height: 10px; border-radius: 9px; box-shadow: none; }
+.accent { color: @dv_accent_fg; font-size: 22px; }
+.muted { color: @dv_fg_muted; font-size: 11px; }
+window#launcher {
+  background: linear-gradient(125deg, @dv_accent_t1, @dv_s1 55%, @dv_s3);
+  color: @dv_fg_strong;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+#launcher label { color: @dv_fg_strong; }
+#launcher .heading { font-size: 22px; font-weight: bold; }
+#launcher .launcher-eyebrow { color: @dv_fg_muted; font-size: 9px; font-weight: bold; letter-spacing: 2px; }
+#launcher .launcher-brand { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 11px; }
+#launcher .launcher-brand image { color: @dv_accent_fg; }
+#launcher .launcher-section { color: @dv_fg_muted; font-size: 10px; font-weight: bold; letter-spacing: 1px; }
+#launcher .launcher-count { color: @dv_fg_muted; background: @dv_s3; border-radius: 8px; padding: 2px 8px; font-size: 10px; }
+#launcher entry {
+  background: @dv_s0;
+  color: @dv_fg_strong;
+  border: 1px solid @dv_line1;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: none;
+  caret-color: @dv_accent_fg;
+}
+#launcher entry image { color: @dv_fg_muted; }
+#launcher entry:focus { border-color: @dv_accent; box-shadow: 0 0 0 1px alpha(@dv_accent, 0.15); }
+#launcher list { background: transparent; }
+#launcher .launcher-view-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#launcher flowboxchild { background: alpha(@dv_fg, 0.035); border: 1px solid transparent; border-radius: 14px; padding: 2px; }
+#launcher flowboxchild:hover { background: @dv_s3; }
+#launcher flowboxchild:selected { background: @dv_accent_t2; border-color: @dv_accent; }
+#launcher flowboxchild:focus { outline-color: @dv_accent; outline-offset: -3px; }
+#launcher .launcher-workspace-item { background: alpha(@dv_fg, 0.025); border-radius: 10px; }
+#launcher row { border: 1px solid transparent; border-radius: 10px; margin: 0 3px 4px 0; }
+#launcher row:hover { background: @dv_s3; }
+#launcher row:selected { background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#launcher row:selected:hover { background: @dv_accent_t3; }
+#launcher row:focus { outline-color: @dv_accent; outline-offset: -2px; }
+#launcher .launcher-app-icon { background: @dv_s3; border-radius: 9px; }
+#launcher row:selected .launcher-app-icon { background: @dv_accent_t3; }
+#launcher .launcher-app-name { font-weight: bold; font-size: 13px; }
+#launcher .launcher-app-description { color: @dv_fg_muted; font-size: 11px; }
+#launcher .launcher-row-arrow { color: @dv_fg_dim; }
+#launcher row:selected .launcher-row-arrow { color: @dv_accent_fg; }
+#launcher button, #task-view button.task-view-dismiss {
+  background: transparent;
+  color: @dv_fg;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  text-shadow: none;
+  padding: 7px 10px;
+  min-height: 0;
+  min-width: 0;
+}
+#launcher button:hover, #task-view button.task-view-dismiss:hover { background: @dv_s4; border-color: @dv_line2; }
+#launcher button:focus, #task-view button.task-view-dismiss:focus { border-color: @dv_accent; }
+#launcher .launcher-icon-button, #task-view button.task-view-dismiss { padding: 7px; }
+#launcher .launcher-icon-button image, #task-view button.task-view-dismiss image { color: @dv_fg_muted; }
+#launcher .launcher-shortcut { background: @dv_s3; border-color: @dv_line1; padding: 12px 10px; border-radius: 10px; }
+#launcher .launcher-shortcut:hover { background: @dv_s4; border-color: @dv_line3; }
+#launcher .shortcut-terminal image { color: @dv_info; }
+#launcher .shortcut-files image { color: @dv_warning; }
+#launcher .shortcut-title { font-size: 12px; font-weight: bold; }
+#launcher .shortcut-detail { font-size: 10px; color: @dv_fg_muted; }
+#launcher .launcher-hint { color: @dv_fg_muted; font-size: 10px; }
+#launcher .launcher-message { color: @dv_warning; font-size: 11px; }
+#launcher .launcher-empty { padding: 30px 10px; }
+#launcher .launcher-empty image { color: @dv_fg_muted; }
+#launcher .launcher-footer { background: @dv_s0; border-top: 1px solid @dv_line0; border-radius: 0; padding: 12px 16px; }
+#launcher .launcher-footer image { color: @dv_fg_muted; }
+#launcher .launcher-footer label { font-size: 11px; }
+#launcher .launcher-logout { color: @dv_fg_muted; border-color: @dv_line1; }
+#launcher .logout-confirm { background: @dv_s4; border-color: @dv_error_t2; }
+#launcher .logout-confirm label { color: @dv_error; }
+#launcher scrollbar { background: transparent; }
+#launcher scrollbar slider { background: @dv_s6; border-radius: 6px; min-width: 4px; }
+window#settings { background: @dv_s1; color: @dv_fg_strong; }
+#settings label { color: @dv_fg; }
+#settings .heading { font-size: 25px; font-weight: bold; }
+#settings .section-heading { font-size: 14px; font-weight: bold; }
+#settings .settings-description { color: @dv_fg_muted; font-size: 11px; }
+#settings .settings-eyebrow { color: @dv_fg_muted; font-size: 9px; font-weight: bold; letter-spacing: 1px; }
+#settings .settings-sidebar { background: @dv_s0; border-right: 1px solid @dv_line0; padding: 16px; }
+#settings .settings-sidebar-title { font-size: 16px; font-weight: bold; }
+#settings .settings-brand { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 10px; }
+#settings .settings-brand image { color: @dv_accent_fg; }
+#settings .settings-sidebar-footer { border-top: 1px solid @dv_line0; padding: 13px 4px 0; }
+#settings .settings-sidebar-footer image { color: @dv_fg_muted; }
+#settings button { background: @dv_s3; color: @dv_fg; border: 1px solid @dv_line2; border-radius: 7px; padding: 8px 14px; min-height: 0; min-width: 0; box-shadow: none; text-shadow: none; }
+#settings button:hover { background: @dv_s5; border-color: @dv_line3; }
+#settings button:focus { border-color: @dv_accent; }
+#settings button:disabled { background: @dv_s2; border-color: @dv_line1; }
+#settings button:disabled label { color: @dv_fg_dim; }
+#settings .settings-nav { background: transparent; border: 1px solid transparent; padding: 9px 10px; border-radius: 8px; }
+#settings .settings-nav:hover { background: @dv_s3; border-color: @dv_line1; }
+#settings .settings-nav label { color: @dv_fg_muted; font-size: 12px; }
+#settings .settings-nav image { color: @dv_fg_muted; }
+#settings .settings-nav-active { background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#settings .settings-nav-active:hover { background: @dv_accent_t3; border-color: @dv_accent_t4; }
+#settings .settings-nav-active label, #settings .settings-nav-active image { color: @dv_accent_fg; }
+#settings .settings-nav label.settings-nav-state { font-size: 8px; font-weight: bold; color: @dv_fg_dim; }
+#settings .settings-nav label.nav-on { color: @dv_accent_fg; }
+#settings .settings-nav-count { color: @dv_fg_muted; background: @dv_s3; border-radius: 6px; padding: 1px 6px; font-size: 9px; }
+#settings .settings-page-header { border-bottom: 1px solid @dv_line0; padding: 20px 24px; }
+#settings .settings-form { padding: 20px 24px; }
+#settings .wifi-header { padding: 22px 24px 20px; }
+#settings .wifi-body { padding: 22px 24px 26px; }
+#settings .wifi-radio-card { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 12px; padding: 16px 18px; }
+#settings .wifi-radio-icon { background: @dv_s3; color: @dv_accent_fg; border-radius: 10px; }
+#settings .display-preview { background: @dv_s0; border: 1px solid @dv_line1; border-radius: 14px; padding: 22px; min-height: 100px; }
+#settings .display-monitor { background: @dv_s3; border: 2px solid @dv_line2; border-radius: 9px; padding: 14px 28px; }
+#settings .display-monitor-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .display-monitor-number { font-size: 28px; font-weight: bold; }
+#settings .display-confirm { background: @dv_accent_t3; border: 1px solid @dv_accent_t4; border-radius: 12px; padding: 18px; }
+#settings .audio-device-icon { background: @dv_accent_t3; border-radius: 11px; color: @dv_accent_fg; }
+#settings .audio-volume-value { color: @dv_fg; font-size: 11px; }
+#settings .audio-app-row { border-top: 1px solid @dv_line1; padding-top: 16px; }
+#settings .audio-empty { background: @dv_s1; border-radius: 9px; padding: 22px 16px; color: @dv_fg_muted; }
+#settings .power-battery-hero { background-image: linear-gradient(125deg, @dv_accent_t3, @dv_s2); border: 1px solid @dv_accent_t4; border-radius: 15px; padding: 24px; }
+#settings .power-battery-low { background-image: linear-gradient(125deg, @dv_s4, @dv_s2); border-color: @dv_warning_t2; }
+#settings .power-battery-icon { background: @dv_accent_t4; border-radius: 17px; color: @dv_accent_fg; }
+#settings .power-charge { font-size: 36px; font-weight: bold; color: @dv_accent_fg; }
+#settings .power-battery-details { border-top: 1px solid @dv_accent_t4; padding-top: 16px; }
+#settings .power-empty { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 14px; padding: 24px; }
+#settings .power-empty-icon { background: @dv_s4; color: @dv_fg_muted; border-radius: 15px; }
+#settings .power-mode { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 10px; padding: 16px; }
+#settings .power-mode-selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#settings .power-mode image, #settings .power-active { color: @dv_accent_fg; }
+#settings .power-active { font-size: 10px; font-weight: bold; }
+#settings .power-unavailable { background: @dv_s1; border-radius: 10px; padding: 18px; }
+#settings .power-charge-bar trough { min-height: 7px; border-radius: 5px; background: @dv_accent_t1; }
+#settings .power-charge-bar progress { background: @dv_accent; border-radius: 5px; }
+#settings .touchpad-device { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 13px; padding: 20px; }
+#settings .touchpad-device-icon { background: @dv_accent_t3; border-radius: 13px; color: @dv_accent_fg; }
+#settings .tp-pad { background: @dv_s1; border: 1px solid @dv_line1; border-radius: 6px; }
+#settings .tp-zone { background: @dv_accent_t1; }
+#settings .tp-zone-on { background: @dv_accent_t3; }
+#settings .tp-zone-corner { border-radius: 0 5px 0 12px; }
+#settings .touchpad-option { padding: 17px 20px; }
+#settings .wifi-refresh { background: transparent; border-color: @dv_line1; padding: 9px 12px; }
+#settings .wifi-refresh label { font-size: 11px; }
+#settings .wifi-radio-off { background: @dv_s1; }
+#settings .wifi-radio-off .wifi-radio-icon { color: @dv_fg_muted; }
+#settings .wifi-connection-icon-off { background: @dv_s3; border-color: @dv_line1; color: @dv_fg_muted; }
+#settings .wifi-disconnect { background: transparent; border-color: @dv_accent_t4; padding: 5px 12px; }
+#settings .wifi-disconnect label { color: @dv_accent_fg; font-size: 10px; }
+#settings .wifi-disconnect:hover { background: @dv_accent_t3; }
+#settings .wifi-off { background: @dv_s1; border: 1px dashed @dv_line1; border-radius: 12px; padding: 36px 24px; color: @dv_fg_muted; }
+#settings .wifi-join { background: @dv_s2; border: 1px solid @dv_accent_t4; border-radius: 12px; padding: 16px 18px; }
+#settings .wifi-join-icon { background: @dv_accent_t3; color: @dv_accent_fg; }
+#settings .wifi-join-error { color: @dv_error; font-size: 10px; }
+#settings .wifi-reveal { padding: 6px 10px; }
+#settings .wifi-connection { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 14px; padding: 20px; }
+#settings .wifi-connection-active { background-image: linear-gradient(120deg, @dv_accent_t2, @dv_accent_t2); border-color: @dv_accent_t4; }
+#settings .wifi-connection-icon { background: @dv_accent_t3; border: 1px solid @dv_accent_t4; border-radius: 13px; color: @dv_accent_fg; }
+#settings .wifi-overline { color: @dv_accent_fg; font-size: 9px; font-weight: bold; letter-spacing: 1px; }
+#settings .wifi-network-title { font-size: 19px; font-weight: bold; color: @dv_fg_strong; }
+#settings .wifi-status-badge { color: @dv_fg_muted; background: @dv_s3; border-radius: 20px; padding: 5px 9px; font-size: 9px; }
+#settings .wifi-status-online { color: @dv_accent_fg; background: @dv_accent_t3; border: 1px solid @dv_accent_t4; }
+#settings .wifi-connection-details { border-top: 1px solid @dv_accent_t4; padding-top: 14px; }
+#settings .wifi-connection-details label, #settings .wifi-connection-details image { color: @dv_accent_fg; font-size: 10px; }
+#settings .wifi-count { color: @dv_fg_muted; font-size: 10px; }
+#settings .wifi-network-list { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 11px; }
+#settings .wifi-network-row { padding: 13px 14px; }
+#settings .wifi-network-row:hover { background: @dv_s3; }
+#settings .wifi-row-divider { border-top: 1px solid @dv_line1; }
+#settings .wifi-row-icon { background: @dv_s3; color: @dv_fg_muted; border-radius: 9px; }
+#settings .wifi-row-name { color: @dv_fg; font-size: 12px; font-weight: bold; }
+#settings .wifi-row-detail, #settings .wifi-network-row image { color: @dv_fg_muted; font-size: 10px; }
+#settings .wifi-saved-badge { color: @dv_accent_fg; background: @dv_accent_t3; border: 1px solid @dv_accent_t4; border-radius: 9px; padding: 1px 7px; font-size: 9px; }
+#settings .wifi-connect-button { background: @dv_accent_t4; padding-left: 16px; padding-right: 16px; border-color: @dv_accent_t4; padding: 7px 13px; }
+#settings .wifi-connect-button label { color: @dv_accent_fg; font-size: 11px; }
+#settings .wifi-connect-button:hover { background: @dv_accent_t4; border-color: @dv_success; }
+#settings .wifi-setup-button { background: transparent; border-color: @dv_line1; padding: 7px 13px; }
+#settings .wifi-setup-button label { color: @dv_fg_muted; font-size: 11px; }
+#settings .wifi-empty { padding: 26px 18px; color: @dv_fg_muted; }
+#settings .wifi-manage { padding: 16px 0 0; border-top: 1px solid @dv_line1; }
+#settings .wifi-manage-title { font-size: 11px; font-weight: bold; color: @dv_fg; }
+#settings .wifi-manage-button { padding: 7px 10px; background: transparent; border-color: @dv_line1; }
+#settings .wifi-manage-button label { font-size: 10px; }
+#settings .wifi-notice { padding: 12px; border-radius: 9px; }
+#settings .wifi-notice-error { color: @dv_error; background: @dv_s3; border: 1px solid @dv_error_t2; }
+#settings button.network-category { padding: 14px 16px; background: transparent; border: none; border-radius: 0; }
+#settings button.network-category:hover { background: @dv_s4; }
+#settings button.network-category:focus { box-shadow: inset 0 0 0 1px @dv_accent; }
+#settings button.network-category-divider { border-top: 1px solid @dv_line1; }
+#settings .network-category-icon { color: @dv_fg_muted; background: @dv_s3; border-radius: 10px; }
+#settings .network-category-primary { color: @dv_accent_fg; background: @dv_accent_t3; }
+#settings .network-category-title { color: @dv_fg; font-size: 12px; font-weight: bold; }
+#settings .network-host-badge { color: @dv_fg_muted; background: @dv_s3; border-radius: 5px; padding: 3px 6px; font-size: 9px; }
+#settings .network-breadcrumb { padding: 10px 24px 0; color: @dv_fg_muted; }
+#settings .network-breadcrumb button { padding: 3px 0; background: transparent; border: none; }
+#settings .network-breadcrumb label { font-size: 10px; }
+#settings .network-breadcrumb button label { color: @dv_accent_fg; }
+#settings .settings-page-icon { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 12px; }
+#settings .settings-page-icon image { color: @dv_accent_fg; }
+#settings .settings-badge { border-radius: 6px; padding: 4px 8px; font-size: 9px; font-weight: bold; }
+#settings .badge-base, #settings .badge-off { background: @dv_s3; color: @dv_fg_muted; }
+#settings .badge-on { background: @dv_accent_t2; color: @dv_accent_fg; }
+#settings .settings-card { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 12px; }
+#settings .settings-card-header { background: @dv_s3; border-bottom: 1px solid @dv_line1; border-radius: 12px 12px 0 0; padding: 14px 16px; }
+#settings .settings-card-header image { color: @dv_fg_muted; }
+#settings .settings-field-title { font-size: 12px; font-weight: bold; }
+#settings .settings-field { padding: 12px 16px; }
+#settings .field-divider { border-top: 1px solid @dv_line1; }
+#settings .settings-input-hint { color: @dv_fg_muted; font-size: 9px; }
+#settings entry { background: @dv_s0; color: @dv_fg; border: 1px solid @dv_line2; border-radius: 7px; padding: 8px 10px; min-height: 0; box-shadow: none; caret-color: @dv_accent_fg; }
+#settings entry:focus { border-color: @dv_accent; }
+#settings entry image { color: @dv_fg_muted; }
+#settings .settings-sidebar entry { padding: 8px; font-size: 11px; }
+#settings .settings-code-input { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px; }
+#settings switch { background: @dv_s6; color: @dv_fg_muted; border: 1px solid @dv_line3; border-radius: 13px; min-width: 40px; min-height: 22px; padding: 1px; }
+#settings switch:checked { background: @dv_accent; border-color: @dv_accent; color: @dv_on_accent; }
+#settings switch slider { background: @dv_fg; border: none; border-radius: 11px; min-width: 20px; min-height: 20px; box-shadow: none; }
+#settings switch:checked slider { background: @dv_on_accent; }
+#settings switch:focus { outline-color: @dv_accent; outline-offset: 2px; }
+#settings .settings-action-bar { background: @dv_s0; border-top: 1px solid @dv_line0; padding: 14px 24px; }
+#settings .settings-primary { background: @dv_accent; border-color: @dv_accent; padding: 8px 22px; }
+#settings .settings-primary label { color: @dv_on_accent; font-size: 12px; font-weight: bold; }
+#settings .settings-primary:hover { background: @dv_accent; border-color: @dv_accent; }
+#settings .settings-primary:disabled { background: @dv_accent_t3; border-color: @dv_accent_t4; }
+#settings .settings-primary:disabled label { color: @dv_accent_t4; }
+#settings .settings-saved { color: @dv_accent_fg; }
+#settings .settings-pending { color: @dv_warning; }
+#settings .error { color: @dv_error; font-size: 11px; }
+#settings .settings-notice { color: @dv_error; font-size: 11px; }
+#settings .settings-error-banner { color: @dv_error; background: @dv_s4; border: 1px solid @dv_error_t2; padding: 12px; border-radius: 8px; }
+#settings .settings-empty image { color: @dv_fg_muted; }
+#settings scrollbar { background: transparent; }
+#settings scrollbar slider { background: @dv_s6; border-radius: 6px; min-width: 4px; }
+window#settings .app-titlebar { background: @dv_s0; border-bottom: 1px solid @dv_line0; padding: 3px 8px; min-height: 24px; }
+window#settings .app-titlebar label { font-size: 11px; }
+window#settings .app-titlebar button:hover { background: @dv_s4; }
+#settings .updates-summary { padding: 20px; }
+#settings .store-extension-icon { background: @dv_accent_t3; color: @dv_accent_fg; border: 1px solid @dv_accent_t4; border-radius: 10px; }
+#settings .updates-details { padding: 16px; }
+#settings .updates-command { background: @dv_s0; border: 1px solid @dv_line2; border-radius: 7px; padding: 10px; font-family: monospace; font-size: 11px; color: @dv_accent_fg; }
+window#files { background: @dv_s0; color: @dv_fg; }
+.app-titlebar {
+  background: @dv_s1; color: @dv_fg_strong; border-bottom: 1px solid @dv_border;
+  border-radius: 8px 8px 0 0; padding: 5px 8px; box-shadow: none; min-height: 24px;
+}
+#files .app-titlebar button, #settings .app-titlebar button, .app-titlebar button { background: transparent; border-color: transparent; padding: 4px 6px; }
+#files .app-titlebar button:hover, #settings .app-titlebar button:hover, .app-titlebar button:hover { background: @dv_s5; }
+#files .app-titlebar image, #settings .app-titlebar image, .app-titlebar image { color: @dv_accent_fg; }
+#files label { color: @dv_fg; }
+#files .mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+#files .subtle, #files .muted { color: @dv_fg_muted; font-size: 11px; }
+#files .eyebrow { color: @dv_fg_muted; font-size: 10px; font-weight: bold; }
+#files .app-title { font-size: 20px; font-weight: bold; }
+#files .folder-title { font-size: 23px; font-weight: bold; }
+#files .files-toolbar { background: @dv_s1; border-bottom: 1px solid @dv_line0; }
+#files .brand-mark { background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 10px; }
+#files .brand-glyph { color: @dv_accent_fg; font-family: monospace; font-size: 20px; font-weight: bold; }
+#files .files-sidebar { background: @dv_s0; border-right: 1px solid @dv_line0; }
+#files button {
+  background: @dv_s2; color: @dv_fg; border: 1px solid @dv_line1;
+  border-radius: 6px; padding: 7px 10px; box-shadow: none; text-shadow: none; min-height: 0; min-width: 0;
+}
+#files button:hover { background: @dv_s4; border-color: @dv_line2; }
+#files button:focus { border-color: @dv_accent; }
+#files button:disabled { color: @dv_fg_dim; background: @dv_s1; border-color: @dv_line0; }
+#files button:disabled label { color: @dv_fg_dim; }
+#files .place-button, #files .folder-shortcut { background: transparent; border: 1px solid transparent; padding: 9px 10px; }
+#files .place-button:hover, #files .folder-shortcut:hover { background: @dv_s2; }
+#files .place-active { background: @dv_accent_t2; border-color: @dv_accent_t3; }
+#files .place-active label { color: @dv_accent_fg; }
+#files .folder-shortcut { padding: 6px 10px; }
+#files .folder-shortcut label { color: @dv_fg_muted; }
+#files .shortcut-note { border-top: 1px solid @dv_line0; padding-top: 14px; }
+#files .terminal-action { background: @dv_s3; border-color: @dv_line2; }
+#files .primary-action { background: @dv_accent_t3; color: @dv_accent_fg; border-color: @dv_accent_t4; }
+#files .primary-action:hover { background: @dv_accent_t3; }
+#files .view-switch { color: @dv_purple; }
+#files entry {
+  background: @dv_s0; color: @dv_fg; border: 1px solid @dv_line1;
+  border-radius: 6px; padding: 8px 10px; box-shadow: none; caret-color: @dv_accent_fg; min-height: 20px;
+}
+#files .location-bar { background: transparent; border: none; padding: 0; }
+#files viewport { background: transparent; }
+#files entry:focus { border-color: @dv_accent; }
+#files entry selection { background: @dv_accent_t4; color: @dv_fg_strong; }
+#files .local-badge { background: @dv_accent_t2; color: @dv_accent_fg; border-radius: 5px; padding: 5px 9px; font-size: 10px; font-weight: bold; }
+#files .breadcrumbs button { background: transparent; border-color: transparent; color: @dv_fg_muted; padding: 3px 6px; font-size: 11px; }
+#files .breadcrumbs button:hover { background: @dv_s3; }
+#files .breadcrumbs .crumb-current { color: @dv_accent_fg; background: @dv_accent_t2; }
+#files .column-heading label { color: @dv_fg_muted; font-size: 10px; font-weight: bold; }
+#files list, #files flowbox { background: transparent; }
+#files row { border-radius: 6px; border: 1px solid transparent; margin-bottom: 2px; padding: 0; }
+#files row:hover { background: @dv_s2; }
+#files row:selected, #files row.selected-file { background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#files flowboxchild { background: @dv_s1; border: 1px solid @dv_line0; border-radius: 8px; }
+#files flowboxchild:hover { background: @dv_s3; border-color: @dv_line2; }
+#files flowboxchild:selected, #files flowboxchild.selected-file { background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#files .file-name { color: @dv_fg; }
+#files .file-type { font-size: 11px; }
+#files .type-badge { background: @dv_s0; border-radius: 4px; padding: 4px 6px; font-size: 9px; font-weight: bold; }
+#files .kind-mint { color: @dv_accent_fg; }
+#files .kind-blue { color: @dv_info; }
+#files .kind-yellow { color: @dv_warning; }
+#files .kind-purple { color: @dv_purple; }
+#files .kind-orange { color: @dv_warning; }
+#files .kind-neutral { color: @dv_fg_muted; }
+#files .error { color: @dv_error; }
+#files .edit-strip { background: @dv_s3; border: 1px solid @dv_line2; border-radius: 7px; }
+#files .empty-message { color: @dv_fg_muted; padding: 12px; }
+#files .files-statusbar { background: @dv_s0; border-top: 1px solid @dv_line0; min-height: 32px; padding: 0 16px; }
+#files .status-dot { color: @dv_accent_fg; font-size: 9px; }
+#files .status-message { color: @dv_accent_fg; font-size: 11px; }
+#files scrollbar { background: transparent; }
+#files scrollbar slider { background: @dv_s5; border-radius: 6px; min-width: 5px; min-height: 5px; }
+#files checkbutton { color: @dv_fg_muted; font-size: 12px; }
+/* Files: quiet surfaces, compact controls and a clear folder hierarchy. */
+#files .files-brand image { color: @dv_accent_fg; }
+#files .files-brand-title { font-size: 19px; font-weight: bold; }
+#files .files-sidebar { background: @dv_s0; border-color: @dv_line0; }
+#files .files-sidebar .subtle { font-size: 10px; }
+#files .place-button { border-radius: 9px; padding: 11px 10px; }
+#files .place-active { background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#files .place-active image { color: @dv_accent_fg; }
+#files .folder-heading { padding: 4px 0 10px; }
+#files .folder-emblem { background: @dv_accent_t2; border-radius: 14px; color: @dv_accent_fg; }
+#files .folder-emblem image { color: @dv_accent_fg; }
+#files .folder-title { font-size: 25px; }
+#files .location-bar { padding-bottom: 2px; }
+#files .location-bar button, #files .files-icon-button { background: transparent; border-color: transparent; padding: 8px; }
+#files .location-bar button:hover, #files .files-icon-button:hover { background: @dv_s3; }
+#files .location-bar entry { background: @dv_s0; border-color: @dv_line1; border-radius: 9px; }
+#files .breadcrumbs button { border-radius: 6px; padding: 4px 8px; }
+#files .files-actions { background: @dv_s1; border: 1px solid @dv_line0; border-radius: 10px; padding: 7px; }
+#files .files-actions button { background: transparent; border-color: transparent; border-radius: 7px; padding: 7px 8px; }
+#files .files-actions button:hover { background: @dv_s4; }
+#files .files-actions .primary-action { background: @dv_accent_t3; border-color: @dv_accent_t4; }
+#files .files-actions .primary-action label, #files .files-actions .primary-action image { color: @dv_accent_fg; }
+#files .files-actions .view-active { background: @dv_accent_t3; border-color: @dv_accent_t4; color: @dv_accent_fg; }
+#files .column-heading { padding: 8px 0; }
+#files .files-content { background: @dv_s0; border: 1px solid @dv_line0; border-radius: 12px; padding: 8px; }
+#files .files-empty { padding: 18px; }
+#files .empty-folder-icon { background: @dv_accent_t2; border: 1px solid @dv_accent_t3; border-radius: 28px; }
+#files .empty-folder-icon image { color: @dv_accent_fg; }
+#files .empty-title { font-size: 21px; font-weight: bold; color: @dv_fg; }
+#files row { border-radius: 8px; margin-bottom: 4px; }
+#files .file-name { font-size: 13px; }
+#files flowboxchild { border-radius: 12px; background: @dv_s2; }
+#files .files-statusbar image { color: @dv_accent_fg; }
+#files .footer-location, #files .footer-count { color: @dv_fg_muted; font-size: 11px; }
+#files .quick-open { background: @dv_s1; }
+#files .quick-search-title { font-size: 23px; font-weight: bold; color: @dv_fg_strong; }
+#files .quick-search-emblem { background: @dv_accent_t2; border: 1px solid @dv_accent_t3; border-radius: 13px; }
+#files .quick-search-emblem image { color: @dv_accent_fg; }
+#files .quick-open entry { padding: 12px 14px; border: 1px solid @dv_line2; border-radius: 11px; background: @dv_s0; font-size: 14px; box-shadow: none; }
+#files .quick-open entry:focus { border-color: @dv_accent; box-shadow: none; }
+#files .quick-search-caption { font-size: 12px; font-weight: 600; color: @dv_fg_muted; }
+#files .quick-search-count { background: @dv_s3; color: @dv_fg_muted; padding: 4px 9px; border-radius: 9px; font-size: 10px; }
+#files .quick-search-results { background: @dv_s0; border: 1px solid @dv_line1; border-radius: 12px; padding: 6px; }
+#files .quick-search-results list { background: transparent; }
+#files .quick-open row { background: transparent; border: 1px solid transparent; border-radius: 9px; margin-bottom: 3px; }
+#files .quick-open row:hover { background: @dv_s2; }
+#files .quick-open row:selected { background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#files .quick-result-icon { background: @dv_s2; border-radius: 9px; }
+#files .quick-result-name { font-size: 13px; font-weight: 600; color: @dv_fg; }
+#files .quick-result-path { font-size: 11px; color: @dv_fg_muted; }
+#files .quick-search-empty { padding: 28px 18px; color: @dv_fg_muted; }
+#files .quick-search-notice { padding: 9px 12px; background: @dv_s2; border-radius: 8px; color: @dv_fg_muted; font-size: 11px; }
+#files .quick-search-footer { border-top: 1px solid @dv_line0; padding-top: 14px; }
+#files .quick-search-shortcuts { color: @dv_fg_muted; font-size: 10px; }
+#settings .about-device-hero { padding: 24px; border-radius: 16px; background: @dv_accent_t2; border-color: @dv_accent_t4; }
+#settings .about-device-icon { background: @dv_accent_t3; border-radius: 17px; color: @dv_accent_fg; }
+#settings .about-device-name { font-size: 23px; font-weight: bold; color: @dv_fg_strong; }
+#settings .about-card { padding: 22px; border-radius: 14px; }
+#settings .about-card > box:first-child image { color: @dv_accent_fg; }
+#settings .about-detail { padding: 3px 0; }
+#settings .about-detail-value { color: @dv_fg; font-size: 12px; }
+
+window#terminal, #terminal .terminal-surface { background: @dv_s0; color: @dv_fg; }
+
+#terminal-completions { background: transparent; border: none; padding: 0; margin: 0; box-shadow: none; }
+#terminal-completions .completion-panel { background: @dv_s1; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 10px; padding: 0; }
+#terminal-completions .completion-panel > border { border: none; }
+#terminal-completions button { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 4px 8px; min-height: 0; min-width: 0; box-shadow: none; text-shadow: none; color: inherit; }
+#terminal-completions button:hover, #terminal-completions button.completion-selected { background: @dv_accent_t3; }
+#terminal-completions .completion-header { padding: 3px 8px 5px; }
+#terminal-completions .completion-heading { font-size: 11px; font-weight: bold; }
+#terminal-completions .completion-count { font-size: 10px; }
+#terminal-completions .completion-detail { font-family: sans-serif; font-size: 10px; }
+#terminal-completions .completion-key { font-family: sans-serif; font-size: 9px; border: 1px solid @dv_accent_t4; border-radius: 4px; padding: 1px 5px; }
+#terminal-completions .completion-footer { border-top: 1px solid @dv_line1; padding: 7px 8px 2px; }
+#terminal-completions .completion-hint { font-family: sans-serif; font-size: 10px; }
+
+
+/* Browser-style tabs share the native window controls and drag area. */
+.app-titlebar.tabbed-titlebar { background: @dv_s0; border-bottom-color: @dv_line0; padding: 2px 6px 0; min-height: 29px; }
+.window-tabs { padding: 0 2px; }
+.window-tab { background: transparent; border-radius: 6px 6px 0 0; border: 1px solid transparent; }
+.window-tab-active { background: @dv_s2; border-color: @dv_line1; border-bottom-color: @dv_line0; }
+.window-tab .tab-dragging { opacity: 0.45; }
+#files .app-titlebar.tabbed-titlebar button, #terminal .app-titlebar.tabbed-titlebar button, #editor .app-titlebar.tabbed-titlebar button {
+  background: transparent; background-image: none; box-shadow: none; text-shadow: none;
+  border: 1px solid transparent; min-height: 16px; min-width: 16px; padding: 3px 4px; margin: 0;
+}
+#files .app-titlebar.tabbed-titlebar image, #terminal .app-titlebar.tabbed-titlebar image, #editor .app-titlebar.tabbed-titlebar image { color: @dv_fg_muted; }
+#files .app-titlebar.tabbed-titlebar button:hover, #terminal .app-titlebar.tabbed-titlebar button:hover, #editor .app-titlebar.tabbed-titlebar button:hover { background: @dv_s4; }
+#files .app-titlebar .tab-select, #terminal .app-titlebar .tab-select, #editor .app-titlebar .tab-select { border: none; padding: 4px 8px; min-height: 16px; min-width: 0; border-radius: 5px 0 0 0; }
+#files .app-titlebar .tab-close, #terminal .app-titlebar .tab-close, #editor .app-titlebar .tab-close { border: none; padding: 3px; min-height: 12px; min-width: 12px; border-radius: 4px; margin: 2px; }
+#files .app-titlebar .tab-add, #terminal .app-titlebar .tab-add, #editor .app-titlebar .tab-add { border: none; padding: 3px; min-height: 18px; min-width: 18px; border-radius: 5px; }
+#files .window-tab label, #terminal .window-tab label, #editor .window-tab label { color: @dv_fg_muted; font-size: 11px; }
+#files .window-tab-active label, #terminal .window-tab-active label, #editor .window-tab-active label { color: @dv_fg_strong; }
+#files .window-tab-active image, #terminal .window-tab-active image, #editor .window-tab-active image { color: @dv_accent_fg; }
+
+window#editor, #editor .editor-body { background: @dv_s2; color: @dv_fg; }
+#editor .app-titlebar.tabbed-titlebar { background: @dv_s1; border-bottom: 1px solid @dv_line0; padding: 0 6px; }
+#editor .window-tab { border-radius: 0; border: 0; border-right: 1px solid @dv_line0; }
+#editor .window-tab-active { background: @dv_s2; }
+#editor .window-tab label { color: @dv_fg_muted; font-size: 12px; }
+#editor .window-tab-active label { color: @dv_fg; font-style: italic; }
+#editor .app-titlebar .tab-select { padding: 5px 8px; border-radius: 0; }
+#editor .app-titlebar .tab-close { border-radius: 3px; }
+#editor .editor-toolbar { background: @dv_s2; padding: 2px 8px 2px 16px; }
+#editor .editor-toolbar button { background: transparent; background-image: none; box-shadow: none; color: @dv_fg_muted; border: none; border-radius: 3px; padding: 3px; min-height: 16px; min-width: 16px; }
+#editor .editor-toolbar button:hover { background: @dv_s4; color: @dv_fg; }
+#editor .editor-toolbar button:disabled { color: @dv_fg_dim; }
+#editor .breadcrumb { color: @dv_fg_muted; font-size: 12px; }
+#editor .breadcrumb-file { color: @dv_fg_muted; }
+#editor .editor-toolbar image { color: @dv_fg_muted; }
+#editor .subtle { color: @dv_fg_muted; font-size: 11px; }
+#editor .mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px; }
+#editor .editor-status { background: @dv_s1; border-top: 1px solid @dv_line0; padding: 3px 12px; }
+#editor .error { color: @dv_error; font-size: 11px; }
+/* Language preferences */
+.language-card { padding: 18px; }
+.time-card { padding: 18px; }
+.system-card { padding: 18px; }
+.system-display { padding: 12px 0; }
+.system-display-number { background-color: alpha(@dv_accent, 0.14); border: 1px solid alpha(@dv_accent, 0.4); border-radius: 8px; color: @dv_accent_fg; font-size: 22px; font-weight: 700; }
+.panel-language { font-weight: 700; }
+.language-selected { background-color: alpha(@dv_accent, 0.16); color: @dv_accent_fg; }
+/* Wallpaper widgets stay below application windows on the background surface. */
+#desktop-widgets .desktop-widget {
+    background-color: alpha(@dv_s2, 0.90);
+    color: @dv_fg_strong;
+    border: 1px solid alpha(@dv_fg, 0.12);
+    border-radius: 20px;
+    padding: 18px;
+}
+#desktop-widgets .desktop-widget-time { font-size: 42px; font-weight: 700; }
+#desktop-widgets .desktop-widget-remove { background: transparent; color: @dv_fg_muted; border: none; box-shadow: none; padding: 0 5px; min-height: 20px; min-width: 20px; border-radius: 8px; }
+#desktop-widgets .desktop-widget-remove:hover { background: alpha(@dv_error, 0.2); color: @dv_error; }
+#desktop-widgets .settings-eyebrow { color: @dv_fg_muted; }
+window#launcher.animated-overlay, window#task-view.animated-overlay { background: transparent; }
+#launcher .overlay-motion-content { background: linear-gradient(125deg, @dv_accent_t1, @dv_s1 55%, @dv_s3); }
+#task-view .overlay-motion-content { background: linear-gradient(125deg, @dv_accent_t1, @dv_s1 50%, @dv_s2); color: @dv_fg; }
+/* Standalone desktop welcome screen. */
+.login-screen { background: radial-gradient(ellipse at 15% 10%, alpha(@dv_accent_t4, 0.28), transparent 65%), linear-gradient(135deg, @dv_s0, @dv_s0 65%, @dv_s1); color: @dv_fg_strong; }
+.login-topbar { padding: 24px 36px; }
+.login-brand { background: transparent; }
+.about-brand image { border-radius: 10px; }
+.login-wordmark { font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+.login-top-note { color: @dv_accent_fg; font-size: 12px; }
+.login-card { background: alpha(@dv_s2, 0.96); border: 1px solid @dv_line1; border-radius: 24px; padding: 30px 36px 22px; box-shadow: 0 18px 56px alpha(@dv_shadow, 0.28); }
+.login-avatar { background: linear-gradient(135deg, @dv_accent_t3, @dv_accent_t2); border: 1px solid @dv_accent_t4; border-radius: 24px; color: @dv_accent_fg; }
+.login-eyebrow { color: @dv_accent_fg; font-size: 10px; font-weight: bold; letter-spacing: 2px; }
+.login-title { color: @dv_fg_strong; font-size: 28px; font-weight: 700; }
+.login-subtitle { color: @dv_fg_muted; font-size: 12px; }
+button.login-primary, button.login-secondary { padding: 12px 18px; border-radius: 12px; box-shadow: none; text-shadow: none; }
+button.login-primary { background: @dv_accent; border: 1px solid @dv_accent; color: @dv_on_accent; }
+button.login-primary label { color: @dv_on_accent; font-weight: bold; font-size: 13px; }
+button.login-primary:hover { background: @dv_accent; }
+button.login-primary:disabled { background: @dv_accent_t4; border-color: @dv_accent_t4; }
+button.login-primary:disabled label { color: @dv_accent_fg; }
+button.login-secondary { background: @dv_s3; border: 1px solid @dv_line2; color: @dv_fg; }
+button.login-secondary label { color: @dv_fg; font-size: 13px; }
+button.login-secondary:hover { background: @dv_s5; border-color: @dv_accent; }
+button.login-primary:focus, button.login-secondary:focus { outline: 2px solid @dv_accent; outline-offset: 3px; }
+.login-divider { color: @dv_fg_muted; font-size: 11px; }
+.login-divider-line { background: @dv_s5; }
+.login-card-footer { color: @dv_accent_fg; padding-top: 14px; border-top: 1px solid @dv_line1; font-size: 10px; }
+.login-profile-note { color: @dv_fg_muted; font-size: 11px; }
+.login-bottom { padding: 20px 36px; color: @dv_fg_muted; font-size: 10px; letter-spacing: 1px; }
+.login-code-card { background: @dv_s0; border: 1px solid @dv_accent_t4; border-radius: 14px; padding: 18px; }
+.login-code { color: @dv_accent_fg; font-family: monospace; font-size: 30px; font-weight: bold; letter-spacing: 5px; }
+.login-wait-icon { color: @dv_accent_fg; }
+.login-error { background: @dv_s4; border: 1px solid @dv_error_t2; color: @dv_error; border-radius: 10px; padding: 12px; font-size: 12px; }
+#settings .accounts-hero { padding: 24px; border: 1px solid @dv_accent_t4; border-radius: 18px; background: linear-gradient(120deg, @dv_accent_t2, @dv_s3 75%); }
+#settings .accounts-profile-name { font-size: 25px; font-weight: bold; color: @dv_fg_strong; }
+#settings .accounts-overline { color: @dv_accent_fg; font-size: 9px; font-weight: bold; letter-spacing: 1.6px; }
+#settings .accounts-status { background: @dv_s4; color: @dv_fg_muted; border: 1px solid @dv_line2; border-radius: 7px; padding: 5px 8px; font-size: 9px; font-weight: bold; }
+#settings .accounts-status-connected { background: @dv_accent_t3; border-color: @dv_accent_t4; color: @dv_accent_fg; }
+#settings .accounts-card-body { padding: 18px 20px; }
+#settings .accounts-user-row { padding: 16px 20px; border-bottom: 1px solid @dv_line1; }
+#settings .accounts-you { color: @dv_accent_fg; background: @dv_accent_t3; border-radius: 5px; padding: 2px 6px; font-size: 9px; font-weight: bold; }
+#settings .accounts-users-footer { padding: 12px 20px; background: alpha(@dv_shade, 0.3); border-radius: 0 0 12px 12px; }
+#settings .accounts-security-note { padding: 15px 18px; border: 1px solid @dv_line1; border-radius: 12px; background: @dv_s2; }
+#settings .accounts-security-note image { color: @dv_accent_fg; }
+#settings .accounts-auth-code { padding: 18px; background: @dv_s1; border: 1px solid @dv_accent_t4; border-radius: 12px; }
+#settings .accounts-page button.login-primary { background: @dv_accent; border-color: @dv_accent; padding: 10px 18px; border-radius: 10px; }
+#settings .accounts-page button.login-primary label { color: @dv_on_accent; font-weight: bold; }
+#settings .accounts-page button.login-primary:disabled { background: @dv_accent_t4; border-color: @dv_accent_t4; }
+#settings .accounts-page button.login-primary:disabled label { color: @dv_accent_fg; }
+#settings .login-screen button.login-profile { background: @dv_s1; border: 1px solid @dv_line1; border-radius: 12px; padding: 10px 14px; }
+#settings .login-screen button.login-profile-selected { background: @dv_accent_t2; border-color: @dv_accent; }
+#settings .login-screen button.login-primary { background: @dv_accent; border: 1px solid @dv_accent; border-radius: 12px; padding: 12px 18px; color: @dv_on_accent; }
+#settings .login-screen button.login-primary label { color: @dv_on_accent; font-size: 13px; font-weight: bold; }
+#settings .login-screen button.login-primary:hover { background: @dv_accent; }
+#settings .login-screen button.login-primary:disabled { background: @dv_accent_t4; border-color: @dv_accent_t4; }
+#settings .login-screen button.login-primary:disabled label { color: @dv_accent_fg; }
+#settings .login-screen button.login-secondary { background: @dv_s3; border: 1px solid @dv_line2; border-radius: 12px; padding: 12px 18px; }
+#settings .login-screen button.login-secondary:hover { background: @dv_s5; border-color: @dv_accent; }
+#settings .login-screen .login-eyebrow { color: @dv_accent_fg; }
+#settings .login-screen .login-subtitle { color: @dv_fg_muted; }
+
+/* Process monitor */
+#task-manager { background: @dv_s0; color: @dv_fg; }
+.task-manager-body { padding: 22px; }
+#task-manager button, #task-manager entry, #task-manager combobox button { background: @dv_s3; background-image: none; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 8px; box-shadow: none; padding: 8px 12px; }
+#task-manager button:hover { background: @dv_s4; }
+#task-manager button:disabled { color: @dv_fg_muted; background: @dv_s1; border-color: @dv_line0; }
+#task-manager .subtle { color: @dv_fg_muted; font-weight: normal; }
+#task-manager #task-end { background: @dv_accent_t3; border-color: @dv_accent_t4; }
+#task-manager #task-end:disabled { background: @dv_s1; border-color: @dv_line0; }
+.task-title { font-size: 24px; font-weight: bold; }
+.task-stat { background: @dv_s2; border: 1px solid @dv_line1; border-radius: 14px; padding: 16px; }
+.task-value { font-size: 28px; font-weight: bold; color: @dv_accent_fg; }
+.task-columns { color: @dv_fg_muted; padding: 0 14px; font-size: 11px; }
+button.task-process { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 9px 12px; box-shadow: none; color: @dv_fg; }
+button.task-process:hover { background: @dv_s3; }
+button.task-process.selected { background: @dv_accent_t3; border-color: @dv_accent; }
+.task-confirm { background: @dv_s3; border: 1px solid @dv_warning_t2; border-radius: 10px; padding: 14px; }
+
+/* Disk overview */
+#disk-manager { background: @dv_s0; color: @dv_fg; }
+.disk-manager-body { padding: 22px; }
+#disk-manager button { background: @dv_s3; background-image: none; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 9px; box-shadow: none; padding: 12px; }
+#disk-manager button:hover { background: @dv_s4; }
+#disk-manager button:disabled { color: @dv_fg_muted; background: @dv_s1; border-color: @dv_line0; }
+#disk-manager button.selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#disk-manager .subtle { color: @dv_fg_muted; font-weight: normal; }
+.disk-summary, .disk-partition { padding: 16px; background: @dv_s2; border: 1px solid @dv_line1; border-radius: 12px; }
+.disk-name { font-size: 22px; font-weight: bold; }
+.disk-notice { padding: 12px; background: @dv_accent_t2; border-radius: 9px; }
+.disk-manager-settings .settings-card { padding: 20px; }
+.disk-manager-settings .disk-settings-hero { background: linear-gradient(115deg, @dv_s3, @dv_accent_t2); border-color: @dv_accent_t4; }
+.disk-settings-device { padding: 12px; background: alpha(@dv_accent, 0.06); border-radius: 10px; }
+.task-manager-settings .settings-card { padding: 20px; }
+.task-manager-settings .task-settings-hero { background: linear-gradient(115deg, @dv_accent_t3, @dv_s4); border-color: @dv_line2; }
+/* Standalone application store */
+#app-store { background: @dv_s0; color: @dv_fg_strong; }
+#app-store button, #app-store entry { background: @dv_s3; background-image: none; border: 1px solid @dv_line1; border-radius: 10px; color: @dv_fg_strong; box-shadow: none; padding: 10px 14px; }
+#app-store button:hover { background: @dv_s5; border-color: @dv_line3; }
+#app-store button:disabled { background: @dv_s1; border-color: @dv_line0; color: @dv_fg_muted; }
+#app-store .subtle { color: @dv_fg_muted; font-weight: normal; }
+.app-store-topbar { padding: 14px 22px; border-bottom: 1px solid @dv_line0; background: @dv_s1; }
+.app-store-brand-mark { background: @dv_accent_t2; border: 1px solid @dv_accent_t3; color: @dv_accent_fg; border-radius: 11px; }
+.app-store-brand { font-size: 18px; font-weight: 700; margin-right: 32px; }
+#app-store entry { padding: 10px 14px; border-radius: 11px; background: @dv_s0; font-size: 12px; }
+#app-store button.app-store-toolbar-action { padding: 10px; background: transparent; border-color: transparent; color: @dv_fg_muted; }
+#app-store button.app-store-toolbar-action:hover { background: @dv_s4; color: @dv_fg; }
+.app-store-sidebar { padding: 24px 12px 18px; background: @dv_s1; border-right: 1px solid @dv_line0; }
+.app-store-nav-heading { margin: 0 12px 11px; color: @dv_fg_muted; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
+.app-store-category-heading { margin-top: 20px; }
+#app-store .app-store-sidebar button { background: transparent; border-color: transparent; padding: 7px 10px; min-height: 22px; border-radius: 9px; color: @dv_fg_muted; font-size: 12px; }
+#app-store .app-store-sidebar button:hover { background: @dv_s4; color: @dv_fg_strong; }
+#app-store .app-store-sidebar button.selected { background: @dv_accent_t2; border-color: @dv_accent_t3; color: @dv_accent_fg; font-weight: 600; }
+.app-store-nav-count { font-size: 10px; }
+.app-store-sidebar-footer { margin: 18px 10px 0; padding-top: 17px; border-top: 1px solid @dv_line1; }
+.app-store-sidebar-footer .subtle { font-size: 10px; }
+.app-store-footer-title { font-size: 12px; font-weight: 600; color: @dv_fg; }
+.app-store-content { padding: 26px 28px 32px; }
+#app-store-scroll, #app-store-scroll > viewport { background: @dv_s0; }
+.app-store-page-title { font-size: 26px; font-weight: 700; letter-spacing: -0.7px; }
+.app-store-content > box > box > .subtle { font-size: 12px; }
+.app-store-result-count { font-size: 11px; color: @dv_fg_muted; padding: 6px 10px; background: @dv_s3; border: 1px solid @dv_line1; border-radius: 20px; }
+.app-store-hero { background: linear-gradient(115deg, mix(@dv_s1, #42796d, 0.27), mix(@dv_s1, #598598, 0.13)); border: 1px solid alpha(#7ebca4, 0.22); border-radius: 18px; padding: 24px 26px; }
+.app-store-eyebrow { font-size: 9px; font-weight: 700; letter-spacing: 1.5px; color: alpha(@dv_fg_strong, 0.67); }
+.app-store-hero-title { font-size: 31px; font-weight: 700; letter-spacing: -1px; color: @dv_fg_strong; }
+.app-store-hero-description { font-size: 12px; color: alpha(@dv_fg_strong, 0.73); }
+#app-store button.app-store-hero-action { padding: 10px 13px; margin-top: 3px; border-radius: 9px; background: @dv_fg_strong; color: @dv_s0; border-color: transparent; font-size: 11px; font-weight: 600; }
+#app-store button.app-store-hero-action:hover { background: @dv_fg; }
+.app-store-hero-art { padding: 4px; }
+.app-store-hero-tile { border: 1px solid alpha(@dv_fg_strong, 0.13); border-radius: 19px; background: alpha(@dv_s0, 0.54); box-shadow: 0 8px 18px alpha(#000, 0.15); }
+.app-store-hero-tile.hero-tile-1 { background: mix(@dv_s1, #ca8e71, 0.13); }
+.app-store-section { font-size: 18px; font-weight: 700; letter-spacing: -0.25px; }
+.app-store-collection-header { padding: 22px; border: 1px solid @dv_line1; border-radius: 16px; background: linear-gradient(110deg, @dv_s1, mix(@dv_s1, #608ba0, 0.10)); }
+.app-store-collection-mark { background: @dv_accent_t2; color: @dv_accent_fg; border: 1px solid @dv_accent_t3; border-radius: 14px; }
+.app-store-grid { padding: 0; background: transparent; }
+.app-store-grid > flowboxchild { padding: 0; border: none; background: transparent; border-radius: 15px; }
+#app-store button.app-store-app { padding: 17px; background: @dv_s1; border-color: @dv_line1; border-radius: 15px; }
+#app-store button.app-store-app:hover { background: @dv_s3; border-color: @dv_accent_t4; box-shadow: 0 5px 14px alpha(#000, 0.08); }
+#app-store button.app-store-app:focus { border-color: @dv_accent; }
+.app-store-app-name { font-size: 14px; font-weight: 700; letter-spacing: -0.2px; }
+.app-store-app-description { font-size: 11px; color: @dv_fg_muted; }
+.app-store-app-category { font-size: 10px; color: @dv_fg_muted; }
+.app-store-card-arrow { color: @dv_fg_dim; margin-top: 3px; }
+.app-store-icon { border-radius: 14px; background: @dv_s4; color: @dv_fg; }
+.app-store-icon.category-productivity { background: mix(@dv_s2, #659d87, 0.10); }
+.app-store-icon.category-developer-tools { background: mix(@dv_s2, #6c8ed2, 0.10); }
+.app-store-icon.category-internet { background: mix(@dv_s2, #ad8a70, 0.10); }
+.app-store-chip { padding: 4px 8px; background: @dv_s4; border-radius: 6px; font-size: 10px; color: @dv_fg_muted; }
+.app-store-installed-chip { background: @dv_accent_t2; color: @dv_accent_fg; }
+.app-store-card { padding: 22px; background: @dv_s1; border: 1px solid @dv_line1; border-radius: 16px; }
+.app-store-detail-header { padding: 28px; background: linear-gradient(115deg, @dv_s1, @dv_accent_t2); }
+.app-store-detail-icon { background: @dv_s3; border: 1px solid @dv_line1; border-radius: 22px; }
+.app-store-detail-title { font-size: 32px; font-weight: 700; letter-spacing: -0.8px; }
+.app-store-detail-hero { padding: 26px 28px; background: linear-gradient(115deg, @dv_s1, mix(@dv_s1, #4d897d, 0.15)); border: 1px solid @dv_line1; border-radius: 19px; }
+.app-store-detail-publisher { color: @dv_accent_fg; font-size: 12px; font-weight: 600; }
+.app-store-detail-tagline { color: @dv_fg_muted; font-size: 12px; }
+.app-store-detail-actions { margin-top: 1px; }
+#app-store .app-store-detail-hero button.app-store-install-button { min-width: 100px; min-height: 0; padding: 11px 17px; border-radius: 9px; background: @dv_fg_strong; color: @dv_s0; border-color: transparent; font-size: 12px; font-weight: 700; }
+#app-store .app-store-detail-hero button.app-store-install-button:hover { background: @dv_fg; }
+#app-store .app-store-detail-hero button.app-store-install-button:disabled { background: @dv_s5; color: @dv_fg_dim; }
+#app-store button.app-store-website-button { min-height: 0; padding: 11px 15px; border-radius: 9px; background: transparent; border-color: @dv_line2; font-size: 12px; font-weight: 500; }
+#app-store button.app-store-website-button:hover { background: @dv_s4; border-color: @dv_line3; }
+.app-store-managed-by { color: @dv_fg_muted; background: @dv_s3; border: 1px solid @dv_line1; border-radius: 7px; padding: 5px 8px; font-size: 10px; }
+.app-store-install-caption { color: @dv_fg_muted; font-size: 11px; }
+.app-store-facts { background: @dv_s1; border: 1px solid @dv_line1; border-radius: 13px; padding: 4px 0; }
+.app-store-fact { padding: 13px 18px; }
+.app-store-fact + .app-store-fact { border-left: 1px solid @dv_line1; }
+.app-store-fact-label { font-size: 9px; font-weight: 700; letter-spacing: 1px; color: @dv_fg_muted; }
+.app-store-fact-value { font-size: 12px; font-weight: 600; color: @dv_fg; }
+.app-store-detail-body { padding: 4px 2px; }
+.app-store-about-description { font-size: 12px; color: @dv_fg_muted; }
+.app-store-tag { font-size: 10px; color: @dv_fg_muted; background: @dv_s3; border: 1px solid @dv_line1; border-radius: 6px; padding: 5px 9px; }
+.app-store-notes { font-size: 11px; color: @dv_fg_muted; padding-top: 3px; }
+.app-store-notes > label { margin-left: 5px; }
+.app-store-notes .subtle { font-size: 11px; margin-top: 14px; }
+.app-store-compatibility { padding: 18px; border: 1px solid @dv_line1; border-radius: 13px; background: @dv_s1; }
+.app-store-compatibility-title { font-size: 12px; font-weight: 600; color: @dv_fg; }
+.app-store-compatibility image { color: @dv_fg_muted; }
+.app-store-compatibility-description { font-size: 11px; color: @dv_fg_muted; }
+.app-store-testing-status { font-size: 10px; color: @dv_warning; background: @dv_warning_t2; border-radius: 6px; padding: 5px 8px; }
+.app-store-verified-status { font-size: 10px; color: @dv_accent_fg; background: @dv_accent_t2; border-radius: 6px; padding: 5px 8px; }
+
+#app-store button.app-store-back, #app-store button.app-store-text-action { padding: 7px 2px; background: transparent; border-color: transparent; color: @dv_accent_fg; font-size: 11px; }
+#app-store button.app-store-back:hover, #app-store button.app-store-text-action:hover { color: @dv_fg_strong; }
+#app-store button.app-store-primary { background: @dv_accent; border-color: @dv_accent; color: @dv_on_accent; font-weight: bold; }
+#app-store button.app-store-primary:hover { background: @dv_accent; }
+#app-store button.app-store-primary:disabled { background: @dv_accent_t2; border-color: @dv_accent_t3; color: @dv_accent_t4; }
+.app-store-confirm, .app-store-notice { padding: 16px 18px; background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 12px; font-size: 12px; }
+#app-store #app-store-error { padding: 12px 15px; border-radius: 10px; background: @dv_error_t2; border: 1px solid alpha(@dv_error, 0.2); font-size: 12px; }
+.app-store-success { color: @dv_accent_fg; }
+.app-store-empty { padding: 48px 16px; color: @dv_fg_muted; }
+.app-store-extensions .subtle { font-size: 12px; }
+.app-store-extension-card .app-store-section { font-size: 16px; }
+.app-store-extension-empty { padding: 30px; background: linear-gradient(115deg, @dv_s1, @dv_accent_t2); }
+.app-store-extension-empty .app-store-section { margin-top: 8px; }
+.app-store-extension-status { padding: 14px 16px; border: 1px solid @dv_line1; border-radius: 11px; background: @dv_s1; color: @dv_fg_muted; }
+.app-store-extension-status .subtle { font-size: 11px; }
+.app-store-settings-hero { background: linear-gradient(115deg, @dv_accent_t2, @dv_s3); border-color: @dv_accent_t4; }
+.app-store-settings-stat { padding: 16px; }
+.app-store-settings .settings-card { padding: 20px; }
+.app-store-settings .app-store-settings-hero { background: linear-gradient(115deg, @dv_accent_t2, @dv_s3); border-color: @dv_accent_t4; }
+
+/* The Snap panel is independent of the desktop overview. */
+window#snap { background: transparent; }
+#snap .overlay-motion-content, #snap-panel { background: @dv_s1; color: @dv_fg; border-radius: 0; }
+#snap-panel { border: none; }
+#snap-panel .snap-header { padding: 22px 26px 18px; background: linear-gradient(115deg, @dv_accent_t2, @dv_s2); border-radius: 0; }
+#snap-panel .snap-emblem { background: alpha(@dv_accent, 0.12); color: @dv_accent_fg; padding: 15px; border: 1px solid alpha(@dv_accent, 0.22); border-radius: 15px; }
+#snap-panel .snap-eyebrow { font-size: 9px; letter-spacing: 1.8px; color: @dv_accent_fg; font-weight: 700; }
+#snap-panel .snap-heading { font-size: 27px; font-weight: 700; color: @dv_fg_strong; }
+#snap-panel .snap-muted { font-size: 11px; color: @dv_fg_muted; }
+#snap-panel .snap-keycap { font-size: 10px; padding: 5px 9px; color: @dv_fg_muted; border: 1px solid @dv_line1; border-radius: 6px; }
+#snap-panel button { background: transparent; background-image: none; color: @dv_fg; border: 1px solid transparent; border-radius: 8px; box-shadow: none; text-shadow: none; padding: 8px 12px; }
+#snap-panel button:hover { background: alpha(@dv_accent, 0.08); }
+#snap-panel button:focus { border-color: @dv_accent; }
+#snap-panel button:disabled { color: @dv_fg_dim; }
+#snap-panel button.snap-close { padding: 8px; color: @dv_fg_muted; }
+#snap-panel button.snap-close:hover { background: @dv_error_t2; color: @dv_error; }
+#snap-panel .snap-tabs { padding: 10px 26px; border-bottom: 1px solid @dv_line1; }
+#snap-panel button.snap-tab { padding: 9px 16px; font-weight: 600; color: @dv_fg_muted; }
+#snap-panel button.snap-tab-active { background: alpha(@dv_accent, 0.1); color: @dv_accent_fg; }
+#snap-panel .snap-count { font-size: 10px; background: alpha(@dv_accent, 0.1); padding: 2px 6px; border-radius: 6px; }
+#snap-panel .snap-body { padding: 16px 26px; }
+#snap-panel .snap-section-title { font-size: 13px; font-weight: 600; color: @dv_fg; }
+#snap-panel button.snap-layout-card { background: @dv_s2; border-color: @dv_line1; border-radius: 10px; padding: 12px 10px; }
+#snap-panel button.snap-layout-card:hover { background: @dv_accent_t3; border-color: @dv_accent; }
+#snap-panel button.snap-selected { background: @dv_accent_t3; border-color: @dv_accent; box-shadow: inset 0 -2px @dv_accent; }
+#snap-panel .snap-layout-name { font-size: 11px; font-weight: 600; }
+#snap-panel .snap-editor { padding: 14px; border: 1px solid @dv_line1; border-radius: 12px; background: @dv_s0; }
+#snap-panel .snap-monitor { padding: 0 12px 0 0; }
+#snap-panel .snap-slot { color: @dv_fg_muted; font-size: 11px; font-weight: 700; padding: 8px; background: @dv_s3; border-radius: 7px; }
+#snap-panel .snap-slot-filled { color: @dv_accent_fg; background: alpha(@dv_accent, 0.12); }
+#snap-panel combobox button { background: @dv_s2; border-color: @dv_line1; padding: 6px 10px; font-size: 11px; }
+#snap-panel .snap-footer { padding: 14px 26px; border-top: 1px solid @dv_line1; background: @dv_s1; border-radius: 0; }
+#snap-panel button.snap-primary { background: @dv_accent; color: @dv_on_accent; font-weight: 700; padding: 10px 20px; }
+#snap-panel button.snap-primary:hover { background: shade(@dv_accent, 1.1); }
+#snap-panel button.snap-primary:disabled { background: @dv_accent_t3; color: @dv_accent_fg; }
+#snap-panel button.snap-secondary { background: @dv_accent_t3; border-color: @dv_accent_t4; color: @dv_accent_fg; }
+#snap-panel .snap-group-card { padding: 16px; background: @dv_s2; border: 1px solid @dv_line1; border-radius: 12px; }
+#snap-panel .snap-empty { padding: 54px 20px; color: @dv_accent_fg; }
+.media-window { background: @dv_s0; color: @dv_fg; }
+#settings .camera-settings-hero { padding: 24px; border: 1px solid @dv_line2; border-radius: 18px; background: linear-gradient(120deg, @dv_s4, @dv_s3); }
+#settings .camera-settings-emblem { background: @dv_s5; border: 1px solid @dv_accent_t4; border-radius: 22px; color: @dv_info; }
+#settings .camera-settings-title { font-size: 23px; font-weight: bold; color: @dv_fg_strong; }
+#settings .camera-settings-privacy { font-size: 11px; color: @dv_info; }
+#settings .camera-devices-card, #settings .camera-launch-card { padding: 22px; border-radius: 16px; }
+#settings .camera-device-icon { background: @dv_s5; border-radius: 12px; color: @dv_info; }
+#settings .camera-settings-empty { padding: 16px 24px; color: @dv_fg_muted; }
+#settings .camera-settings-tip { padding: 4px 8px 12px; color: @dv_fg_muted; }
+#settings .microphone-settings-hero { padding: 24px; border: 1px solid @dv_accent_t4; border-radius: 18px; background: linear-gradient(120deg, @dv_accent_t2, @dv_s3); }
+#settings .microphone-settings-emblem { background: @dv_accent_t3; border: 1px solid @dv_accent_t4; border-radius: 22px; color: @dv_accent_fg; }
+#settings .microphone-settings-title { font-size: 23px; font-weight: bold; color: @dv_fg_strong; }
+#settings .microphone-settings-privacy { font-size: 11px; color: @dv_accent_fg; }
+#settings .microphone-settings-page .audio-device-icon { background: @dv_accent_t3; border-radius: 12px; color: @dv_accent_fg; }
+#settings .microphone-settings-page .system-card, #settings .microphone-test-card { padding: 22px; border-radius: 16px; }
+#settings .microphone-settings-page .audio-volume-value { color: @dv_accent_fg; font-weight: bold; }
+#settings .microphone-settings-tip { padding: 4px 8px 12px; color: @dv_fg_muted; }
+.media-window label { color: @dv_fg; }
+.media-window .media-status { color: @dv_fg_muted; font-size: 12px; }
+.media-heading { font-size: 28px; font-weight: 700; color: @dv_fg_strong; }
+.media-window .media-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: @dv_accent_fg; }
+.media-preview { background: @dv_s0; border: 1px solid @dv_line1; border-radius: 16px; padding: 12px; color: @dv_fg_muted; }
+.media-window .media-content button { background: @dv_s2; background-image: none; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 10px; padding: 10px 18px; box-shadow: none; text-shadow: none; }
+.media-window .media-content button:hover { background: @dv_s4; }
+.media-window .media-content button:disabled { background: @dv_s1; border-color: @dv_line0; color: @dv_fg_dim; }
+.media-window .media-content button:disabled label { color: @dv_fg_dim; }
+.media-window .media-content button.suggested-action { background: @dv_accent; border-color: @dv_accent; color: @dv_on_accent; }
+.media-window .media-content button.suggested-action label { color: @dv_on_accent; }
+.media-window .media-content button.suggested-action:disabled { background: @dv_accent_t2; border-color: @dv_accent_t3; }
+.media-window .media-content button.suggested-action:disabled label { color: @dv_accent_fg; }
+.media-window .media-content combobox button { padding: 10px 14px; }
+.media-window levelbar trough { background: @dv_s2; border: 0; border-radius: 6px; padding: 3px; }
+.media-window levelbar block.empty { background: @dv_s2; border-color: @dv_line0; }
+.media-window levelbar block.filled { background: @dv_accent; border-color: @dv_accent; border-radius: 4px; }
+/* Installer: a quiet step rail and a focused form, matching the desktop. */
+#installer { background: @dv_s1; color: @dv_fg; }
+#installer .installer-sidebar { padding: 26px; background: @dv_s0; border-right: 1px solid @dv_line0; color: @dv_fg_muted; }
+#installer .installer-wordmark { color: @dv_accent_fg; font-size: 11px; font-weight: bold; letter-spacing: 3px; }
+#installer .installer-sidebar-title { color: @dv_fg; font-size: 22px; font-weight: bold; }
+#installer .installer-stage { color: @dv_fg_muted; }
+#installer .installer-stage-number { background: @dv_s3; border-radius: 14px; min-width: 28px; min-height: 28px; font-size: 11px; }
+#installer .installer-stage.current { color: @dv_fg_strong; font-weight: bold; }
+#installer .installer-stage.current .installer-stage-number { background: @dv_accent; color: @dv_on_accent; }
+#installer .installer-stage.complete { color: @dv_accent_fg; }
+#installer .installer-sidebar-note { font-size: 10px; color: @dv_fg_muted; letter-spacing: 1px; }
+#installer .installer-body { color: @dv_fg; }
+#installer .installer-title { font-size: 29px; font-weight: bold; color: @dv_fg_strong; }
+#installer .installer-body .subtle { color: @dv_fg_muted; }
+#installer .installer-body .error { color: @dv_error; background: @dv_s3; border: 1px solid @dv_error_t2; padding: 12px; border-radius: 10px; }
+#installer .installer-hero { padding: 24px; background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 18px; color: @dv_accent_fg; }
+#installer .installer-eyebrow { font-size: 10px; font-weight: bold; letter-spacing: 2px; color: @dv_accent_fg; }
+#installer .installer-info-card { padding: 16px; background: @dv_s2; border: 1px solid @dv_line1; border-radius: 12px; }
+#installer .installer-card-title { font-weight: bold; }
+#installer .installer-body button { background: @dv_s3; background-image: none; border: 1px solid @dv_line1; border-radius: 10px; padding: 10px 17px; color: @dv_fg; box-shadow: none; text-shadow: none; }
+#installer .installer-body button:hover { background: @dv_s5; }
+#installer .installer-body button.suggested-action { background: @dv_accent; border-color: @dv_accent; color: @dv_on_accent; font-weight: bold; }
+#installer .installer-body button.destructive-action { background: @dv_error_t2; border-color: @dv_error; color: white; font-weight: bold; }
+#installer .installer-body button:disabled { background: @dv_s2; border-color: @dv_line1; color: @dv_fg_dim; }
+#installer .installer-body button.disk-device { padding: 17px; background: @dv_s2; }
+#installer .installer-body button.disk-device.selected { background: @dv_accent_t3; border-color: @dv_accent; }
+#installer .installer-body entry { background: @dv_s0; border: 1px solid @dv_line1; border-radius: 9px; padding: 11px 13px; color: @dv_fg_strong; box-shadow: none; }
+#installer .installer-body entry:focus { border-color: @dv_accent; }
+#installer .installer-field-label { font-size: 11px; color: @dv_fg_muted; font-weight: bold; }
+#installer .installer-navigation { margin-top: 16px; }
+#installer progressbar trough { background: @dv_s3; min-height: 9px; border: 0; border-radius: 8px; }
+#installer progressbar progress { background: @dv_accent; min-height: 9px; border-radius: 8px; }
+/* Faint hairlines: every surface gets a 1px edge in the foreground at a few percent. Borders keep their width
+   (or are inset shadows), so nothing changes size. */
+window#settings, window#files, window#terminal, window#editor, window#task-manager, window#disk-manager, window#app-store, window.media-window { border: 1px solid @dv_border; }
+window#panel { border-color: @dv_border; }
+window#panel.panel-top { border-bottom-color: @dv_border; }
+.app-titlebar.tabbed-titlebar, #editor .app-titlebar.tabbed-titlebar, window#settings .app-titlebar { border-bottom-color: @dv_border; }
+menu, .popup menu, popover.background, popover contents, tooltip.background { border: 1px solid @dv_border; }
+.panel-popup, #panel .panel-popup { border-color: @dv_border; }
+#settings .settings-sidebar, #files .files-sidebar, #installer .installer-sidebar, .app-store-sidebar { border-color: @dv_border_soft; }
+#settings .settings-action-bar, #settings .settings-page-header, #files .files-toolbar, #files .files-statusbar, #editor .editor-status, .app-store-topbar { border-color: @dv_border_soft; }
+#settings .settings-card, #settings .wifi-radio-card, #settings .wifi-connection, #settings .wifi-network-list, #settings .power-mode, #settings .power-empty,
+.task-stat, .disk-summary, .disk-partition, .app-store-card, #app-store button.app-store-app, #installer .installer-info-card, #snap-panel .snap-group-card, #snap-panel button.snap-layout-card { border-color: @dv_border; }
+#settings .settings-card-header, #settings .field-divider, #settings .wifi-row-divider, #settings button.network-category-divider { border-color: @dv_border_soft; }
+#settings entry, #files entry, #launcher entry, #installer .installer-body entry, #task-manager entry, #app-store entry, #settings spinbutton { border-color: @dv_border; }
+#settings button, #files button, #task-manager button, #disk-manager button, #app-store button, #installer .installer-body button, .media-window .media-content button, .panel-popup button { border-color: @dv_border; }
+.panel-popup .alert-card, .panel-popup .device-tile, #settings .audio-empty, #settings .power-unavailable, #settings .touchpad-option, #launcher .launcher-workspace-item, #launcher .launcher-app-icon, #settings .about-card, #files .quick-search-notice { box-shadow: inset 0 0 0 1px @dv_border_soft; }
+#launcher row, #files row, #files flowboxchild, #launcher flowboxchild, #settings .settings-nav, #settings .wifi-network-row, button.task-process { border-color: @dv_border_soft; }
+
+/* Browser: quiet chrome and a native start page shared by light and dark themes. */
+window#browser { background: @dv_s1; color: @dv_fg; }
+#browser .app-titlebar.tabbed-titlebar { background: @dv_s1; border-bottom: none; min-height: 28px; padding: 0 6px; }
+#browser .window-tabs { padding: 0 4px; }
+#browser .window-tab { border-radius: 7px 7px 0 0; padding: 0; }
+#browser .window-tab-active { background: @dv_s2; border-color: @dv_line1; border-bottom-color: @dv_s2; }
+#browser .window-tab label { color: @dv_fg_muted; font-size: 11px; }
+#browser .window-tab-active label { color: @dv_fg_strong; }
+#browser .browser-toolbar { background: @dv_s2; padding: 5px 12px; border-bottom: 1px solid @dv_line1; }
+#browser .browser-toolbar button { background: transparent; background-image: none; color: @dv_fg_muted; border: 1px solid transparent; border-radius: 7px; box-shadow: none; min-width: 18px; min-height: 18px; padding: 4px; }
+#browser .browser-toolbar button:hover { background: @dv_s4; color: @dv_fg_strong; }
+#browser .browser-toolbar button:disabled { color: @dv_fg_dim; }
+#browser .browser-toolbar button:focus { border-color: @dv_accent; }
+#browser entry { background: @dv_s0; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 12px; padding: 9px 14px; min-height: 18px; box-shadow: none; caret-color: @dv_accent_fg; }
+#browser entry:focus { border-color: @dv_accent; box-shadow: 0 0 0 2px alpha(@dv_accent, 0.10); }
+#browser entry image { color: @dv_fg_muted; padding-right: 8px; }
+#browser .browser-shortcut { color: @dv_fg_dim; font-size: 10px; padding: 0 6px; }
+#browser .browser-progress trough { background: @dv_s2; border: 0; border-radius: 0; min-height: 2px; }
+#browser .browser-progress progress { background: @dv_accent; border: 0; border-radius: 0; min-height: 2px; }
+#browser .browser-start { background: linear-gradient(145deg, @dv_accent_t1, @dv_s0 60%); }
+#browser .browser-emblem { color: @dv_accent_fg; background: alpha(@dv_accent, 0.10); border: 1px solid alpha(@dv_accent, 0.18); border-radius: 24px; padding: 20px; }
+#browser .browser-eyebrow { color: @dv_accent_fg; font-size: 10px; font-weight: 700; letter-spacing: 3px; }
+#browser .browser-heading { color: @dv_fg_strong; font-size: 30px; font-weight: 600; letter-spacing: -1px; }
+#browser .browser-description { color: @dv_fg_muted; font-size: 12px; }
+#browser entry.browser-start-search { padding: 16px 20px; border-radius: 16px; background: @dv_s2; font-size: 14px; box-shadow: 0 8px 28px alpha(@dv_shadow, 0.10); }
+#browser button.browser-quicklink { background: @dv_s2; background-image: none; color: @dv_fg; border: 1px solid @dv_line1; border-radius: 15px; padding: 20px 24px; min-width: 116px; box-shadow: none; }
+#browser button.browser-quicklink:hover { background: alpha(@dv_accent, 0.08); border-color: alpha(@dv_accent, 0.45); }
+#browser button.browser-quicklink:focus { border-color: @dv_accent; }
+#browser .browser-quicklink image { color: @dv_accent_fg; margin-bottom: 4px; }
+#browser .browser-link-title { color: @dv_fg_strong; font-size: 13px; font-weight: 600; }
+#browser .browser-quicklink .browser-description { font-size: 10px; }
+#browser .browser-footer { color: @dv_fg_dim; font-size: 10px; }
+#browser .browser-status { background: @dv_s2; color: @dv_error; padding: 8px 16px; border-top: 1px solid @dv_line1; font-size: 11px; }
+#browser .browser-downloads { padding: 12px 16px; border-top: 1px solid @dv_line1; }
+#browser .browser-downloads progressbar { min-width: 200px; }
+#browser .app-titlebar.tabbed-titlebar button { background: transparent; background-image: none; box-shadow: none; text-shadow: none; color: @dv_fg_muted; border: 1px solid transparent; border-radius: 7px; min-height: 18px; min-width: 18px; padding: 4px 6px; }
+#browser .app-titlebar.tabbed-titlebar button:hover { background: @dv_s4; color: @dv_fg_strong; }
+#browser .app-titlebar .tab-select { border: none; padding: 3px 8px; min-height: 16px; }
+#browser .app-titlebar .tab-close { padding: 3px; margin-right: 3px; }
+#browser .app-titlebar .tab-close:hover { background: alpha(@dv_error, 0.14); color: @dv_error; }
+
+#browser .browser-toolbar entry { padding: 5px 12px; min-height: 18px; border-radius: 9px; font-size: 12px; }
+#browser .app-titlebar.tabbed-titlebar { min-height: 26px; }
+#browser .app-titlebar.tabbed-titlebar .window-tab { margin: 0; padding: 0; }
+#browser .app-titlebar.tabbed-titlebar .tab-select { min-height: 16px; min-width: 0; padding: 2px 5px; margin: 0; }
+#browser .app-titlebar.tabbed-titlebar .tab-close { min-height: 12px; min-width: 12px; padding: 2px; margin: 0 3px 0 0; border: none; }
+#browser .app-titlebar.tabbed-titlebar .tab-add { min-height: 16px; min-width: 16px; padding: 2px 4px; margin: 0; }
+
+#browser-inspector, window#browser-devtools { background: @dv_s1; color: @dv_fg; }
+#browser-inspector .inspector-toolbar { background: @dv_s2; border-top: 1px solid @dv_border; border-bottom: 1px solid @dv_border; padding: 7px 12px; }
+#browser-inspector .inspector-title { color: @dv_accent_fg; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+#browser-inspector .inspector-location { color: @dv_fg_muted; font-size: 11px; }
+#browser-inspector .inspector-toolbar button { background: transparent; background-image: none; color: @dv_fg_muted; border: 1px solid @dv_line1; border-radius: 6px; box-shadow: none; padding: 4px 9px; min-height: 16px; font-size: 11px; }
+#browser-inspector .inspector-toolbar button:hover { background: @dv_s4; color: @dv_fg_strong; border-color: @dv_line3; }
+#browser-inspector .inspector-toolbar button:focus { border-color: @dv_accent; }
+#browser-inspector .inspector-toolbar button:disabled { color: @dv_fg_dim; }
+#browser-inspector .inspector-toolbar .inspector-close { border-color: transparent; min-width: 16px; padding: 3px; }
+#browser-inspector .inspector-toolbar .inspector-close:hover { background: alpha(@dv_error, 0.14); color: @dv_error; }
+
+/* Screenshot (snipping tool) */
+window.snip-overlay, .snip-overlay { background: transparent; }
+.snip-toolbar { background: @dv_s3; border: 1px solid @dv_border; border-radius: 14px; padding: 6px; box-shadow: 0 8px 24px alpha(black, 0.45); }
+.snip-toolbar .snip-mode, .snip-toolbar .snip-close { min-height: 30px; padding: 2px 14px; border-radius: 9px; color: @dv_fg; background: transparent; border: 1px solid transparent; }
+.snip-toolbar .snip-mode:checked { background: @dv_accent; color: @dv_on_accent; }
+.snip-toolbar .snip-mode:hover:not(:checked), .snip-toolbar .snip-close:hover { background: @dv_s5; border-color: @dv_border_soft; }
+.snip-toast { background: @dv_s3; color: @dv_fg; border: 1px solid @dv_border; border-radius: 14px; box-shadow: 0 10px 28px alpha(black, 0.5); }
+.snip-toast-title { font-weight: bold; color: @dv_fg_strong; }
+.snip-toast-detail { color: @dv_fg_muted; font-size: 12px; }
+.snip-window { background: @dv_s0; color: @dv_fg; }
+.snip-window label { color: @dv_fg; }
+.snip-canvas { background: @dv_s1; border: 1px solid @dv_border; border-radius: 12px; }
+.snip-tools radiobutton, .snip-tools button { min-height: 28px; }

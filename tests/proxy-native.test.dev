@@ -1,0 +1,66 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+# Every run gets its own keyfile GSettings backend, so no real user setting is read or changed.
+fn environment(home:str):Map<str,str> {
+    let env = Map<str,str>(); env.set("GSETTINGS_BACKEND","keyfile"); env.set("XDG_CONFIG_HOME",home); env.set("DEVOS_SETTINGS_TEST","1")
+    return env
+}
+fn worker(home:str, input:str):str {
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/proxy-page.dev","--",t.root()),environment(home),input,120000)))
+}
+fn save(fields:str):str { return "{\"action\":\"save\"," + fields + "}\n" }
+fn manual():str { return "\"mode\":\"manual\",\"pac\":\"\",\"http\":\"proxy.example.org\",\"httpPort\":8080,\"https\":\"\",\"httpsPort\":0,\"socks\":\"\",\"socksPort\":0,\"same\":true,\"authentication\":true,\"username\":\"it's me\",\"password\":\"s3cret\",\"changePassword\":true,\"bypass\":[\"localhost\",\"*.local\"]" }
+
+test.case("a saved manual proxy round-trips, and the password is stored but never returned",fn() {
+    let home = temporary()
+    test.expect(strings.startsWith(worker(home,"{\"action\":\"get\"}\n"),"X\tnone"),"The default mode is not none")
+    let answer = worker(home,save(manual()))
+    test.expect(strings.startsWith(answer,"X\tmanual"),"Save was refused: " + answer)
+    test.expect(!strings.contains(answer,"s3cret") && strings.contains(answer,"proxy.example.org") && strings.contains(answer,"it's me") && strings.contains(answer,"localhost, *.local"),"Frame wrong: " + answer)
+    test.expect(strings.equal(worker(home,"{\"action\":\"get\"}\n"),answer),"A fresh read differs from the save answer")
+    let kept = worker(home,save(strings.replaceAll(manual(),"\"changePassword\":true","\"changePassword\":false") ))
+    test.expect(strings.startsWith(kept,"X\tmanual") && !strings.contains(kept,"s3cret"),"Keeping the password failed: " + kept)
+    tool.exec(Vec<str>("rm","-rf",home))
+})
+test.case("invalid proxy settings are refused and change nothing",fn() {
+    let home = temporary()
+    let before = worker(home,"{\"action\":\"get\"}\n")
+    let bad = Vec<str>(
+        "\"mode\":\"weird\"",
+        "\"mode\":\"auto\",\"pac\":\"ftp://x/y.pac\"",
+        "\"mode\":\"auto\",\"pac\":\"\"",
+        "\"mode\":\"manual\",\"http\":\"\",\"httpPort\":8080,\"https\":\"\",\"httpsPort\":0,\"socks\":\"\",\"socksPort\":0,\"same\":true",
+        "\"mode\":\"manual\",\"http\":\"bad host\",\"httpPort\":8080,\"same\":true",
+        "\"mode\":\"manual\",\"http\":\"h.example\",\"httpPort\":70000,\"same\":true",
+        "\"mode\":\"manual\",\"http\":\"h.example\",\"httpPort\":0,\"same\":true",
+        "\"mode\":\"none\",\"bypass\":[\"has space\"]")
+    for fields in bad { test.expect(strings.startsWith(worker(home,save(fields)),"E\t"),"Accepted: " + fields) }
+    test.expect(strings.startsWith(worker(home,"{\"action\":\"bogus\"}\n"),"E\t") && strings.startsWith(worker(home,"not json\n"),"E\t"),"A bad request was accepted")
+    test.expect(strings.equal(worker(home,"{\"action\":\"get\"}\n"),before),"A refused save changed the settings")
+    tool.exec(Vec<str>("rm","-rf",home))
+})
+test.case("switching back to off keeps working",fn() {
+    let home = temporary()
+    worker(home,save(manual()))
+    let off = worker(home,save("\"mode\":\"none\",\"bypass\":[\"localhost\"]"))
+    test.expect(strings.startsWith(off,"X\tnone"),"Reset failed: " + off)
+    tool.exec(Vec<str>("rm","-rf",home))
+})
+test.case("native Settings edits and applies a manual proxy under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/proxy-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let home = temporary()
+    let env = environment(home); env.set("DEVOS_PROXY_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","proxy-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Proxy page saved"),"Proxy page: " + t.out(done) + " / " + t.err(done))
+    let saved = worker(home,"{\"action\":\"get\"}\n")
+    test.expect(strings.startsWith(saved,"X\tmanual") && strings.contains(saved,"proxy.test") && strings.contains(saved,"3128"),"The page did not save: " + saved)
+    tool.exec(Vec<str>("rm","-rf",home))
+})
+return t.finish()

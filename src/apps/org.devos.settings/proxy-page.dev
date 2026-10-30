@@ -1,0 +1,170 @@
+#!/usr/bin/env d
+# Data worker of the native Proxy page: the per-user system proxy (GSettings org.gnome.system.proxy and its http/https/socks children),
+# read and written with the `gsettings` program and separate arguments. It repeats the JS page's validation (validateProxy), writes every key
+# or none (the previous values are put back if one write fails), refuses keys an administrator locked, and never sends the saved password back.
+# One JSON request per line on stdin:
+#   {"action":"get"}
+#   {"action":"save","mode":"none|auto|manual","pac":"","http":"","httpPort":0,"https":"","httpsPort":0,"socks":"","socksPort":0,
+#    "same":false,"authentication":false,"username":"","password":"","changePassword":false,"bypass":["localhost"]}
+# Frame: X mode pac http httpPort https httpsPort socks socksPort same authentication username passwordSet bypass(", "-joined) locked      or  E message
+use "std/args"
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); return strings.replaceAll(out,"\n"," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn flag(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn yes(value:bool):str { return value ? "1" : "0" }
+
+# --- GVariant text for the few types the proxy schemas use ---------------------------------------------------------------------
+fn quote(value:str):str { return "'" + strings.replaceAll(strings.replaceAll(value,"\\","\\\\"),"'","\\'") + "'" }
+fn unquote(value:str):str {
+    let v = strings.trim(value)
+    if strings.startsWith(v,"@") { let at = strings.indexOf(v," "); v = strings.trim(strings.substring(v,at + 1,strings.charLength(v))) }
+    if strings.charLength(v) < 2 { return "" }
+    let inner = strings.substring(v,1,strings.charLength(v) - 1)
+    let out = ""; let i = 0; let n = strings.charLength(inner) as i64
+    while i < n {
+        let ch = strings.substring(inner,i,i + 1)
+        if strings.equal(ch,"\\") && i + 1 < n { out = out + strings.substring(inner,i + 1,i + 2); i = i + 2 } else { out = out + ch; i = i + 1 }
+    }
+    return out
+}
+# ['a', 'b'] or @as []
+fn items(value:str):Vec<str> {
+    let out = Vec<str>(); let v = strings.trim(value)
+    if strings.startsWith(v,"@") { return out }
+    if strings.charLength(v) < 2 { return out }
+    let n = strings.charLength(v) as i64; let i = 1; let depth = false; let quoteChar = ""; let current = ""
+    while i < n - 1 {
+        let ch = strings.substring(v,i,i + 1)
+        if depth {
+            if strings.equal(ch,"\\") && i + 1 < n - 1 { current = current + ch + strings.substring(v,i + 1,i + 2); i = i + 2; continue }
+            if strings.equal(ch,quoteChar) { depth = false; out.push(unquote(quoteChar + current + quoteChar)); current = "" } else { current = current + ch }
+        } else if strings.equal(ch,"'") || strings.equal(ch,"\"") { depth = true; quoteChar = ch }
+        i = i + 1
+    }
+    return out
+}
+struct Key { schema: str, name: str }
+fn read(schema:str, key:str):hw.Run { return hw.run(Vec<str>("gsettings","get",schema,key),10000) }
+fn writable(schema:str, key:str):bool { let ran = hw.run(Vec<str>("gsettings","writable",schema,key),10000); return ran.code == 0 && strings.equal(strings.trim(ran.out),"true") }
+fn write(schema:str, key:str, value:str):bool { return hw.run(Vec<str>("gsettings","set",schema,key,value),10000).code == 0 }
+fn installed():bool { return hw.run(Vec<str>("gsettings","list-keys","org.gnome.system.proxy"),10000).code == 0 }
+
+# --- the proxy settings -------------------------------------------------------------------------------------------------------
+struct Proxy { mode: str, pac: str, http: str, httpPort: i64, https: str, httpsPort: i64, socks: str, socksPort: i64, same: bool, authentication: bool, username: str, password: str, bypass: Vec<str> }
+fn integer(value:str):i64 { let n = 0; let v = strings.trim(value); for i in 0..(strings.charLength(v) as i64) { let at = strings.indexOf("0123456789",strings.substring(v,i,i + 1)); if at < 0 { break }; n = n * 10 + at }; return n }
+fn load():Proxy {
+    let mode = unquote(read("org.gnome.system.proxy","mode").out)
+    let out = Proxy(mode,unquote(read("org.gnome.system.proxy","autoconfig-url").out),"",0,"",0,"",0,strings.equal(strings.trim(read("org.gnome.system.proxy","use-same-proxy").out),"true"),false,"","",items(read("org.gnome.system.proxy","ignore-hosts").out))
+    out.http = unquote(read("org.gnome.system.proxy.http","host").out); out.httpPort = integer(read("org.gnome.system.proxy.http","port").out)
+    out.https = unquote(read("org.gnome.system.proxy.https","host").out); out.httpsPort = integer(read("org.gnome.system.proxy.https","port").out)
+    out.socks = unquote(read("org.gnome.system.proxy.socks","host").out); out.socksPort = integer(read("org.gnome.system.proxy.socks","port").out)
+    out.authentication = strings.equal(strings.trim(read("org.gnome.system.proxy.http","use-authentication").out),"true")
+    out.username = unquote(read("org.gnome.system.proxy.http","authentication-user").out)
+    out.password = unquote(read("org.gnome.system.proxy.http","authentication-password").out)
+    return out
+}
+fn locked():bool {
+    for pair in Vec<Vec<str>>(Vec<str>("org.gnome.system.proxy","mode"),Vec<str>("org.gnome.system.proxy","autoconfig-url"),Vec<str>("org.gnome.system.proxy","ignore-hosts"),Vec<str>("org.gnome.system.proxy","use-same-proxy"),
+        Vec<str>("org.gnome.system.proxy.http","host"),Vec<str>("org.gnome.system.proxy.http","port"),Vec<str>("org.gnome.system.proxy.https","host"),Vec<str>("org.gnome.system.proxy.https","port"),
+        Vec<str>("org.gnome.system.proxy.socks","host"),Vec<str>("org.gnome.system.proxy.socks","port"),Vec<str>("org.gnome.system.proxy.http","authentication-user"),Vec<str>("org.gnome.system.proxy.http","authentication-password"),Vec<str>("org.gnome.system.proxy.http","use-authentication")) {
+        if !writable(pair[0],pair[1]) { return true }
+    }
+    return false
+}
+fn frame():str {
+    let p = load()
+    return "X\t" + p.mode + "\t" + clean(p.pac) + "\t" + clean(p.http) + "\t${p.httpPort}\t" + clean(p.https) + "\t${p.httpsPort}\t" + clean(p.socks) + "\t${p.socksPort}\t" + yes(p.same) + "\t" + yes(p.authentication) + "\t" + clean(p.username) + "\t" + yes(p.password != "") + "\t" + clean(strings.join(p.bypass,", ")) + "\t" + yes(locked())
+}
+fn lower(value:str):str { return strings.toLowerCase(value) }
+fn blank(value:str):bool { return strings.contains(value," ") || strings.contains(value,"\t") || strings.contains(value,"\n") || strings.contains(value,"\r") }
+fn hostOk(value:str):bool {
+    if strings.charLength(value) == 0 { return false }
+    for i in 0..(strings.charLength(value) as i64) { if !strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:[]_-",strings.substring(value,i,i + 1)) { return false } }
+    return true
+}
+# The JS page's validateProxy; empty when valid.
+fn problem(p:Proxy):str {
+    if !(strings.equal(p.mode,"none") || strings.equal(p.mode,"auto") || strings.equal(p.mode,"manual")) { return "Choose a proxy mode." }
+    if strings.equal(p.mode,"auto") {
+        let rest = strings.startsWith(lower(p.pac),"https://") ? strings.substring(p.pac,8,strings.charLength(p.pac)) : strings.startsWith(lower(p.pac),"http://") ? strings.substring(p.pac,7,strings.charLength(p.pac)) : ""
+        if rest == "" || blank(rest) || strings.contains(rest,"@") { return "Enter an HTTP or HTTPS address for the PAC file." }
+    }
+    if strings.equal(p.mode,"manual") {
+        if p.same && p.http == "" { return "Enter the HTTP proxy used for all protocols." }
+        if p.http == "" && p.https == "" && p.socks == "" { return "Enter at least one proxy server." }
+        let hosts = Vec<str>(p.http,p.https,p.socks); let ports = Vec<i64>(p.httpPort,p.httpsPort,p.socksPort)
+        for i in 0..3 { if hosts[i] != "" && (!hostOk(hosts[i]) || ports[i] < 1 || ports[i] > 65535) { return "Use a host name or IP address and a port from 1 to 65535." } }
+    }
+    if p.bypass.len() > 100 { return "Enter comma-separated hosts to bypass." }
+    for host in p.bypass { if host == "" || blank(host) { return "Enter comma-separated hosts to bypass." } }
+    return ""
+}
+fn gvariantList(values:Vec<str>):str { let parts = Vec<str>(); for item in values { parts.push(quote(item)) }; return "[" + strings.join(parts,", ") + "]" }
+# Every key written for a proxy, as (schema, key, GVariant text); the password is only included when `withPassword`.
+fn changes(p:Proxy, withPassword:bool):Vec<Vec<str>> {
+    let out = Vec<Vec<str>>()
+    out.push(Vec<str>("org.gnome.system.proxy","autoconfig-url",quote(p.pac))); out.push(Vec<str>("org.gnome.system.proxy","ignore-hosts",gvariantList(p.bypass)))
+    out.push(Vec<str>("org.gnome.system.proxy","use-same-proxy",p.same ? "true" : "false"))
+    out.push(Vec<str>("org.gnome.system.proxy.http","host",quote(p.http))); out.push(Vec<str>("org.gnome.system.proxy.http","port","${p.httpPort}"))
+    out.push(Vec<str>("org.gnome.system.proxy.https","host",quote(p.https))); out.push(Vec<str>("org.gnome.system.proxy.https","port","${p.httpsPort}"))
+    out.push(Vec<str>("org.gnome.system.proxy.socks","host",quote(p.socks))); out.push(Vec<str>("org.gnome.system.proxy.socks","port","${p.socksPort}"))
+    out.push(Vec<str>("org.gnome.system.proxy.http","authentication-user",quote(p.username)))
+    if withPassword { out.push(Vec<str>("org.gnome.system.proxy.http","authentication-password",quote(p.password))) }
+    out.push(Vec<str>("org.gnome.system.proxy.http","use-authentication",p.authentication ? "true" : "false"))
+    out.push(Vec<str>("org.gnome.system.proxy","mode",quote(p.mode)))
+    return out
+}
+fn ports(value:json.Value, key:str):i64 { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"number") && json.float(json.get(value,key)) == (json.int(json.get(value,key)) as f64) ? json.int(json.get(value,key)) : -1 }
+fn save(request:json.Value):str {
+    let bypass = Vec<str>(); let list = json.has(request,"bypass") && strings.equal(json.kind(json.get(request,"bypass")),"array") ? json.get(request,"bypass") : json.array()
+    for i in 0..(json.len(list) as i64) { if strings.equal(json.kind(json.at(list,i)),"string") { bypass.push(strings.trim(json.string(json.at(list,i)))) } else { return failure("Enter comma-separated hosts to bypass.") } }
+    let want = Proxy(text(request,"mode"),text(request,"pac"),strings.trim(text(request,"http")),ports(request,"httpPort"),strings.trim(text(request,"https")),ports(request,"httpsPort"),strings.trim(text(request,"socks")),ports(request,"socksPort"),flag(request,"same"),flag(request,"authentication"),text(request,"username"),text(request,"password"),bypass)
+    let reason = problem(want)
+    if reason != "" { return failure(reason) }
+    if !installed() { return failure("System proxy support is not installed. Install the current DevOs runtime.") }
+    # Out-of-range ports of unused servers are stored as 0.
+    if want.httpPort < 0 || want.httpPort > 65535 { want.httpPort = 0 }; if want.httpsPort < 0 || want.httpsPort > 65535 { want.httpsPort = 0 }; if want.socksPort < 0 || want.socksPort > 65535 { want.socksPort = 0 }
+    let original = load()
+    let withPassword = flag(request,"changePassword")
+    if !withPassword { want.password = original.password }
+    let fields = changes(want,withPassword)
+    for field in fields { if !writable(field[0],field[1]) { return failure("Your administrator has locked this proxy setting.") } }
+    let done = 0; let ok = true
+    for field in fields { if write(field[0],field[1],field[2]) { done = done + 1 } else { ok = false; break } }
+    if !ok {
+        # Put the previous values back so a failed save leaves nothing half-written.
+        for field in changes(original,true) { write(field[0],field[1],field[2]) }
+        return failure("Could not save proxy settings.")
+    }
+    return frame()
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action")
+    if strings.equal(action,"get") {
+        if !installed() { return failure("System proxy support is not installed. Install the current DevOs runtime.") }
+        return frame()
+    }
+    if strings.equal(action,"save") { return save(request) }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()

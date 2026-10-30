@@ -1,0 +1,99 @@
+#!/usr/bin/env d
+# Data worker of the native Desktop settings page: the core desktop configuration (name, panel height, clock format and the
+# terminal / file manager / lock / autostart commands) stored in <config>/dev-os/config.json, validated by lib/config.dev (the
+# DevLang copy of the @dev-os/config rules). One JSON request per line on stdin:
+#   {"action":"get"}
+#   {"action":"save","name":"Dev OS","panel_height":36,"clock_format":"%H:%M","terminal":"[\"dev-os-terminal\"]","files":"[\"thunar\",\"~\"]","lock":"[...]","autostart":"[]"}
+# The four command fields arrive as JSON text (like the JS page). One frame per request, tab separated:
+#   C name panel_height clock_format terminal files lock autostart loadError reloaded(1/0) reloadError        or  E message
+# After a save the running shell is asked to reload (dev-os-shell reload); a failed reload is reported but the file stays saved.
+# Test hooks (only with DEVOS_SETTINGS_TEST=1): DEVOS_SETTINGS_RELOAD_COMMAND as a JSON array.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/config.dev" as config
+use "../../../lib/hw.dev" as hw
+use "../../../lib/desktop.dev" as util
+
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\r"," "); return strings.replaceAll(out,"\n"," ")
+}
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+# The message of a raised error without the "file:line:col: std/result.raise: " prefix the runtime adds.
+fn reason(message:str):str {
+    let marker = "std/result.raise: "
+    return strings.contains(message,marker) ? strings.substring(message,strings.indexOf(message,marker) + strings.charLength(marker),strings.charLength(message)) : message
+}
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn yes(value:bool):str { return value ? "1" : "0" }
+# The saved configuration, or the defaults plus the reason when the file is damaged (it is then not overwritten blindly: a save
+# replaces it with the validated form values, like the JS page).
+struct Loaded { value: json.Value, error: str }
+fn loaded():Loaded {
+    let read = result.attempt(fn():json.Value { return config.load(config.configPath()) })
+    if result.isErr(read) { return Loaded(config.defaults(),"Cannot read " + config.configPath() + ": " + reason(result.message(read))) }
+    return Loaded(result.unwrap(read),"")
+}
+fn number(value:json.Value):str { return strings.equal(json.kind(value),"number") ? json.stringify(value) : "" }
+fn frame(state:Loaded, reloaded:bool, reloadError:str):str {
+    let v = state.value
+    return "C\t" + clean(text(v,"name")) + "\t" + number(json.get(v,"panel_height")) + "\t" + clean(text(v,"clock_format")) + "\t" + clean(json.stringify(json.get(v,"terminal"))) + "\t" + clean(json.stringify(json.get(v,"files"))) + "\t" + clean(json.stringify(json.get(v,"lock"))) + "\t" + clean(json.stringify(json.get(v,"autostart"))) + "\t" + clean(state.error) + "\t" + yes(reloaded) + "\t" + clean(reloadError)
+}
+# The text of a command field as JSON, or null with the reason set.
+fn commandField(request:json.Value, key:str, title:str):json.Value {
+    let parsed = result.attempt(fn():json.Value { return json.parse(text(request,key)) })
+    if result.isErr(parsed) { return json.null_value() }
+    return result.unwrap(parsed)
+}
+fn reloadCommand(root:str):Vec<str> {
+    let fallback = Vec<str>("sh",(process.hasEnv("DEV_OS_ROOT") ? process.getenv("DEV_OS_ROOT") : root) + "/bin/dev-os-shell","reload")
+    if !process.hasEnv("DEVOS_SETTINGS_TEST") || !process.hasEnv("DEVOS_SETTINGS_RELOAD_COMMAND") { return fallback }
+    let parsed = result.attempt(fn():json.Value { return json.parse(process.getenv("DEVOS_SETTINGS_RELOAD_COMMAND")) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"array") { return fallback }
+    let out = Vec<str>(); let list = result.unwrap(parsed)
+    for i in 0..(json.len(list) as i64) { if strings.equal(json.kind(json.at(list,i)),"string") { out.push(json.string(json.at(list,i))) } }
+    return out
+}
+fn save(root:str, request:json.Value):str {
+    let candidate = json.object()
+    candidate = json.set(candidate,"name",text(request,"name"))
+    candidate = json.set(candidate,"clock_format",text(request,"clock_format"))
+    let height = json.has(request,"panel_height") ? json.get(request,"panel_height") : json.null_value()
+    candidate = json.set(candidate,"panel_height",height)
+    let titles = Vec<str>("Terminal command","External file manager","Lock command","Start with this session")
+    let keys = Vec<str>("terminal","files","lock","autostart")
+    for i in 0..4 {
+        let value = commandField(request,keys[i],titles[i])
+        if strings.equal(json.kind(value),"null") { return failure(titles[i] + " must be valid JSON, for example [\"dev-os-terminal\"].") }
+        candidate = json.set(candidate,keys[i],value)
+    }
+    let checked = result.attempt(fn():json.Value { return config.validate(candidate) })
+    if result.isErr(checked) { return failure(reason(result.message(checked))) }
+    let path = config.configPath()
+    if !util.atomic(path,result.unwrap(checked)) { return failure("Cannot save " + path) }
+    let ran = hw.run(reloadCommand(root),15000)
+    return frame(loaded(),ran.code == 0,ran.code == 0 ? "" : "Saved, but the running desktop could not reload: " + strings.trim(ran.out))
+}
+fn handle(root:str, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action")
+    if strings.equal(action,"get") { return frame(loaded(),false,"") }
+    if strings.equal(action,"save") { return save(root,request) }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,line))
+    }
+    return 0
+}
+return main()

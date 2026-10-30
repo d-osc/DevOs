@@ -1,0 +1,23 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-context-menu.dev" as menu
+extern fn panel_menu_widget(handle:*void):*void
+extern fn gtk_container_get_children(widget:*void):*List
+extern fn g_list_free(list:*List)
+extern fn gtk_widget_get_name(widget:*void):str
+extern fn gtk_menu_item_activate(widget:*void)
+extern fn rd_widget_live_count():i64
+struct List {data:*void,next:*List,previous:*List}
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let clicks=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn(bytes:*u8,length:i64) {unsafe {let key=Vec<u8>();for i in 0..length {key.push(bytes[i])};check(ui.equalText(ui.Text(key),ui.text("custom-test")),"Menu changed action identity");clicks.set(clicks.get()+1)}})
+        let handle=menu.panel_menu_new((*context).native,callback.call,callback.data)
+        let frame=ui.concatText(Vec<ui.Text>(ui.text("M"),ui.Text(Vec<u8>(30)),ui.text("M\tmenuSettings\tSettings\tpreferences-system-symbolic"),ui.Text(Vec<u8>(30)),ui.text("Q"),ui.Text(Vec<u8>(30)),ui.text("M\tcustom-test\tไทย%09100%25\t")))
+        menu.populate(handle,frame);let children=gtk_container_get_children(panel_menu_widget(handle));check(children!=null && (*children).next!=null && (*(*children).next).next!=null,"Prepared separator or menu row missing");let custom=(*(*(*children).next).next).data;check(ui.equalText(ui.text(gtk_widget_get_name(custom)),ui.text("panel-menu-custom-test")),"Menu widget identity changed");gtk_menu_item_activate(custom);check(clicks.get()==1,"Menu selected action twice");g_list_free(children)
+        menu.populate(handle,ui.text("M"));children=gtk_container_get_children(panel_menu_widget(handle));check(children==null,"Disabled menu retained rows");menu.panel_menu_free(handle,callback.data);ui.close(context);return ui.noop
+    }},Vec<i64>())
+    return ui.Label("Prepared native menu")
+}
+fn main():i32 {check(ui.run("Native panel context menu",320,80,App),"Context menu failed");unsafe {check(rd_widget_live_count()==0,"Menu host leaked widgets")};print("PASS native context rows, separator, selection and cleanup");return 0}
+return main()

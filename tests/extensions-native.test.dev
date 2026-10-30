@@ -1,0 +1,88 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn separator():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn worker(preferences:str, users:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",preferences); env.set("DEVOS_USER_EXTENSIONS",users)
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/extensions.dev","--",t.root()),env,input,90000)))
+}
+fn fieldsOf(frame:str):Vec<Vec<str>> { let out = Vec<Vec<str>>(); for record in strings.split(frame,separator()) { out.push(strings.split(record,"\t")) }; return out }
+fn userExtension(directory:str) {
+    tool.exec(Vec<str>("mkdir","-p",directory + "/org.example.status"))
+    fs.writeFileSync(directory + "/org.example.status/extension.json","{\"id\":\"org.example.status\",\"name\":\"Status\",\"description\":\"Shows a status.\",\"version\":\"1.0.0\",\"apiVersion\":1,\"settingsVersion\":1,\"enabledByDefault\":false,\"settings\":[{\"id\":\"a\",\"title\":\"Status\",\"fields\":[{\"key\":\"text\",\"title\":\"Text\",\"type\":\"string\",\"default\":\"ok\"},{\"key\":\"size\",\"title\":\"Size\",\"type\":\"number\",\"integer\":true,\"min\":1,\"max\":9,\"default\":3},{\"key\":\"tint\",\"title\":\"Tint\",\"type\":\"color\",\"default\":\"#112233\"},{\"key\":\"on\",\"title\":\"On\",\"type\":\"boolean\",\"default\":true}]}]}")
+    tool.exec(Vec<str>("mkdir","-p",directory + "/org.example.evil"))
+    fs.writeFileSync(directory + "/org.example.evil/extension.json","{\"id\":\"org.example.evil\",\"name\":\"Evil\",\"description\":\"Claims system UI.\",\"version\":\"1.0.0\",\"apiVersion\":1,\"kind\":\"ui\",\"system\":true,\"entry\":\"x.js\",\"order\":1,\"settingsVersion\":1,\"enabledByDefault\":true,\"settings\":[{\"id\":\"a\",\"title\":\"A\",\"fields\":[{\"key\":\"x\",\"title\":\"X\",\"type\":\"string\",\"default\":\"\"}]}]}")
+    tool.exec(Vec<str>("mkdir","-p",directory + "/org.devos.editor"))
+    fs.writeFileSync(directory + "/org.devos.editor/extension.json","{\"id\":\"org.devos.editor\",\"name\":\"Fake editor\",\"description\":\"Tries to replace a bundled id.\",\"version\":\"1.0.0\",\"apiVersion\":1,\"settingsVersion\":1,\"enabledByDefault\":true,\"settings\":[{\"id\":\"a\",\"title\":\"A\",\"fields\":[{\"key\":\"x\",\"title\":\"X\",\"type\":\"string\",\"default\":\"\"}]}]}")
+}
+
+test.case("the worker lists extensions by group and hides those with their own native page",fn() {
+    let preferences = temporary(); let users = temporary(); userExtension(users)
+    let rows = fieldsOf(worker(preferences,users,"{\"action\":\"list\"}\n"))
+    let ids = Vec<str>(); for i in 1..(rows.len() as i64) { ids.push(rows[i][0]) }
+    test.expect(strings.equal(rows[0][0],"L") && ids.len() >= 6,"List too short: " + strings.join(ids,","))
+    for hidden in Vec<str>("org.devos.theme","org.devos.icons","org.devos.updates","org.devos.background","org.devos.panel") { test.expect(!strings.contains(strings.join(ids,","),hidden),hidden + " has a native page and must not be listed here") }
+    for shown in Vec<str>("org.devos.editor","org.devos.files","org.devos.terminal","org.devos.launcher","org.devos.settings","org.devos.clock","org.example.status") { test.expect(strings.contains(strings.join(ids,","),shown),shown + " is missing") }
+    test.expect(!strings.contains(strings.join(ids,","),"org.example.evil"),"A user package declaring system UI was listed")
+    let editorCount = 0; for i in 1..(rows.len() as i64) { if strings.equal(rows[i][0],"org.devos.editor") { editorCount = editorCount + 1; test.expect(strings.equal(rows[i][1],"Editor") && strings.equal(rows[i][3],"app"),"A user package replaced a bundled id") } }
+    test.expect(editorCount == 1,"The editor id appears " + "${editorCount}" + " times")
+    for i in 1..(rows.len() as i64) {
+        if strings.equal(rows[i][0],"org.example.status") { test.expect(strings.equal(rows[i][3],"extension") && strings.equal(rows[i][4],"0") && strings.equal(rows[i][5],"4"),"User extension row wrong") }
+        if strings.equal(rows[i][0],"org.devos.clock") { test.expect(strings.equal(rows[i][3],"extension"),"Clock must be an extension") }
+    }
+    let names = Vec<str>(); for i in 1..(rows.len() as i64) { names.push(strings.toLowerCase(rows[i][1])) }
+    let sorted = Vec<str>(); for name in names { sorted.push(name) }; sorted.sort()
+    test.expect(strings.equal(strings.join(names,","),strings.join(sorted,",")),"The list is not sorted by name")
+    tool.exec(Vec<str>("rm","-rf",preferences,users))
+})
+test.case("the form of an extension carries its sections, fields and current values",fn() {
+    let preferences = temporary(); let users = temporary(); userExtension(users)
+    let records = fieldsOf(worker(preferences,users,"{\"action\":\"form\",\"id\":\"org.example.status\"}\n"))
+    test.expect(strings.equal(records[0][0],"F") && strings.equal(records[0][1],"org.example.status") && strings.equal(records[0][2],"Status") && strings.equal(records[0][4],"0") && strings.equal(records[0][5],"0"),"Form header wrong")
+    test.expect(strings.equal(records[1][0],"S") && strings.equal(records[1][1],"Status"),"Section missing")
+    test.expect(strings.equal(records[2][1],"text") && strings.equal(records[2][4],"string") && strings.equal(records[2][5],"ok"),"String field wrong")
+    test.expect(strings.equal(records[3][4],"number") && strings.equal(records[3][5],"3") && strings.equal(records[3][6],"1") && strings.equal(records[3][7],"9") && strings.equal(records[3][8],"1"),"Number field wrong")
+    test.expect(strings.equal(records[4][4],"color") && strings.equal(records[4][5],"#112233") && strings.equal(records[5][4],"boolean") && strings.equal(records[5][5],"1"),"Color or boolean field wrong")
+    let editor = fieldsOf(worker(preferences,users,"{\"action\":\"form\",\"id\":\"org.devos.editor\"}\n"))
+    test.expect(strings.equal(editor[0][5],"1") && strings.equal(editor[1][0],"S"),"A system app's form must say it is system")
+    tool.exec(Vec<str>("rm","-rf",preferences,users))
+})
+test.case("saving validates every value against the manifest and keeps invalid files untouched",fn() {
+    let preferences = temporary(); let users = temporary(); userExtension(users)
+    let good = "{\"action\":\"save\",\"id\":\"org.example.status\",\"enabled\":true,\"values\":{\"text\":\"hello\",\"size\":7,\"tint\":\"#AABBCC\",\"on\":false}}"
+    let input = good + "\n{\"action\":\"form\",\"id\":\"org.example.status\"}\n{\"action\":\"save\",\"id\":\"org.example.status\",\"enabled\":true,\"values\":{\"size\":10}}\n{\"action\":\"save\",\"id\":\"org.example.status\",\"enabled\":true,\"values\":{\"tint\":\"red\"}}\n{\"action\":\"save\",\"id\":\"org.example.status\",\"enabled\":true,\"values\":{\"size\":2.5}}\n{\"action\":\"save\",\"id\":\"org.example.status\",\"enabled\":true,\"values\":{\"on\":\"yes\"}}\n{\"action\":\"save\",\"id\":\"org.example.status\",\"enabled\":true,\"values\":{\"nope\":1}}\n{\"action\":\"save\",\"id\":\"org.devos.editor\",\"enabled\":false,\"values\":{}}\n{\"action\":\"save\",\"id\":\"org.devos.theme\",\"enabled\":true,\"values\":{}}\n{\"action\":\"form\",\"id\":\"../x\"}\nnot json\n"
+    let lines = strings.split(worker(preferences,users,input),"\n")
+    test.expect(lines.len() == 11,"Expected one frame per request: ${lines.len()}")
+    let saved = fieldsOf(lines[0])
+    test.expect(strings.equal(saved[0][0],"F") && strings.equal(saved[0][4],"1") && strings.equal(saved[2][5],"hello") && strings.equal(saved[3][5],"7") && strings.equal(saved[5][5],"0"),"Saved values were not answered back")
+    test.expect(strings.contains(fs.readFileSync(preferences + "/org.example.status.json","utf8"),"\"text\":\"hello\"") && strings.contains(fs.readFileSync(preferences + "/org.example.status.json","utf8"),"\"version\":1"),"The shared preferences file is wrong")
+    test.expect(strings.contains(lines[1],"hello"),"The form does not show the saved value")
+    for i in 2..7 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    test.expect(strings.contains(lines[2],"Size") && strings.contains(lines[3],"Tint") && strings.contains(lines[6],"Unknown extension setting"),"Messages do not name the field")
+    test.expect(strings.startsWith(lines[7],"E\t") && strings.contains(lines[7],"System UI cannot be disabled"),"A system app was disabled")
+    test.expect(strings.startsWith(lines[8],"E\t") && strings.contains(lines[8],"Unknown extension"),"An extension with its own page was edited here")
+    test.expect(strings.startsWith(lines[9],"E\t") && strings.startsWith(lines[10],"E\t"),"Bad ids or JSON accepted")
+    test.expect(strings.contains(fs.readFileSync(preferences + "/org.example.status.json","utf8"),"\"size\":7"),"A rejected save changed the file")
+    fs.writeFileSync(preferences + "/org.example.status.json","{\"version\":9,\"enabled\":true,\"values\":{}}")
+    let damaged = fieldsOf(worker(preferences,users,"{\"action\":\"form\",\"id\":\"org.example.status\"}\n"))
+    test.expect(strings.contains(damaged[0][6],"requires migration"),"A damaged file was not reported")
+    test.expect(strings.contains(worker(preferences,users,good + "\n"),"Cannot overwrite invalid settings") && strings.contains(fs.readFileSync(preferences + "/org.example.status.json","utf8"),"\"version\":9"),"A damaged file was overwritten")
+    tool.exec(Vec<str>("rm","-rf",preferences,users))
+})
+test.case("native Settings shows the form of the first app and saves an edit under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/extensions-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let preferences = temporary(); let users = temporary()
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",preferences); env.set("DEVOS_USER_EXTENSIONS",users); env.set("DEVOS_EXTENSIONS_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","extensions-settings","xvfb-run","-a",executable),env,"",120000)
+    t.success(done); t.contains(t.out(done),"PASS native extension form saved")
+    test.expect(strings.contains(fs.readFileSync(preferences + "/org.devos.editor.json","utf8"),"\"fontSize\":16"),"The page did not save the first app (Editor)")
+    tool.exec(Vec<str>("rm","-rf",preferences,users))
+})
+return t.finish()

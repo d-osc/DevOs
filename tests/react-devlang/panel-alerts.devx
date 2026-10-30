@@ -1,0 +1,33 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "../../src/system/org.devos.panel/native-alerts.dev" as alerts
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn rc_env(name:str):str
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn rd_widget_live_count():i64
+extern fn g_bus_get_sync(kind:i32,cancel:*void,error:*void):*void
+extern fn g_variant_new_string(value:str):*void
+extern fn g_variant_new_tuple(children:**void,count:i64):*void
+extern fn g_dbus_connection_emit_signal(bus:*void,destination:*void,path:str,interface:str,signal:str,parameters:*void,error:*void):i32
+extern fn g_object_unref(value:*void)
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn emit() {unsafe {let bus=g_bus_get_sync(2,null,null);check(bus!=null,"No private message bus");let value=g_variant_new_string("ทดสอบ\t100%\nnotification");let tuple=g_variant_new_tuple(&value,1);check(g_dbus_connection_emit_signal(bus,null,"/org/devos/Panel","org.devos.Panel","Message",tuple,null)!=0,"Message signal failed");g_object_unref(bus)}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let frame=ui.useText(context,ui.emptyText());let pipe=ui.useRef(context,0);let ticks=ui.useRef(context,0);let cleared=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {let root=rc_env("DEV_OS_ROOT");return channel.connectWithLibrary(context,"d","${root}/src/services/panel-layout.dev",root,"${root}/dist/native/libpanel-clock.so",fn(value:ui.Text) {frame.set(value)},fn(value:i64) {pipe.set(value);channel.interval(value,100);channel.send(value,ui.text("{\"clock\":true,\"alerts\":true}"))})}},Vec<i64>())
+    alerts.subscribe(context,pipe)
+    let node=alerts.View(context,frame.value,fn() {cleared.set(cleared.get()+1);channel.command(pipe.get(),ui.text("{\"clock\":true,\"clearAlerts\":true}"));phase.set(3)})
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {ticks.set(ticks.get()+1);if ticks.get()>400 {ui.rd_fail("Timed out testing alert transport")}
+            if phase.get()==0 && frame.get().bytes.len()>0 {check(ui.click(context,"panel-alert"),"Alert button missing");phase.set(1)}
+            else if phase.get()==1 && ui.find(context,"panel-alert-empty")!=null {check(gtk_widget_get_sensitive(ui.find(context,"panel-alert-clear"))==0,"Empty clear enabled");emit();phase.set(2)}
+            else if phase.get()==2 && ui.find(context,"panel-alert-count")!=null {check(ui.equalText(ui.readText(context,"panel-alert-count"),ui.text("1")),"Message duplicated");check(ui.find(context,"panel-alert-empty")==null,"Live alert kept empty state");check(ui.click(context,"panel-alert-clear"),"Clear action missing")}
+            else if phase.get()==3 && ui.find(context,"panel-alert-empty")!=null {check(cleared.get()==1,"Clear replayed");emit();phase.set(4)}
+            else if phase.get()==4 && ui.find(context,"panel-alert-count")!=null {check(ui.equalText(ui.readText(context,"panel-alert-count"),ui.text("1")),"Poll replayed clear or notify");check(cleared.get()==1,"Clear repeated");ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return node
+}
+fn main():i32 {check(ui.run("Native panel alerts",640,80,App),"Alerts UI failed");unsafe {check(rd_widget_live_count()==0,"Alert widgets leaked")};print("PASS native alerts bus, worker, live popup, clear and cleanup");return 0}
+return main()

@@ -1,0 +1,37 @@
+use "../../packages/react-devlang/src/ui.dev" as ui
+extern fn rd_fail(message: str)
+extern fn rd_widget_live_count(): i64
+fn check(ok: bool, message: str) { if !ok { unsafe { rd_fail(message) } } }
+fn reduce(value: i64, action: i64): i64 { return value + action }
+fn App(context: *ui.Context): ui.Node {
+    let reducer = ui.useReducer(context, 0, reduce)
+    let observed = ui.useRef(context, 0)
+    let checked = ui.useBool(context, false)
+    let caption = ui.withProps(ui.Label("${reducer.value}"), ui.named("caption"))
+    let content = caption
+    if checked.value { content = ui.Box(ui.props(), Vec<ui.Node>(caption, ui.Separator())) }
+    ui.useEffect(context, fn(): fn(): void {
+        if reducer.value == 0 {
+            observed.set(99)
+            reducer.dispatch(2)
+            reducer.dispatch(3)
+            check(ui.click(context, "toggle"), "Checkbox handler did not run")
+        } else {
+            check(reducer.value == 5, "Reducer must use the current state for batched dispatches")
+            check(observed.get() == 99, "Ref did not preserve its value")
+            check(checked.value, "Controlled checkbox state not updated")
+            check(ui.equalText(ui.readText(context, "caption"), ui.text("5")), "Scroll child replacement failed")
+            ui.close(context)
+        }
+        return ui.noop
+    }, Vec<i64>(reducer.value))
+    return ui.Box(ui.props(), Vec<ui.Node>(ui.CheckBox(ui.named("toggle"), "Toggle", checked.value, fn() { checked.set(!checked.value) }), ui.Progress(ui.props(), reducer.value as f64 / 10.0), ui.Scroll(ui.props(), content)))
+}
+fn main(): i32 {
+    check(ui.runStyled("Widgets", 400, 300, "label { color: #55aaff; }", App), "Native root did not start")
+    unsafe { check(rd_widget_live_count() == 0, "Widgets leaked after shutdown") }
+    check(!ui.runStyled("Invalid CSS", 100, 100, "label { invalid", App), "Invalid CSS must fail cleanly")
+    print("PASS reducer, ref, controlled checkbox, scroll replacement, progress and CSS lifecycle")
+    return 0
+}
+return main()

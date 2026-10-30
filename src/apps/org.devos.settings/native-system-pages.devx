@@ -1,0 +1,318 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-icons-page.devx" as helpers
+extern fn rc_env(name:str):str
+
+# Native System pages: About, Storage, Power & battery, Date & time, Mouse and Keyboard input. The worker (system-pages.dev) runs the
+# DevLang helpers bin/dev-os-system, dev-os-time and dev-os-input-settings and answers with frames (see its header); the pages only
+# display and send the user's changes.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke(page:str):bool { return k.isText(ui.text(environment("DEVOS_SYSTEM_SMOKE")),page) }
+fn records(frame:ui.Text):Vec<ui.Text> { return channel.split(frame,30) }
+fn cells(record:ui.Text):Vec<ui.Text> { return channel.split(record,9) }
+fn cell(row:Vec<ui.Text>, index:i64):ui.Text { return index < row.len() as i64 ? row[index] : ui.emptyText() }
+fn head(frame:ui.Text):Vec<ui.Text> { return cells(records(frame)[0]) }
+fn flag(value:ui.Text):bool { return value.bytes.len() > 0 && value.bytes[0] == 49 }
+fn kindOf(record:ui.Text, letter:u8):bool { return record.bytes.len() > 1 && record.bytes[0] == letter && record.bytes[1] == 9 }
+fn number(value:ui.Text):i64 { return channel.integer(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn plain(value:str):ui.Text { return ui.text(value) }
+
+# One worker process and the state every page needs.
+# `replies` counts every answer, so a page can react to an answer that equals the previous one.
+struct Link { frame: ui.TextState, failure: ui.TextState, pipe: ui.IntRef, waiting: ui.IntRef, replies: ui.State }
+fn link(context:*ui.Context, script:str, first:str):Link {
+    let frame = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText()); let pipe = ui.useRef(context,0); let waiting = ui.useRef(context,0); let replies = ui.useState(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.settings/" + script,root,fn(value:ui.Text) {
+            waiting.set(0); replies.set(replies.get() + 1)
+            if value.bytes.len() > 0 && value.bytes[0] == 69 { let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; return }
+            failure.set(ui.emptyText()); frame.set(value)
+        },fn(value:i64) { pipe.set(value); channel.pause(value,true); waiting.set(1); channel.command(value,ui.text(first)) })
+    },Vec<i64>())
+    return Link(frame,failure,pipe,waiting,replies)
+}
+fn send(l:Link, body:ui.Text) { if l.waiting.get() != 0 { return }; l.waiting.set(1); l.failure.set(ui.emptyText()); channel.command(l.pipe.get(),body) }
+fn loading(l:Link):ui.Node {
+    let wait = Vec<ui.Node>(); if l.failure.value.bytes.len() > 0 { wait.push(k.caption(l.failure.value,"settings-error-banner")) } else { wait.push(ui.Label("Loading…")) }
+    return ext.column(12,wait)
+}
+fn detail(title:str, value:ui.Text):ui.Node {
+    let name = ui.props(); name.className = ui.text("settings-description"); name.xalign = 0.0; name.widthChars = 19; name.valign = 1
+    let shown = ui.props(); shown.className = ui.text("about-detail-value"); shown.xalign = 0.0; shown.expand = true; shown.wrap = true
+    let row = ui.props(); row.vertical = false; row.spacing = 16; row.className = ui.text("about-detail")
+    return ui.Box(row,Vec<ui.Node>(ui.withProps(ui.Label(title),name),ui.withProps(ui.TextLabel(value.bytes.len() > 0 ? value : plain("Not reported")),shown)))
+}
+fn group(title:str, rows:Vec<ui.Node>):ui.Node {
+    let options = ui.props(); options.spacing = 14; options.className = ui.text("settings-card system-card about-card")
+    let all = Vec<ui.Node>(k.note(title,"section-heading")); for item in rows { all.push(item) }
+    return ui.Box(options,all)
+}
+fn gibibytes(bytes:i64):ui.Text {
+    if bytes >= 1073741824 { let tenths = (bytes * 10 + 536870912) / 1073741824; return plain("${tenths / 10}.${tenths % 10} GiB") }
+    return plain("${(bytes + 524288) / 1048576} MiB")
+}
+# The value of a hardware key from the H records.
+fn hardware(frame:ui.Text, key:str):ui.Text {
+    for record in records(frame) { if kindOf(record,72) { let parts = cells(record); if k.isText(cell(parts,1),key) { return cell(parts,2) } } }
+    return ui.emptyText()
+}
+
+# --- About ---------------------------------------------------------------------------------------------------------------------
+fn renderAbout(context:*ui.Context):ui.Node {
+    let l = link(context,"system-pages.dev","{\"action\":\"system\"}")
+    ui.useEffect(context,fn():fn():void { if smoke("about") && l.frame.value.bytes.len() > 0 { print("PASS native About page"); ui.close(context) }; return ui.noop },Vec<i64>(l.frame.revision))
+    if l.frame.value.bytes.len() == 0 { return loading(l) }
+    let f = l.frame.value; let h = head(f); let managed = flag(cell(h,1))
+    let maker = hardware(f,"manufacturer"); let model = hardware(f,"model")
+    let subtitle = maker.bytes.len() > 0 && model.bytes.len() > 0 ? join(Vec<ui.Text>(maker,plain(" · "),model)) : maker.bytes.len() > 0 ? maker : model.bytes.len() > 0 ? model : plain("Device information")
+    let nodes = Vec<ui.Node>()
+    nodes.push(ext.row(14,Vec<ui.Node>(ui.Icon(ui.props(),"dev-os"),ext.column(2,Vec<ui.Node>(k.note("Dev OS","about-device-name"),k.note("Your space to create","settings-description"))))))
+    nodes.push(ext.row(16,Vec<ui.Node>(ui.Icon(ui.props(),"computer-symbolic"),ext.column(6,Vec<ui.Node>(
+        ext.named(k.caption(cell(h,2).bytes.len() > 0 ? cell(h,2) : plain("Your device"),"about-device-name"),"about-hostname"),k.caption(subtitle,"settings-description"),
+        ext.named(k.caption(join(Vec<ui.Text>(plain("Desktop version "),cell(h,16))),"settings-description"),"system-about-version"))))))
+    nodes.push(group("Device identity",Vec<ui.Node>(detail("Manufacturer",maker),detail("Model",model),detail("Product family",hardware(f,"family")),detail("Serial number",hardware(f,"serial")),detail("Hardware UUID",hardware(f,"productUuid")),detail("Linux Machine ID",hardware(f,"machineId")))))
+    let cpu = Vec<ui.Node>(detail("Processor",cell(h,6)),detail("CPU vendor",hardware(f,"cpuVendor")),detail("Logical CPUs",cell(h,7)),detail("CPU sockets",hardware(f,"cpuSockets")),detail("Cores per socket",hardware(f,"coresPerSocket")),detail("Threads per core",hardware(f,"threadsPerCore")))
+    if hardware(f,"cpuMaxMHz").bytes.len() > 0 { cpu.push(detail("Maximum frequency",join(Vec<ui.Text>(hardware(f,"cpuMaxMHz"),plain(" MHz"))))) }
+    cpu.push(detail("Installed memory",number(cell(h,8)) > 0 ? gibibytes(number(cell(h,8))) : ui.emptyText())); cpu.push(detail("Architecture",cell(h,5)))
+    for pair in Vec<Vec<str>>(Vec<str>("SoC ID","socId"),Vec<str>("SoC family","socFamily"),Vec<str>("SoC revision","socRevision")) { if hardware(f,pair[1]).bytes.len() > 0 { cpu.push(detail(pair[0],hardware(f,pair[1]))) } }
+    nodes.push(group("Processor & memory",cpu))
+    nodes.push(group("Firmware & motherboard",Vec<ui.Node>(detail("Board manufacturer",hardware(f,"boardVendor")),detail("Board model",hardware(f,"boardModel")),detail("BIOS vendor",hardware(f,"biosVendor")),detail("BIOS version",hardware(f,"biosVersion")),detail("BIOS date",hardware(f,"biosDate")),detail("Boot mode",hardware(f,"bootMode")))))
+    let system = Vec<ui.Node>(detail(managed ? "Runtime host" : "Operating system",cell(h,3)),detail("Linux kernel",cell(h,4)),detail("Session",managed ? join(Vec<ui.Text>(cell(h,9),plain(" · WSL"))) : cell(h,9)))
+    let n = 0
+    for record in records(f) {
+        if kindOf(record,68) {
+            let parts = cells(record); n = n + 1
+            system.push(detail("Storage",join(Vec<ui.Text>(cell(parts,1),plain(": "),gibibytes(number(cell(parts,3))),plain(" used / "),gibibytes(number(cell(parts,2))),plain(" total · "),gibibytes(number(cell(parts,4))),plain(" free")))))
+        }
+    }
+    if managed { system.push(k.note("CPU, memory and storage values describe the Linux runtime inside WSL. Firmware identifiers may be unavailable.","settings-description")) }
+    nodes.push(group("Operating system",system))
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"error"),"system-error")) }
+    return ext.column(18,nodes)
+}
+fn about():ui.Node { return ui.component(9350,ui.keyed(910),renderAbout) }
+
+# --- Storage -------------------------------------------------------------------------------------------------------------------
+fn renderStorage(context:*ui.Context):ui.Node {
+    let l = link(context,"system-pages.dev","{\"action\":\"system\"}")
+    ui.useEffect(context,fn():fn():void { if smoke("storage") && l.frame.value.bytes.len() > 0 { print("PASS native Storage page"); ui.close(context) }; return ui.noop },Vec<i64>(l.frame.revision))
+    if l.frame.value.bytes.len() == 0 { return loading(l) }
+    let f = l.frame.value; let nodes = Vec<ui.Node>(); let index = 0
+    for record in records(f) {
+        if !kindOf(record,68) { continue }
+        let parts = cells(record); let total = number(cell(parts,2)); let used = number(cell(parts,3))
+        let bar = ui.named("storage-bar-${index}"); bar.className = ui.text("power-charge-bar")
+        let card = ui.props(); card.spacing = 12; card.className = ui.text("settings-card system-card")
+        nodes.push(ui.Box(card,Vec<ui.Node>(k.caption(k.isText(cell(parts,1),"/") ? plain("System disk") : cell(parts,1),"section-heading"),
+            detail("Used",join(Vec<ui.Text>(gibibytes(used),plain(" of "),gibibytes(total)))),
+            ui.Progress(bar,total > 0 ? (used as f64) / (total as f64) : 0.0),
+            detail("Available",gibibytes(number(cell(parts,4)))),k.caption(cell(parts,1),"settings-description"))))
+        index = index + 1
+    }
+    if index == 0 { nodes.push(k.note("No storage was reported.","settings-description")) }
+    if flag(cell(head(f),1)) { nodes.push(k.note("This is the Linux filesystem capacity, which may differ from free space on the Windows host.","settings-description")) }
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"error"),"system-error")) }
+    return ext.column(16,nodes)
+}
+fn storage():ui.Node { return ui.component(9351,ui.keyed(911),renderStorage) }
+
+# --- Power & battery -----------------------------------------------------------------------------------------------------------
+fn modeTitle(id:str):str { return id == "power-saver" ? "Power saver" : id == "balanced" ? "Balanced" : "Performance" }
+fn modeDetail(id:str):str { return id == "power-saver" ? "Use less energy and extend battery life." : id == "balanced" ? "Everyday performance with efficient power use." : "Prioritize speed for demanding tasks." }
+fn minutesText(minutes:i64):ui.Text { return minutes >= 60 ? plain("${minutes / 60} h ${minutes % 60} min") : plain("${minutes} min") }
+fn renderPower(context:*ui.Context):ui.Node {
+    let l = link(context,"system-pages.dev","{\"action\":\"system\"}")
+    let selected = ui.useText(context,ui.emptyText()); let step = ui.useRef(context,0); let status = ui.useText(context,ui.emptyText()); let applied = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        selected.set(ui.emptyText()); if applied.get() == 1 { applied.set(0); status.set(plain("Power mode updated.")) }
+        if smoke("power") && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"power-mode-performance") }
+            else if step.get() == 2 { print("PASS native Power page switched mode: ${k.isText(cell(head(l.frame.value),12),"performance") ? "performance" : "other"}"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.frame.revision))
+    ui.useEffect(context,fn():fn():void {
+        if smoke("power") && step.get() == 1 && k.isText(selected.value,"performance") { step.set(2); ui.click(context,"power-apply") }
+        return ui.noop
+    },Vec<i64>(selected.revision))
+    if l.frame.value.bytes.len() == 0 { return loading(l) }
+    let f = l.frame.value; let h = head(f); let managed = flag(cell(h,1)); let busy = l.waiting.get() != 0
+    let nodes = Vec<ui.Node>(); let batteries = 0
+    for record in records(f) {
+        if !kindOf(record,66) { continue }
+        batteries = batteries + 1
+        let parts = cells(record); let percent = cell(parts,3).bytes.len() > 0 ? number(cell(parts,3)) : -1
+        let bar = ui.props(); bar.className = ui.text("power-charge-bar")
+        let hero = Vec<ui.Node>(ext.row(20,Vec<ui.Node>(ui.Icon(ui.props(),percent >= 0 && percent <= 20 ? "battery-low-symbolic" : k.isText(cell(parts,2),"Charging") ? "battery-good-charging-symbolic" : "battery-good-symbolic"),
+            ext.column(4,Vec<ui.Node>(k.caption(cell(parts,1),"section-heading"),k.caption(percent >= 0 ? join(Vec<ui.Text>(plain("${percent}% · "),cell(parts,2))) : cell(parts,2),"settings-description"))))))
+        if percent >= 0 { hero.push(ui.Progress(bar,(percent as f64) / 100.0)) }
+        let facts = Vec<ui.Node>()
+        if cell(parts,4).bytes.len() > 0 { facts.push(ext.column(5,Vec<ui.Node>(k.note("Battery health","settings-description"),k.caption(join(Vec<ui.Text>(cell(parts,4),plain("%"))),"settings-field-title")))) }
+        if cell(parts,5).bytes.len() > 0 { facts.push(ext.column(5,Vec<ui.Node>(k.note("Charge cycles","settings-description"),k.caption(cell(parts,5),"settings-field-title")))) }
+        if cell(parts,6).bytes.len() > 0 { facts.push(ext.column(5,Vec<ui.Node>(k.note("Time remaining","settings-description"),k.caption(minutesText(number(cell(parts,6))),"settings-field-title")))) }
+        if facts.len() > 0 { hero.push(ext.row(26,facts)) }
+        let card = ui.props(); card.spacing = 18; card.className = ui.text(percent >= 0 && percent <= 20 ? "power-battery-hero power-battery-low" : "power-battery-hero")
+        nodes.push(ui.Box(card,hero))
+    }
+    if batteries == 0 { nodes.push(ext.row(20,Vec<ui.Node>(ui.Icon(ui.props(),"battery-missing-symbolic"),ext.column(7,Vec<ui.Node>(ext.named(k.note("No battery detected","section-heading"),"power-no-battery"),k.note("This device is running on external power or does not report a battery.","settings-description")))))) }
+    let modes = Vec<ui.Node>(k.note("Power mode","section-heading"),k.note("Choose the balance between energy use and performance.","settings-description"))
+    let supported = Vec<str>()
+    for id in channel.split(cell(h,13),44) { for known in Vec<str>("power-saver","balanced","performance") { if k.isText(id,known) { supported.push(known) } } }
+    let active = cell(h,12); let chosen = selected.value.bytes.len() > 0 ? selected.value : active
+    if managed {
+        modes.push(k.note("Windows controls power management for this session.","settings-description"))
+    } else if flag(cell(h,11)) && supported.len() > 0 {
+        for id in supported {
+            modes.push(k.radio("power-mode-" + id,k.isText(chosen,id),!busy,modeTitle(id),modeDetail(id),fn() { selected.set(plain(id)) }))
+        }
+        let apply = ui.named("power-apply"); apply.className = ui.text("settings-primary"); apply.sensitive = !busy && !k.isText(chosen,"") && !ui.equalText(chosen,active)
+        modes.push(ext.row(12,Vec<ui.Node>(ext.expand(k.caption(!ui.equalText(chosen,active) ? plain("Apply to use the selected power mode.") : plain("Your current power mode is active."),"settings-description")),
+            ui.Button(apply,"Apply",fn() { applied.set(1); send(l,join(Vec<ui.Text>(plain("{\"action\":\"power\",\"profile\":"),channel.quote(selected.get()),plain("}")))) }))))
+    } else {
+        modes.push(ext.named(k.note("Power modes are not available","settings-field-title"),"power-modes-unavailable"))
+        modes.push(k.note("The power service or hardware does not currently offer adjustable profiles.","settings-description"))
+    }
+    if cell(h,14).bytes.len() > 0 { modes.push(k.caption(join(Vec<ui.Text>(plain("Performance is limited: "),cell(h,14),plain("."))),"settings-description")) }
+    let card = ui.props(); card.spacing = 16; card.className = ui.text("settings-card system-card")
+    nodes.push(ui.Box(card,modes))
+    nodes.push(k.note("Battery Care, Fan Profile and Memory & Swap have their own pages under Hardware.","settings-description"))
+    if status.value.bytes.len() > 0 { nodes.push(k.caption(status.value,"settings-description")) }
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"error"),"system-error")) }
+    return ext.column(20,nodes)
+}
+fn power():ui.Node { return ui.component(9352,ui.keyed(912),renderPower) }
+
+# --- Date & time ---------------------------------------------------------------------------------------------------------------
+fn renderTime(context:*ui.Context):ui.Node {
+    let l = link(context,"system-pages.dev","{\"action\":\"time\"}")
+    let query = ui.useText(context,ui.emptyText()); let date = ui.useText(context,ui.emptyText()); let clock = ui.useText(context,ui.emptyText()); let status = ui.useText(context,ui.emptyText())
+    let pending = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let h = head(l.frame.value); date.set(cell(h,8)); clock.set(cell(h,9))
+        if pending.get() == 1 { status.set(plain("Time zone updated.")) } else if pending.get() == 2 { status.set(plain("Automatic time updated.")) } else if pending.get() == 3 { status.set(plain("Date and time updated.")) }
+        pending.set(0)
+        if smoke("time") && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.click(context,"time-zone-1") }
+            else if step.get() == 1 { print("PASS native Time page: ${k.isText(cell(h,3),"Europe/Paris") ? "zone changed" : "unchanged"}"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(l.frame.revision))
+    ui.useEffect(context,fn():fn():void { pending.set(0); return ui.noop },Vec<i64>(l.failure.revision))
+    if l.frame.value.bytes.len() == 0 { return loading(l) }
+    let f = l.frame.value; let h = head(f); let busy = l.waiting.get() != 0
+    let available = flag(cell(h,1)); let managed = flag(cell(h,2)); let automatic = flag(cell(h,4)); let editable = available && !busy && !managed
+    let nodes = Vec<ui.Node>()
+    nodes.push(ext.row(10,Vec<ui.Node>(ui.Icon(ui.props(),"preferences-system-time-symbolic"),ext.expand(k.caption(join(Vec<ui.Text>(cell(h,3).bytes.len() > 0 ? cell(h,3) : plain("Unknown time zone"),plain("  ·  "),cell(h,8),plain(" "),cell(h,9))),"settings-description")))))
+    if cell(h,7).bytes.len() > 0 { nodes.push(ext.named(k.caption(cell(h,7),"error"),"time-state-error")) }
+    if managed {
+        let host = ui.named("time-host"); host.sensitive = !busy
+        nodes.push(ext.column(10,Vec<ui.Node>(k.note("Windows manages this clock","section-heading"),k.note("Dev OS is running inside Windows, so the time zone and the time come from the host.","settings-description"),ui.Button(host,"Open Windows date & time settings",fn() { send(l,plain("{\"action\":\"time-host\"}")) }))))
+    }
+    # Time zone: a search box and the matching zones.
+    let search = ui.named("time-search"); search.placeholder = ui.text("Search time zones…")
+    let zoneNodes = Vec<ui.Node>(k.note("Time zone","section-heading"),k.note("Choose the region used to display the time.","settings-description"),ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) }))
+    let shown = 0
+    for record in records(f) {
+        if !kindOf(record,81) || shown >= 40 { continue }
+        let zone = cell(cells(record),1)
+        if query.value.bytes.len() > 0 && !helpers.foldContains(zone,query.value) { continue }
+        let chosen = ui.equalText(zone,cell(h,3))
+        let options = ui.named("time-zone-${shown}"); options.sensitive = editable; options.className = ui.text(chosen ? "icons-theme-choice icons-theme-selected" : "icons-theme-choice")
+        shown = shown + 1
+        zoneNodes.push(ui.TextButton(options,zone,fn() { pending.set(1); send(l,join(Vec<ui.Text>(plain("{\"action\":\"time-timezone\",\"timezone\":"),channel.quote(zone),plain("}")))) }))
+    }
+    if shown == 0 { zoneNodes.push(k.note("No time zones match your search.","settings-description")) }
+    let zoneCard = ui.props(); zoneCard.spacing = 8; zoneCard.className = ui.text("settings-card time-card")
+    nodes.push(ui.Box(zoneCard,zoneNodes))
+    let auto = ui.named("time-automatic"); auto.sensitive = available && flag(cell(h,5)) && !busy && !managed
+    let autoRow = ext.row(16,Vec<ui.Node>(ext.expand(ext.column(5,Vec<ui.Node>(k.note("Set time automatically","section-heading"),k.note(automatic ? (flag(cell(h,6)) ? "The clock is synchronized with a network time server." : "Waiting for a network time server.") : "Turn this on to keep the clock accurate.","settings-description")))),
+        ui.Switch(auto,automatic,fn(next:bool) { if next != automatic { pending.set(2); send(l,plain(next ? "{\"action\":\"time-ntp\",\"enabled\":true}" : "{\"action\":\"time-ntp\",\"enabled\":false}")) } })))
+    let autoCard = ui.props(); autoCard.spacing = 10; autoCard.className = ui.text("settings-card time-card")
+    nodes.push(ui.Box(autoCard,Vec<ui.Node>(autoRow)))
+    let dateEntry = ui.named("time-date"); dateEntry.sensitive = editable && !automatic; dateEntry.placeholder = ui.text("YYYY-MM-DD"); dateEntry.width = 160
+    let timeEntry = ui.named("time-clock"); timeEntry.sensitive = editable && !automatic; timeEntry.placeholder = ui.text("HH:MM"); timeEntry.width = 100
+    let setButton = ui.named("time-set"); setButton.sensitive = editable && !automatic && date.value.bytes.len() > 0 && clock.value.bytes.len() > 0
+    let manual = Vec<ui.Node>(k.note("Set date and time","section-heading"),k.note(automatic ? "Turn off automatic time to set the date and time yourself." : "Enter the local date and time for the selected time zone.","settings-description"),
+        ext.row(10,Vec<ui.Node>(ui.Entry(dateEntry,date.value,fn(value:ui.Text) { date.set(value) }),ui.Entry(timeEntry,clock.value,fn(value:ui.Text) { clock.set(value) }),
+            ui.Button(setButton,"Set date and time",fn() { pending.set(3); send(l,join(Vec<ui.Text>(plain("{\"action\":\"time-set\",\"date\":"),channel.quote(date.get()),plain(",\"time\":"),channel.quote(clock.get()),plain("}")))) }))))
+    let manualCard = ui.props(); manualCard.spacing = 12; manualCard.className = ui.text("settings-card time-card")
+    nodes.push(ui.Box(manualCard,manual))
+    if status.value.bytes.len() > 0 { nodes.push(k.caption(status.value,"settings-description")) }
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"error"),"time-error")) }
+    return ext.column(16,nodes)
+}
+fn time():ui.Node { return ui.component(9353,ui.keyed(913),renderTime) }
+
+# --- Mouse and Keyboard input --------------------------------------------------------------------------------------------------
+fn renderInput(context:*ui.Context, kind:str):ui.Node {
+    let l = link(context,"system-pages.dev","{\"action\":\"input\",\"kind\":\"" + kind + "\",\"op\":\"get\"}")
+    let speed = ui.useState(context,50); let delay = ui.useState(context,500); let rate = ui.useState(context,25)
+    let natural = ui.useBool(context,false); let leftHanded = ui.useBool(context,false); let repeat = ui.useBool(context,true)
+    let status = ui.useText(context,ui.emptyText()); let loaded = ui.useRef(context,0); let step = ui.useRef(context,0); let acted = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let h = head(l.frame.value)
+        if l.frame.value.bytes.len() > 0 {
+            if cell(h,3).bytes.len() > 0 { speed.set(number(cell(h,3))) }
+            if cell(h,7).bytes.len() > 0 { delay.set(number(cell(h,7))) }
+            if cell(h,8).bytes.len() > 0 { rate.set(number(cell(h,8))) }
+            natural.set(flag(cell(h,4))); leftHanded.set(flag(cell(h,5))); repeat.set(flag(cell(h,6)))
+            if acted.get() == 1 { acted.set(0); status.set(flag(cell(h,2)) ? plain("Preferences applied.") : plain("Preferences saved. They apply when the device is available.")) }
+            loaded.set(1)
+        }
+        if smoke(kind) && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); acted.set(1); ui.click(context,kind + "-reset") }
+        }
+        return ui.noop
+    },Vec<i64>(l.frame.revision))
+    ui.useEffect(context,fn():fn():void { if smoke(kind) && step.get() == 1 && status.value.bytes.len() > 0 { print("PASS native ${kind} input page reset"); ui.close(context) }; return ui.noop },Vec<i64>(status.revision))
+    # Render as soon as there is a frame or an error: a refused read (damaged preferences) still offers "Reset defaults".
+    if l.frame.value.bytes.len() == 0 && l.failure.value.bytes.len() == 0 { return loading(l) }
+    let busy = l.waiting.get() != 0; let h = head(l.frame.value); let isMouse = kind == "mouse"
+    let saved = l.frame.value.bytes.len() > 0
+    let dirty = saved && (isMouse ? (speed.value != number(cell(h,3)) || natural.value != flag(cell(h,4)) || leftHanded.value != flag(cell(h,5))) : (repeat.value != flag(cell(h,6)) || delay.value != number(cell(h,7)) || rate.value != number(cell(h,8))))
+    let nodes = Vec<ui.Node>()
+    let devices = cell(h,9)
+    nodes.push(ext.row(16,Vec<ui.Node>(ui.Icon(ui.props(),isMouse ? "input-mouse-symbolic" : "input-keyboard-symbolic"),ext.column(6,Vec<ui.Node>(
+        k.caption(devices.bytes.len() > 0 ? devices : plain(busy ? "Detecting devices…" : isMouse ? "No mouse detected" : "No keyboard detected"),"section-heading"),
+        k.note(isMouse ? "Pointer speed and buttons for the mouse and pointing devices." : "How keys repeat when you hold them down.","settings-description"))))))
+    let slider = fn(id:str, title:str, low:i64, high:i64, unit:str, state:ui.State):ui.Node {
+        let options = ui.named(id); options.expand = true
+        let card = ui.props(); card.spacing = 12; card.className = ui.text("settings-card system-card")
+        return ui.Box(card,Vec<ui.Node>(k.note(title,"section-heading"),ext.row(12,Vec<ui.Node>(ui.Scale(options,low,high,state.value,fn(next:i64) { state.set(next) }),k.note("${state.value}${unit}","settings-field-title")))))
+    }
+    let toggle = fn(id:str, title:str, detailText:str, state:ui.BoolState):ui.Node {
+        let options = ui.named(id); options.valign = 3
+        return ext.row(18,Vec<ui.Node>(ext.expand(ext.column(5,Vec<ui.Node>(k.note(title,"settings-field-title"),k.note(detailText,"settings-description")))),ui.Switch(options,state.value,fn(next:bool) { state.set(next) })))
+    }
+    if isMouse {
+        nodes.push(slider("mouse-speed","Pointer speed",0,100,"%",speed))
+        let card = ui.props(); card.spacing = 4; card.className = ui.text("settings-card")
+        nodes.push(ui.Box(card,Vec<ui.Node>(toggle("mouse-left-handed","Left-handed layout","Use the right button as your primary button.",leftHanded),toggle("mouse-natural","Natural scrolling","Move content in the same direction as the scroll wheel.",natural))))
+    } else {
+        let card = ui.props(); card.spacing = 4; card.className = ui.text("settings-card")
+        nodes.push(ui.Box(card,Vec<ui.Node>(toggle("keyboard-repeat","Repeat keys","Hold a key to repeat it.",repeat))))
+        nodes.push(slider("keyboard-delay","Delay before repeating",100,2000," ms",delay))
+        nodes.push(slider("keyboard-rate","Repeat speed",5,60," / sec",rate))
+    }
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),kind + "-error")) }
+    let reset = ui.named(kind + "-reset"); reset.sensitive = !busy
+    let apply = ui.named(kind + "-apply"); apply.className = ui.text("settings-primary"); apply.sensitive = saved && !busy && dirty
+    let message = status.value.bytes.len() > 0 ? status.value : plain(dirty ? "Changes are ready to apply." : "Preferences are saved per user.")
+    let bar = ui.props(); bar.vertical = false; bar.spacing = 12; bar.className = ui.text("settings-action-bar")
+    nodes.push(ui.Box(bar,Vec<ui.Node>(ext.expand(k.caption(message,"settings-description")),
+        ui.Button(reset,"Reset defaults",fn() { acted.set(1); send(l,plain("{\"action\":\"input\",\"kind\":\"" + kind + "\",\"op\":\"reset\"}")) }),
+        ui.Button(apply,busy ? "Working…" : "Apply",fn() {
+            acted.set(1)
+            let settings = isMouse ? "{\"speed\":${speed.get()},\"natural\":" + (natural.value ? "true" : "false") + ",\"leftHanded\":" + (leftHanded.value ? "true" : "false") + "}" : "{\"repeat\":" + (repeat.value ? "true" : "false") + ",\"delay\":${delay.get()},\"rate\":${rate.get()}}"
+            send(l,plain("{\"action\":\"input\",\"kind\":\"" + kind + "\",\"op\":\"save\",\"settings\":" + settings + "}"))
+        }))))
+    return ext.column(18,nodes)
+}
+fn renderMouse(context:*ui.Context):ui.Node { return renderInput(context,"mouse") }
+fn renderKeyboard(context:*ui.Context):ui.Node { return renderInput(context,"keyboard") }
+fn mouse():ui.Node { return ui.component(9354,ui.keyed(914),renderMouse) }
+fn keyboard():ui.Node { return ui.component(9355,ui.keyed(915),renderKeyboard) }

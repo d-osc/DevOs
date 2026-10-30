@@ -1,0 +1,65 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.theme/model.dev" as model
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",directory)
+    return t.out(tool.run(Vec<str>("d",t.root()+"/src/apps/org.devos.theme/service.dev","--",t.root()),env,input,60000))
+}
+
+test.case("clock times are strict 24-hour HH:MM",fn() {
+    test.expect(model.parseClock("07:00") == 420 && model.parseClock(" 19:05 ") == 1145 && model.parseClock("00:00") == 0 && model.parseClock("23:59") == 1439,"Valid times refused")
+    for bad in Vec<str>("24:00","7:00","07:60","0700","ab:cd","07:0","","07:00:00") { test.expect(model.parseClock(bad) == -1,"Accepted " + bad) }
+    test.expect(strings.equal(model.formatClock(1145),"19:05"),"Clock not formatted")
+    test.expect(!strings.equal(model.scheduleError("07:00","07:00"),""),"Equal times accepted")
+    test.expect(!strings.equal(model.scheduleError("7am","19:00"),""),"Bad time accepted")
+    test.expect(strings.equal(model.scheduleError("07:00","19:00"),""),"Good schedule refused")
+})
+test.case("auto follows the schedule, including past midnight",fn() {
+    test.expect(strings.equal(model.resolve("dark",720,"07:00","19:00"),"dark") && strings.equal(model.resolve("light",0,"07:00","19:00"),"light"),"Fixed modes must not change")
+    test.expect(strings.equal(model.resolve("auto",419,"07:00","19:00"),"dark") && strings.equal(model.resolve("auto",420,"07:00","19:00"),"light"),"Light must start at 07:00")
+    test.expect(strings.equal(model.resolve("auto",1139,"07:00","19:00"),"light") && strings.equal(model.resolve("auto",1140,"07:00","19:00"),"dark"),"Dark must start at 19:00")
+    test.expect(strings.equal(model.resolve("auto",30,"22:00","06:00"),"light") && strings.equal(model.resolve("auto",720,"22:00","06:00"),"dark"),"Schedule must wrap past midnight")
+    test.expect(strings.equal(model.resolve("auto",720,"nonsense","19:00"),"light"),"Invalid schedule must use the defaults")
+})
+test.case("worker reads, validates and saves Theme settings in the shared file",fn() {
+    let directory = temporary()
+    let input = "{\"action\":\"get\"}\n{\"action\":\"set\",\"mode\":\"dark\",\"family\":\"github\",\"lightFrom\":\"06:30\",\"darkFrom\":\"20:00\"}\n{\"action\":\"get\"}\n{\"action\":\"set\",\"mode\":\"neon\",\"family\":\"github\",\"lightFrom\":\"06:30\",\"darkFrom\":\"20:00\"}\n{\"action\":\"set\",\"mode\":\"auto\",\"family\":\"vscode\",\"lightFrom\":\"08:00\",\"darkFrom\":\"08:00\"}\n{\"action\":\"set\",\"mode\":\"auto\",\"family\":\"../x\",\"lightFrom\":\"08:00\",\"darkFrom\":\"09:00\"}\nnot json\n"
+    let lines = strings.split(strings.trim(worker(directory,input)),"\n")
+    test.expect(lines.len() == 7,"Expected one frame per request")
+    let first = strings.split(lines[0],"\t")
+    test.expect(strings.equal(first[0],"T") && strings.equal(first[2],"auto") && strings.equal(first[3],"vscode") && strings.equal(first[4],"07:00") && strings.equal(first[5],"19:00"),"Defaults missing")
+    test.expect(first.len() == 7 + 48,"Frame must carry the minute and 48 palette colors")
+    test.expect(strings.equal(first[7],"#121314"),"VS Code dark base color missing")
+    let saved = strings.split(lines[1],"\t")
+    test.expect(strings.equal(saved[0],"T") && strings.equal(saved[2],"dark") && strings.equal(saved[3],"github") && strings.equal(saved[4],"06:30"),"Set did not answer with the new state")
+    test.expect(strings.contains(lines[2],"\tdark\tgithub\t06:30\t20:00\t"),"Saved state not read back")
+    let file = fs.readFileSync(directory+"/org.devos.theme.json","utf8")
+    test.expect(strings.contains(file,"\"version\":2") && strings.contains(file,"\"mode\":\"dark\"") && strings.contains(file,"\"family\":\"github\""),"Shared preferences file not written")
+    test.expect(strings.startsWith(lines[3],"E\t"),"Unknown mode accepted")
+    test.expect(strings.startsWith(lines[4],"E\t") && strings.contains(lines[4],"different times"),"Equal times accepted")
+    test.expect(strings.startsWith(lines[5],"E\t"),"Unknown family accepted")
+    test.expect(strings.startsWith(lines[6],"E\t"),"Bad JSON accepted")
+    fs.writeFileSync(directory+"/org.devos.theme.json","{\"version\":1,\"enabled\":true,\"values\":{}}")
+    let old = strings.split(strings.trim(worker(directory,"{\"action\":\"get\"}\n{\"action\":\"set\",\"mode\":\"dark\",\"family\":\"vscode\",\"lightFrom\":\"07:00\",\"darkFrom\":\"19:00\"}\n")),"\n")
+    test.expect(strings.startsWith(old[0],"T\tExtension settings version requires migration"),"Old file must be reported")
+    test.expect(strings.startsWith(old[1],"E\t") && strings.contains(fs.readFileSync(directory+"/org.devos.theme.json","utf8"),"\"version\":1"),"Old file was overwritten")
+    tool.exec(Vec<str>("rm","-rf",directory))
+})
+test.case("native Settings Theme page applies Dark through the worker under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/theme-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let directory = temporary()
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",directory); env.set("DEVOS_THEME_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","theme-settings","xvfb-run","-a",executable),env,"",60000)
+    t.success(done); t.contains(t.out(done),"PASS native Theme page applied Dark")
+    let file = fs.readFileSync(directory+"/org.devos.theme.json","utf8")
+    test.expect(strings.contains(file,"\"mode\":\"dark\"") && strings.contains(file,"\"version\":2"),"The page did not save the shared preferences file")
+    tool.exec(Vec<str>("rm","-rf",directory))
+})
+return t.finish()

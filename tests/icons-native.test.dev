@@ -1,0 +1,72 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.icons/fa.dev" as fa
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn worker(directory:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",directory)
+    return t.out(tool.run(Vec<str>("d",t.root()+"/src/apps/org.devos.icons/service.dev","--",t.root()),env,input,90000))
+}
+fn mapping():json.Value { return json.get(json.parse(fs.readFileSync(t.root()+"/data/icons/fa/index.json","utf8")),"mapping") }
+fn materials():json.Value { return json.parse(fs.readFileSync(t.root()+"/src/apps/org.devos.icons/material/mapping.json","utf8")) }
+
+test.case("packs offer only the styles that exist on disk",fn() {
+    test.expect(fa.packs().len() == 16 && fa.hasCombination("classic","thin") && fa.hasCombination("graphite","thin"),"Known combinations refused")
+    test.expect(!fa.hasCombination("graphite","solid") && !fa.hasCombination("etch","regular") && !fa.hasCombination("nope","solid"),"Missing combinations accepted")
+    test.expect(strings.equal(fa.packTitle("sharp-duotone"),"Sharp Duotone") && strings.equal(fa.packTitle("jelly"),"Jelly"),"Pack titles wrong")
+    test.expect(!strings.equal(fa.choiceError("nope","solid"),"") && !strings.equal(fa.choiceError("classic","bold"),"") && strings.equal(fa.choiceError("classic","thin"),""),"Strict choice parsing wrong")
+    for pack in fa.packs() { for style in fa.packStyles(pack) { test.expect(fs.existsSync(t.root()+"/data/icons/fa/"+pack+"-"+style+".json"),"Missing glyph file for " + pack + " " + style) } }
+    let near = fa.nearest("regular"); test.expect(strings.equal(near[0],"regular") && strings.equal(near[1],"solid") && strings.equal(near[2],"light") && strings.equal(near[3],"thin"),"Nearest style order wrong")
+})
+test.case("SVG output follows the glyph fallback chain",fn() {
+    let exact = fa.svg(t.root(),mapping(),"folder-symbolic","classic","solid","#112233")
+    test.expect(strings.startsWith(exact,"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"") && strings.contains(exact,"<g fill=\"#112233\">") && strings.contains(exact,"<path d=\""),"SVG shape wrong")
+    test.expect(!strings.contains(exact,"fill-opacity"),"A single-layer pack must not have a second layer")
+    let duo = fa.svg(t.root(),mapping(),"folder-symbolic","duotone","solid","#112233")
+    test.expect(strings.contains(duo,"fill-opacity=\".4\""),"Duotone must add its 40% layer")
+    test.expect(strings.equal(fa.svg(t.root(),mapping(),"not-a-real-icon","classic","solid","#112233"),""),"Unmapped icon must fall back to the GTK theme")
+    let odd = fa.svg(t.root(),mapping(),"folder-symbolic","graphite","thin","#112233")
+    test.expect(strings.contains(odd,"<svg"),"Pack without the icon must fall back")
+})
+test.case("Material icons are looked up like material.ts",fn() {
+    test.expect(strings.equal(fa.material(materials(),"src",true),"dev-os-material-folder-src") && strings.equal(fa.material(materials(),"nothing-special",true),"dev-os-material-folder"),"Folder lookup wrong")
+    test.expect(strings.equal(fa.material(materials(),"package.json",false),"dev-os-material-nodejs"),"Exact file name lookup wrong")
+    test.expect(strings.equal(fa.material(materials(),"View.TSX",false),"dev-os-material-react_ts"),"Extension lookup must ignore case")
+    test.expect(strings.equal(fa.material(materials(),"notes.txt",false),"dev-os-material-document"),"txt lookup wrong")
+    test.expect(strings.equal(fa.material(materials(),"mystery.zzzz",false),"dev-os-material-file"),"Unknown extension must use the file icon")
+})
+test.case("worker previews, saves and refuses bad icon preferences",fn() {
+    let directory = temporary()
+    let input = "{\"action\":\"get\"}\n{\"action\":\"preview\",\"pack\":\"duotone\",\"style\":\"solid\",\"color\":\"#d4d4d4\",\"material\":true}\n{\"action\":\"preview\",\"pack\":\"bogus\",\"style\":\"solid\",\"color\":\"#d4d4d4\"}\n{\"action\":\"set\",\"baseIcons\":false,\"basePack\":\"classic\",\"baseStyle\":\"thin\",\"themeName\":\"Adwaita\",\"useSystemTheme\":true,\"materialFiles\":false}\n{\"action\":\"get\"}\n{\"action\":\"set\",\"baseIcons\":true,\"basePack\":\"classic\",\"baseStyle\":\"bold\",\"themeName\":\"Adwaita\"}\n{\"action\":\"set\",\"baseIcons\":true,\"basePack\":\"classic\",\"baseStyle\":\"solid\",\"themeName\":\"  \"}\nnot json\n"
+    let lines = strings.split(strings.trim(worker(directory,input)),"\n")
+    test.expect(lines.len() == 8,"Expected one frame per request")
+    let first = strings.split(lines[0],"\t")
+    test.expect(strings.equal(first[0],"I") && strings.equal(first[1],"") && strings.equal(first[2],"1") && strings.equal(first[3],"duotone") && strings.equal(first[4],"solid") && strings.equal(first[5],"Adwaita") && strings.equal(first[6],"0") && strings.equal(first[7],"1"),"Defaults missing")
+    let view = strings.split(lines[1],"\t")
+    test.expect(strings.equal(view[0],"V") && view.len() == 11,"Preview must carry 6 SVGs and 4 file icons")
+    test.expect(strings.startsWith(view[1],"<svg") && strings.equal(view[7],"dev-os-material-folder-src") && strings.equal(view[9],"dev-os-material-nodejs"),"Preview content wrong")
+    test.expect(strings.startsWith(lines[2],"E\t"),"Unknown pack accepted")
+    let saved = strings.split(lines[3],"\t")
+    test.expect(strings.equal(saved[0],"I") && strings.equal(saved[2],"0") && strings.equal(saved[3],"classic") && strings.equal(saved[4],"thin") && strings.equal(saved[6],"1") && strings.equal(saved[7],"0"),"Set did not answer with the new state")
+    test.expect(strings.contains(lines[4],"\t0\tclassic\tthin\tAdwaita\t1\t0\t"),"Saved state not read back")
+    let file = fs.readFileSync(directory+"/org.devos.icons.json","utf8")
+    test.expect(strings.contains(file,"\"basePack\":\"classic\"") && strings.contains(file,"\"version\":1") && strings.contains(file,"\"materialFiles\":false"),"Shared preferences file not written")
+    test.expect(strings.startsWith(lines[5],"E\t") && strings.startsWith(lines[6],"E\t") && strings.startsWith(lines[7],"E\t"),"Bad requests accepted")
+    tool.exec(Vec<str>("rm","-rf",directory))
+})
+test.case("native Settings Icons page applies Classic Thin through the worker under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/icons-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let directory = temporary()
+    let env = Map<str,str>(); env.set("DEVOS_PREFERENCES_DIR",directory); env.set("DEVOS_ICONS_SMOKE","1"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","icons-settings","xvfb-run","-a",executable),env,"",90000)
+    t.success(done); t.contains(t.out(done),"PASS native Icons page applied Classic Thin")
+    let file = fs.readFileSync(directory+"/org.devos.icons.json","utf8")
+    test.expect(strings.contains(file,"\"basePack\":\"classic\"") && strings.contains(file,"\"baseStyle\":\"thin\""),"The page did not save the shared preferences file")
+    tool.exec(Vec<str>("rm","-rf",directory))
+})
+return t.finish()

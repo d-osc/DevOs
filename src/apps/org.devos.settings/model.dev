@@ -1,0 +1,243 @@
+# Presentation model of the native Settings hardware pages (Battery Care, Fan Profile, Connectivity).
+# The helpers (bin/dev-os-<page>) print JSON; this module validates requests for them and turns their state into
+# one tab-separated presentation frame, so the native window never parses JSON or decides what a state means.
+use "std/json"
+use "std/strings"
+use "std/encoding"
+
+fn eq(a:str,b:str):bool { return strings.equal(a,b) }
+fn separator():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn pages():Vec<str> { return Vec<str>("battery-care","fan-profile","connectivity","touchpad-gestures","microphone","keyboard","swap","speaker","language","display-care") }
+fn known(page:str):bool { for item in pages() { if eq(item,page) { return true } }; return false }
+
+fn index(page:str):i64 { let all = pages(); for i in 0..(all.len() as i64) { if eq(all[i],page) { return i } }; return 0 }
+
+# Seconds between two `get` refreshes of the same page, matching the original card timers.
+fn refresh(page:str):i64 { return eq(page,"battery-care") ? 60 : eq(page,"touchpad-gestures") || eq(page,"microphone") ? 10 : eq(page,"keyboard") ? 20 : eq(page,"swap") ? 15 : eq(page,"speaker") ? 10 : 30 }
+
+fn member(value:str,options:Vec<str>):bool { for option in options { if eq(option,value) { return true } }; return false }
+fn digits(value:str):bool { for ch in strings.split(value,"") { if !strings.contains("0123456789",ch) { return false } }; return true }
+# True when `item` is not one of the key=value pairs the swap helper takes.
+fn swapProblem(item:str):bool {
+    let parts = strings.split(item,"=")
+    if parts.len() != 2 { return true }
+    let key = parts[0]; let value = parts[1]
+    if eq(key,"type") { return !member(value,Vec<str>("zram","file","off")) }
+    if eq(key,"algorithm") { return !member(value,Vec<str>("zstd","lz4")) }
+    if member(key,Vec<str>("percent","mib","swappiness")) { return strings.len(value) == 0 || strings.len(value) > 9 || !digits(value) }
+    return true
+}
+# A whole number from -10 to 10.
+fn decibels(value:str):bool {
+    let negative = strings.startsWith(value,"-"); let body = negative ? strings.substring(value,1,strings.charLength(value)) : value
+    if strings.len(body) == 0 || strings.len(body) > 2 || !digits(body) { return false }
+    let amount = 0; for ch in strings.split(body,"") { amount = amount * 10 + strings.indexOf("0123456789",ch) }
+    return amount <= 10
+}
+fn layoutId(value:str):bool {
+    if strings.len(value) == 0 || strings.len(value) > 24 { return false }
+    for ch in strings.split(value,"") { if !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789_-",ch) { return false } }
+    return true
+}
+# A whole number (optionally negative) within [low, high].
+fn intIn(value:str,low:i64,high:i64):bool {
+    let negative = strings.startsWith(value,"-"); let body = negative ? strings.substring(value,1,strings.charLength(value)) : value
+    if strings.len(body) == 0 || strings.len(body) > 6 || !digits(body) { return false }
+    let amount = 0; for ch in strings.split(body,"") { amount = amount * 10 + strings.indexOf("0123456789",ch) }
+    if negative { amount = 0 - amount }
+    return amount >= low && amount <= high
+}
+fn onOff(args:Vec<str>):bool { return args.len() == 1 && member(args[0],Vec<str>("on","off")) }
+
+# Returns "" when the helper may be run with these arguments, otherwise the reason it must not.
+fn validate(page:str,action:str,args:Vec<str>):str {
+    if !known(page) { return "Unknown settings page" }
+    if eq(action,"get") { return args.len() == 0 ? "" : "Unexpected arguments" }
+    if eq(page,"battery-care") {
+        if member(action,Vec<str>("care","full","quick")) && onOff(args) { return "" }
+    } else if eq(page,"fan-profile") {
+        if eq(action,"set") && args.len() == 2 && member(args[0],Vec<str>("ac","battery","both")) && member(args[1],Vec<str>("performance","standard","whisper")) { return "" }
+        if eq(action,"sync") && onOff(args) { return "" }
+    } else if eq(page,"connectivity") {
+        if eq(action,"taskfirst") && args.len() == 1 && member(args[0],Vec<str>("off","productivity","streaming","games")) { return "" }
+        if eq(action,"smartconnect") && onOff(args) { return "" }
+    } else if eq(page,"touchpad-gestures") {
+        if member(action,Vec<str>("lock","gestures")) && onOff(args) { return "" }
+        if eq(action,"launch") && args.len() == 1 && member(args[0],Vec<str>("task-manager","launcher","task-view","settings","files","terminal","none")) { return "" }
+    } else if eq(page,"display-care") {
+        if eq(action,"reset") && args.len() == 0 { return "" }
+        if eq(action,"set") && args.len() == 2 {
+            if member(args[0],Vec<str>("pixelRefresh","autoHidePanel","panelTransparency","targetMode")) && member(args[1],Vec<str>("on","off")) { return "" }
+            if eq(args[0],"dimming") && intIn(args[1],0,100) { return "" }
+            if eq(args[0],"temperature") && intIn(args[1],-50,50) { return "" }
+            if eq(args[0],"eyeCare") && intIn(args[1],1,5) { return "" }
+            if eq(args[0],"edgeBrightness") && intIn(args[1],0,4) { return "" }
+            if eq(args[0],"splendid") && member(args[1],Vec<str>("normal","vivid","manual","eyecare")) { return "" }
+        }
+    } else if eq(page,"language") {
+        if eq(action,"save") && args.len() == 2 && member(args[1],Vec<str>("alt-shift","super-space","ctrl-shift","caps-lock")) {
+            let ids = strings.split(args[0],",")
+            if ids.len() >= 1 && ids.len() <= 4 { for id in ids { if !layoutId(id) { return "Invalid keyboard language" } }; return "" }
+        }
+    } else if eq(page,"speaker") {
+        if member(action,Vec<str>("voice","boost","smart")) && onOff(args) { return "" }
+        if eq(action,"mode") && args.len() == 1 && member(args[0],Vec<str>("dynamic","game","movie","music","voice","custom1","custom2","custom3")) { return "" }
+        if eq(action,"device") && args.len() == 1 && strings.len(args[0]) > 0 && strings.len(args[0]) < 256 && !strings.startsWith(args[0],"-") { return "" }
+        if eq(action,"custom") && args.len() == 4 && member(args[0],Vec<str>("custom1","custom2","custom3")) {
+            for i in 1..4 { if !decibels(args[i]) { return "Invalid equalizer level" } }
+            return ""
+        }
+    } else if eq(page,"swap") {
+        if eq(action,"set") && args.len() >= 1 && args.len() <= 4 {
+            for item in args { if swapProblem(item) { return "Invalid swap setting" } }
+            return ""
+        }
+    } else if eq(page,"keyboard") {
+        if eq(action,"set") && args.len() == 2 {
+            if eq(args[0],"fn") && member(args[1],Vec<str>("locked","normal")) { return "" }
+            if member(args[0],Vec<str>("auto-brighten","auto-dim")) && member(args[1],Vec<str>("on","off")) { return "" }
+            if eq(args[0],"sleep") && member(args[1],Vec<str>("nothing","both","battery")) { return "" }
+            if member(args[0],Vec<str>("sleep-both","sleep-battery")) && strings.len(args[1]) > 0 && strings.len(args[1]) < 6 && digits(args[1]) { return "" }
+        }
+    } else if eq(page,"microphone") {
+        if eq(action,"mode") && args.len() == 1 && member(args[0],Vec<str>("authentic","general","conference")) { return "" }
+        if eq(action,"device") && args.len() == 1 && strings.len(args[0]) > 0 && strings.len(args[0]) < 256 && !strings.startsWith(args[0],"-") { return "" }
+    }
+    return "Unsupported settings action"
+}
+
+# Tab, newline, carriage return, NUL and the record separator would corrupt a frame.
+fn clean(text:str):str {
+    let out = ""; for ch in strings.split(text,"") { if strings.len(ch) == 1 && strings.contains("\0\t\r\n"+separator(),ch) { out = out + " " } else { out = out + ch } }; return out
+}
+fn get(state:json.Value,key:str):json.Value { return eq(json.kind(state),"object") && json.has(state,key) ? json.get(state,key) : json.null_value() }
+fn text(state:json.Value,key:str,fallback:str):str { let value = get(state,key); return eq(json.kind(value),"string") ? clean(json.string(value)) : fallback }
+fn flag(state:json.Value,key:str,fallback:bool):str {
+    let value = get(state,key); let on = eq(json.kind(value),"bool") ? json.bool(value) : fallback
+    return on ? "1" : "0"
+}
+fn whole(state:json.Value,key:str,fallback:i64):i64 { let value = get(state,key); return eq(json.kind(value),"number") ? json.int(value) : fallback }
+fn number(state:json.Value,key:str):str { let value = get(state,key); return eq(json.kind(value),"number") ? "${json.int(value)}" : "" }
+fn names(state:json.Value,key:str):str {
+    let value = get(state,key); let out = Vec<str>()
+    if eq(json.kind(value),"array") { for i in 0..(json.len(value) as i64) { let item = json.at(value,i); if eq(json.kind(item),"string") { out.push(clean(json.string(item))) } } }
+    return strings.join(out,",")
+}
+
+fn remainingText(seconds:i64):str {
+    let minutes = (seconds + 59) / 60; if minutes < 1 { minutes = 1 }; let hours = minutes / 60
+    return hours > 0 ? "${hours} h ${minutes % 60} min" : "${minutes} min"
+}
+
+fn join(fields:Vec<str>):str { return strings.join(fields,"\t") }
+
+# S<TAB>battery-care<TAB>supported, reason, care, full, remaining text, limit, quick
+fn battery(state:json.Value):str {
+    return join(Vec<str>("S","battery-care",flag(state,"supported",false),text(state,"reason",""),flag(state,"care",false),flag(state,"full",false),
+        remainingText(whole(state,"remaining",0)),"${whole(state,"limit",80)}",flag(state,"quick",true)))
+}
+# S<TAB>fan-profile<TAB>supported, reason, emulated, current, source, ac, battery, sync, syncAvailable, hotkey, rpm, modes
+fn fan(state:json.Value):str {
+    return join(Vec<str>("S","fan-profile",flag(state,"supported",false),text(state,"reason",""),flag(state,"emulated",false),text(state,"current",""),
+        text(state,"source","unknown"),text(state,"ac",""),text(state,"battery",""),flag(state,"sync",true),flag(state,"syncAvailable",false),
+        flag(state,"hotkey",false),number(state,"rpm"),names(state,"modes")))
+}
+# S<TAB>connectivity<TAB>taskfirstSupported, reason, taskfirst, active, interfaces, smartconnectSupported, reason, smartconnect, last
+fn connectivity(state:json.Value):str {
+    return join(Vec<str>("S","connectivity",flag(state,"taskfirstSupported",false),text(state,"taskfirstReason",""),text(state,"taskfirst","off"),
+        flag(state,"taskfirstActive",false),text(state,"taskfirstInterfaces",""),flag(state,"smartconnectSupported",false),
+        text(state,"smartconnectReason",""),flag(state,"smartconnect",false),text(state,"smartconnectLast","")))
+}
+# Entries of a [{id,title}] list as "id=title" joined by commas (commas inside are replaced).
+fn pairs(state:json.Value,key:str,idKey:str):str {
+    let value = get(state,key); let out = Vec<str>()
+    if eq(json.kind(value),"array") { for i in 0..(json.len(value) as i64) { let item = json.at(value,i); out.push(strings.replaceAll(text(item,idKey,""),",",";") + "=" + strings.replaceAll(text(item,"title",text(item,"name","")),",",";")) } }
+    return strings.join(out,",")
+}
+# S<TAB>touchpad-gestures<TAB>supported, reason, locked, enabled, launch, gesturesAvailable, volume, brightness, seek, launchOk, targets(id=title,..)
+fn touchpad(state:json.Value):str {
+    let backends = get(state,"backends")
+    return join(Vec<str>("S","touchpad-gestures",flag(state,"supported",false),text(state,"reason",""),flag(state,"locked",false),flag(state,"enabled",false),
+        text(state,"launch","task-manager"),flag(state,"gesturesAvailable",false),flag(backends,"volume",false),flag(backends,"brightness",false),
+        flag(backends,"seek",false),flag(backends,"launch",false),pairs(state,"targets","id")))
+}
+# S<TAB>microphone<TAB>supported, reason, mode, noiseAvailable, noiseReason, warning, device, sources(name=title,..)
+fn microphone(state:json.Value):str {
+    let noise = get(state,"noise")
+    return join(Vec<str>("S","microphone",flag(state,"supported",false),text(state,"reason",""),text(state,"mode","authentic"),flag(noise,"available",false),
+        text(noise,"reason",""),text(state,"warning",""),text(state,"device",""),pairs(state,"sources","name")))
+}
+fn numbers(state:json.Value,key:str):str {
+    let value = get(state,key); let out = Vec<str>()
+    if eq(json.kind(value),"array") { for i in 0..(json.len(value) as i64) { let item = json.at(value,i); if eq(json.kind(item),"number") { out.push("${json.int(item)}") } } }
+    return strings.join(out,",")
+}
+# S<TAB>keyboard<TAB>fnSupported, fnReason, fnMode, backlightSupported, backlightReason, sensorSupported, sensorReason, lux, idleSupported,
+# idleReason, autoBrighten, autoDim, sleep, sleepBoth, sleepBattery, timeouts
+fn keyboard(state:json.Value):str {
+    let keys = get(state,"fn"); let light = get(state,"backlight"); let sensor = get(state,"sensor"); let idle = get(state,"idle"); let saved = get(state,"settings")
+    return join(Vec<str>("S","keyboard",flag(keys,"supported",false),text(keys,"reason",""),text(keys,"mode",""),flag(light,"supported",false),text(light,"reason",""),
+        flag(sensor,"supported",false),text(sensor,"reason",""),number(sensor,"lux"),flag(idle,"supported",false),text(idle,"reason",""),
+        flag(saved,"autoBrighten",false),flag(saved,"autoDim",false),text(saved,"sleep","nothing"),"${whole(saved,"sleepBoth",60)}","${whole(saved,"sleepBattery",60)}",numbers(state,"timeouts")))
+}
+fn percentOrCustom(state:json.Value):i64 { let value = get(state,"percent"); return eq(json.kind(value),"number") ? json.int(value) : -1 }
+# S<TAB>swap<TAB>fileAllowed, fileReason, memTotalMiB, minMiB, maxMiB, maxFileMiB, type, percent (-1 custom), sizeMiB, algorithm, swappiness,
+# activeType, sizeBytes, usedBytes, dataBytes, compressedBytes, memoryBytes
+fn swap(state:json.Value):str {
+    let active = get(state,"active")
+    return join(Vec<str>("S","swap",flag(state,"fileAllowed",false),text(state,"fileReason",""),"${whole(state,"memTotalMiB",0)}","${whole(state,"minMiB",256)}",
+        "${whole(state,"maxMiB",0)}","${whole(state,"maxFileMiB",0)}",text(state,"type","zram"),"${percentOrCustom(state)}","${whole(state,"sizeMiB",0)}",
+        text(state,"algorithm","zstd"),"${whole(state,"swappiness",100)}",text(active,"type","none"),"${whole(active,"sizeBytes",0)}","${whole(active,"usedBytes",0)}",
+        "${whole(active,"dataBytes",0)}","${whole(active,"compressedBytes",0)}","${whole(active,"memoryBytes",0)}"))
+}
+fn levels(state:json.Value,slot:str):str {
+    let custom = get(get(state,"custom"),slot); let out = Vec<str>()
+    for i in 0..3 {
+        let value = eq(json.kind(custom),"array") && (json.len(custom) as i64) > i ? json.at(custom,i) : json.null_value()
+        let amount = eq(json.kind(value),"number") ? json.float(value) : 0.0
+        out.push("${(amount + (amount < 0.0 ? -0.5 : 0.5)) as i64}")
+    }
+    return strings.join(out,";")
+}
+# S<TAB>speaker<TAB>supported, reason, voice, boost, mode, smart, effective, filtersAvailable, filtersReason, warning, device, speakers(name=title,..),
+# custom1, custom2, custom3 (each "bass;mid;treble" dB)
+fn speaker(state:json.Value):str {
+    let filters = get(state,"filters")
+    return join(Vec<str>("S","speaker",flag(state,"supported",false),text(state,"reason",""),flag(state,"voice",false),flag(state,"boost",false),text(state,"mode","dynamic"),
+        flag(state,"smart",true),text(state,"effective","dynamic"),flag(filters,"available",false),text(filters,"reason",""),text(state,"warning",""),text(state,"device",""),
+        pairs(state,"speakers","name"),levels(state,"custom1"),levels(state,"custom2"),levels(state,"custom3")))
+}
+# id=name=sample entries of the language catalog, comma separated.
+fn triples(state:json.Value,key:str):str {
+    let value = get(state,key); let out = Vec<str>()
+    if eq(json.kind(value),"array") { for i in 0..(json.len(value) as i64) { let item = json.at(value,i); out.push(strings.replaceAll(text(item,"id",""),",",";") + "=" + strings.replaceAll(text(item,"name",""),",",";") + "=" + strings.replaceAll(text(item,"sample",""),",",";")) } }
+    return strings.join(out,",")
+}
+# S<TAB>language<TAB>warning, shortcut, layouts (csv ids), catalog (id=name=sample,..), shortcuts (id=name,..), applied ("" until a save, then 1 or 0)
+fn language(state:json.Value,applied:str):str {
+    let saved = get(state,"settings")
+    return join(Vec<str>("S","language",text(state,"warning",""),text(saved,"shortcut","alt-shift"),names(saved,"layouts"),triples(state,"layouts"),pairs(state,"shortcuts","id"),applied))
+}
+# S<TAB>display-care<TAB>pixelRefresh, autoHidePanel, panelTransparency, dimming, splendid, temperature, eyeCare, targetMode, edgeBrightness,
+# gammaAvailable, gammaReason, idleAvailable, idleReason, ereadingReason, gamutReason, batteryPresent, onBattery, resetNote
+fn displayCare(state:json.Value):str {
+    let saved = get(state,"settings"); let brightness = get(state,"brightness")
+    let note = eq(json.kind(brightness),"object") && !(json.has(brightness,"ok") && eq(json.kind(json.get(brightness,"ok")),"bool") && json.bool(json.get(brightness,"ok"))) ? "The brightness could not be restored: " + text(brightness,"reason","") : ""
+    return join(Vec<str>("S","display-care",flag(saved,"pixelRefresh",true),flag(saved,"autoHidePanel",false),flag(saved,"panelTransparency",true),"${whole(saved,"dimming",100)}",
+        text(saved,"splendid","normal"),"${whole(saved,"temperature",0)}","${whole(saved,"eyeCare",3)}",flag(saved,"targetMode",false),"${whole(saved,"edgeBrightness",0)}",
+        flag(get(state,"gamma"),"available",false),text(get(state,"gamma"),"reason",""),flag(get(state,"idle"),"available",false),text(get(state,"idle"),"reason",""),
+        text(get(state,"ereading"),"reason",""),text(get(state,"gamut"),"reason",""),flag(get(state,"battery"),"present",false),flag(get(state,"battery"),"onBattery",false),clean(note)))
+}
+fn frame(page:str,state:json.Value):str {
+    if eq(page,"display-care") { return displayCare(state) }
+    if eq(page,"language") { return language(state,"") }
+    if eq(page,"speaker") { return speaker(state) }
+    if eq(page,"swap") { return swap(state) }
+    if eq(page,"keyboard") { return keyboard(state) }
+    if eq(page,"touchpad-gestures") { return touchpad(state) }
+    if eq(page,"microphone") { return microphone(state) }
+    if eq(page,"battery-care") { return battery(state) }
+    if eq(page,"fan-profile") { return fan(state) }
+    return connectivity(state)
+}
+fn failure(message:str):str { return "E\t" + clean(message) }

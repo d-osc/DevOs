@@ -1,0 +1,29 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.background/native-view.devx" as view
+use "../../src/system/org.devos.background/scene.dev" as scene
+extern fn rd_widget_live_count():i64
+extern fn rd_fail(message:str)
+fn main():i32 {unsafe {
+    if view.monitorIndex(ui.text("2147483648"))!= -1 || view.monitorIndex(ui.text("-1"))!= -1 || view.monitorIndex(ui.text("1"))!=1 {rd_fail("Monitor selection validation failed")}
+    let cache=scene.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new()
+    let ok=ui.run("Native background test",800,520,fn(context:*ui.Context):ui.Node {
+        let content=view.App(context,painter,image,photo,false);let stage=ui.useRef(context,0)
+        ui.useEffect(context,fn():fn():void {unsafe {
+            let callback=callback_context(fn() {unsafe {
+                if (*image).surface==0 {return}
+                let next=stage.get()
+                if next>0 && (*image).style!=next-1 {return}
+                if next==24 {ui.close(context);return}
+                if !ui.select(context,"wallpaper-style",next as i32) {rd_fail("Native style selection failed")};stage.set(next+1)
+            }})
+            let timer=view.bg_timer(25,callback.call,callback.data)
+            return fn() {unsafe {view.bg_untimer(timer,callback.data)}}
+        }},Vec<i64>())
+        return content
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);view.bg_picture_free(photo)
+    if !ok || frame.style!=23 || frame.scale<1 || rd_widget_live_count()!=0 {rd_fail("Native background lifecycle failed")}
+    print("PASS all 24 native GTK scenes and cleanup");return 0
+}}
+return main()
+

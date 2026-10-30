@@ -1,0 +1,185 @@
+# Operations on update packages that need subprocesses (sha256sum, find, tar, openssl, cp): same behavior as
+# packages/updates/package.ts. Programs run with separate arguments, never through a shell string built from data.
+# Errors are returned as text (empty means success). Archives are listed and validated before anything is extracted, and the
+# installed base tree is never modified: a patch is applied to a copy that is verified against the target manifest.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/path"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "./protocol.dev" as proto
+use "./manifest.dev" as manifest
+
+struct Trust { error: str, trust: str }
+
+# Parsed JSON, or null when the text is not valid JSON.
+fn parseText(content:str):json.Value {
+    let parsed = result.attempt(fn():json.Value { return json.parse(content) })
+    return result.isErr(parsed) ? json.null_value() : result.unwrap(parsed)
+}
+fn remove(target:str) { hw.run(Vec<str>("rm","-rf","--",target),300000) }
+fn sha256(file:str):str {
+    let ran = hw.run(Vec<str>("sha256sum","--",file),300000)
+    if ran.code != 0 { return "" }
+    return strings.split(strings.trim(ran.out)," ")[0]
+}
+# Free bytes for unprivileged writes in `directory`, or -1.
+fn freeBytes(directory:str):i64 {
+    let ran = hw.run(Vec<str>("df","-Pk","--",directory),20000)
+    if ran.code != 0 { return -1 }
+    let rows = strings.split(strings.trim(ran.out),"\n"); let words = Vec<str>()
+    for word in strings.split(strings.trim(rows[rows.len() - 1])," ") { if !strings.equal(word,"") { words.push(word) } }
+    if words.len() < 4 || !proto.digits(words[3]) { return -1 }
+    return proto.number(words[3]) * 1024
+}
+fn treeBytes(directory:str):i64 {
+    let ran = hw.run(Vec<str>("du","-sk","--",directory),120000)
+    if ran.code != 0 { return -1 }
+    let first = strings.split(strings.trim(ran.out),"\t")[0]
+    return proto.digits(first) ? proto.number(first) * 1024 : -1
+}
+fn octalDigit(mode:str, fromEnd:i64):i64 {
+    let at = strings.charLength(mode) as i64 - fromEnd
+    return at < 0 ? 0 : strings.indexOf("01234567",strings.substring(mode,at,at+1))
+}
+# The tree under `directory` must be exactly `files` (plus manifest.json): contents, file set and executable bits.
+fn verifyTree(directory:str, files:Vec<manifest.File>):str {
+    let parent = path.dirname(directory)
+    let list = strings.trim(hw.run(Vec<str>("mktemp",parent + "/.verify-XXXXXXXX"),10000).out)
+    if strings.equal(list,"") { return "Cannot prepare the checksum list" }
+    fs.writeFileSync(list,manifest.checksumList(files))
+    let message = ""
+    let listing = hw.run(Vec<str>("find",directory,"-mindepth","1","-printf","%y\\t%m\\t%P\\n"),120000)
+    if listing.code != 0 { message = "Cannot read the update files" }
+    let expected = Map<str,manifest.File>()
+    for item in files { expected.set(item.path,item) }
+    let seen = Map<str,bool>(); let counted = 0; let wanted = files.len() as i64
+    if strings.equal(message,"") {
+        for row in strings.split(strings.trim(listing.out),"\n") {
+            if strings.equal(row,"") { continue }
+            let cells = strings.split(row,"\t")
+            if cells.len() != 3 { message = "Cannot read the update files"; break }
+            let kind = cells[0]; let mode = cells[1]; let name = cells[2]
+            if strings.equal(name,"manifest.json") && strings.equal(kind,"f") { continue }
+            if strings.equal(kind,"d") { continue }
+            if !strings.equal(kind,"f") || !expected.contains(name) { message = "Unexpected file " + name + " in the update"; break }
+            let wantsExecutable = strings.equal(expected.get(name).mode,"755")
+            if wantsExecutable != (octalDigit(mode,3) % 2 == 1) { message = "Wrong permissions on " + name; break }
+            if !seen.contains(name) { seen.set(name,true); counted = counted + 1 }
+        }
+    }
+    if strings.equal(message,"") && counted != wanted { message = "The update is missing files listed in its manifest" }
+    if strings.equal(message,"") {
+        let checked = hw.run(Vec<str>("sh","-c","cd \"$1\" && sha256sum --check --quiet --strict -- \"$2\"","sh",directory,list),300000)
+        if checked.code != 0 { message = "A file in the update does not match its manifest checksum" }
+    }
+    remove(list)
+    return message
+}
+# manifest.json of a release tree: error "" and an empty version mean there is none.
+fn readManifest(directory:str):manifest.Manifest {
+    let file = directory + "/manifest.json"
+    if !fs.is_file(file) { return manifest.Manifest("","","","",Vec<str>(),Vec<manifest.File>()) }
+    let parsed = parseText(fs.readFileSync(file,"utf8"))
+    if strings.equal(json.kind(parsed),"null") { return manifest.Manifest("Invalid update manifest","","","",Vec<str>(),Vec<manifest.File>()) }
+    return manifest.parseManifest(parsed,"","")
+}
+
+# Public keys (*.pub) that ship with the running version. Without any, releases are only checked by hash.
+fn trustedKeys(directory:str):Vec<str> {
+    let keys = Vec<str>()
+    if !fs.is_dir(directory) { return keys }
+    for name in fs.readdirSync(directory) {
+        if !strings.endsWith(name,".pub") || strings.charLength(name) < 5 { continue }
+        let plain = true
+        for i in 0..(strings.charLength(name) as i64) { if !manifest.pathChar(strings.substring(name,i,i+1)) { plain = false } }
+        if plain { keys.push(directory + "/" + name) }
+    }
+    keys.sort()
+    return keys
+}
+# Ed25519 check of SHA256SUMS. With a key installed a missing or invalid signature is fatal; without one the result is
+# "unsigned". `signature` is "" when the release has none.
+fn checkSignature(sums:str, signature:str, keys:Vec<str>):Trust {
+    if keys.len() == 0 { return Trust("","unsigned") }
+    if strings.equal(signature,"") { return Trust("This release is not signed, but this Dev OS only installs signed releases. Nothing was changed.","") }
+    for key in keys {
+        let ran = hw.run(Vec<str>("openssl","pkeyutl","-verify","-pubin","-inkey",key,"-rawin","-in",sums,"-sigfile",signature),30000)
+        if ran.code == 0 { return Trust("","verified") }
+    }
+    return Trust("The release signature is invalid (or openssl is missing). Nothing was changed.","")
+}
+struct Listing { error: str, names: str, details: str }
+fn tarList(archive:str):Listing {
+    let names = hw.run(Vec<str>("tar","-tzf",archive,"--quoting-style=escape"),120000)
+    let details = hw.run(Vec<str>("tar","-tvzf",archive,"--numeric-owner","--quoting-style=escape"),120000)
+    if names.code != 0 || details.code != 0 { return Listing("Cannot read the update archive","","") }
+    return Listing("",names.out,details.out)
+}
+fn extractText(archive:str, member:str, destination:str):bool {
+    return hw.run(Vec<str>("sh","-c","tar -xzOf \"$1\" \"$2\" > \"$3\"","sh",archive,member,destination),120000).code == 0
+}
+fn sortedKey(items:Vec<manifest.File>):str {
+    let lines = Vec<str>(); for item in items { lines.push(item.path + ":" + item.sha256 + ":" + item.mode) }
+    lines.sort(); return strings.join(lines,"\n")
+}
+fn sortedPaths(paths:Vec<str>):str { let copy = Vec<str>(); for item in paths { copy.push(item) }; copy.sort(); return strings.join(copy,"\n") }
+# Creates the full release tree of the patch's target version at `destination` from the installed tree `baseDir`.
+# Nothing in `baseDir` is modified; a failure leaves no `destination` behind. Empty on success.
+fn applyPatch(archive:str, baseDir:str, destination:str):str {
+    let listing = tarList(archive)
+    if !strings.equal(listing.error,"") { return listing.error }
+    let refused = manifest.validatePatchArchive(listing.names,listing.details)
+    if !strings.equal(refused,"") { return refused }
+    let staging = destination + ".patch"
+    remove(staging)
+    if !fs.mkdirSync(staging,true) { return "Cannot create the patch staging directory" }
+    let message = ""
+    let extracted = hw.run(Vec<str>("tar","-xzf",archive,"-C",staging,"--strip-components=1","--no-same-owner"),300000)
+    if extracted.code != 0 { message = "Cannot unpack the update patch" }
+    let meta = manifest.parsePatch(json.null_value())
+    let target = manifest.parseManifest(json.null_value(),"","")
+    if strings.equal(message,"") {
+        meta = manifest.parsePatch(parseText(fs.readFileSync(staging + "/patch.json","utf8")))
+        if !strings.equal(meta.error,"") { message = meta.error }
+    }
+    if strings.equal(message,"") {
+        target = manifest.parseManifest(parseText(fs.readFileSync(staging + "/manifest.json","utf8")),meta.to,meta.platform)
+        if !strings.equal(target.error,"") { message = target.error }
+    }
+    let base = manifest.parseManifest(json.null_value(),"","")
+    if strings.equal(message,"") {
+        base = readManifest(baseDir)
+        if strings.equal(base.version,"") { message = "The installed version has no manifest, so a patch cannot be applied. Use the full package." }
+        else if !strings.equal(base.error,"") { message = base.error }
+        else if !strings.equal(base.version,meta.from) || !strings.equal(base.platform,meta.platform) { message = "This patch is for Dev OS " + meta.from + "; " + base.version + " is installed." }
+    }
+    if strings.equal(message,"") && !strings.equal(sha256(baseDir + "/manifest.json"),meta.baseSha) { message = "The installed files differ from the version this patch was made for." }
+    if strings.equal(message,"") && !strings.equal(sha256(staging + "/manifest.json"),meta.targetSha) { message = "The patch manifest does not match its own checksum." }
+    if strings.equal(message,"") {
+        # The patch must describe exactly the difference between the two manifests, otherwise it could smuggle extra files in.
+        let expected = manifest.diff(base,target)
+        if !strings.equal(sortedKey(expected.add),sortedKey(meta.add)) || !strings.equal(sortedKey(expected.replace),sortedKey(meta.replace)) || !strings.equal(sortedPaths(expected.remove),sortedPaths(meta.remove)) { message = "The patch does not match its target manifest." }
+    }
+    if strings.equal(message,"") {
+        if hw.run(Vec<str>("cp","-a","--",baseDir,destination),300000).code != 0 { message = "Cannot copy the installed version" }
+        else {
+            let at = 0
+            while at < (meta.remove.len() as i64) && strings.equal(message,"") {
+                let args = Vec<str>("sh","-c","cd \"$1\" && shift && rm -f -- \"$@\"","sh",destination)
+                let stop = at + 100; if stop > (meta.remove.len() as i64) { stop = meta.remove.len() as i64 }
+                for i in at..stop { args.push(meta.remove[i]) }
+                if hw.run(args,120000).code != 0 { message = "Cannot remove files listed in the patch" }
+                at = at + 100
+            }
+            if strings.equal(message,"") && hw.run(Vec<str>("find",destination,"-mindepth","1","-type","d","-empty","-delete"),120000).code != 0 { message = "Cannot tidy the patched tree" }
+            if strings.equal(message,"") && (meta.add.len() + meta.replace.len()) > 0 && hw.run(Vec<str>("cp","-a","--",staging + "/tree/.",destination),300000).code != 0 { message = "Cannot copy patch files" }
+            if strings.equal(message,"") && !fs.writeFileSync(destination + "/manifest.json",fs.readFileSync(staging + "/manifest.json","utf8")) { message = "Cannot write the patched manifest" }
+            if strings.equal(message,"") { message = verifyTree(destination,target.files) }
+            if !strings.equal(message,"") { remove(destination) }
+        }
+    }
+    remove(staging)
+    return message
+}

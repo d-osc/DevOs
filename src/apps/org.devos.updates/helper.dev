@@ -1,0 +1,44 @@
+# Runs the system update helper (dev-os-system-update, which asks for administrator approval through pkexec) and reads its JSON
+# answer. A call can take many minutes (approval, copying a boot image), more than the five minutes one subprocess call is
+# allowed, so the helper runs in the background and its output files are polled. Programs get separate arguments only.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "../../../lib/hw.dev" as hw
+
+struct Reply { error: str, answer: json.Value }
+
+fn remove(target:str) { hw.run(Vec<str>("rm","-rf","--",target),60000) }
+fn approvalDenied(text:str):bool {
+    let lower = strings.toLowerCase(text)
+    return strings.contains(lower,"dismissed") || strings.contains(lower,"not authorized") || strings.contains(lower,"authentication")
+}
+# `command` is the helper (program and fixed leading arguments), `args` the request. Empty `error` means a JSON object came back.
+fn call(command:Vec<str>, args:Vec<str>, seconds:i64):Reply {
+    let none = json.null_value()
+    if command.len() == 0 { return Reply("System updates are not installed.",none) }
+    let directory = strings.trim(hw.run(Vec<str>("mktemp","-d"),10000).out)
+    if strings.equal(directory,"") { return Reply("Cannot start the system update helper",none) }
+    let argv = Vec<str>("sh","-c","d=$1; shift; ( \"$@\" > \"$d/out\" 2> \"$d/err\" < /dev/null; echo $? > \"$d/rc\" ) > /dev/null 2>&1 < /dev/null & echo $! > \"$d/pid\"","sh",directory)
+    for item in command { argv.push(item) }
+    for item in args { argv.push(item) }
+    if hw.run(argv,10000).code != 0 { remove(directory); return Reply("Cannot start the system update helper",none) }
+    let waited = 0; let limit = seconds * 5
+    while !fs.existsSync(directory + "/rc") && waited < limit { time.sleep_ms(200); waited = waited + 1 }
+    if !fs.existsSync(directory + "/rc") {
+        if fs.existsSync(directory + "/pid") { hw.run(Vec<str>("kill",strings.trim(fs.readFileSync(directory + "/pid","utf8"))),10000) }
+        remove(directory)
+        return Reply("The system update took too long and was stopped.",none)
+    }
+    let out = fs.existsSync(directory + "/out") ? fs.readFileSync(directory + "/out","utf8") : ""
+    let err = strings.trim(fs.existsSync(directory + "/err") ? fs.readFileSync(directory + "/err","utf8") : "")
+    remove(directory)
+    let parsed = result.attempt(fn():json.Value { return json.parse(out) })
+    if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") {
+        if approvalDenied(err) { return Reply("Administrator approval was cancelled. Nothing was changed.",none) }
+        return Reply(strings.equal(err,"") ? "The system update helper did not answer." : err,none)
+    }
+    return Reply("",result.unwrap(parsed))
+}

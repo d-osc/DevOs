@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-power.dev" as power
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn panel_prepare(root:*void,index:i32):i32
+extern fn panel_layout(root:*void,top:i32,height:i32)
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let ticks=ui.useRef(context,0)
+    let controls=power.Controls(context)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        check(panel_prepare((*context).native,0)!=0,"Power fixture requires a private Wayland panel");panel_layout((*context).native,0,240)
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>600 {ui.rd_fail("Timed out testing native power controls")}
+            if phase.get()==0 && gtk_widget_get_sensitive(ui.find(context,"panel-power-restart"))!=0 {check(ui.click(context,"panel-power-restart"),"Restart button missing");phase.set(1)}
+            else if phase.get()==1 && ui.find(context,"panel-power-confirm")!=null {check(ui.click(context,"panel-power-cancel"),"Cancel missing");phase.set(2)}
+            else if phase.get()==2 && ui.find(context,"panel-power-confirm")==null {check(power.panel_loading_ready((*context).native)==0,"Cancel opened a loading screen");check(ui.click(context,"panel-power-restart"),"Restart missing after cancel");phase.set(3)}
+            else if phase.get()==3 && ui.find(context,"panel-power-confirm")!=null {check(ui.click(context,"panel-power-confirm"),"Restart confirmation missing");phase.set(4)}
+            else if phase.get()==4 && ui.find(context,"panel-power-confirm")==null {check(power.panel_loading_ready((*context).native)!=0,"Restart acknowledged before loading draw");power.panel_loading_clear((*context).native);check(ui.click(context,"panel-power-shutdown"),"Shutdown missing");phase.set(5)}
+            else if phase.get()==5 && ui.find(context,"panel-power-confirm")!=null {check(ui.click(context,"panel-power-confirm"),"Shutdown confirmation missing");phase.set(6)}
+            else if phase.get()==6 && ui.find(context,"panel-power-confirm")==null {check(power.panel_loading_ready((*context).native)!=0,"Authorized shutdown loading screen missing");power.panel_loading_clear((*context).native);check(ui.click(context,"panel-power-sleep"),"Sleep missing");phase.set(7)}
+            else if phase.get()==7 && ui.find(context,"panel-power-confirm")!=null {check(ui.click(context,"panel-power-confirm"),"Sleep confirmation missing");phase.set(8)}
+            else if phase.get()==8 && ui.find(context,"panel-power-confirm")==null {check(power.panel_loading_ready((*context).native)==0,"Desktop lock opened a shutdown overlay");ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return controls
+}
+fn main():i32 {check(ui.run("Native panel power controls",640,240,App),"Power UI failed");unsafe {check(rd_widget_live_count()==0,"Power widgets leaked")};print("PASS native power confirmation, cancellation, loading draw and cleanup");return 0}
+return main()

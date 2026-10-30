@@ -1,0 +1,124 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn rs():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn records(frame:str):Vec<str> { return strings.split(frame,rs()) }
+fn cells(record:str):Vec<str> { return strings.split(record,"\t") }
+fn id():str { return "11111111-2222-5333-8444-555555555555" }
+fn network(ssid:str, profile:str, signal:str, secure:str, connected:str, security:str):str {
+    return "{\"ssid\":\"" + ssid + "\",\"profile\":\"" + profile + "\",\"adapter\":\"wlan0\",\"interfaceId\":\"" + id() + "\",\"signal\":" + signal + ",\"secure\":" + secure + ",\"connected\":" + connected + ",\"connectable\":true,\"security\":\"" + security + "\"}"
+}
+fn scan():str {
+    return "{\"ok\":true,\"wirelessEnabled\":true,\"networks\":[" + network("Cafe","","40","true","false","psk") + "," + network("Open","","30","false","false","open") + "," + network("","","99","false","false","open") + "," + network("Saved","Saved","70","true","false","psk") + "," + network("Home","Home","188","true","true","psk") + "," + network("Cafe","","60","true","false","psk") + "]}"
+}
+# Stand-ins for bin/dev-os-network-linux (logs last.<action>, answers reply.<action> or reply.scan) and for the host's powershell.exe
+# (logs its arguments, answers ps.reply). They never touch a radio, NetworkManager or Windows.
+fn rig():str {
+    let d = temporary()
+    fs.writeFileSync(d + "/dev-os-network-linux","use \"std/io\"\nuse \"std/fs\"\nuse \"std/json\"\nuse \"std/process\"\nfn main():i32 {\n    let raw = io.read_line()\n    let dir = process.getenv(\"DEVOS_FAKE_DIR\")\n    let action = json.string(json.get(json.parse(raw),\"action\"))\n    fs.writeFileSync(dir + \"/last.\" + action,raw)\n    let own = dir + \"/reply.\" + action\n    print(fs.readFileSync(fs.existsSync(own) ? own : dir + \"/reply.scan\",\"utf8\"))\n    return 0\n}\nreturn main()\n")
+    fs.writeFileSync(d + "/powershell","#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DEVOS_FAKE_DIR/ps.args\"\ncat \"$DEVOS_FAKE_DIR/ps.reply\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/powershell"))
+    fs.writeFileSync(d + "/reply.scan",scan()); fs.writeFileSync(d + "/reply.connect","{\"ok\":true}"); fs.writeFileSync(d + "/reply.radio","{\"ok\":true}"); fs.writeFileSync(d + "/reply.disconnect","{\"ok\":true}")
+    fs.writeFileSync(d + "/ps.reply",strings.replaceAll(scan(),"\"wirelessEnabled\":true,",""))
+    return d
+}
+fn worker(directory:str, mode:str, input:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",directory); env.set("DEVOS_FAKE_DIR",directory); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_WIFI_MODE",mode); env.set("DEVOS_WIFI_POWERSHELL",directory + "/powershell")
+    return strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/wifi-page.dev","--",t.root()),env,input,120000)))
+}
+fn sent(directory:str, action:str):json.Value { return json.parse(fs.readFileSync(directory + "/last." + action,"utf8")) }
+# What the fake powershell was asked to run: the command after -EncodedCommand, decoded, and the request inside it.
+fn command(directory:str):str { return tool.exec(Vec<str>("sh","-c","tail -n 1 '" + directory + "/ps.args' | base64 -d | iconv -f UTF-16LE -t UTF-8")) }
+fn request(directory:str):json.Value {
+    let encoded = tool.exec(Vec<str>("sh","-c","tail -n 1 '" + directory + "/ps.args' | base64 -d | iconv -f UTF-16LE -t UTF-8 | grep -o \"RequestBase64 '[^']*'\" | cut -d\"'\" -f2 | base64 -d"))
+    return json.parse(encoded)
+}
+
+test.case("a Linux scan becomes a frame: hidden networks dropped, duplicates merged, signal clamped, connected then strongest first",fn() {
+    let d = rig()
+    let all = records(worker(d,"linux","{\"action\":\"scan\"}\n")); let h = cells(all[0])
+    test.expect(strings.equal(h[0],"V") && strings.equal(h[1],"Linux") && strings.equal(h[2],"1") && strings.equal(h[3],"") && all.len() == 5,"Header or count wrong: " + strings.join(all,"|"))
+    let names = Vec<str>(); let signals = Vec<str>()
+    for i in 1..5 { let n = cells(all[i]); names.push(n[1]); signals.push(n[5]) }
+    test.expect(strings.equal(strings.join(names,","),"Home,Saved,Cafe,Open") && strings.equal(strings.join(signals,","),"100,70,60,30"),"Order, merge or clamp wrong: " + strings.join(names,",") + " " + strings.join(signals,","))
+    let home = cells(all[1])
+    test.expect(strings.equal(home[2],"Home") && strings.equal(home[4],id()) && strings.equal(home[6],"1") && strings.equal(home[7],"1") && strings.equal(home[8],"1") && strings.equal(home[9],"psk"),"Connected record wrong")
+    fs.writeFileSync(d + "/reply.scan","{\"ok\":true,\"networks\":[{\"ssid\":\"x\",\"profile\":\"\",\"adapter\":\"w\",\"interfaceId\":\"not-a-uuid\",\"signal\":1,\"secure\":false,\"connected\":false,\"connectable\":true}]}")
+    test.expect(strings.startsWith(worker(d,"linux","{\"action\":\"scan\"}\n"),"E\tInvalid Wi-Fi network data."),"A malformed scan was accepted")
+    fs.writeFileSync(d + "/reply.scan","{\"ok\":false,\"error\":\"NetworkManager is not running.\"}")
+    test.expect(strings.equal(worker(d,"linux","{\"action\":\"scan\"}\n"),"E\tNetworkManager is not running."),"A helper error was not passed on")
+    fs.writeFileSync(d + "/reply.scan","garbage")
+    test.expect(strings.contains(worker(d,"linux","{\"action\":\"scan\"}\n"),"returned no valid data"),"A silent helper was not reported")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("Linux connect, disconnect and radio are validated, forwarded exactly and followed by a fresh scan",fn() {
+    let d = rig()
+    let lines = strings.split(worker(d,"linux","{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"profile\":\"\",\"ssid\":\"Cafe\",\"security\":\"psk\",\"secure\":true,\"password\":\"correct horse\"}\n{\"action\":\"disconnect\",\"interfaceId\":\"" + id() + "\"}\n{\"action\":\"radio\",\"enabled\":false}\n{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"profile\":\"Saved\",\"ssid\":\"Saved\",\"security\":\"psk\",\"secure\":true,\"password\":\"\"}\n"),"\n")
+    test.expect(lines.len() == 4,"Expected one frame per request: ${lines.len()}")
+    test.expect(strings.startsWith(lines[0],"V\tLinux\t1\tConnected to Cafe.") && strings.startsWith(lines[1],"V\t") && strings.startsWith(lines[2],"V\t"),"Answers wrong: " + lines[0])
+    let c = sent(d,"connect")
+    test.expect(strings.equal(json.string(json.get(c,"profile")),"Saved") && strings.equal(json.string(json.get(c,"ssid")),"Saved"),"The last connect payload is wrong")
+    test.expect(strings.equal(json.string(json.get(sent(d,"disconnect"),"interfaceId")),id()) && !json.bool(json.get(sent(d,"radio"),"enabled")),"Disconnect or radio payload wrong")
+    worker(d,"linux","{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"profile\":\"\",\"ssid\":\"Cafe\",\"security\":\"psk\",\"secure\":true,\"password\":\"correct horse\"}\n")
+    let join = sent(d,"connect")
+    test.expect(strings.equal(json.string(json.get(join,"password")),"correct horse") && strings.equal(json.string(json.get(join,"security")),"psk") && json.bool(json.get(join,"secure")) && strings.equal(json.string(json.get(join,"ssid")),"Cafe"),"Join payload wrong")
+    test.expect(!strings.contains(worker(d,"linux","{\"action\":\"scan\"}\n"),"correct horse"),"A password appeared in a frame")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("bad Wi-Fi requests never reach the helper",fn() {
+    let d = rig()
+    let long = strings.replaceAll("0123456789","0123456789","012345678901234567890123456789012")
+    let input = "{\"action\":\"connect\",\"interfaceId\":\"nope\",\"ssid\":\"x\"}\n{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"ssid\":\"\"}\n{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"ssid\":\"" + long + "\"}\n{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"ssid\":\"ok\",\"password\":\"a\\nb\"}\n{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"profile\":\"a\\nb\",\"ssid\":\"ok\"}\n{\"action\":\"disconnect\",\"interfaceId\":\"nope\"}\n{\"action\":\"radio\",\"enabled\":\"on\"}\n{\"action\":\"radio\"}\n{\"action\":\"settings\"}\n{\"action\":\"bogus\"}\nnot json\n"
+    let lines = strings.split(worker(d,"linux",input),"\n")
+    test.expect(lines.len() == 11,"Expected one frame per request: ${lines.len()}")
+    for i in 0..11 { test.expect(strings.startsWith(lines[i],"E\t"),"Request ${i} was accepted: " + lines[i]) }
+    for action in Vec<str>("connect","disconnect","radio","settings") { test.expect(!fs.existsSync(d + "/last." + action),action + " reached the helper") }
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("inside WSL the request goes to the host's PowerShell as an encoded command and only saved profiles can be joined",fn() {
+    let d = rig()
+    let scanned = records(worker(d,"windows","{\"action\":\"scan\"}\n"))
+    test.expect(strings.equal(cells(scanned[0])[1],"Windows") && strings.equal(cells(scanned[0])[2],"") && scanned.len() == 5,"Windows scan wrong: " + scanned[0])
+    let args = fs.readFileSync(d + "/ps.args","utf8")
+    test.expect(strings.startsWith(args,"-NoLogo\n-NoProfile\n-NonInteractive\n-EncodedCommand\n"),"PowerShell arguments wrong: " + args)
+    test.expect(strings.contains(command(d),"param([string]$RequestBase64") && strings.equal(json.string(json.get(request(d),"action")),"scan"),"The command does not carry the script and the request")
+    let out = strings.split(worker(d,"windows","{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"profile\":\"Saved\",\"ssid\":\"Saved\",\"password\":\"leaked?\"}\n{\"action\":\"settings\"}\n{\"action\":\"radio\",\"enabled\":true}\n{\"action\":\"disconnect\",\"interfaceId\":\"" + id() + "\"}\n"),"\n")
+    test.expect(strings.startsWith(out[0],"V\tWindows\t\tConnected to Saved.") && strings.startsWith(out[1],"V\tWindows") && strings.startsWith(out[2],"E\t") && strings.startsWith(out[3],"E\t"),"WSL answers wrong: " + strings.join(out,"|"))
+    fs.writeFileSync(d + "/ps.reply","{\"ok\":true}")
+    worker(d,"windows","{\"action\":\"connect\",\"interfaceId\":\"" + id() + "\",\"profile\":\"Saved\",\"ssid\":\"Saved\",\"password\":\"leaked?\"}\n")
+    let payload = request(d)
+    test.expect(strings.equal(json.string(json.get(payload,"action")),"scan") || strings.equal(json.string(json.get(payload,"action")),"connect"),"Unexpected request")
+    test.expect(!strings.contains(command(d),"leaked?") && !strings.contains(json.stringify(payload),"password"),"A password was sent to Windows")
+    fs.writeFileSync(d + "/ps.reply","{\"ok\":false,\"error\":\"Location access is off.\",\"accessDenied\":true}")
+    let denied = worker(d,"windows","{\"action\":\"scan\"}\n")
+    test.expect(strings.startsWith(denied,"E\tLocation access is off. Allow location access for desktop apps in Windows Privacy settings, then refresh."),"Access denied is not explained: " + denied)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the real Windows PowerShell answers a scan from WSL (read only)",fn() {
+    let env = Map<str,str>()
+    let out = strings.trim(t.out(tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.settings/wifi-page.dev","--",t.root()),env,"{\"action\":\"scan\"}\n",120000)))
+    test.expect(strings.startsWith(out,"V\t") || strings.startsWith(out,"E\t"),"The real helper did not answer: " + out)
+})
+fn page(mode:str):str {
+    let executable = t.root() + "/build/react-devlang/tests/wifi-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let d = rig()
+    let env = Map<str,str>(); env.set("DEVOS_SETTINGS_HELPERS",d); env.set("DEVOS_FAKE_DIR",d); env.set("DEVOS_SETTINGS_TEST","1"); env.set("DEVOS_WIFI_MODE","linux"); env.set("DEVOS_WIFI_SMOKE",mode); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","wifi-settings","xvfb-run","-a",executable),env,"",120000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Wi-Fi page connected"),"Wi-Fi page " + mode + ": " + t.out(done) + " / " + t.err(done))
+    return d
+}
+test.case("native Settings joins a saved network and a new one with a typed password under real GTK",fn() {
+    let saved = page("saved")
+    test.expect(strings.equal(json.string(json.get(sent(saved,"connect"),"profile")),"Saved") && strings.equal(json.string(json.get(sent(saved,"connect"),"password")),""),"The saved network was joined wrongly")
+    let joined = page("join")
+    test.expect(strings.equal(json.string(json.get(sent(joined,"connect"),"ssid")),"Cafe") && strings.equal(json.string(json.get(sent(joined,"connect"),"password")),"correct horse battery") && strings.equal(json.string(json.get(sent(joined,"connect"),"security")),"psk"),"The new network was joined wrongly: " + json.stringify(sent(joined,"connect")))
+    tool.exec(Vec<str>("rm","-rf",saved,joined))
+})
+return t.finish()

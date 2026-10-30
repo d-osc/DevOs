@@ -1,0 +1,485 @@
+# Installing, switching and rolling back Dev OS releases under the update root (same behavior as install, installFile, rollback,
+# activate, prune and the lock/staging handling of packages/updates/service.ts). No UI and no D-Bus: a caller passes a Ctx and
+# gets an Outcome. Everything that can change what the next session starts from goes through `activate`, one atomic replacement
+# of history.json. System image updates (dev-os-system-*) are handed to the privileged helper (see the end of this file).
+#
+# Layout of the update root: history.json (current, previous), releases/<version>-<12 hex>/, current -> releases/<key>,
+# install.lock while a transaction runs, .staging-*/.verify-* leftovers that are removed at the next start.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/desktop.dev" as util
+use "./protocol.dev" as proto
+use "./manifest.dev" as manifest
+use "./package.dev" as pkg
+use "./system.dev" as sysd
+use "./helper.dev" as helper
+
+# root: update root; keyDir: *.pub files shipped with this Dev OS; running: version of the running Dev OS; installRoot: the
+# release tree this session runs from (never pruned); free: bytes to assume free (-1 = ask the file system); live: Live USB;
+# api: "" in production, or "http://127.0.0.1:<port>" so tests can serve downloads from this computer.
+struct Ctx { root: str, keyDir: str, running: str, installRoot: str, free: i64, live: bool, api: str, sys: Sys }
+# The system update helper: `command` is the program and its fixed leading arguments (empty = not installed), `reboot` restarts the computer.
+struct Sys { command: Vec<str>, reboot: Vec<str> }
+fn noSystem():Sys { return Sys(Vec<str>(),Vec<str>("systemctl","reboot")) }
+# error is empty on success; message is the sentence to show; trust is "verified", "unsigned" or "".
+struct Outcome { error: str, message: str, trust: str, version: str, previous: str, patched: bool, restart: bool }
+struct Item { key: str, version: str, repository: str, platform: str }
+
+fn failed(message:str):Outcome { return Outcome(message,"The update could not be completed.","","","",false,false) }
+fn done(message:str, version:str, previous:str, trust:str, patched:bool):Outcome { return Outcome("",message,trust,version,previous,patched,false) }
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn run(argv:Vec<str>):hw.Run { return hw.run(argv,300000) }
+fn remove(target:str) { hw.run(Vec<str>("rm","-rf","--",target),300000) }
+# Size in bytes of a regular file, or -1.
+fn fileSize(path:str):i64 {
+    let ran = run(Vec<str>("stat","-c","%s","--",path))
+    return ran.code == 0 && proto.digits(strings.trim(ran.out)) ? proto.number(strings.trim(ran.out)) : -1
+}
+fn exists(target:str):bool { return fs.existsSync(target) || run(Vec<str>("test","-L",target)).code == 0 }
+fn temporary(parent:str, prefix:str):str { return strings.trim(run(Vec<str>("mktemp","-d",parent + "/" + prefix + "-XXXXXXXXXX")).out) }
+
+# --- history --------------------------------------------------------------------------------------------------------------
+struct Records { error: str, current: json.Value, previous: json.Value }
+fn records(root:str):Records {
+    let check = proto.history(root)
+    if !strings.equal(check.error,"") { return Records(check.error,json.null_value(),json.null_value()) }
+    let file = root + "/history.json"
+    if !fs.existsSync(file) { return Records("",json.null_value(),json.null_value()) }
+    let data = json.parse(fs.readFileSync(file,"utf8"))
+    return Records("",json.get(data,"current"),json.get(data,"previous"))
+}
+fn installedVersion(ctx:Ctx, current:json.Value):str { return strings.equal(json.kind(current),"object") ? text(current,"version") : ctx.running }
+fn record(item:Item):json.Value { return {key:item.key,version:item.version,repository:item.repository,platform:item.platform} }
+fn selectedRoot(ctx:Ctx):str {
+    let found = records(ctx.root)
+    return strings.equal(found.error,"") && strings.equal(json.kind(found.current),"object") ? ctx.root + "/releases/" + text(found.current,"key") : ""
+}
+
+# --- locking and leftovers --------------------------------------------------------------------------------------------------
+# install.lock is created exclusively (noclobber): a second transaction, or a crashed one, makes this fail.
+fn lock(ctx:Ctx):str {
+    if !fs.mkdirSync(ctx.root + "/releases",true) { return "Cannot create the update directory" }
+    let made = run(Vec<str>("sh","-c","umask 077; set -C; : > \"$1\"","sh",ctx.root + "/install.lock"))
+    if made.code != 0 { return "Another update is in progress. If an interrupted update left install.lock behind, remove it after closing Dev OS." }
+    return ""
+}
+fn unlock(ctx:Ctx) { hw.run(Vec<str>("rm","-f","--",ctx.root + "/install.lock"),10000) }
+fn staleName(name:str):bool { return strings.startsWith(name,".staging-") || strings.startsWith(name,".verify-") }
+# Staging left behind by an interrupted installation. Called with the lock held; it never touches an activated release.
+fn cleanLeftovers(ctx:Ctx) {
+    for directory in Vec<str>(ctx.root,ctx.root + "/releases") {
+        if !fs.is_dir(directory) { continue }
+        for name in fs.readdirSync(directory) { if staleName(name) { remove(directory + "/" + name) } }
+    }
+}
+fn releaseKeyName(name:str):bool {
+    let parts = strings.split(name,"-")
+    if parts.len() != 2 || !proto.lowerHex(parts[1],12) { return false }
+    return !strings.equal(proto.version(parts[0]),"") && strings.equal(proto.version(parts[0]),parts[0])
+}
+# Keep the selected and the previous release, plus whatever this session runs from.
+fn prune(ctx:Ctx, current:str, previous:str) {
+    let directory = ctx.root + "/releases"
+    if !fs.is_dir(directory) { return }
+    for name in fs.readdirSync(directory) {
+        let path = directory + "/" + name
+        if releaseKeyName(name) && !strings.equal(name,current) && !strings.equal(name,previous) && !strings.equal(path,ctx.installRoot) { remove(path) }
+    }
+}
+# The commit point: one atomic replacement of history.json, then the convenience `current` symlink.
+fn activate(ctx:Ctx, item:json.Value, previous:json.Value):str {
+    if !util.atomic(ctx.root + "/history.json",{current:item,previous:previous}) { return "Cannot save the update history" }
+    let link = temporary(ctx.root,".link")
+    if !strings.equal(link,"") {
+        remove(link)
+        let made = run(Vec<str>("sh","-c","ln -s \"releases/$1\" \"$2\" && mv -T -- \"$2\" \"$3\"","sh",text(item,"key"),link,ctx.root + "/current"))
+        if made.code != 0 { remove(link) }
+    }
+    return ""
+}
+fn space(ctx:Ctx, needed:i64):str {
+    let free = ctx.free >= 0 ? ctx.free : pkg.freeBytes(ctx.root)
+    if free < 0 { return "Cannot read free disk space" }
+    if free < needed { return "Not enough free disk space: about ${(needed + 1048575) / 1048576} MB needed in " + ctx.root + ", ${free / 1048576} MB available. Free some space and try again; the current installation was not changed." }
+    return ""
+}
+
+# --- downloads --------------------------------------------------------------------------------------------------------------
+fn loopbackAllowed(url:str, api:str):bool { return strings.startsWith(api,"http://127.0.0.1:") && strings.startsWith(url,"http://127.0.0.1:") }
+# Downloads `url` to `path` with curl (HTTPS only, redirects stay on HTTPS, size capped) in the background so the five minute
+# limit of one subprocess call does not apply, and checks the size. Empty on success.
+fn download(api:str, url:str, size:i64, path:str):str {
+    let secure = strings.startsWith(url,"https://github.com/")
+    if !secure && !loopbackAllowed(url,api) { return "Update downloads must come from github.com" }
+    let status = path + ".status"
+    remove(status); remove(path)
+    let protocols = secure ? "--proto =https --proto-redir =https" : "--proto =http"
+    let script = "(curl --fail --silent --show-error --location " + protocols + " --max-filesize " + "${size}" + " --max-time 7200 --output \"$1\" -- \"$2\" 2>\"$1.error\"; echo $? > \"$3\") >/dev/null 2>&1 </dev/null & echo started"
+    if run(Vec<str>("sh","-c",script,"sh",path,url,status)).code != 0 { return "Cannot start the download" }
+    let waited = 0
+    while !fs.existsSync(status) {
+        time.sleep_ms(200); waited = waited + 1
+        if waited > 40000 { return "The download took too long" }
+    }
+    let code = strings.trim(fs.readFileSync(status,"utf8"))
+    let detail = fs.existsSync(path + ".error") ? strings.trim(fs.readFileSync(path + ".error","utf8")) : ""
+    remove(status); remove(path + ".error")
+    if !strings.equal(code,"0") { remove(path); return strings.equal(detail,"") ? "The download failed" : "Download failed: " + detail }
+    let got = fileSize(path)
+    if got != size { remove(path); return "Downloaded file size does not match the release" }
+    return ""
+}
+
+# --- adopting a verified archive --------------------------------------------------------------------------------------------
+fn adopt(ctx:Ctx, item:Item, unpack:str):str {
+    let found = records(ctx.root)
+    if !strings.equal(found.error,"") { return found.error }
+    let metaFile = unpack + "/release.json"
+    if !fs.existsSync(metaFile) { return "Package metadata does not match the selected release" }
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(metaFile,"utf8")) })
+    if result.isErr(parsed) { return "Package metadata does not match the selected release" }
+    let meta = result.unwrap(parsed)
+    let format = json.has(meta,"format") && strings.equal(json.kind(json.get(meta,"format")),"number") ? json.int(json.get(meta,"format")) : 0
+    if format != 1 || !strings.equal(text(meta,"version"),item.version) || !strings.equal(text(meta,"platform"),item.platform) { return "Package metadata does not match the selected release" }
+    for name in Vec<str>("dev-os-session","dev-os-shell","dev-os-start") {
+        if run(Vec<str>("test","-x",unpack + "/bin/" + name)).code != 0 { return "Update session commands are not executable" }
+    }
+    if run(Vec<str>("test","-x",unpack + "/native/dev-os-window-tracker")).code != 0 { return "Window tracker is not executable" }
+    # Packages from before manifests existed are still accepted when their archive hash was verified.
+    let signed = pkg.readManifest(unpack)
+    if !strings.equal(signed.error,"") { return signed.error }
+    if !strings.equal(signed.version,"") {
+        if !strings.equal(signed.version,item.version) || !strings.equal(signed.platform,item.platform) { return "Package manifest does not match the selected release" }
+        let installed = installedVersion(ctx,found.current)
+        if proto.newer(signed.minCompatible,installed) { return "This update needs Dev OS " + signed.minCompatible + " or newer first (installed: " + installed + "). Install the intermediate release, then try again." }
+        let checked = pkg.verifyTree(unpack,signed.files)
+        if !strings.equal(checked,"") { return checked }
+    }
+    let target = ctx.root + "/releases/" + item.key
+    if exists(target) { return "This release directory already exists; use rollback or inspect the previous installation." }
+    if run(Vec<str>("mv","-T","--",unpack,target)).code != 0 { return "Cannot move the release into place" }
+    let committed = activate(ctx,record(item),found.current)
+    if !strings.equal(committed,"") { return committed }
+    prune(ctx,item.key,strings.equal(json.kind(found.current),"object") ? text(found.current,"key") : "")
+    return ""
+}
+fn fullPackage(ctx:Ctx, archive:str, item:Item):str {
+    let listing = pkg.tarList(archive)
+    if !strings.equal(listing.error,"") { return listing.error }
+    let refused = manifest.validateArchive(listing.names,listing.details)
+    if !strings.equal(refused,"") { return refused }
+    let unpack = temporary(ctx.root + "/releases",".staging")
+    if strings.equal(unpack,"") { return "Cannot create the staging directory" }
+    let message = ""
+    if run(Vec<str>("tar","-xzf",archive,"-C",unpack,"--strip-components=1","--no-same-owner","--no-same-permissions")).code != 0 { message = "Cannot unpack the update" }
+    if strings.equal(message,"") { message = adopt(ctx,item,unpack) }
+    remove(unpack)
+    return message
+}
+fn patchPackage(ctx:Ctx, archive:str, item:Item):str {
+    let found = records(ctx.root)
+    if !strings.equal(found.error,"") { return found.error }
+    if !strings.equal(json.kind(found.current),"object") { return "A patch needs an installed Dev OS version to patch." }
+    let listing = pkg.tarList(archive)
+    if !strings.equal(listing.error,"") { return listing.error }
+    let meta = result.attempt(fn():json.Value { return json.parse(run(Vec<str>("tar","-xzOf",archive,"dev-os-patch/patch.json")).out) })
+    if result.isErr(meta) { return "Invalid update patch" }
+    let patch = manifest.parsePatch(result.unwrap(meta))
+    if !strings.equal(patch.error,"") { return patch.error }
+    if !strings.equal(patch.to,item.version) || !strings.equal(patch.platform,item.platform) { return "The patch does not lead to the selected release" }
+    if !strings.equal(patch.from,text(found.current,"version")) { return "The patch is not for the installed version" }
+    let unpack = ctx.root + "/releases/.staging-" + strings.substring(strings.trim(run(Vec<str>("mktemp","-u","XXXXXXXXXX")).out),0,10)
+    let message = pkg.applyPatch(archive,ctx.root + "/releases/" + text(found.current,"key"),unpack)
+    if strings.equal(message,"") { message = adopt(ctx,item,unpack) }
+    remove(unpack)
+    return message
+}
+
+# --- transactions -----------------------------------------------------------------------------------------------------------
+# Lock, clean leftovers, validate the history, run `job` in a private staging directory, then always clean up.
+fn transaction(ctx:Ctx, job:fn(str):Outcome):Outcome {
+    let locked = lock(ctx)
+    if !strings.equal(locked,"") { return failed(locked) }
+    cleanLeftovers(ctx)
+    let outcome = failed("The update could not be completed.")
+    let found = records(ctx.root)
+    if !strings.equal(found.error,"") { outcome = failed(found.error) }
+    else {
+        let staging = temporary(ctx.root,".staging")
+        if strings.equal(staging,"") { outcome = failed("Cannot create the staging directory") }
+        else { outcome = job(staging); remove(staging) }
+    }
+    unlock(ctx)
+    return outcome
+}
+fn readyMessage(version:str):str { return "Dev OS " + version + " is installed. Restart the shell to use it." }
+fn result_of(ctx:Ctx, failure:str, trust:str, patched:bool):Outcome {
+    if !strings.equal(failure,"") { return Outcome(failure,"The update could not be completed.",trust,"","",patched,false) }
+    let found = records(ctx.root)
+    return done(readyMessage(text(found.current,"version")),text(found.current,"version"),strings.equal(json.kind(found.previous),"object") ? text(found.previous,"version") : "",trust,patched)
+}
+struct Sums { error: str, trust: str, names: Vec<str>, hashes: Vec<str>, present: bool }
+# SHA256SUMS of the release, checked against the Ed25519 signature when this Dev OS ships a key.
+fn trusted(ctx:Ctx, staging:str, extras:manifest.Extras):Sums {
+    let keys = pkg.trustedKeys(ctx.keyDir)
+    let none = Sums("","unsigned",Vec<str>(),Vec<str>(),false)
+    if !extras.sums.found {
+        if keys.len() > 0 { none.error = "This release has no SHA256SUMS, but this Dev OS only installs signed releases. Nothing was changed."; return none }
+        return none
+    }
+    let reason = download(ctx.api,extras.sums.url,extras.sums.size,staging + "/SHA256SUMS")
+    if !strings.equal(reason,"") { none.error = reason; return none }
+    let signature = ""
+    if extras.signature.found {
+        reason = download(ctx.api,extras.signature.url,extras.signature.size,staging + "/SHA256SUMS.sig")
+        if !strings.equal(reason,"") { none.error = reason; return none }
+        signature = staging + "/SHA256SUMS.sig"
+    }
+    let trust = pkg.checkSignature(staging + "/SHA256SUMS",signature,keys)
+    if !strings.equal(trust.error,"") { none.error = trust.error; return none }
+    let parsed = manifest.parseSums(fs.readFileSync(staging + "/SHA256SUMS","utf8"))
+    return Sums(parsed.error,trust.trust,parsed.names,parsed.hashes,true)
+}
+fn lookup(sums:Sums, name:str):str { for i in 0..(sums.names.len() as i64) { if strings.equal(sums.names[i],name) { return sums.hashes[i] } }; return "" }
+
+# Installs a checked release from GitHub. `managed` is whether an earlier update is already installed.
+fn install(ctx:Ctx, release:proto.Release, extras:manifest.Extras):Outcome {
+    return transaction(ctx,fn(staging:str):Outcome {
+        let found = records(ctx.root)
+        let managed = strings.equal(json.kind(found.current),"object")
+        let installed = installedVersion(ctx,found.current)
+        if !(proto.newer(release.version,installed) || (!managed && strings.equal(release.version,ctx.running))) { return failed("This version or a newer one was already installed. Check for updates again.") }
+        let key = release.version + "-" + strings.substring(release.sha256,0,12)
+        if strings.equal(json.kind(found.previous),"object") && strings.equal(text(found.previous,"key"),key) && strings.equal(text(found.previous,"repository"),release.repository) {
+            let switched = activate(ctx,found.previous,found.current)
+            return strings.equal(switched,"") ? result_of(ctx,"","",false) : failed(switched)
+        }
+        let item = Item(key,release.version,release.repository,release.platform)
+        let sums = trusted(ctx,staging,extras)
+        if !strings.equal(sums.error,"") { return failed(sums.error) }
+        let fullName = "dev-os-" + release.platform + ".tar.gz"
+        # Two independent sources must agree: the GitHub API digest and the (signed) SHA256SUMS of the same release.
+        if sums.present && !strings.equal(lookup(sums,fullName),release.sha256) { return failed("SHA256SUMS does not match the release package. The current installation was kept.") }
+        let patch = extras.patch
+        if managed && patch.found && (!sums.present || !strings.equal(lookup(sums,patch.name),"")) {
+            let expected = sums.present ? lookup(sums,patch.name) : patch.sha256
+            let problem = ""
+            if strings.equal(expected,"") { problem = "The patch has no checksum" }
+            if strings.equal(problem,"") { problem = space(ctx,4 * patch.size + pkg.treeBytes(selectedRoot(ctx)) + 33554432) }
+            let file = staging + "/patch.tar.gz"
+            if strings.equal(problem,"") { problem = download(ctx.api,patch.url,patch.size,file) }
+            if strings.equal(problem,"") && !strings.equal(pkg.sha256(file),expected) { problem = "SHA-256 verification of the patch failed" }
+            if strings.equal(problem,"") { problem = patchPackage(ctx,file,item) }
+            # A patch is only an optimisation: the full package is verified on its own.
+            if strings.equal(problem,"") { return result_of(ctx,"",sums.trust,true) }
+        }
+        let needed = space(ctx,4 * release.size + 33554432)
+        if !strings.equal(needed,"") { return failed(needed) }
+        let archive = staging + "/package.tar.gz"
+        let fetched = download(ctx.api,release.url,release.size,archive)
+        if !strings.equal(fetched,"") { return failed(fetched) }
+        if !strings.equal(pkg.sha256(archive),release.sha256) { return failed("SHA-256 verification failed. The current installation was kept.") }
+        return result_of(ctx,fullPackage(ctx,archive,item),sums.trust,false)
+    })
+}
+fn baseName(path:str):str { let parts = strings.split(path,"/"); return parts[parts.len() - 1] }
+fn dirName(path:str):str { let at = strings.lastIndexOf(path,"/"); return at <= 0 ? "/" : strings.substring(path,0,at) }
+# Installs an update package (full or patch) the user already has, for machines without internet. A SHA256SUMS next to the file
+# (with SHA256SUMS.sig when this Dev OS ships a key) is checked; with a key installed, a bare file is refused.
+fn installFile(ctx:Ctx, path:str):Outcome {
+    if ctx.live { return failed("Live USB is not updated in place: its system image is read-only and changes in memory are lost at shutdown. Write a newer Dev OS image to the USB stick instead.") }
+    return transaction(ctx,fn(staging:str):Outcome {
+        if !strings.startsWith(path,"/") || !fs.is_file(path) || !strings.endsWith(path,".tar.gz") { return failed("Choose an update file ending in .tar.gz (dev-os-linux-<arch>.tar.gz or a dev-os-patch-… file).") }
+        let size = fileSize(path)
+        if size <= 0 || size > 268435456 { return failed("The update file is empty or too large") }
+        let needed = space(ctx,5 * size + 33554432)
+        if !strings.equal(needed,"") { return failed(needed) }
+        # Work on a private copy so a USB stick being unplugged or edited cannot change what was verified.
+        let archive = staging + "/package.tar.gz"
+        if run(Vec<str>("cp","--",path,archive)).code != 0 { return failed("Cannot read the update file") }
+        let hash = pkg.sha256(archive); let name = baseName(path); let directory = dirName(path)
+        let keys = pkg.trustedKeys(ctx.keyDir); let trust = "unsigned"
+        let sidecar = directory + "/SHA256SUMS"
+        if fs.is_file(sidecar) {
+            let copy = staging + "/SHA256SUMS"; let signature = staging + "/SHA256SUMS.sig"
+            run(Vec<str>("cp","--",sidecar,copy))
+            let hasSignature = fs.is_file(sidecar + ".sig")
+            if hasSignature { run(Vec<str>("cp","--",sidecar + ".sig",signature)) }
+            let checked = pkg.checkSignature(copy,hasSignature ? signature : "",keys)
+            if !strings.equal(checked.error,"") { return failed(checked.error) }
+            trust = checked.trust
+            let sums = manifest.parseSums(fs.readFileSync(copy,"utf8"))
+            if !strings.equal(sums.error,"") { return failed(sums.error) }
+            let expected = ""; for i in 0..(sums.names.len() as i64) { if strings.equal(sums.names[i],name) { expected = sums.hashes[i] } }
+            if !strings.equal(expected,hash) { return failed(name + " is not listed in SHA256SUMS with this checksum. The file may be damaged or from another release. Nothing was changed.") }
+        } else if keys.len() > 0 {
+            return failed("This Dev OS only installs signed updates. Copy SHA256SUMS and SHA256SUMS.sig from the same GitHub release next to the update file and try again.")
+        }
+        let first = strings.trim(run(Vec<str>("sh","-c","tar -tzf \"$1\" | head -n 1","sh",archive)).out)
+        if strings.startsWith(first,"dev-os-system") { return applySystem(ctx,archive,name,hash,staging,trust) }
+        let machine = proto.platform(strings.trim(run(Vec<str>("uname","-m")).out))
+        if strings.equal(machine,"") { return failed("No Dev OS release package is available for this processor") }
+        let found = records(ctx.root); let installed = installedVersion(ctx,found.current)
+        let key = fn(to:str):str { return to + "-" + strings.substring(hash,0,12) }
+        if strings.startsWith(first,"dev-os-patch") {
+            let meta = result.attempt(fn():json.Value { return json.parse(run(Vec<str>("tar","-xzOf",archive,"dev-os-patch/patch.json")).out) })
+            if result.isErr(meta) { return failed("Invalid update patch") }
+            let to = proto.version(text(result.unwrap(meta),"to"))
+            if strings.equal(to,"") { return failed("Release version must be stable semver, for example v0.3.0") }
+            if !strings.equal(text(result.unwrap(meta),"platform"),machine) { return failed("This patch is for " + text(result.unwrap(meta),"platform") + "; this computer needs " + machine + ".") }
+            if !proto.newer(to,installed) { return failed("Dev OS " + to + " is not newer than the installed " + installed + ". To go back to an older version use \"Use previous version\".") }
+            return result_of(ctx,patchPackage(ctx,archive,Item(key(to),to,"local/file",machine)),trust,true)
+        }
+        let meta = result.attempt(fn():json.Value { return json.parse(run(Vec<str>("tar","-xzOf",archive,"dev-os/release.json")).out) })
+        if result.isErr(meta) { return failed("Invalid update package") }
+        let to = proto.version(text(result.unwrap(meta),"version"))
+        if strings.equal(to,"") { return failed("Release version must be stable semver, for example v0.3.0") }
+        if !strings.equal(text(result.unwrap(meta),"platform"),machine) { return failed("This package is for " + text(result.unwrap(meta),"platform") + "; this computer needs " + machine + ".") }
+        if !proto.newer(to,installed) { return failed("Dev OS " + to + " is not newer than the installed " + installed + ". To go back to an older version use \"Use previous version\".") }
+        return result_of(ctx,fullPackage(ctx,archive,Item(key(to),to,"local/file",machine)),trust,false)
+    })
+}
+# Selects the previous release again (and the current one becomes the previous one, so rolling forward works too).
+fn rollback(ctx:Ctx):Outcome {
+    let locked = lock(ctx)
+    if !strings.equal(locked,"") { return failed(locked) }
+    let outcome = failed("The update could not be completed.")
+    let found = records(ctx.root)
+    if !strings.equal(found.error,"") { outcome = failed(found.error) }
+    else if !strings.equal(json.kind(found.previous),"object") { outcome = failed("No previous version is installed") }
+    else {
+        let switched = activate(ctx,found.previous,found.current)
+        outcome = strings.equal(switched,"") ? result_of(ctx,"","",false) : failed(switched)
+    }
+    unlock(ctx)
+    return outcome
+}
+
+# --- system updates (kernel, initramfs, bootloader stub, firmware, system files) --------------------------------------------
+# The privileged helper does the work after administrator approval and re-checks every file; this side downloads and verifies the
+# bundle, decides what to offer and passes the archive, its name and its hash on. A system update takes effect after a restart.
+struct SysState { supported: bool, reason: str, version: str, kernel: str, safeBoot: bool, signed: bool, pending: str, canRollback: bool, lastError: str, offer: sysd.Offer }
+fn noSysState(reason:str):SysState { return SysState(false,reason,"","",false,false,"",false,"",sysd.noOffer()) }
+fn liveMessage():str { return "Live USB is not updated in place: its system image is read-only and changes in memory are lost at shutdown. Write a newer Dev OS image to the USB stick instead." }
+# Asks the helper what is installed (read only, no administrator approval).
+fn systemState(ctx:Ctx):SysState {
+    let reply = helper.call(ctx.sys.command,Vec<str>("status"),30)
+    if !strings.equal(reply.error,"") { return noSysState(reply.error) }
+    let info = sysd.parseInfo(reply.answer)
+    if !strings.equal(info.error,"") { return noSysState(info.error) }
+    let reason = info.live ? liveMessage() : strings.equal(info.machine,"unsupported") ? "System updates are not available for this processor." : ""
+    return SysState(strings.equal(reason,""),reason,info.version,info.kernel,info.safeBoot,info.signed,info.pending,info.canRollback,info.lastError,sysd.noOffer())
+}
+# Is there a newer system bundle on the release? Informational: the helper checks everything again.
+fn checkSystem(ctx:Ctx, extras:manifest.Extras):SysState {
+    let state = systemState(ctx)
+    let bundle = extras.system; let description = extras.systemMeta
+    if !bundle.found || !description.found || !state.supported || strings.equal(bundle.sha256,"") { return state }
+    if !fs.mkdirSync(ctx.root,true) { return state }
+    let directory = temporary(ctx.root,".staging")
+    if strings.equal(directory,"") { return state }
+    let file = directory + "/system.json"
+    let problem = download(ctx.api,description.url,description.size,file)
+    if strings.equal(problem,"") && !strings.equal(description.sha256,"") && !strings.equal(pkg.sha256(file),description.sha256) { problem = "The system update description does not match the release." }
+    if strings.equal(problem,"") {
+        let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(file,"utf8")) })
+        if result.isErr(parsed) { problem = "Invalid system update" }
+        else {
+            let meta = sysd.parseMeta(result.unwrap(parsed),proto.platform(strings.trim(run(Vec<str>("uname","-m")).out)))
+            if !strings.equal(meta.error,"") { problem = meta.error }
+            else if proto.newer(meta.version,state.version) { state.offer = sysd.offer(meta) }
+        }
+    }
+    if !strings.equal(problem,"") { state.lastError = "Could not read the system update: " + problem }
+    remove(directory)
+    return state
+}
+struct Applied { error: str, version: str }
+fn applySystem(ctx:Ctx, file:str, name:str, hash:str, staging:str, trust:str):Outcome {
+    let args = Vec<str>("apply","--archive",file,"--name",name,"--sha256",hash)
+    if fs.is_file(staging + "/SHA256SUMS") { args.push("--sums"); args.push(staging + "/SHA256SUMS") }
+    if fs.is_file(staging + "/SHA256SUMS.sig") { args.push("--sig"); args.push(staging + "/SHA256SUMS.sig") }
+    let reply = helper.call(ctx.sys.command,args,1800)
+    if !strings.equal(reply.error,"") { return failed(reply.error) }
+    if !sysd.flag(reply.answer,"ok") { return failed(strings.equal(text(reply.answer,"error"),"") ? "The system update failed." : text(reply.answer,"error")) }
+    let message = "System update " + text(reply.answer,"version") + " is installed. Restart the computer to finish it."
+    return Outcome("",message,trust,text(reply.answer,"version"),"",false,true)
+}
+# Downloads, verifies and hands the latest system bundle to the helper. Takes effect after a restart.
+fn installSystem(ctx:Ctx, extras:manifest.Extras):Outcome {
+    if ctx.live { return failed(liveMessage()) }
+    let state = checkSystem(ctx,extras)
+    if !state.supported { return failed(strings.equal(state.reason,"") ? "System updates are not available." : state.reason) }
+    if !strings.equal(state.pending,"") { return failed("System update " + state.pending + " is installed and waits for a restart.") }
+    if !state.offer.found { return failed(strings.equal(state.lastError,"") ? "There is no newer system update." : state.lastError) }
+    let bundle = extras.system
+    return transaction(ctx,fn(staging:str):Outcome {
+        if strings.equal(bundle.sha256,"") { return failed("The system update has no SHA-256 digest on GitHub.") }
+        let sums = trusted(ctx,staging,extras)
+        if !strings.equal(sums.error,"") { return failed(sums.error) }
+        if sums.present && !strings.equal(lookup(sums,bundle.name),bundle.sha256) { return failed("SHA256SUMS does not match the system update. Nothing was changed.") }
+        let needed = space(ctx,2 * bundle.size + 67108864)
+        if !strings.equal(needed,"") { return failed(needed) }
+        let file = staging + "/" + bundle.name
+        let fetched = download(ctx.api,bundle.url,bundle.size,file)
+        if !strings.equal(fetched,"") { return failed(fetched) }
+        if !strings.equal(pkg.sha256(file),bundle.sha256) { return failed("SHA-256 verification of the system update failed. Nothing was changed.") }
+        return applySystem(ctx,file,bundle.name,bundle.sha256,staging,sums.trust)
+    })
+}
+# "rollback" restores the previous system (restart needed); "cancel" withdraws an update that waits for its restart.
+fn systemAction(ctx:Ctx, action:str):Outcome {
+    let reply = helper.call(ctx.sys.command,Vec<str>(action),600)
+    if !strings.equal(reply.error,"") { return failed(reply.error) }
+    if !sysd.flag(reply.answer,"ok") { return failed(strings.equal(text(reply.answer,"error"),"") ? "The system update could not be changed." : text(reply.answer,"error")) }
+    let rolled = strings.equal(action,"rollback")
+    return Outcome("",rolled ? "The previous system is restored. Restart the computer to use it." : "The system update was cancelled.","","","",false,rolled)
+}
+# Restarts the computer (after a system update).
+fn restartComputer(ctx:Ctx):str {
+    if ctx.sys.reboot.len() == 0 { return "Could not restart: no restart command" }
+    let ran = hw.run(ctx.sys.reboot,30000)
+    return ran.code == 0 ? "" : "Could not restart: " + strings.trim(ran.out)
+}
+
+# --- switching the running session to the installed version -----------------------------------------------------------------
+# The session manager picks the new version up from a request file in the runtime directory (its name is announced in
+# DEV_OS_VERSION_REQUEST); then the shell is told to restart the session. Same checks as requestSessionVersion in
+# packages/runtime/session-version.ts: the selected version is still the one shown, its commands run and report its version, and
+# its dependencies pass `doctor`. `shellCommand` restarts the running shell (e.g. dev-os-shell session.restart).
+fn requestName(name:str):bool {
+    if !strings.startsWith(name,"dev-os-version-") || !strings.endsWith(name,".json") { return false }
+    let middle = strings.substring(name,15,strings.charLength(name) - 5)
+    return strings.charLength(middle) > 0 && strings.charLength(middle) < 100 && sysd.word(middle,"0123456789abcdef-")
+}
+fn useInstalled(ctx:Ctx, request:str, runtimeDir:str, shellCommand:Vec<str>):Outcome {
+    if strings.equal(runtimeDir,"") || !strings.startsWith(request,runtimeDir + "/") || !requestName(strings.substring(request,strings.charLength(runtimeDir) + 1,strings.charLength(request))) {
+        return failed("This session manager cannot switch versions. Save your work, close this session and start .\\dev.ps1 updated or dev-os-updated-session.")
+    }
+    let found = records(ctx.root)
+    if !strings.equal(found.error,"") { return failed(found.error) }
+    if !strings.equal(json.kind(found.current),"object") { return failed("Install a release before switching versions") }
+    let key = text(found.current,"key")
+    let selected = ctx.root + "/releases/" + key
+    let metaFile = selected + "/release.json"
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(metaFile,"utf8")) })
+    if result.isErr(parsed) { return failed("Installed release metadata is missing") }
+    let version = text(result.unwrap(parsed),"version")
+    let native = fs.is_file(selected + "/bin/dev-os-supervisor") && fs.is_file(selected + "/src/system/supervisor.dev") && fs.is_file(selected + "/dist/native/libsupervisor.so")
+    if run(Vec<str>("test","-x",selected + "/bin/dev-os-start")).code != 0 || !(native || fs.is_file(selected + "/dist/supervisor.js")) { return failed("Installed session manager is missing") }
+    let reported = strings.trim(run(Vec<str>(selected + "/bin/dev-os-shell","--version")).out)
+    if !strings.equal(reported,version) { return failed("Installed runtime version does not match its package metadata") }
+    if run(Vec<str>(selected + "/bin/dev-os-shell","doctor")).code != 0 { return failed("The installed version is missing dependencies (dev-os-shell doctor failed). Nothing was changed.") }
+    let again = records(ctx.root)
+    if !strings.equal(again.error,"") || !strings.equal(text(again.current,"key"),key) { return failed("The selected version changed while checking dependencies. Try again.") }
+    if !util.atomic(request,{root:selected,version:version}) { return failed("Cannot ask the session manager to switch versions") }
+    if shellCommand.len() > 0 {
+        let restarted = run(shellCommand)
+        if restarted.code != 0 { return failed("The session could not be restarted: " + strings.trim(restarted.out)) }
+    }
+    return done("Restarting the desktop with Dev OS " + version + "…",version,"","",false)
+}

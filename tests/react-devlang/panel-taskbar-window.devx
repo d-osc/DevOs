@@ -1,0 +1,4 @@
+use "react_devlang/ui" as ui
+extern fn rd_identity(id:str)
+fn main():i32 {unsafe {rd_identity("org.devos.App.taskmanager.Fixture")};return ui.run("Task Manager",500,240,fn(context:*ui.Context):ui.Node {return <Label>Native taskbar tracker fixture</Label>}) ? 0 : 1}
+return main()

@@ -1,0 +1,385 @@
+# Native GTK function components. No JavaScript runtime or GObject introspection.
+extern fn rd_strlen(value: str): i64
+extern fn rd_buffer_new(length: i64): *u8
+extern fn rd_buffer_free(buffer: *void)
+extern fn rd_fail(message: str)
+extern fn rd_new(title: str, width: i32, height: i32): *void
+extern fn rd_host(root: *void): *void
+extern fn rd_callback(root: *void, handler: callback(i32, *void, *u8, i64, *void): void, context: *void)
+extern fn rd_schedule(root: *void)
+extern fn rd_applying(root: *void, applying: i32)
+extern fn rd_run(root: *void)
+extern fn rd_close(root: *void)
+extern fn rd_free(root: *void)
+extern fn rd_widget(root: *void, kind: i32): *void
+extern fn rd_text(widget: *void, kind: i32, bytes: *u8, length: i64)
+extern fn rd_name(widget: *void, bytes: *u8, length: i64)
+extern fn rd_class(widget: *void, bytes: *u8, length: i64)
+extern fn rd_css(root: *void, css: str): i32
+extern fn rd_layout(widget: *void, kind: i32, vertical: i32, spacing: i32, expand: i32, sensitive: i32, visible: i32, width: i32, height: i32)
+extern fn rd_active(widget: *void, active: i32)
+extern fn rd_pointer(widget:*void,enabled:i32)
+extern fn rd_scale(widget: *void, range: *u8, value: f64)
+extern fn rd_fraction(widget: *void, value: f64)
+extern fn rd_attach(parent: *void, child: *void, index: i32)
+extern fn rd_destroy(widget: *void)
+extern fn rd_find_name(root: *void, name: str): *void
+extern fn rd_click_name(root: *void, name: str): i32
+extern fn rd_change_name(root: *void, name: str, text: str): i32
+extern fn rd_activate_name(root:*void,name:str):i32
+extern fn rd_text_name(root: *void, name: str): str
+
+struct Text { bytes: Vec<u8> }
+struct Props { key: i64, id: Text, vertical: bool, spacing: i32, expand: bool, sensitive: bool, visible: bool, width: i32, height: i32, className: Text, xalign:f64, widthChars:i32, wrap:bool, ellipsize:bool, placeholder:Text, halign:i32, valign:i32, margin:i32, iconSize:i32 }
+struct Node {
+    kind: i32, tag: i64, props: Props, label: Text, active: bool, fraction: f64,
+    children: Vec<Node>, clicked: fn(): void, changed: fn(Text): void, checked: fn(bool): void, render: fn(*void): Ref<Node>, draw:fn(*void,i32,i32):void, pointerEnabled:bool, pointer:fn(Text):void
+}
+struct Hook { kind: i32, number: i64, value: Text, dependencies: Vec<i64>, cleanup: fn(): void, setup: fn(): fn(): void, dirty: bool }
+struct Frame { id: i64, alive: bool, initialized: bool, cursor: i64, hooks: Vec<Hook> }
+struct Mounted { widget: *void, node: Node, children: Vec<Mounted>, frame: i64 }
+struct Context {
+    native: *void, frames: Vec<Frame>, sequence: i64, active: i64,
+    rendering: bool, alive: bool, tree: Vec<Mounted>, render: fn(*Context): Node, cleanups: Vec<fn(): void>
+}
+struct State { value: i64, get: fn(): i64, set: fn(i64): void }
+struct TextState { value: Text, get: fn(): Text, set: fn(Text): void, revision: i64 }
+struct BoolState { value: bool, set: fn(bool): void }
+struct IntRef { get: fn(): i64, set: fn(i64): void }
+struct Reducer { value: i64, dispatch: fn(i64): void }
+
+fn noop() {}
+fn emptyEffect(): fn(): void { return noop }
+fn emptyNode(context: *void): Ref<Node> { return ref(Label("")) }
+fn emptyText(): Text { return Text(Vec<u8>()) }
+fn nativeText(value: Text): *u8 { unsafe {
+    let result = rd_buffer_new(value.bytes.len() as i64)
+    for i in 0..(value.bytes.len() as i64) { result[i] = value.bytes[i] }
+    return result
+} }
+fn text(value: str): Text {
+    let bytes = Vec<u8>()
+    let length = 0
+    unsafe { length = rd_strlen(value) }
+    for i in 0..length { bytes.push(value[i]) }
+    return Text(bytes)
+}
+fn equalText(a: Text, b: Text): bool {
+    if a.bytes.len() != b.bytes.len() { return false }
+    for i in 0..(a.bytes.len() as i64) { if a.bytes[i] != b.bytes[i] { return false } }
+    return true
+}
+fn scalarText<T>(value: T): Text { return text("${value}") }
+fn concatText(values: Vec<Text>): Text {
+    let bytes = Vec<u8>()
+    for i in 0..(values.len() as i64) { for j in 0..(values[i].bytes.len() as i64) { bytes.push(values[i].bytes[j]) } }
+    return Text(bytes)
+}
+fn equalDeps(a: Vec<i64>, b: Vec<i64>): bool {
+    if a.len() != b.len() { return false }
+    for i in 0..(a.len() as i64) { if a[i] != b[i] { return false } }
+    return true
+}
+fn props(): Props { return Props(-1, emptyText(), true, 8, false, true, true, -1, -1, emptyText(), 0.0, -1, false, false, emptyText(),0,0,0,16) }
+fn named(value: str): Props { let result = props(); result.id = text(value); return result }
+fn keyed(key: i64): Props { let result = props(); result.key = key; return result }
+fn withProps(node: Node, options: Props): Node { node.props = options; return node }
+fn element(kind: i32, options: Props, label: Text, children: Vec<Node>): Node {
+    return Node(kind, 0, options, label, false, 0.0, children, noop, fn(value: Text) {}, fn(value: bool) {}, emptyNode,fn(cr:*void,width:i32,height:i32) {},false,fn(value:Text) {})
+}
+fn Box(options: Props, children: Vec<Node>): Node { return element(0, options, emptyText(), children) }
+fn Popover(options:Props,anchor:Text,child:Node,dismissed:fn():void):Node {let node=element(18,options,anchor,Vec<Node>(child));node.clicked=dismissed;node.active=true;return node}
+fn onPointer(node:Node,handler:fn(Text):void):Node {node.pointerEnabled=true;node.pointer=handler;return node}
+fn Label(value: str): Node { return TextLabel(text(value)) }
+fn TextLabel(value: Text): Node { return element(1, props(), value, Vec<Node>()) }
+fn Button(options: Props, value: str, clicked: fn(): void): Node { let node = element(2, options, text(value), Vec<Node>()); node.clicked = clicked; return node }
+fn TextButton(options: Props, value: Text, clicked: fn(): void): Node { let node = element(2, options, value, Vec<Node>()); node.clicked = clicked; return node }
+fn WidgetButton(options: Props, child: Node, clicked: fn(): void): Node { let node = element(2, options, emptyText(), Vec<Node>(child)); node.tag = 1; node.clicked = clicked; return node }
+fn Entry(options: Props, value: Text, changed: fn(Text): void): Node { let node = element(3, options, value, Vec<Node>()); node.changed = changed; return node }
+fn SearchEntry(options:Props,value:Text,changed:fn(Text):void):Node { let node = Entry(options,value,changed); node.kind=10; return node }
+fn PasswordEntry(options:Props,value:Text,changed:fn(Text):void):Node {let node=Entry(options,value,changed);node.kind=12;return node}
+fn TextArea(options:Props,value:Text,changed:fn(Text):void):Node {let node=Entry(options,value,changed);node.kind=15;return node}
+fn onActivate(node:Node,activated:fn():void):Node {node.clicked=activated;return node}
+fn activate(context:*Context,name:str):bool {unsafe {return rd_activate_name((*context).native,name)!=0}}
+fn Icon(options:Props,name:str):Node {return element(11,options,text(name),Vec<Node>())}
+fn DrawingArea(options:Props,draw:fn(*void,i32,i32):void):Node {let node=element(13,options,emptyText(),Vec<Node>());node.draw=draw;return node}
+fn Overlay(options:Props,child:Node):Node {return element(14,options,emptyText(),Vec<Node>(child))}
+extern fn gtk_widget_queue_draw(widget:*void)
+extern fn gtk_widget_get_allocated_width(widget:*void):i32
+extern fn gtk_widget_get_allocated_height(widget:*void):i32
+fn queueDraw(context:*Context,name:str) {unsafe {let widget=find(context,name);if widget!=null {gtk_widget_queue_draw(widget)}}}
+extern fn rd_alignment(widget:*void,horizontal:i32,vertical:i32,margin:i32)
+extern fn rd_icon_size(widget:*void,size:i32)
+extern fn rd_selected(widget:*void,index:i32)
+extern fn rd_label_options(widget:*void,xalign:f64,width:i32,wrap:i32,ellipsize:i32)
+extern fn rd_placeholder(widget:*void,bytes:*u8,length:i64)
+extern fn rd_stack_select(widget:*void,index:i32)
+extern fn rd_select_name(root:*void,name:str,index:i32):i32
+fn select(context:*Context,name:str,index:i32):bool { unsafe { return rd_select_name((*context).native,name,index) != 0 } }
+fn Select(options:Props,items:Vec<Text>,active:i64,changed:fn(i64):void):Node {
+    let bytes=Vec<u8>(); for i in 0..(items.len() as i64) { if i>0 { bytes.push(10) }; for ch in items[i].bytes { bytes.push(ch) } }
+    let node=element(8,options,Text(bytes),Vec<Node>()); node.fraction=active as f64
+    node.changed=fn(value:Text) { let index=0; for ch in value.bytes { if ch<48 || ch>57 { return }; index=index*10+(ch-48) as i64 }; changed(index) }
+    return node
+}
+fn CheckBox(options: Props, value: str, active: bool, clicked: fn(): void): Node { let node = element(4, options, text(value), Vec<Node>()); node.active = active; node.clicked = clicked; return node }
+fn TextCheckBox(options: Props, value: Text, active: bool, clicked: fn(): void, changed: fn(bool): void): Node { let node = element(4, options, value, Vec<Node>()); node.active = active; node.clicked = clicked; node.checked = changed; return node }
+fn Switch(options:Props,active:bool,changed:fn(bool):void):Node {let node=element(16,options,emptyText(),Vec<Node>());node.active=active;node.checked=changed;return node}
+# Horizontal slider from `low` to `high`; `changed` receives the whole number the user chose (not renders).
+fn Scale(options:Props,low:i64,high:i64,value:i64,changed:fn(i64):void):Node {
+    let node=element(17,options,text("${low} ${high}"),Vec<Node>()); node.fraction=value as f64
+    node.changed=fn(raw:Text) { let number=0; for ch in raw.bytes { if ch<48 || ch>57 { return }; number=number*10+(ch-48) as i64 }; changed(number) }
+    return node
+}
+# Shows only the child at `active` (0-based); the others stay mounted and keep their state.
+fn Stack(options:Props,active:i64,children:Vec<Node>):Node {let node=element(19,options,emptyText(),children);node.fraction=active as f64;return node}
+fn Scroll(options: Props, child: Node): Node { return element(5, options, emptyText(), Vec<Node>(child)) }
+fn Progress(options: Props, fraction: f64): Node { let node = element(6, options, emptyText(), Vec<Node>()); node.fraction = fraction; return node }
+fn Separator(): Node { return element(7, props(), emptyText(), Vec<Node>()) }
+fn Fragment(options: Props, children: Vec<Node>): Node { return Box(options, children) }
+fn component(tag: i64, options: Props, render: fn(*Context): Node): Node { let node = element(9, options, emptyText(), Vec<Node>()); node.tag = tag; node.render = fn(raw: *void): Ref<Node> { unsafe { return ref(render(raw as *Context)) } }; return node }
+
+fn frameIndex(context: *Context, id: i64): i64 { unsafe {
+    for i in 0..((*context).frames.len() as i64) { if (*context).frames[i].alive && (*context).frames[i].id == id { return i } }
+    return -1
+} }
+fn newFrame(context: *Context): i64 { unsafe {
+    (*context).sequence = (*context).sequence + 1
+    let frame = Frame((*context).sequence, true, false, 0, Vec<Hook>())
+    for i in 0..((*context).frames.len() as i64) {
+        if !(*context).frames[i].alive { (*context).frames[i] = frame; return frame.id }
+    }
+    (*context).frames.push(frame)
+    return frame.id
+} }
+fn hook(context: *Context, kind: i32, number: i64, value: Text): i64 { unsafe {
+    if !(*context).rendering || (*context).active < 0 { rd_fail("Hooks may only run inside a component") }
+    let frame = (*context).active
+    let index = (*context).frames[frame].cursor
+    if index >= (*context).frames[frame].hooks.len() as i64 {
+        if (*context).frames[frame].initialized { rd_fail("Component changed its hook count") }
+        (*context).frames[frame].hooks.push(Hook(kind, number, value, Vec<i64>(), noop, emptyEffect, false))
+    }
+    if (*context).frames[frame].hooks[index].kind != kind { rd_fail("Component changed its hook order or type") }
+    (*context).frames[frame].cursor = index + 1
+    return index
+} }
+fn setNumber(context: *Context, id: i64, index: i64, value: i64, notify: bool) { unsafe {
+    if !(*context).alive { return }
+    if (*context).rendering { rd_fail("State cannot be changed during render") }
+    let frame = frameIndex(context, id)
+    if frame < 0 { return }
+    if (*context).frames[frame].hooks[index].number == value { return }
+    (*context).frames[frame].hooks[index].number = value
+    if notify { rd_schedule((*context).native) }
+} }
+fn useState(context: *Context, initial: i64): State { unsafe {
+    let index = hook(context, 0, initial, emptyText())
+    let frame = (*context).active
+    let id = (*context).frames[frame].id
+    let value = (*context).frames[frame].hooks[index].number
+    return State(value, fn(): i64 { unsafe {
+        let found = frameIndex(context, id)
+        if found < 0 { return 0 }
+        return (*context).frames[found].hooks[index].number
+    } }, fn(next: i64) { setNumber(context, id, index, next, true) })
+} }
+fn useBool(context: *Context, initial: bool): BoolState {
+    let state = useState(context, initial ? 1 : 0)
+    return BoolState(state.value != 0, fn(next: bool) { state.set(next ? 1 : 0) })
+}
+fn update(state: State, transform: fn(i64): i64) { state.set(transform(state.get())) }
+fn useReducer(context: *Context, initial: i64, reduce: fn(i64, i64): i64): Reducer {
+    let state = useState(context, initial)
+    return Reducer(state.value, fn(action: i64) { state.set(reduce(state.get(), action)) })
+}
+fn useRef(context: *Context, initial: i64): IntRef { unsafe {
+    let index = hook(context, 3, initial, emptyText())
+    let id = (*context).frames[(*context).active].id
+    return IntRef(fn(): i64 { unsafe {
+        let frame = frameIndex(context, id)
+        if frame < 0 { return 0 }
+        return (*context).frames[frame].hooks[index].number
+    } }, fn(next: i64) { setNumber(context, id, index, next, false) })
+} }
+fn useText(context: *Context, initial: Text): TextState { unsafe {
+    let index = hook(context, 1, 0, initial)
+    let frame = (*context).active
+    let id = (*context).frames[frame].id
+    let value = (*context).frames[frame].hooks[index].value
+    let revision = (*context).frames[frame].hooks[index].number
+    return TextState(value, fn(): Text { unsafe {
+        let found = frameIndex(context, id)
+        if found < 0 { return emptyText() }
+        return (*context).frames[found].hooks[index].value
+    } }, fn(next: Text) { unsafe {
+        if !(*context).alive { return }
+        if (*context).rendering { rd_fail("State cannot be changed during render") }
+        let found = frameIndex(context, id)
+        if found < 0 { return }
+        if equalText((*context).frames[found].hooks[index].value, next) { return }
+        (*context).frames[found].hooks[index].value = next
+        (*context).frames[found].hooks[index].number = (*context).frames[found].hooks[index].number + 1
+        rd_schedule((*context).native)
+    } }, revision)
+} }
+fn useEffect(context: *Context, setup: fn(): fn(): void, dependencies: Vec<i64>) { unsafe {
+    let index = hook(context, 2, 0, emptyText())
+    let frame = (*context).active
+    let previous = (*context).frames[frame].hooks[index]
+    let dirty = previous.number == 0 || !equalDeps(previous.dependencies, dependencies)
+    (*context).frames[frame].hooks[index].setup = setup
+    (*context).frames[frame].hooks[index].dependencies = dependencies
+    (*context).frames[frame].hooks[index].dirty = dirty
+} }
+fn dropFrame(context: *Context, id: i64) { unsafe {
+    let frame = frameIndex(context, id)
+    if frame < 0 { return }
+    let hooks = (*context).frames[frame].hooks
+    (*context).frames[frame].alive = false
+    (*context).frames[frame].hooks.clear()
+    for i in 0..(hooks.len() as i64) { if hooks[i].kind == 2 && hooks[i].number != 0 { (*context).cleanups.push(hooks[i].cleanup) } }
+} }
+fn dispose(context: *Context, mounted: Mounted) {
+    for i in 0..(mounted.children.len() as i64) { dispose(context, mounted.children[i]) }
+    if mounted.frame >= 0 { dropFrame(context, mounted.frame) }
+    unsafe { rd_destroy(mounted.widget) }
+}
+fn apply(context: *Context, mounted: Mounted): Mounted { unsafe {
+    let node = mounted.node
+    let options = node.props
+    let label = nativeText(node.label)
+    if node.kind != 2 || node.children.len() == 0 { rd_text(mounted.widget, node.kind, label, node.label.bytes.len() as i64) }
+    rd_buffer_free(label as *void)
+    let name = nativeText(options.id)
+    rd_name(mounted.widget, name, options.id.bytes.len() as i64)
+    rd_buffer_free(name as *void)
+    let classes = nativeText(options.className)
+    rd_class(mounted.widget, classes, options.className.bytes.len() as i64)
+    rd_buffer_free(classes as *void)
+    rd_layout(mounted.widget, node.kind, options.vertical ? 1 : 0, options.spacing, options.expand ? 1 : 0, options.sensitive ? 1 : 0, options.visible ? 1 : 0, options.width, options.height)
+    rd_pointer(mounted.widget,node.pointerEnabled ? 1 : 0)
+    rd_alignment(mounted.widget,options.halign,options.valign,options.margin)
+    if node.kind==11 {rd_icon_size(mounted.widget,options.iconSize)}
+    if node.kind==13 {gtk_widget_queue_draw(mounted.widget)}
+    if node.kind == 1 { rd_label_options(mounted.widget,options.xalign,options.widthChars,options.wrap ? 1 : 0,options.ellipsize ? 1 : 0) }
+    if node.kind == 8 { rd_selected(mounted.widget,node.fraction as i32) }
+    if node.kind == 3 || node.kind == 10 || node.kind==12 { let placeholder=nativeText(options.placeholder); rd_placeholder(mounted.widget,placeholder,options.placeholder.bytes.len() as i64); rd_buffer_free(placeholder as *void) }
+    if node.kind == 4 || node.kind==16 || node.kind==18 { rd_active(mounted.widget, node.active ? 1 : 0) }
+    if node.kind == 6 { rd_fraction(mounted.widget, node.fraction) }
+    if node.kind == 17 { let range=nativeText(node.label); rd_scale(mounted.widget,range,node.fraction); rd_buffer_free(range as *void) }
+    let nodes = node.children
+    let frame = mounted.frame
+    if node.kind == 9 {
+        if frame < 0 { frame = newFrame(context) }
+        let index = frameIndex(context, frame)
+        let saved = (*context).active
+        (*context).active = index
+        (*context).frames[index].cursor = 0
+        let child = deref(node.render(context as *void))
+        if (*context).frames[index].cursor != (*context).frames[index].hooks.len() as i64 { rd_fail("Component changed its hook count") }
+        (*context).frames[index].initialized = true
+        (*context).active = saved
+        nodes = Vec<Node>(child)
+    }
+    let children = reconcile(context, mounted.widget, mounted.children, nodes)
+    if node.kind == 19 { rd_stack_select(mounted.widget, node.fraction as i32) }
+    return Mounted(mounted.widget, node, children, frame)
+} }
+fn reconcile(context: *Context, parent: *void, previous: Vec<Mounted>, nodes: Vec<Node>): Vec<Mounted> { unsafe {
+    let result = Vec<Mounted>()
+    let used = Vec<bool>()
+    for i in 0..(previous.len() as i64) { used.push(false) }
+    for i in 0..(nodes.len() as i64) {
+        let node = nodes[i]
+        if node.props.key >= 0 { for n in 0..i { if nodes[n].props.key == node.props.key { rd_fail("Duplicate sibling key") } } }
+        let found: i64 = -1
+        for j in 0..(previous.len() as i64) {
+            let old = previous[j].node
+            let identity = node.props.key >= 0 ? old.props.key == node.props.key : j == i && old.props.key < 0
+            if !used[j] && identity && old.kind == node.kind && old.tag == node.tag { found = j; break }
+        }
+        let mounted = Mounted(null, node, Vec<Mounted>(), -1)
+        if found >= 0 { used[found] = true; mounted = previous[found]; mounted.node = node }
+        else { mounted.widget = rd_widget((*context).native, node.kind) }
+        mounted = apply(context, mounted)
+        result.push(mounted)
+    }
+    for i in 0..(previous.len() as i64) { if !used[i] { dispose(context, previous[i]) } }
+    for i in 0..(result.len() as i64) { rd_attach(parent, result[i].widget, i as i32) }
+    return result
+} }
+fn commit(context: *Context) { unsafe {
+    if !(*context).alive { return }
+    (*context).rendering = true
+    rd_applying((*context).native, 1)
+    let rootOptions = keyed(0)
+    rootOptions.expand = true
+    let root = component(0, rootOptions, (*context).render)
+    (*context).tree = reconcile(context, rd_host((*context).native), (*context).tree, Vec<Node>(root))
+    rd_applying((*context).native, 0)
+    (*context).rendering = false
+    let cleanups = (*context).cleanups
+    (*context).cleanups.clear()
+    for i in 0..(cleanups.len() as i64) { cleanups[i]() }
+    for frame in 0..((*context).frames.len() as i64) {
+        if !(*context).alive { break }
+        if !(*context).frames[frame].alive { continue }
+        for i in 0..((*context).frames[frame].hooks.len() as i64) {
+            let effect = (*context).frames[frame].hooks[i]
+            if effect.kind != 2 || !effect.dirty { continue }
+            (*context).frames[frame].hooks[i].dirty = false
+            if effect.number != 0 { effect.cleanup() }
+            let cleanup = effect.setup()
+            (*context).frames[frame].hooks[i].cleanup = cleanup
+            (*context).frames[frame].hooks[i].number = 1
+        }
+    }
+} }
+fn event(nodes: Vec<Mounted>, kind: i32, widget: *void, value: Text): bool { unsafe {
+    for i in 0..(nodes.len() as i64) {
+        if nodes[i].widget == widget {
+            if kind == 1 { nodes[i].node.clicked() }
+            if kind == 2 { nodes[i].node.changed(value) }
+            if kind == 4 { nodes[i].node.clicked(); nodes[i].node.checked(value.bytes.len() > 0 && value.bytes[0] == 49 as u8) }
+            if kind == 6 {nodes[i].node.pointer(value)}
+            return true
+        }
+        if event(nodes[i].children, kind, widget, value) { return true }
+    }
+    return false
+} }
+fn paint(nodes:Vec<Mounted>,widget:*void,cr:*void):bool {unsafe {
+    for node in nodes {if node.widget==widget {node.node.draw(cr,gtk_widget_get_allocated_width(widget),gtk_widget_get_allocated_height(widget));return true};if paint(node.children,widget,cr) {return true}}
+    return false
+}}
+fn close(context: *Context) { unsafe { (*context).alive = false; rd_close((*context).native) } }
+fn find(context: *Context, name: str): *void { unsafe { return rd_find_name((*context).native, name) } }
+fn click(context: *Context, name: str): bool { unsafe { return rd_click_name((*context).native, name) != 0 } }
+fn change(context: *Context, name: str, value: str): bool { unsafe { return rd_change_name((*context).native, name, value) != 0 } }
+fn readText(context: *Context, name: str): Text { unsafe { return text(rd_text_name((*context).native, name)) } }
+fn run(title: str, width: i32, height: i32, render: fn(*Context): Node): bool { return runStyled(title, width, height, "", render) }
+fn runStyled(title: str, width: i32, height: i32, css: str, render: fn(*Context): Node): bool { unsafe {
+    let native = rd_new(title, width, height)
+    if native == null { return false }
+    if rd_css(native, css) == 0 { rd_free(native); return false }
+    let context = Context(native, Vec<Frame>(), 0, -1, false, true, Vec<Mounted>(), render, Vec<fn(): void>())
+    let pointer = &context
+    let handler = callback_context(fn(kind: i32, widget: *void, bytes: *u8, length: i64) { unsafe {
+        if kind == 0 { commit(pointer); return }
+        if kind == 5 {paint((*pointer).tree,widget,bytes as *void);return}
+        let owned = Vec<u8>()
+        for i in 0..length { owned.push(bytes[i]) }
+        event((*pointer).tree, kind, widget, Text(owned))
+    } })
+    rd_callback(native, handler.call, handler.data)
+    commit(pointer)
+    rd_run(native)
+    context.alive = false
+    for i in 0..(context.frames.len() as i64) { if context.frames[i].alive { dropFrame(pointer, context.frames[i].id) } }
+    let cleanups = context.cleanups
+    context.cleanups.clear()
+    for i in 0..(cleanups.len() as i64) { cleanups[i]() }
+    rd_free(native)
+    return true
+} }

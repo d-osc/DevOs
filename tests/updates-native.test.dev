@@ -1,0 +1,132 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.updates/protocol.dev" as proto
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn release(tag:str, target:str):json.Value {
+    let name = "dev-os-" + target + ".tar.gz"
+    let digest = "sha256:" + strings.replaceAll("0000000000000000000000000000000000000000000000000000000000000000","0","a")
+    return json.parse("{\"tag_name\":\"" + tag + "\",\"draft\":false,\"prerelease\":false,\"body\":\"Notes line one\\nline two\",\"published_at\":\"2026-10-01T00:00:00Z\",\"assets\":[{\"name\":\"" + name + "\",\"state\":\"uploaded\",\"size\":1048576,\"digest\":\"" + digest + "\",\"browser_download_url\":\"https://github.com/o/r/releases/download/" + tag + "/" + name + "\"}]}")
+}
+# Runs the worker with a local fake GitHub API (a directory served over HTTP on 127.0.0.1).
+fn worker(site:str, port:str, update:str, preferences:str, input:str):str {
+    let script = "cd '" + site + "' && python3 -m http.server " + port + " --bind 127.0.0.1 >/dev/null 2>&1 & pid=$!; sleep 1; cd '" + t.root() + "' && DEVOS_UPDATES_API=http://127.0.0.1:" + port + " DEVOS_UPDATES_ROOT='" + update + "' DEVOS_PREFERENCES_DIR='" + preferences + "' d src/apps/org.devos.updates/service.dev -- .; kill $pid"
+    return t.out(tool.run(Vec<str>("sh","-c",script),Map<str,str>(),input,120000))
+}
+
+test.case("versions are stable semver and compare numerically",fn() {
+    test.expect(strings.equal(proto.version("v0.3.7-ux3407na-dev"),"0.3.7") && strings.equal(proto.version("0.3.7-ux3407na-dev"),"0.3.7") && strings.equal(proto.version("1.20.3"),"1.20.3"),"Valid tags refused")
+    for bad in Vec<str>("v0.3.7-ux3407na-dev/unsafe","v1.2.3-beta","1.2","01.2.3","1.2.3.4","v","a.b.c","") { test.expect(strings.equal(proto.version(bad),""),"Accepted " + bad) }
+    test.expect(proto.newer("0.10.0","0.2.0") && !proto.newer("0.2.0","0.10.0") && !proto.newer("0.2.0","0.2.0") && !proto.newer("v1.2.3-beta","0.2.0"),"Numeric comparison wrong")
+    test.expect(proto.validRepository("d-osc/DevOs") && proto.validRepository("a/b.c_d") && !proto.validRepository("d-osc/../../etc") && !proto.validRepository("owner") && !proto.validRepository("-x/y") && !proto.validRepository("o/r/extra"),"Repository rules wrong")
+    test.expect(strings.equal(proto.platform("x86_64"),"linux-x64") && strings.equal(proto.platform("aarch64"),"linux-arm64") && strings.equal(proto.platform("riscv64"),""),"Platform mapping wrong")
+})
+test.case("a GitHub release is accepted only when it is a stable, well-formed package for this platform",fn() {
+    let ok = proto.parseRelease(release("v0.4.0","linux-arm64"),"o/r","linux-arm64")
+    test.expect(strings.equal(ok.error,"") && strings.equal(ok.version,"0.4.0") && ok.size == 1048576 && strings.contains(ok.url,"/o/r/releases/download/v0.4.0/dev-os-linux-arm64.tar.gz") && strings.contains(ok.notes,"line two"),"Good release refused")
+    test.expect(!strings.equal(proto.parseRelease(release("v0.4.0","linux-arm64"),"o/r","linux-x64").error,""),"Other platform accepted")
+    test.expect(!strings.equal(proto.parseRelease(release("v0.4.0","linux-arm64"),"another/repo","linux-arm64").error,""),"Download URL of another repository accepted")
+    test.expect(!strings.equal(proto.parseRelease(json.set(release("v0.4.0","linux-arm64"),"prerelease",true),"o/r","linux-arm64").error,""),"Prerelease accepted")
+    test.expect(!strings.equal(proto.parseRelease(json.set(release("v0.4.0","linux-arm64"),"draft",true),"o/r","linux-arm64").error,""),"Draft accepted")
+    test.expect(!strings.equal(proto.parseRelease(json.parse("{\"tag_name\":\"v0.3.7-ux3407na-dev\",\"prerelease\":true}"),"o/r","linux-arm64").error,""),"Development prerelease accepted")
+    let noDigest = json.parse(strings.replaceAll(json.stringify(release("v0.4.0","linux-arm64")),"sha256:","md5:"))
+    test.expect(!strings.equal(proto.parseRelease(noDigest,"o/r","linux-arm64").error,""),"Release without a SHA-256 digest accepted")
+    let huge = json.parse(strings.replaceAll(json.stringify(release("v0.4.0","linux-arm64")),"1048576","999999999999"))
+    test.expect(!strings.equal(proto.parseRelease(huge,"o/r","linux-arm64").error,""),"Oversized package accepted")
+    test.expect(!strings.equal(proto.parseRelease(json.parse("[]"),"o/r","linux-arm64").error,""),"Non-object accepted")
+})
+test.case("swaylock release and version parsing",fn() {
+    test.expect(strings.equal(proto.parseSwaylockVersion("swaylock version 1.7.2\n"),"1.7.2") && strings.equal(proto.parseSwaylockVersion("x\nswaylock version v1.8.0 extra\n"),"1.8.0") && strings.equal(proto.parseSwaylockVersion("unknown locker"),""),"Installed version parsing wrong")
+    let upstream = json.parse("{\"tag_name\":\"v1.8.6\",\"draft\":false,\"prerelease\":false,\"html_url\":\"https://github.com/swaywm/swaylock/releases/tag/v1.8.6\"}")
+    test.expect(strings.equal(proto.parseSwaylockRelease(upstream).version,"1.8.6"),"Upstream release refused")
+    test.expect(!strings.equal(proto.parseSwaylockRelease(json.set(upstream,"prerelease",true)).error,"") && !strings.equal(proto.parseSwaylockRelease(json.set(upstream,"html_url","https://example.com/fake")).error,""),"Bad upstream release accepted")
+})
+test.case("installed update history is validated against each release.json",fn() {
+    let root = temporary()
+    test.expect(strings.equal(proto.history(root).error,"") && strings.equal(proto.history(root).current,""),"No history must be fine")
+    fs.mkdirSync(root + "/releases/0.4.0-0123456789ab",true)
+    fs.writeFileSync(root + "/releases/0.4.0-0123456789ab/release.json","{\"format\":1,\"version\":\"0.4.0\",\"platform\":\"linux-arm64\"}")
+    fs.writeFileSync(root + "/history.json","{\"current\":{\"key\":\"0.4.0-0123456789ab\",\"version\":\"0.4.0\",\"repository\":\"o/r\",\"platform\":\"linux-arm64\"},\"previous\":null}")
+    let found = proto.history(root)
+    test.expect(strings.equal(found.error,"") && strings.equal(found.current,"0.4.0") && strings.equal(found.currentKey,"0.4.0-0123456789ab") && strings.equal(found.previous,""),"Valid history refused")
+    fs.writeFileSync(root + "/releases/0.4.0-0123456789ab/release.json","{\"format\":1,\"version\":\"0.5.0\",\"platform\":\"linux-arm64\"}")
+    test.expect(!strings.equal(proto.history(root).error,""),"Metadata mismatch accepted")
+    fs.writeFileSync(root + "/history.json","{\"current\":{\"key\":\"../x\",\"version\":\"0.4.0\",\"repository\":\"o/r\",\"platform\":\"linux-arm64\"},\"previous\":null}")
+    test.expect(!strings.equal(proto.history(root).error,""),"Unsafe key accepted")
+    fs.writeFileSync(root + "/history.json","not json")
+    test.expect(!strings.equal(proto.history(root).error,""),"Broken history accepted")
+    tool.exec(Vec<str>("rm","-rf",root))
+})
+test.case("worker checks a fake GitHub API without installing anything",fn() {
+    let site = temporary(); let update = temporary(); let preferences = temporary()
+    let machine = strings.trim(tool.exec(Vec<str>("uname","-m")))
+    let target = proto.platform(machine)
+    fs.mkdirSync(site + "/repos/o/r/releases",true); fs.mkdirSync(site + "/repos/swaywm/swaylock/releases",true)
+    fs.writeFileSync(site + "/repos/o/r/releases/latest",json.stringify(release("v99.0.0",target)))
+    fs.writeFileSync(site + "/repos/swaywm/swaylock/releases/latest","{\"tag_name\":\"v1.8.6\",\"draft\":false,\"prerelease\":false,\"html_url\":\"https://github.com/swaywm/swaylock/releases/tag/v1.8.6\"}")
+    let input = "{\"action\":\"source\",\"repository\":\"o/r\",\"checkOnOpen\":true,\"periodicCheck\":false}\n{\"action\":\"check\"}\n{\"action\":\"source\",\"repository\":\"o/../x\"}\n{\"action\":\"source\",\"repository\":\"o/missing\"}\n{\"action\":\"check\"}\nnot json\n"
+    let lines = strings.split(strings.trim(worker(site,"18741",update,preferences,input)),"\n")
+    test.expect(lines.len() == 6,"Expected one frame per request")
+    let saved = strings.split(lines[0],"\t")
+    test.expect(strings.equal(saved[0],"U") && strings.equal(saved[1],"idle") && strings.equal(saved[19],"o/r") && strings.equal(saved[20],"1") && strings.equal(saved[21],"0"),"Source settings not saved")
+    let checked = strings.split(lines[1],"\t")
+    test.expect(strings.equal(checked[1],"available") && strings.equal(checked[11],"1") && strings.equal(checked[12],"99.0.0") && strings.equal(checked[14],"1048576"),"New release not reported")
+    test.expect(strings.contains(checked[2],"Dev OS 99.0.0 is available") && strings.equal(checked[3],""),"Available message wrong")
+    test.expect(strings.contains(checked[15],"Notes line one") && !strings.contains(checked[15],"\n"),"Release notes must travel on one line")
+    test.expect(strings.equal(checked[17],"1.8.6") && strings.equal(checked[18],""),"Upstream swaylock version missing")
+    test.expect(strings.startsWith(checked[8],"20"),"Check time not recorded")
+    test.expect(strings.startsWith(lines[2],"E\t"),"Bad repository accepted")
+    let saveMissing = strings.split(lines[3],"\t")
+    test.expect(strings.equal(saveMissing[19],"o/missing"),"Second source not saved")
+    let missing = strings.split(lines[4],"\t")
+    test.expect(strings.equal(missing[1],"error") && strings.contains(missing[3],"Repository is unavailable or private"),"Unknown repository not reported")
+    test.expect(strings.startsWith(lines[5],"E\t"),"Bad JSON accepted")
+    test.expect(fs.existsSync(update + "/last-check.json") && !fs.existsSync(update + "/releases"),"The check must only stamp the time and install nothing")
+    tool.exec(Vec<str>("rm","-rf",site,update,preferences))
+})
+test.case("worker reports a missing connection and keeps working",fn() {
+    let site = temporary(); let update = temporary(); let preferences = temporary()
+    let script = "cd '" + t.root() + "' && DEVOS_UPDATES_API=http://127.0.0.1:18742 DEVOS_UPDATES_ROOT='" + update + "' DEVOS_PREFERENCES_DIR='" + preferences + "' d src/apps/org.devos.updates/service.dev -- ."
+    let out = strings.trim(t.out(tool.run(Vec<str>("sh","-c",script),Map<str,str>(),"{\"action\":\"check\"}\n{\"action\":\"state\"}\n",120000)))
+    let lines = strings.split(out,"\n"); test.expect(lines.len() == 2,"Expected two frames")
+    let first = strings.split(lines[0],"\t")
+    test.expect(strings.equal(first[1],"error") && strings.equal(first[10],"1") && strings.contains(first[3],"Cannot reach GitHub") && strings.contains(first[2],"No internet connection"),"Offline not reported")
+    test.expect(strings.startsWith(lines[1],"U\tidle"),"Worker stopped after an offline check")
+    tool.exec(Vec<str>("rm","-rf",site,update,preferences))
+})
+test.case("native Settings Updates page checks a fake GitHub API under real GTK",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/updates-settings"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.settings/native-main.devx", executable), Map<str,str>(), "", 180000)
+    let site = temporary(); let update = temporary(); let preferences = temporary()
+    let target = proto.platform(strings.trim(tool.exec(Vec<str>("uname","-m"))))
+    fs.mkdirSync(site + "/repos/o/r/releases",true); fs.mkdirSync(site + "/repos/swaywm/swaylock/releases",true)
+    fs.writeFileSync(site + "/repos/o/r/releases/latest",json.stringify(release("v99.0.0",target)))
+    fs.writeFileSync(site + "/repos/swaywm/swaylock/releases/latest","{\"tag_name\":\"v1.8.6\",\"draft\":false,\"prerelease\":false,\"html_url\":\"https://github.com/swaywm/swaylock/releases/tag/v1.8.6\"}")
+    fs.writeFileSync(preferences + "/org.devos.updates.json","{\"version\":1,\"enabled\":true,\"values\":{\"repository\":\"o/r\",\"checkOnOpen\":false,\"periodicCheck\":false}}")
+    let script = "cd '" + site + "' && python3 -m http.server 18743 --bind 127.0.0.1 >/dev/null 2>&1 & pid=$!; sleep 1; cd '" + t.root() + "' && ulimit -c 0; DEVOS_UPDATES_API=http://127.0.0.1:18743 DEVOS_UPDATES_ROOT='" + update + "' DEVOS_PREFERENCES_DIR='" + preferences + "' DEVOS_UPDATES_SMOKE=1 DEV_OS_ROOT='" + t.root() + "' G_DEBUG=fatal-warnings NO_AT_BRIDGE=1 xvfb-run -a '" + executable + "'; code=$?; kill $pid; exit $code"
+    let done = tool.run(Vec<str>("sh","-c",script),Map<str,str>(),"",120000)
+    t.success(done); t.contains(t.out(done),"PASS native Updates page checked: available")
+    test.expect(fs.existsSync(update + "/last-check.json") && !fs.existsSync(update + "/releases"),"The page must only record the check time")
+    tool.exec(Vec<str>("rm","-rf",site,update,preferences))
+})
+test.case("worker install requests stop before any download when there is nothing to install",fn() {
+    let site = temporary(); let update = temporary(); let preferences = temporary()
+    let target = proto.platform(strings.trim(tool.exec(Vec<str>("uname","-m"))))
+    fs.mkdirSync(site + "/repos/o/r/releases",true); fs.mkdirSync(site + "/repos/swaywm/swaylock/releases",true)
+    fs.writeFileSync(site + "/repos/o/r/releases/latest",json.stringify(release("v0.0.1",target)))
+    fs.writeFileSync(preferences + "/org.devos.updates.json","{\"version\":1,\"enabled\":true,\"values\":{\"repository\":\"o/r\",\"checkOnOpen\":false,\"periodicCheck\":false}}")
+    let input = "{\"action\":\"install\"}\n{\"action\":\"installSystem\"}\n{\"action\":\"cancelSystem\"}\n{\"action\":\"useInstalled\"}\n"
+    let lines = strings.split(strings.trim(worker(site,"18744",update,preferences,input)),"\n")
+    test.expect(lines.len() == 4,"Expected one frame per request")
+    test.expect(strings.contains(lines[3],"cannot switch versions"),"useInstalled outside a managed session did not explain itself: " + lines[3])
+    test.expect(strings.contains(lines[0],"\terror\t") && strings.contains(lines[0],"already installed"),"An install of an old version was attempted: " + lines[0])
+    test.expect(strings.startsWith(lines[1],"U\terror\t") && strings.equal(strings.split(lines[1],"\t")[0],"U"),"installSystem did not answer with a frame")
+    test.expect(strings.startsWith(lines[2],"U\t"),"cancelSystem did not answer with a frame")
+    test.expect(!fs.existsSync(update + "/releases") || strings.equal(strings.trim(tool.exec(Vec<str>("ls",update + "/releases"))),""),"Something was installed")
+    tool.exec(Vec<str>("rm","-rf",site,update,preferences))
+})
+return t.finish()

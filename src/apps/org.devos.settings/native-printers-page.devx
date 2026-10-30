@@ -1,0 +1,85 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+use "./native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+
+# Native Printers page: the CUPS queues, Set default / Remove…, and Add a network printer (driverless IPP/IPPS). The worker
+# (printers-page.dev) runs bin/dev-os-printers. Frame K: available default message, then L records (name, uri).
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn smoke():bool { return ui.text(environment("DEVOS_PRINTERS_SMOKE")).bytes.len() > 0 }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 14; options.className = ui.text("settings-card system-card"); return ui.Box(options,children) }
+# The same shape the helper accepts for a queue name.
+fn queueName(value:ui.Text):bool {
+    if value.bytes.len() < 1 || value.bytes.len() > 63 || value.bytes[0] == 45 { return false }
+    for byte in value.bytes { if !((byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95 || byte == 45) { return false } }
+    return true
+}
+fn ipp(value:ui.Text):bool {
+    let a = ui.text("ipp://").bytes; let b = ui.text("ipps://").bytes
+    return starts(value,a) || starts(value,b)
+}
+fn starts(value:ui.Text, prefix:Vec<u8>):bool {
+    if value.bytes.len() < prefix.len() { return false }
+    for i in 0..(prefix.len() as i64) { if value.bytes[i] != prefix[i] { return false } }
+    return true
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"printers-page.dev","{\"action\":\"list\"}")
+    let name = ui.useText(context,ui.emptyText()); let uri = ui.useText(context,ui.emptyText()); let removing = ui.useText(context,ui.emptyText())
+    let step = ui.useRef(context,0); let added = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        if added.get() == 1 { added.set(0); if l.failure.value.bytes.len() == 0 { name.set(ui.emptyText()); uri.set(ui.emptyText()) } }
+        if smoke() && l.frame.value.bytes.len() > 0 {
+            if step.get() == 0 { step.set(1); ui.change(context,"printer-name","Office") }
+        }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    ui.useEffect(context,fn():fn():void {
+        if smoke() {
+            if step.get() == 1 && k.isText(name.value,"Office") { step.set(2); ui.change(context,"printer-uri","ipps://printer.local/ipp/print") }
+            else if step.get() == 2 && k.isText(uri.value,"ipps://printer.local/ipp/print") { step.set(3); added.set(1); ui.click(context,"printer-add") }
+            else if step.get() == 3 && l.waiting.get() == 0 && l.replies.value >= 2 { print("PASS native Printers page added a printer"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(name.revision,uri.revision,l.replies.value))
+    if l.frame.value.bytes.len() == 0 && l.failure.value.bytes.len() == 0 { return sp.loading(l) }
+    let f = l.frame.value; let busy = l.waiting.get() != 0; let available = k.isText(field(f,1),"1"); let defaultName = field(f,2)
+    let nodes = Vec<ui.Node>()
+    if field(f,3).bytes.len() > 0 { nodes.push(ext.row(16,Vec<ui.Node>(ui.Icon(ui.props(),"printer-symbolic"),ext.expand(ext.named(k.caption(field(f,3),"settings-description"),"printers-status"))))) }
+    let list = Vec<ui.Node>(k.note("Your printers","section-heading")); let count = 0
+    for record in sp.records(f) {
+        if !sp.kindOf(record,76) { continue }
+        let parts = sp.cells(record); let printer = sp.cell(parts,1); let isDefault = ui.equalText(defaultName,printer)
+        let makeDefault = ui.named("printer-default-${count}"); makeDefault.sensitive = !busy && !isDefault
+        let remove = ui.named("printer-remove-${count}"); remove.sensitive = !busy
+        let item = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"printer-symbolic"),
+            ext.expand(ext.column(5,Vec<ui.Node>(k.caption(isDefault ? join(Vec<ui.Text>(printer,plain(" · Default"))) : printer,"settings-field-title"),k.caption(sp.cell(parts,2),"settings-description")))),
+            ui.Button(makeDefault,"Set default",fn() { sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"default\",\"name\":"),channel.quote(printer),plain("}")))) }),
+            ui.Button(remove,"Remove…",fn() { removing.set(printer) }))))
+        if ui.equalText(removing.value,printer) {
+            let no = ui.named("printer-remove-cancel"); let yes = ui.named("printer-remove-confirm"); yes.sensitive = !busy
+            item.push(ext.row(8,Vec<ui.Node>(ext.expand(k.note("Remove this printer?","settings-field-title")),ui.Button(no,"Cancel",fn() { removing.set(ui.emptyText()) }),
+                ui.Button(yes,"Remove printer",fn() { removing.set(ui.emptyText()); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"remove\",\"name\":"),channel.quote(printer),plain("}")))) }))))
+        }
+        list.push(ext.column(10,item)); count = count + 1
+    }
+    if count == 0 { list.push(k.note(busy ? "Checking printers…" : "No printers added yet.","settings-description")) }
+    nodes.push(card(list))
+    let nameEntry = ui.named("printer-name"); nameEntry.sensitive = available && !busy; nameEntry.placeholder = plain("Printer name, e.g. Office")
+    let uriEntry = ui.named("printer-uri"); uriEntry.sensitive = available && !busy; uriEntry.placeholder = plain("ipps://printer.local/ipp/print")
+    let add = ui.named("printer-add"); add.className = ui.text("settings-primary"); add.sensitive = available && !busy && queueName(name.value) && ipp(uri.value)
+    nodes.push(card(Vec<ui.Node>(k.note("Add a network printer","section-heading"),k.note("Connect to a driverless IPP or IPPS printer on your network. Use the address supplied by the printer manufacturer.","settings-description"),
+        ui.Entry(nameEntry,name.value,fn(value:ui.Text) { name.set(value) }),ui.Entry(uriEntry,uri.value,fn(value:ui.Text) { uri.set(value) }),
+        ui.Button(add,"Add printer",fn() { added.set(1); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"add\",\"name\":"),channel.quote(name.get()),plain(",\"uri\":"),channel.quote(uri.get()),plain("}")))) }))))
+    if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"printers-error")) }
+    let refresh = ui.named("printers-refresh"); refresh.sensitive = !busy
+    nodes.push(ui.Button(refresh,"Refresh",fn() { sp.send(l,plain("{\"action\":\"list\"}")) }))
+    return ext.column(18,nodes)
+}
+fn page():ui.Node { return ui.component(9380,ui.keyed(940),render) }

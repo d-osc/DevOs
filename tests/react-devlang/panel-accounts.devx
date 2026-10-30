@@ -1,0 +1,21 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-accounts.dev" as accounts
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let open=ui.useState(context,0);let selected=ui.useRef(context,0);let settings=ui.useRef(context,0)
+    let frame=ui.concatText(Vec<ui.Text>(ui.text("U\talice\t@alice\t/nonexistent/avatar.image"),ui.Text(Vec<u8>(30)),ui.text("V\tbob\tไทย%09100%25\t@bob\t/nonexistent/avatar.image")))
+    let node=accounts.render(frame,open.value!=0,fn() {open.set(open.get()==0 ? 1 : 0)},fn(user:ui.Text) {check(ui.equalText(user,ui.text("bob")),"Selected account identity changed");selected.set(selected.get()+1);open.set(0);phase.set(2)},fn() {settings.set(settings.get()+1);open.set(0);phase.set(4)},true,ui.Box(ui.props(),Vec<ui.Node>()),ui.emptyText())
+    ui.useEffect(context,fn():fn():void {unsafe {
+        accounts.decorate(context,frame)
+        if phase.value==0 {check(ui.click(context,"panel-switch-user"),"Account button missing");phase.set(1)}
+        else if phase.value==1 {check(ui.find(context,"panel-user-popup")!=null,"Account popup missing");check(ui.find(context,"panel-user-alice")==null,"Current user listed as switch target");check(ui.click(context,"panel-user-bob"),"Other account missing")}
+        else if phase.value==2 {check(selected.get()==1,"User selection repeated");check(ui.find(context,"panel-user-popup")==null,"Selection kept popup open");check(ui.click(context,"panel-switch-user"),"Account popup cannot reopen");phase.set(3)}
+        else if phase.value==3 {check(ui.click(context,"panel-user-settings"),"Account settings missing")}
+        else if phase.value==4 {check(settings.get()==1 && selected.get()==1,"Account action repeated");check(ui.find(context,"panel-user-popup")==null,"Settings kept popup open");ui.close(context)}
+        return ui.noop
+    }},Vec<i64>(phase.value))
+    return node
+}
+fn main():i32 {check(ui.run("Native panel accounts",640,80,App),"Accounts UI failed");unsafe {check(rd_widget_live_count()==0,"Account widgets leaked")};print("PASS native account menu, avatar fallback, selection and cleanup");return 0}
+return main()

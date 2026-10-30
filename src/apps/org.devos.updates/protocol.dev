@@ -1,0 +1,147 @@
+# Read-only side of the update protocol (same rules as packages/updates/protocol.ts and dependencies.ts): versions,
+# repository names, platform, the GitHub release check, the swaylock release/version and the installed-update history.
+# Nothing here downloads, verifies archives or installs; see docs/devlang-app-migration.md for what is still TypeScript.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+
+fn digits(value:str):bool {
+    if strings.charLength(value) == 0 { return false }
+    for i in 0..(strings.charLength(value) as i64) { if !strings.contains("0123456789",strings.substring(value,i,i+1)) { return false } }
+    return true
+}
+fn hex(value:str, length:i64):bool {
+    if strings.charLength(value) != length { return false }
+    for i in 0..length { if !strings.contains("0123456789abcdefABCDEF",strings.substring(value,i,i+1)) { return false } }
+    return true
+}
+fn lowerHex(value:str, length:i64):bool {
+    if strings.charLength(value) != length { return false }
+    for i in 0..length { if !strings.contains("0123456789abcdef",strings.substring(value,i,i+1)) { return false } }
+    return true
+}
+fn part(value:str):bool { return digits(value) && strings.charLength(value) < 16 && (strings.equal(value,"0") || !strings.startsWith(value,"0")) }
+# "major.minor.patch" of a stable tag ("v0.3.0", "0.3.7-ux3407na-dev"), or "" when it is not stable semver.
+fn version(value:str):str {
+    let text = value
+    if strings.startsWith(text,"v") { text = strings.substring(text,1,strings.charLength(text)) }
+    if strings.endsWith(text,"-ux3407na-dev") { text = strings.substring(text,0,strings.charLength(text) - 13) }
+    let parts = strings.split(text,".")
+    if parts.len() != 3 { return "" }
+    for item in parts { if !part(item) { return "" } }
+    return text
+}
+fn number(value:str):i64 { let n = 0; for i in 0..(strings.charLength(value) as i64) { n = n * 10 + strings.indexOf("0123456789",strings.substring(value,i,i+1)) }; return n }
+fn newer(candidate:str, installed:str):bool {
+    let left = strings.split(version(candidate),"."); let right = strings.split(version(installed),".")
+    if left.len() != 3 || right.len() != 3 { return false }
+    for i in 0..3 { if number(left[i]) != number(right[i]) { return number(left[i]) > number(right[i]) } }
+    return false
+}
+fn validRepository(value:str):bool {
+    if strings.charLength(value) > 200 { return false }
+    let parts = strings.split(value,"/")
+    if parts.len() != 2 { return false }
+    let word = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    for index in 0..2 {
+        let name = parts[index]; let length = strings.charLength(name)
+        if length == 0 || !strings.contains(word,strings.substring(name,0,1)) { return false }
+        for i in 0..(length as i64) {
+            let ch = strings.substring(name,i,i+1)
+            if !strings.contains(word,ch) && !strings.equal(ch,"-") && !strings.equal(ch,"_") && !(index == 1 && strings.equal(ch,".")) { return false }
+        }
+    }
+    return true
+}
+fn platform(machine:str):str {
+    if strings.equal(machine,"x86_64") { return "linux-x64" }
+    if strings.equal(machine,"aarch64") { return "linux-arm64" }
+    return ""
+}
+struct Release { error: str, version: str, tag: str, notes: str, published: str, size: i64, url: str, sha256: str, repository: str, platform: str }
+fn bad(message:str):Release { return Release(message,"","","","",0,"","","","") }
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn flag(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
+# The stable release package for `target` of a GitHub "latest release" answer, or Release.error.
+fn parseRelease(raw:json.Value, repo:str, target:str):Release {
+    if !validRepository(repo) { return bad("Use a GitHub repository in owner/repo format.") }
+    if !strings.equal(json.kind(raw),"object") { return bad("Invalid GitHub release response") }
+    let tag = text(raw,"tag_name"); let name = version(tag)
+    if strings.equal(name,"") { return bad("Release version must be stable semver, for example v0.3.0") }
+    if flag(raw,"draft") || flag(raw,"prerelease") { return bad("This release is not on the stable channel") }
+    let assetName = "dev-os-" + target + ".tar.gz"; let found = json.null_value()
+    if json.has(raw,"assets") && strings.equal(json.kind(json.get(raw,"assets")),"array") {
+        let assets = json.get(raw,"assets")
+        for i in 0..(json.len(assets) as i64) {
+            let item = json.at(assets,i)
+            if strings.equal(json.kind(item),"object") && strings.equal(text(item,"name"),assetName) && strings.equal(text(item,"state"),"uploaded") { found = item; break }
+        }
+    }
+    if strings.equal(json.kind(found),"null") { return bad("Release " + name + " has no " + assetName + " package") }
+    let expected = "https://github.com/" + repo + "/releases/download/" + tag + "/" + assetName
+    if !strings.equal(text(found,"browser_download_url"),expected) { return bad("Package URL does not belong to the selected GitHub release") }
+    let size = 0
+    let sized = json.has(found,"size") && strings.equal(json.kind(json.get(found,"size")),"number")
+    if sized { size = json.int(json.get(found,"size")) }
+    if !sized || (size as f64) != json.float(json.get(found,"size")) || size <= 0 || size > 268435456 { return bad("Invalid or oversized update package") }
+    let digest = text(found,"digest")
+    if !strings.startsWith(digest,"sha256:") || !hex(strings.substring(digest,7,strings.charLength(digest)),64) { return bad("This release has no SHA-256 digest. Re-upload its package to GitHub Releases.") }
+    let notes = text(raw,"body"); if strings.charLength(notes) > 12000 { notes = strings.substring(notes,0,12000) }
+    return Release("",name,tag,notes,text(raw,"published_at"),size,expected,strings.toLowerCase(strings.substring(digest,7,strings.charLength(digest))),repo,target)
+}
+fn swaylockReleases():str { return "https://github.com/swaywm/swaylock/releases" }
+# Latest stable swaylock version, or "" with the reason in `error`.
+struct Swaylock { version: str, error: str }
+fn parseSwaylockRelease(raw:json.Value):Swaylock {
+    if !strings.equal(json.kind(raw),"object") { return Swaylock("","Invalid swaylock release response") }
+    if flag(raw,"draft") || flag(raw,"prerelease") { return Swaylock("","swaylock release is not stable") }
+    let latest = version(text(raw,"tag_name"))
+    if strings.equal(latest,"") { return Swaylock("","Release version must be stable semver, for example v0.3.0") }
+    if !strings.equal(text(raw,"html_url"),swaylockReleases() + "/tag/" + text(raw,"tag_name")) { return Swaylock("","Invalid swaylock release source") }
+    return Swaylock(latest,"")
+}
+# "swaylock version v1.7.2" on a line of the program's output, or "".
+fn parseSwaylockVersion(output:str):str {
+    for line in strings.split(output,"\n") {
+        if !strings.startsWith(line,"swaylock version ") { continue }
+        let rest = strings.substring(line,17,strings.charLength(line)); let words = strings.split(rest," ")
+        let bare = strings.startsWith(words[0],"v") ? strings.substring(words[0],1,strings.charLength(words[0])) : words[0]
+        let found = version(bare)
+        if !strings.equal(found,"") && strings.equal(found,bare) { return found }
+    }
+    return ""
+}
+struct History { error: str, current: str, currentKey: str, previous: str }
+# history.json of the update root: the current and previous installed versions, checked against each release.json.
+fn history(root:str):History {
+    let none = History("","","","")
+    let file = root + "/history.json"
+    if !fs.existsSync(file) { return none }
+    let parsed = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(file,"utf8")) })
+    let invalid = History("Invalid installed update history","","","")
+    if result.isErr(parsed) { return invalid }
+    let data = result.unwrap(parsed)
+    if !strings.equal(json.kind(data),"object") || !json.has(data,"current") || !json.has(data,"previous") { return invalid }
+    let versions = Vec<str>("",""); let keys = Vec<str>("","")
+    let names = Vec<str>("current","previous")
+    for index in 0..2 {
+        let record = json.get(data,names[index])
+        if strings.equal(json.kind(record),"null") { continue }
+        if !strings.equal(json.kind(record),"object") { return invalid }
+        let target = text(record,"platform"); let key = text(record,"key"); let number = version(text(record,"version"))
+        if !strings.equal(target,"linux-x64") && !strings.equal(target,"linux-arm64") { return invalid }
+        if strings.equal(number,"") || !strings.equal(text(record,"version"),number) || !strings.startsWith(key,number + "-") { return invalid }
+        let suffix = strings.substring(key,strings.charLength(number) + 1,strings.charLength(key))
+        if !lowerHex(suffix,12) { return invalid }
+        if !validRepository(text(record,"repository")) { return invalid }
+        let meta = root + "/releases/" + key + "/release.json"
+        if !fs.existsSync(meta) { return History("Installed release metadata is missing","","","") }
+        let loaded = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(meta,"utf8")) })
+        if result.isErr(loaded) { return invalid }
+        let info = result.unwrap(loaded)
+        if !json.has(info,"format") || !strings.equal(json.kind(json.get(info,"format")),"number") || json.int(json.get(info,"format")) != 1 || !strings.equal(text(info,"version"),number) || !strings.equal(text(info,"platform"),target) { return History("Installed release metadata does not match update history","","","") }
+        versions[index] = number; keys[index] = key
+    }
+    return History("",versions[0],keys[0],versions[1])
+}

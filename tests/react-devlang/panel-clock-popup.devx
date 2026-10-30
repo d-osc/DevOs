@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-clock.dev" as clock
+use "../../src/system/org.devos.panel/native-command.dev" as commands
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_popover_popdown(widget:*void)
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let clicks=ui.useRef(context,0);let ticks=ui.useRef(context,0)
+    let action=commands.connect(context,fn() {unsafe {ui.rd_fail("Clock command transport failed")}})
+    let frame=phase.value<3 ? ui.text("C\t12:34\t01/01/2024\tMonday, 01 January 2024\tMonday\t01 January 2024\t12:34:56 · UTC") : ui.text("C\t03:04\t02/01/2024\tTuesday, 02 January 2024\tTuesday\t02 January 2024\t03:04:05 · UTC")
+    let node=clock.View(context,frame,phase.value<3,fn() {clicks.set(clicks.get()+1);action.send(ui.text("time"));phase.set(4)},phase.value>=2 && action.ready)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>400 {ui.rd_fail("Timed out waiting for native clock popup")}
+            let current=phase.get()
+            if current==0 {check(ui.click(context,"panel-clock"),"Clock button missing");phase.set(1)}
+            else if current==1 && ui.find(context,"panel-clock-popup")!=null {check(ui.equalText(ui.readText(context,"panel-calendar-weekday"),ui.text("Monday")),"Prepared weekday missing");check(ui.equalText(ui.readText(context,"panel-calendar-detail"),ui.text("12:34:56 · UTC")),"Prepared timezone detail missing");check(gtk_widget_get_sensitive(ui.find(context,"panel-time-settings"))==0,"Unavailable command was enabled");phase.set(2)}
+            else if current==2 && gtk_widget_get_sensitive(ui.find(context,"panel-time-settings"))!=0 {phase.set(3)}
+            else if current==3 && ui.equalText(ui.readText(context,"panel-calendar-weekday"),ui.text("Tuesday")) {check(ui.find(context,"panel-clock-date")==null,"Hidden date survived");check(ui.equalText(ui.readText(context,"panel-calendar-date"),ui.text("02 January 2024")),"Live calendar date stale");check(ui.equalText(ui.readText(context,"panel-clock-time"),ui.text("03:04")),"Live clock time stale");check(ui.click(context,"panel-time-settings"),"Time settings button missing")}
+            else if current==4 && ui.find(context,"panel-clock-popup")==null && action.completed()==1 {check(clicks.get()==1,"Time settings callback replayed");check(ui.click(context,"panel-clock"),"Cannot reopen clock popup");phase.set(5)}
+            else if current==5 && ui.find(context,"panel-clock-popup")!=null {gtk_popover_popdown(ui.find(context,"panel-clock-popup"));phase.set(6)}
+            else if current==6 && ui.find(context,"panel-clock-popup")==null {ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    let error=ui.props();error.visible=action.error.bytes.len()>0;return ui.Box(ui.props(),Vec<ui.Node>(node,ui.withProps(ui.TextLabel(action.error),error)))
+}
+fn main():i32 {check(ui.run("Native clock popup",640,64,App),"Clock popup failed");unsafe {check(rd_widget_live_count()==0,"Clock popup leaked widgets")};print("PASS native clock popup, live labels, settings RPC, dismissal and cleanup");return 0}
+return main()

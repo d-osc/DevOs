@@ -1,0 +1,91 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
+extern fn rc_env(name:str):str
+
+# Native Desktop settings page: name, panel height, clock format and the session commands of <config>/dev-os/config.json.
+# The worker (desktop-config.dev) validates and saves and asks the running shell to reload; this page keeps the draft.
+# Frame C: name, panel_height, clock_format, terminal, files, lock, autostart (command lists as JSON text), load error, reloaded, reload error.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn field(frame:ui.Text, index:i64):ui.Text { let fields = channel.split(frame,9); return index < fields.len() as i64 ? fields[index] : ui.emptyText() }
+fn draftOf(frame:ui.Text):ui.Text {
+    let out = Vec<u8>()
+    for i in 1..8 { if i > 1 { out.push(30) }; for byte in field(frame,i).bytes { out.push(byte) } }
+    return ui.Text(out)
+}
+fn entry(id:str, title:str, detail:str, value:ui.Text, wide:bool, changed:fn(ui.Text):void):ui.Node {
+    let texts = Vec<ui.Node>(k.note(title,"settings-field-title"))
+    if detail != "" { texts.push(k.note(detail,"settings-description")) }
+    let textColumn = ui.props(); textColumn.spacing = 4; textColumn.expand = true
+    let control = ui.named(id); control.width = wide ? 360 : 200; control.expand = wide
+    return ext.row(16,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Entry(control,value,changed)))
+}
+fn section(title:str, detail:str, rows:Vec<ui.Node>):ui.Node {
+    let options = ui.props(); options.spacing = 14; options.className = ui.text("settings-card")
+    let all = Vec<ui.Node>(k.note(title,"section-heading"),k.note(detail,"settings-description"))
+    for item in rows { all.push(item) }
+    return ui.Box(options,all)
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let frame = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText()); let status = ui.useText(context,ui.emptyText())
+    let pipe = ui.useRef(context,0); let waiting = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.settings/desktop-config.dev",root,fn(value:ui.Text) {
+            let kind = waiting.get(); waiting.set(0)
+            if value.bytes.len() > 0 && value.bytes[0] == 69 { let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; return }
+            failure.set(ui.emptyText()); frame.set(value); draft.set(draftOf(value))
+            if kind == 2 { status.set(field(value,10).bytes.len() > 0 ? field(value,10) : ui.text("Settings applied")) }
+        },fn(value:i64) { pipe.set(value); channel.pause(value,true); channel.command(value,ui.text("{\"action\":\"get\"}")) })
+    },Vec<i64>())
+    let busy = waiting.get() != 0
+    # Diagnostic drive (DEVOS_DESKTOP_SMOKE): rename the desktop, Apply, report and close.
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_DESKTOP_SMOKE")).bytes.len() == 0 { return ui.noop }
+        if frame.value.bytes.len() > 0 && step.get() == 0 { step.set(1); ui.change(context,"desktop-name","Smoke Desk") }
+        else if step.get() == 1 && k.isText(ext.at(draft.value,0),"Smoke Desk") { step.set(2); ui.click(context,"desktop-apply") }
+        else if step.get() == 2 && k.isText(status.value,"Settings applied") && k.isText(field(frame.value,1),"Smoke Desk") { print("PASS native Desktop page saved"); ui.close(context) }
+        else if step.get() >= 1 && failure.value.bytes.len() > 0 { print("FAIL native Desktop page"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(frame.revision,draft.revision,status.revision,failure.revision))
+    if frame.value.bytes.len() == 0 {
+        let wait = Vec<ui.Node>(); if failure.value.bytes.len() > 0 { wait.push(k.caption(failure.value,"settings-error-banner")) } else { wait.push(ui.Label("Loading…")) }
+        return ext.column(12,wait)
+    }
+    let saved = draftOf(frame.value)
+    let dirty = !ui.equalText(draft.value,saved)
+    let edit = fn(index:i64, value:ui.Text) { if !ui.equalText(value,ext.at(draft.get(),index)) { draft.set(ext.with(draft.get(),index,value)); status.set(ui.emptyText()) } }
+    let nodes = Vec<ui.Node>()
+    if field(frame.value,8).bytes.len() > 0 { nodes.push(ext.named(k.caption(join(Vec<ui.Text>(ui.text("The saved configuration is damaged and shows the defaults; Apply replaces it. "),field(frame.value,8))),"error"),"desktop-load-error")) }
+    nodes.push(section("Appearance","Make this desktop feel like your workspace.",Vec<ui.Node>(
+        entry("desktop-name","Desktop name","The name shown on your desktop.",ext.at(draft.value,0),false,fn(value:ui.Text) { edit(0,value) }))))
+    nodes.push(section("Panel & clock","Keep essential information within reach.",Vec<ui.Node>(
+        entry("desktop-panel-height","Panel height","Height in pixels, 32 to 96.",ext.at(draft.value,1),false,fn(value:ui.Text) { edit(1,value) }),
+        entry("desktop-clock-format","Clock format","Use %H:%M for 24-hour time, or %I:%M %p for 12-hour time.",ext.at(draft.value,2),false,fn(value:ui.Text) { edit(2,value) }))))
+    nodes.push(section("Session & commands","Choose the commands used by your desktop.",Vec<ui.Node>(
+        entry("desktop-terminal","Terminal command","Command arguments as a JSON array.",ext.at(draft.value,3),true,fn(value:ui.Text) { edit(3,value) }),
+        entry("desktop-files","External file manager","Fallback command as a JSON array. The Files extension handles the desktop Files action.",ext.at(draft.value,4),true,fn(value:ui.Text) { edit(4,value) }),
+        entry("desktop-lock","Lock command","Command arguments as a JSON array.",ext.at(draft.value,5),true,fn(value:ui.Text) { edit(5,value) }),
+        entry("desktop-autostart","Start with this session","JSON array of command arrays. Changes apply at the next session.",ext.at(draft.value,6),true,fn(value:ui.Text) { edit(6,value) }))))
+    if failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(failure.value,"error"),"desktop-error")) }
+    let reset = ui.named("desktop-reset"); reset.sensitive = dirty && !busy
+    let apply = ui.named("desktop-apply"); apply.sensitive = dirty && !busy; apply.className = ui.text("settings-primary")
+    let message = status.value.bytes.len() > 0 ? status.value : ui.text(dirty ? "Unsaved changes" : "Settings are saved.")
+    let bar = ui.props(); bar.vertical = false; bar.spacing = 12; bar.className = ui.text("settings-action-bar")
+    nodes.push(ui.Box(bar,Vec<ui.Node>(ext.expand(k.caption(message,"settings-description")),
+        ui.Button(reset,"Reset",fn() { draft.set(saved); failure.set(ui.emptyText()); status.set(ui.emptyText()) }),
+        ui.Button(apply,"Apply",fn() {
+            if waiting.get() != 0 { return }
+            let value = draft.get()
+            let height = ext.at(value,1)
+            let body = Vec<ui.Text>(ui.text("{\"action\":\"save\",\"name\":"),channel.quote(ext.at(value,0)),ui.text(",\"panel_height\":"),ext.numeric(height) ? height : channel.quote(height),
+                ui.text(",\"clock_format\":"),channel.quote(ext.at(value,2)),ui.text(",\"terminal\":"),channel.quote(ext.at(value,3)),ui.text(",\"files\":"),channel.quote(ext.at(value,4)),
+                ui.text(",\"lock\":"),channel.quote(ext.at(value,5)),ui.text(",\"autostart\":"),channel.quote(ext.at(value,6)),ui.text("}"))
+            waiting.set(2); failure.set(ui.emptyText()); channel.command(pipe.get(),join(body))
+        }))))
+    return ext.column(16,nodes)
+}
+fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
+fn page():ui.Node { return ui.component(9340,ui.keyed(904),render) }

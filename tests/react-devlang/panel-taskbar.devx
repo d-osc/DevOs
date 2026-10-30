@@ -1,0 +1,39 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn gtk_widget_get_style_context(widget:*void):*void
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_style_context_has_class(style:*void,name:str):i32
+extern fn gtk_image_get_storage_type(image:*void):i32
+extern fn gtk_image_get_pixel_size(image:*void):i32
+extern fn gtk_widget_get_tooltip_text(widget:*void):*u8
+extern fn g_free(value:*void)
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {if !value {unsafe {ui.rd_fail(message)}}}
+fn frame(row:str):ui.Text {return ui.concatText(Vec<ui.Text>(ui.text("B"),ui.Text(Vec<u8>(30)),ui.text(row),ui.Text(Vec<u8>(30)),ui.text("T\tmulti\tpanel-task-20\tMulti\tapplication-x-executable-symbolic\t\t\t1\t0\t0\tPicker\t20,21\tpicker")))}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useState(context,0);let selected=ui.useText(context,ui.emptyText());let button=ui.useRef(context,0)
+    let data=phase.value==0 ? frame("T\ttest\tpanel-task-1\tไทย\tapplication-x-executable-symbolic\tfolder-symbolic\t\t1\t1\t0\tTip%09100%25\t1") : phase.value==1 ? frame("T\ttest\tpanel-task-2\tไทย\tapplication-x-executable-symbolic\tfolder-symbolic\t\t1\t0\t1\tChanged\t2") : ui.text("B")
+    let node=tasks.render(data,phase.value==0 ? 16 : 24,2,true,fn(value:ui.Text) {selected.set(value)})
+    ui.useEffect(context,fn():fn():void {unsafe {
+        tasks.decorate(context,data)
+        if phase.value==0 {
+            let widget=ui.find(context,"panel-task-1");check(widget!=null,"Native task button missing");button.set(widget as i64)
+            check(gtk_style_context_has_class(gtk_widget_get_style_context(widget),"task-active")!=0,"Active class missing")
+            check(gtk_widget_get_sensitive(ui.find(context,"panel-task-20"))!=0,"Native picker button is disabled")
+            check(gtk_image_get_storage_type(ui.find(context,"panel-task-1-icon"))==6,"Serialized GIcon did not reach GTK")
+            let tooltip=gtk_widget_get_tooltip_text(widget);let bytes=Vec<u8>();let at=0;while tooltip[at]!=0 {bytes.push(tooltip[at]);at=at+1};g_free(tooltip as *void)
+            check(ui.equalText(ui.Text(bytes),ui.text("Tip\t100%")),"Tooltip wire decoding failed");phase.set(1)
+        } else if phase.value==1 {
+            let widget=ui.find(context,"panel-task-2");check(widget as i64==button.get(),"Group update replaced native task button")
+            check(gtk_style_context_has_class(gtk_widget_get_style_context(widget),"task-minimized")!=0,"Minimized class missing")
+            check(gtk_style_context_has_class(gtk_widget_get_style_context(widget),"task-active")==0,"Stale active class remained")
+            check(gtk_image_get_pixel_size(ui.find(context,"panel-task-2-icon"))==24,"Icon size update was lost")
+            check(ui.click(context,"panel-task-2"),"Native task click failed");phase.set(2)
+        } else {
+            check(ui.equalText(selected.value,ui.text("test")),"Task selection lost group identity");check(ui.find(context,"panel-task-2")==null,"Closed task widget survived");ui.close(context)
+        };return ui.noop
+    }},Vec<i64>(phase.value))
+    return node
+}
+fn main():i32 {check(ui.run("Native taskbar renderer",640,64,App),"Taskbar renderer failed");unsafe {check(rd_widget_live_count()==0,"Native taskbar leaked widgets")};print("PASS native taskbar GIcons, tooltips, stable grouping, state/size updates, selection and cleanup");return 0}
+return main()

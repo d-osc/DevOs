@@ -1,0 +1,44 @@
+use "../../src/system/login/native.devx" as login
+use "react_devlang/ui" as ui
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_entry_get_visibility(widget:*void):i32
+extern fn rd_fail(message:str)
+fn check(ok:bool,message:str) {if !ok {unsafe {rd_fail(message)}}}
+fn present(context:*ui.Context,name:str):bool {unsafe {return ui.find(context,name)!=null}}
+fn enabled(context:*ui.Context,name:str):bool {unsafe {let widget=ui.find(context,name);return widget!=null && gtk_widget_get_sensitive(widget)!=0}}
+fn main():i32 {unsafe {
+    let stage=0;let pointer=&stage
+    let root=login.environment("DEV_OS_ROOT");let scenario=login.environment("LOGIN_TEST_SCENARIO")
+    let code=login.run(login.Config(root,"d","${root}/tests/react-devlang/login-service.dev",true,fn(context:*ui.Context) {unsafe {
+        if !enabled(context,"os-login-new-user") && !enabled(context,"os-login-cancel") {return}
+        if ui.equalText(ui.text(scenario),ui.text("close")) {ui.close(context);return}
+        if ui.equalText(ui.text(scenario),ui.text("guest")) {ui.click(context,"os-login-guest");return}
+        if (*pointer)==0 {(*pointer)=1;check(enabled(context,"os-login-user"),"User inventory missing");ui.click(context,"os-login-new-user")}
+        else if (*pointer)==1 {(*pointer)=2;ui.click(context,"new-user-guest")}
+        else if (*pointer)==2 {
+            (*pointer)=3;ui.change(context,"accounts-new-name","Bob");ui.change(context,"accounts-new-username","bob")
+            check(gtk_entry_get_visibility(ui.find(context,"accounts-new-password"))==0,"Enrollment secret is visible")
+            ui.change(context,"accounts-new-password","pass-123");ui.change(context,"accounts-new-confirm","mismatch")
+        } else if (*pointer)==3 {check(!enabled(context,"accounts-create-user"),"Confirmation mismatch accepted");(*pointer)=4;ui.change(context,"accounts-new-confirm","pass-123")}
+        else if (*pointer)==4 {check(enabled(context,"accounts-create-user"),"Valid enrollment disabled");(*pointer)=5;ui.click(context,"accounts-create-user")}
+        else if (*pointer)==5 && present(context,"os-login-password") {(*pointer)=6;ui.change(context,"os-login-password","wrong");ui.activate(context,"os-login-password")}
+        else if (*pointer)==6 && present(context,"os-login-error") {
+            check(ui.readText(context,"os-login-password").bytes.len()==0,"Failed login retained password")
+            check(ui.equalText(ui.readText(context,"os-login-error"),ui.text("Sign-in failed.")),"Unexpected auth error")
+            (*pointer)=7;ui.click(context,"os-login-github")
+        } else if (*pointer)==7 && present(context,"os-login-cancel") {(*pointer)=8;ui.click(context,"os-login-cancel")}
+        else if (*pointer)==8 && present(context,"os-login-password") {(*pointer)=9;ui.click(context,"os-login-new-user")}
+        else if (*pointer)==9 && present(context,"new-user-github") {(*pointer)=10;ui.click(context,"new-user-github")}
+        else if (*pointer)==10 && present(context,"new-user-verified") {(*pointer)=11;ui.change(context,"accounts-new-password","pass-123");ui.change(context,"accounts-new-confirm","pass-123")}
+        else if (*pointer)==11 && enabled(context,"accounts-create-user") {(*pointer)=12;ui.activate(context,"accounts-new-confirm")}
+        else if (*pointer)==12 && present(context,"os-login-password") {(*pointer)=13;ui.change(context,"os-login-password","pass-123");ui.activate(context,"os-login-password")}
+    }}))
+    if ui.equalText(ui.text(scenario),ui.text("close")) {check(code==1,"Closing login accepted a session");print("PASS closing login rejects session");return 0}
+    check(code==0,"Greeter did not accept backend-started session")
+    check(ui.equalText(ui.text(scenario),ui.text("guest")) || stage==13,"Native login flow incomplete")
+    check(login.usernameValid(ui.text("alice_12")) && !login.usernameValid(ui.text("Root")) && !login.usernameValid(ui.text("a/b")),"Linux username validation changed")
+    check(login.passwordLength(ui.text("éé"))==2 && login.passwordLength(ui.text("🌟🌟"))==4,"Password validation must match existing UTF-16 length")
+    print("PASS native login flow without GJS");return 0
+}}
+return main()
+

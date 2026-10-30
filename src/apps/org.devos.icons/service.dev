@@ -1,0 +1,113 @@
+#!/usr/bin/env d
+# Data worker of the native Icons settings page. One JSON request per line on stdin:
+#   {"action":"get"}
+#   {"action":"preview","pack":"duotone","style":"solid","color":"#d4d4d4","material":true}
+#   {"action":"set","baseIcons":true,"basePack":"duotone","baseStyle":"solid","themeName":"Adwaita","useSystemTheme":false,"materialFiles":true}
+# One tab-separated frame per request:
+#   I <error> baseIcons basePack baseStyle themeName useSystemTheme materialFiles themes(ASCII 31 separated)   (get / set)
+#   V svg x6, then 4 sample file icon names (src, view.tsx, package.json, notes.txt)                           (preview)
+#   E <message>
+# Values are saved through lib/ext-prefs.dev into the Icons preferences file the JS shell reads.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "../../../lib/ext-prefs.dev" as prefs
+use "./fa.dev" as fa
+
+fn directory():str {
+    if process.hasEnv("DEVOS_PREFERENCES_DIR") { return process.getenv("DEVOS_PREFERENCES_DIR") }
+    let config = process.hasEnv("XDG_CONFIG_HOME") ? process.getenv("XDG_CONFIG_HOME") : process.getenv("HOME") + "/.config"
+    return config + "/dev-os/extensions"
+}
+fn clean(value:str):str {
+    let out = strings.replaceAll(value,"\t"," "); out = strings.replaceAll(out,"\n"," "); return strings.replaceAll(out,"\r"," ")
+}
+fn text(value:json.Value, key:str, fallback:str):str {
+    return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : fallback
+}
+fn flag(value:json.Value, key:str, fallback:bool):bool {
+    return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") ? json.bool(json.get(value,key)) : fallback
+}
+fn yes(value:bool):str { return value ? "1" : "0" }
+# Icon theme directories (those with an index.theme) in the places GTK searches, plus the bundled data/icons.
+fn searchPaths(root:str):Vec<str> {
+    let home = process.hasEnv("HOME") ? process.getenv("HOME") : ""
+    let data = process.hasEnv("XDG_DATA_HOME") ? process.getenv("XDG_DATA_HOME") : home + "/.local/share"
+    let out = Vec<str>(root+"/data/icons",home+"/.icons",data+"/icons")
+    let dirs = process.hasEnv("XDG_DATA_DIRS") ? process.getenv("XDG_DATA_DIRS") : "/usr/local/share:/usr/share"
+    for item in strings.split(dirs,":") { if !strings.equal(item,"") { out.push(item+"/icons") } }
+    return out
+}
+fn installedThemes(root:str):Vec<str> {
+    let names = Vec<str>()
+    for base in searchPaths(root) {
+        if !fs.is_dir(base) { continue }
+        for name in fs.readdirSync(base) {
+            if fs.existsSync(base+"/"+name+"/index.theme") && !fa.contains(names,name) { names.push(name) }
+        }
+    }
+    names.sort()
+    return names
+}
+fn frame(root:str, manifest:json.Value):str {
+    let state = prefs.read(directory(),"org.devos.icons",manifest)
+    let values = json.get(state,"values")
+    let problem = json.has(state,"error") ? json.string(json.get(state,"error")) : ""
+    let pack = text(values,"basePack","duotone"); let style = text(values,"baseStyle","solid")
+    if !fa.hasCombination(pack,style) { pack = "duotone"; style = "solid" }
+    let separator = encoding.decode(Vec<u8>(31),"utf8")
+    return "I\t" + clean(problem) + "\t" + yes(flag(values,"baseIcons",true)) + "\t" + pack + "\t" + style + "\t" + clean(text(values,"themeName","Adwaita")) + "\t" + yes(flag(values,"useSystemTheme",false)) + "\t" + yes(flag(values,"materialFiles",true)) + "\t" + clean(strings.join(installedThemes(root),separator))
+}
+fn failure(message:str):str { return "E\t" + clean(message) }
+fn validColor(value:str):bool { return prefs.hexColor(value) }
+fn handle(root:str, manifest:json.Value, mapping:json.Value, material:json.Value, line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return failure("Invalid service request") }
+    let request = result.unwrap(parsed)
+    if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
+    let action = text(request,"action","")
+    if strings.equal(action,"get") { return frame(root,manifest) }
+    if strings.equal(action,"preview") {
+        let pack = text(request,"pack",""); let style = text(request,"style",""); let color = text(request,"color","#cccccc")
+        let reason = fa.choiceError(pack,style)
+        if !strings.equal(reason,"") { return failure(reason) }
+        if !validColor(color) { return failure("Invalid preview color") }
+        let out = "V"
+        for name in Vec<str>("utilities-terminal-symbolic","folder-symbolic","network-wireless-symbolic","bluetooth-symbolic","battery-good-symbolic","preferences-system-symbolic") {
+            out = out + "\t" + fa.svg(root,mapping,name,pack,style,color)
+        }
+        let useMaterial = flag(request,"material",true)
+        out = out + "\t" + (useMaterial ? fa.material(material,"src",true) : "folder") + "\t" + (useMaterial ? fa.material(material,"view.tsx",false) : "text-x-generic")
+        out = out + "\t" + (useMaterial ? fa.material(material,"package.json",false) : "text-x-generic") + "\t" + (useMaterial ? fa.material(material,"notes.txt",false) : "text-x-generic")
+        return out
+    }
+    if strings.equal(action,"set") {
+        let pack = text(request,"basePack",""); let style = text(request,"baseStyle","")
+        let reason = fa.choiceError(pack,style)
+        if !strings.equal(reason,"") { return failure(reason) }
+        let theme = strings.trim(text(request,"themeName",""))
+        if strings.equal(theme,"") { return failure("Select an installed theme or use the session theme.") }
+        let saved = {baseIcons:flag(request,"baseIcons",true),basePack:pack,baseStyle:style,themeName:theme,useSystemTheme:flag(request,"useSystemTheme",false),materialFiles:flag(request,"materialFiles",true)}
+        let failed = prefs.write(directory(),"org.devos.icons",manifest,true,saved)
+        if !strings.equal(failed,"") { return failure(failed) }
+        return frame(root,manifest)
+    }
+    return failure("Unsupported action")
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    let manifest = json.parse(fs.readFileSync(root+"/src/apps/org.devos.icons/extension.json","utf8"))
+    let mapping = json.get(json.parse(fs.readFileSync(root+"/data/icons/fa/index.json","utf8")),"mapping")
+    let material = json.parse(fs.readFileSync(root+"/src/apps/org.devos.icons/material/mapping.json","utf8"))
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(root,manifest,mapping,material,line))
+    }
+    return 0
+}
+return main()

@@ -1,0 +1,171 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-kit.devx" as k
+use "../org.devos.icons/rules.dev" as rules
+extern fn rc_env(name:str):str
+extern fn rd_theme_is_dark():i32
+extern fn rd_session_icon_theme():str
+
+# Native Theme icons settings page. The worker (org.devos.icons/service.dev) owns the saved values, the Font Awesome SVGs, the
+# Material names and the installed theme list. Frames: I (state) = I, error, baseIcons, pack, style, theme, useSystem,
+# material, themes joined by ASCII 31; V (preview) = V, six SVGs, four file icon names.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn field(frame:ui.Text, index:i64):ui.Text { let fields = channel.split(frame,9); return index < fields.len() as i64 ? fields[index] : ui.emptyText() }
+fn flag(value:ui.Text):bool { return value.bytes.len() > 0 && value.bytes[0] == 49 }
+fn yes(value:bool):str { return value ? "true" : "false" }
+fn sessionTheme():ui.Text { unsafe { return ui.text(rd_session_icon_theme()) } }
+
+fn row(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = spacing; return ui.Box(options,children) }
+fn column(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = spacing; return ui.Box(options,children) }
+fn expand(node:ui.Node):ui.Node { let options = node.props; options.expand = true; return ui.withProps(node,options) }
+fn named(node:ui.Node, id:str):ui.Node { let options = node.props; options.id = ui.text(id); return ui.withProps(node,options) }
+fn card(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 16; options.className = ui.text("settings-card icons-settings-card"); return ui.Box(options,children) }
+fn picture(icon:ui.Text, title:str):ui.Node {
+    let image = ui.props(); image.halign = 3
+    let options = ui.props(); options.spacing = 10; options.expand = true; options.className = ui.text("icons-preview-item")
+    return ui.Box(options,Vec<ui.Node>(ui.element(11,image,icon,Vec<ui.Node>()),k.note(title,"settings-description")))
+}
+fn toggle(id:str, title:str, detail:ui.Text, active:bool, changed:fn(bool):void):ui.Node {
+    let options = ui.named(id); options.valign = 3
+    let texts = ui.props(); texts.spacing = 5; texts.expand = true
+    return row(12,Vec<ui.Node>(ui.Box(texts,Vec<ui.Node>(k.note(title,"settings-field-title"),k.caption(detail,"settings-description"))),ui.Switch(options,active,fn(next:bool) { if next != active { changed(next) } })))
+}
+fn choice(id:str, selected:bool, usable:bool, title:ui.Text, chosen:fn():void):ui.Node {
+    let options = ui.named(id); options.sensitive = usable; options.className = ui.text(selected ? "icons-theme-choice icons-theme-selected" : "icons-theme-choice")
+    return ui.TextButton(options,title,chosen)
+}
+fn themed(theme:ui.Text, icon:ui.Text):ui.Text { return ui.concatText(Vec<ui.Text>(ui.text("theme:"),theme,ui.text("\n"),icon)) }
+# The entry of `options` that `value` spells, or "" (pack and style Text are always one of the known names).
+fn known(value:ui.Text, options:Vec<str>):str { for item in options { if k.isText(value,item) { return item } }; return "" }
+fn lower(byte:u8):u8 { return byte >= 65 && byte <= 90 ? byte + 32 : byte }
+# ASCII case-insensitive substring test for the theme search.
+fn foldContains(value:ui.Text, needle:ui.Text):bool {
+    let n = needle.bytes.len() as i64; let v = value.bytes.len() as i64
+    if n == 0 { return true }
+    for start in 0..(v - n + 1) {
+        let same = true
+        for i in 0..n { if lower(value.bytes[start + i]) != lower(needle.bytes[i]) { same = false; break } }
+        if same { return true }
+    }
+    return false
+}
+
+fn render(context:*ui.Context):ui.Node {
+    let frame = ui.useText(context,ui.emptyText()); let preview = ui.useText(context,ui.emptyText())
+    let failure = ui.useText(context,ui.emptyText()); let status = ui.useText(context,ui.emptyText())
+    let base = ui.useBool(context,true); let pack = ui.useText(context,ui.text("duotone")); let style = ui.useText(context,ui.text("solid"))
+    let theme = ui.useText(context,ui.text("Adwaita")); let system = ui.useBool(context,false); let material = ui.useBool(context,true)
+    let query = ui.useText(context,ui.emptyText())
+    let pipe = ui.useRef(context,0); let loaded = ui.useRef(context,0); let applying = ui.useRef(context,0); let step = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.icons/service.dev",root,fn(value:ui.Text) {
+            let kind = value.bytes.len() > 0 ? value.bytes[0] : 0
+            if kind == 69 { let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; applying.set(0); return }
+            if kind == 86 { preview.set(value); return }
+            frame.set(value); failure.set(ui.emptyText())
+            if loaded.get() == 0 || applying.get() == 1 {
+                base.set(flag(field(value,2))); pack.set(field(value,3)); style.set(field(value,4)); theme.set(field(value,5)); system.set(flag(field(value,6))); material.set(flag(field(value,7)))
+                if applying.get() == 1 { status.set(ui.text("Icon preferences updated.")) }
+                loaded.set(1); applying.set(0)
+            }
+        },fn(value:i64) { pipe.set(value); channel.send(value,ui.text("{\"action\":\"get\"}")) })
+    },Vec<i64>())
+    # Font Awesome and file icon previews follow the draft, so ask the worker whenever it changes.
+    ui.useEffect(context,fn():fn():void {
+        if loaded.get() == 1 {
+            let color = unsafeDark() ? "#d4d4d4" : "#333333"
+            channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"preview\",\"pack\":"),channel.quote(pack.get()),ui.text(",\"style\":"),channel.quote(style.get()),ui.text(",\"color\":\"" + color + "\",\"material\":" + yes(material.value) + "}"))))
+        }
+        return ui.noop
+    },Vec<i64>(loaded.get(),pack.revision,style.revision,material.value ? 1 : 0))
+    # Diagnostic drive (DEVOS_ICONS_SMOKE): choose Classic Thin, Apply, wait for the saved state, report and close.
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_ICONS_SMOKE")).bytes.len() == 0 { return ui.noop }
+        if loaded.get() == 1 && step.get() == 0 { step.set(1); ui.click(context,"icons-pack-classic") }
+        else if step.get() == 1 && k.isText(pack.get(),"classic") { step.set(2); ui.click(context,"icons-style-thin") }
+        else if step.get() == 2 && k.isText(style.get(),"thin") { step.set(3); ui.click(context,"icons-settings-apply") }
+        else if step.get() == 3 && k.isText(status.get(),"Icon preferences updated.") && k.isText(field(frame.get(),3),"classic") && k.isText(field(frame.get(),4),"thin") { print("PASS native Icons page applied Classic Thin"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(frame.revision,pack.revision,style.revision,status.revision,loaded.get()))
+    if loaded.get() == 0 { let wait = Vec<ui.Node>(); if failure.value.bytes.len() > 0 { wait.push(k.caption(failure.value,"settings-error-banner")) } else { wait.push(ui.Label("Loading…")) }; return column(12,wait) }
+    let themes = Vec<ui.Text>(); let rawThemes = field(frame.value,8); if rawThemes.bytes.len() > 0 { themes = channel.split(rawThemes,31) }
+    let valid = system.value; for name in themes { if ui.equalText(name,theme.value) { valid = true } }
+    let session = sessionTheme(); let selected = system.value || !valid ? session : theme.value
+    let packName = known(pack.value,rules.packs()); let styleName = known(style.value,rules.styles())
+    let dirty = base.value != flag(field(frame.value,2)) || !ui.equalText(pack.value,field(frame.value,3)) || !ui.equalText(style.value,field(frame.value,4)) || !ui.equalText(theme.value,field(frame.value,5)) || system.value != flag(field(frame.value,6)) || material.value != flag(field(frame.value,7))
+    let edit = fn(change:fn():void) { change(); failure.set(ui.emptyText()); status.set(ui.emptyText()) }
+    let nodes = Vec<ui.Node>()
+    # Stage: actual icons of the selected GTK theme and the sample files.
+    let themeRow = Vec<ui.Node>(); let fileRow = Vec<ui.Node>()
+    let sample = Vec<str>("folder-symbolic","utilities-terminal-symbolic","preferences-system-symbolic","network-wireless-symbolic"); let sampleTitles = Vec<str>("Files","Terminal","Settings","Network")
+    for i in 0..4 { themeRow.push(picture(themed(selected,ui.text(sample[i])),sampleTitles[i])) }
+    let fileTitles = Vec<str>("src","view.tsx","package.json","notes.txt")
+    for i in 0..4 { fileRow.push(picture(themed(selected,field(preview.value,7 + i).bytes.len() == 0 ? ui.text("text-x-generic") : field(preview.value,7 + i)),fileTitles[i])) }
+    nodes.push(column(18,Vec<ui.Node>(
+        row(8,Vec<ui.Node>(expand(k.note("ICON PREVIEW","settings-eyebrow")),named(k.caption(selected,"settings-description"),"icons-preview-theme"))),
+        row(8,themeRow),row(8,fileRow),
+        k.note("Actual icons from the selected theme · Changes stay in this preview until Apply.","settings-description"))))
+    # Font Awesome base icons.
+    let faRow = Vec<ui.Node>(); let faTitles = Vec<str>("Terminal","Files","Wi-Fi","Bluetooth","Battery","Settings")
+    for i in 0..6 { faRow.push(picture(field(preview.value,1 + i),faTitles[i])) }
+    let packButtons = Vec<ui.Node>(); let allPacks = rules.packs()
+    let packRows = Vec<ui.Node>()
+    for i in 0..(allPacks.len() as i64) {
+        let name = allPacks[i]
+        packRows.push(expand(choice("icons-pack-"+name,packName == name,base.value,ui.text(rules.packTitle(name)),fn() {
+            edit(fn() { pack.set(ui.text(name)); if !rules.hasCombination(name,known(style.get(),rules.styles())) { style.set(ui.text(rules.packStyles(name)[0])) } })
+        })))
+        if i % 4 == 3 || i == allPacks.len() as i64 - 1 { packButtons.push(row(6,packRows)); packRows = Vec<ui.Node>() }
+    }
+    let styleButtons = Vec<ui.Node>()
+    for name in rules.styles() {
+        styleButtons.push(expand(choice("icons-style-"+name,styleName == name,base.value && rules.hasCombination(packName,name),ui.text(name == "solid" ? "Solid" : name == "regular" ? "Regular" : name == "light" ? "Light" : "Thin"),fn() { edit(fn() { style.set(ui.text(name)) }) })))
+    }
+    let provides = ui.concatText(Vec<ui.Text>(ui.text(rules.packTitle(packName) + " provides: " + joinStyles(rules.packStyles(packName)) + ". Styles a pack lacks are greyed out; icons missing from a font fall back to the nearest style, then Classic, then the GTK theme.")))
+    let faCard = Vec<ui.Node>(toggle("icons-base-enabled","Font Awesome base icons",ui.text("Panel, launcher, settings and window controls draw from the bundled Font Awesome set."),base.value,fn(next:bool) { edit(fn() { base.set(next) }) }),
+        k.note("BASE ICON PREVIEW","settings-eyebrow"),named(row(8,faRow),"icons-base-preview"),k.note("Icon pack","section-heading"))
+    for line in packButtons { faCard.push(line) }
+    faCard.push(k.note("Icon style","section-heading")); faCard.push(row(6,styleButtons)); faCard.push(k.caption(provides,"settings-description"))
+    nodes.push(card(faCard))
+    # Installed GTK icon themes.
+    let needle = query.value; let list = Vec<ui.Node>(); let shown = 0
+    for name in themes {
+        if needle.bytes.len() > 0 && !foldContains(name,needle) { continue }
+        if shown >= 80 { break }
+        shown = shown + 1
+        let chosen = !system.value && ui.equalText(theme.value,name)
+        list.push(choice("icons-theme-${shown}",chosen,true,name,fn() { edit(fn() { theme.set(name); system.set(false) }) }))
+    }
+    if list.len() == 0 { list.push(k.note("No installed themes match your search.","settings-description")) }
+    let search = ui.named("icons-theme-search"); search.placeholder = ui.text("Search installed themes…")
+    let scroll = ui.props(); scroll.height = 190
+    let listBox = ui.props(); listBox.spacing = 6
+    let refresh = ui.named("icons-refresh")
+    let themeCard = Vec<ui.Node>(toggle("icons-use-session","Use the session icon theme",ui.concatText(Vec<ui.Text>(ui.text("Follow the theme active when Dev OS started: "),session,ui.text("."))),system.value,fn(next:bool) { edit(fn() { system.set(next) }) }),
+        row(8,Vec<ui.Node>(expand(k.note("Installed icon themes","section-heading")),ui.Button(refresh,"Refresh",fn() { channel.command(pipe.get(),ui.text("{\"action\":\"get\"}")); status.set(ui.text("Installed themes refreshed.")) }))),
+        ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) }),
+        ui.Scroll(scroll,ui.Box(listBox,list)))
+    if !valid { themeCard.push(ui.withProps(k.caption(ui.concatText(Vec<ui.Text>(ui.text("“"),theme.value,ui.text("” is unavailable. Select an installed theme or use the session theme."))),"error"),ui.named("icons-theme-error"))) }
+    nodes.push(card(themeCard))
+    nodes.push(card(Vec<ui.Node>(toggle("icons-material-files","Material file & folder icons",ui.text("Colorful file types in Files, Quick Open and Editor tabs."),material.value,fn(next:bool) { edit(fn() { material.set(next) }) }))))
+    nodes.push(k.note("Themes are loaded from GTK icon search paths. Add a theme locally, then Refresh. Shell controls use symbolic variants where available.","settings-description"))
+    if failure.value.bytes.len() > 0 { nodes.push(ui.withProps(k.caption(failure.value,"error"),ui.named("icons-error"))) }
+    let reset = ui.named("icons-settings-reset"); reset.sensitive = dirty
+    let apply = ui.named("icons-settings-apply"); apply.sensitive = dirty && valid && field(frame.value,1).bytes.len() == 0; apply.className = ui.text("settings-primary")
+    let message = status.value.bytes.len() > 0 ? status.value : ui.text(dirty ? "Unsaved changes · Preview only" : "Small details, a familiar workspace.")
+    let bar = ui.props(); bar.vertical = false; bar.spacing = 12; bar.className = ui.text("settings-action-bar")
+    nodes.push(ui.Box(bar,Vec<ui.Node>(expand(k.caption(message,"settings-description")),
+        ui.Button(reset,"Reset",fn() {
+            base.set(flag(field(frame.get(),2))); pack.set(field(frame.get(),3)); style.set(field(frame.get(),4)); theme.set(field(frame.get(),5)); system.set(flag(field(frame.get(),6))); material.set(flag(field(frame.get(),7)))
+            failure.set(ui.emptyText()); status.set(ui.emptyText())
+        }),
+        ui.Button(apply,"Apply",fn() {
+            applying.set(1); status.set(ui.emptyText())
+            channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"set\",\"baseIcons\":" + yes(base.value) + ",\"basePack\":"),channel.quote(pack.get()),ui.text(",\"baseStyle\":"),channel.quote(style.get()),ui.text(",\"themeName\":"),channel.quote(theme.get()),ui.text(",\"useSystemTheme\":" + yes(system.value) + ",\"materialFiles\":" + yes(material.value) + "}"))))
+        }))))
+    return column(18,nodes)
+}
+fn joinStyles(list:Vec<str>):str { let out = ""; for i in 0..(list.len() as i64) { out = out + (i > 0 ? ", " : "") + list[i] }; return out }
+fn unsafeDark():bool { unsafe { return rd_theme_is_dark() != 0 } }
+fn page():ui.Node { return ui.component(9310,ui.keyed(901),render) }

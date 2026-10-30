@@ -1,0 +1,8 @@
+use "../../packages/react-devlang/src/ui.dev" as ui
+fn App(context: *ui.Context): ui.Node {
+    let phase = ui.useState(context, 0)
+    if phase.value == 0 { let extra = ui.useText(context, ui.text("conditional hook")) }
+    ui.useEffect(context, fn(): fn(): void { phase.set(1); return ui.noop }, Vec<i64>())
+    return ui.Label("Invalid hook order")
+}
+ui.run("Invalid hooks", 100, 100, App)

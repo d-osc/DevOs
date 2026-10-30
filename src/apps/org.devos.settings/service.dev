@@ -1,0 +1,83 @@
+#!/usr/bin/env d
+# Data worker of the native Settings hardware pages. One JSON request per line on stdin:
+#   {"page":"fan-profile","action":"set","args":["ac","whisper"]}
+# One presentation frame per request on stdout (`S<TAB>page<TAB>fields...`, see model.dev) or `E<TAB>message`.
+# The helpers (bin/dev-os-<page>) keep their own validation, polkit prompts and saved settings; this worker only runs them
+# with separate arguments, never through a shell string, and only for the pages and actions model.validate allows.
+use "std/args"
+use "std/fs"
+use "std/io"
+use "std/process"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "./model.dev" as model
+
+fn helperCommand(directory:str,page:str):Vec<str> {
+    let local = directory + "/dev-os-" + page
+    if strings.equal(page,"language") && fs.is_file(local) { return Vec<str>("d",local,"--") }
+    if fs.is_file(local) { return Vec<str>("sh",local) }
+    return Vec<str>("dev-os-" + page)
+}
+struct Answer { state: json.Value, message: str }
+fn failed(message:str):Answer { return Answer(json.null_value(),message) }
+# Runs the helper; `message` is empty on success, otherwise the text to show.
+fn invoke(directory:str,page:str,action:str,params:Vec<str>):Answer {
+    let argv = helperCommand(directory,page); argv.push(action)
+    # The language helper takes its settings as JSON on standard input instead of arguments.
+    let input = ""
+    if strings.equal(page,"language") && strings.equal(action,"save") {
+        let layouts = json.array(); for id in strings.split(params[0],",") { layouts = json.push(layouts,id) }
+        input = json.stringify({layouts:layouts,shortcut:params[1]})
+    } else { for item in params { argv.push(item) } }
+    let ran = strings.equal(input,"") ? hw.run(argv,strings.equal(action,"get") ? 20000 : 180000) : hw.runInput(argv,input,60000)
+    let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
+    if result.isErr(parsed) { return failed("The " + page + " helper did not answer.") }
+    let state = result.unwrap(parsed)
+    if !strings.equal(json.kind(state),"object") { return failed("The " + page + " helper answered with an unexpected value.") }
+    let ok = json.has(state,"ok") && strings.equal(json.kind(json.get(state,"ok")),"bool") && json.bool(json.get(state,"ok"))
+    if ran.code != 0 || !ok {
+        return failed(json.has(state,"error") && strings.equal(json.kind(json.get(state,"error")),"string") ? json.string(json.get(state,"error")) : "The " + page + " settings failed.")
+    }
+    return Answer(state,"")
+}
+fn parameters(request:json.Value):Vec<str> {
+    let out = Vec<str>()
+    if json.has(request,"args") && strings.equal(json.kind(json.get(request,"args")),"array") {
+        let list = json.get(request,"args")
+        for i in 0..(json.len(list) as i64) { let item = json.at(list,i); out.push(strings.equal(json.kind(item),"string") ? json.string(item) : "-") }
+    }
+    return out
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : "."
+    let directory = process.hasEnv("DEVOS_SETTINGS_HELPERS") ? process.getenv("DEVOS_SETTINGS_HELPERS") : root + "/bin"
+    let cached = Vec<str>("","","","","","","","","",""); let stamped = Vec<i64>(0,0,0,0,0,0,0,0,0,0)
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+        if result.isErr(parsed) { print(model.failure("Invalid service request")); continue }
+        let request = result.unwrap(parsed)
+        if !strings.equal(json.kind(request),"object") { print(model.failure("Expected an object request")); continue }
+        let page = model.text(request,"page",""); let action = model.text(request,"action",""); let params = parameters(request)
+        let refusal = model.validate(page,action,params)
+        if !strings.equal(refusal,"") { print(model.failure(refusal)); continue }
+        let now = time.now_ms() as i64
+        let slot = model.index(page)
+        if strings.equal(action,"get") && !strings.equal(cached[slot],"") && now - stamped[slot] < model.refresh(page) * 1000 { print(cached[slot]); continue }
+        let outcome = invoke(directory,page,action,params)
+        if !strings.equal(outcome.message,"") { print(model.failure(outcome.message)); continue }
+        let out = model.frame(page,outcome.state)
+        if strings.equal(page,"language") && strings.equal(action,"save") {
+            let applied = json.has(outcome.state,"applied") && strings.equal(json.kind(json.get(outcome.state,"applied")),"bool") && json.bool(json.get(outcome.state,"applied")) ? "1" : "0"
+            let catalog = invoke(directory,page,"get",Vec<str>())
+            if !strings.equal(catalog.message,"") { print(model.failure(catalog.message)); continue }
+            out = model.language(catalog.state,applied)
+        }
+        cached[slot] = out; stamped[slot] = now; print(out)
+    }
+    return 0
+}
+return main()

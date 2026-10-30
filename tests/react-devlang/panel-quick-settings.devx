@@ -1,0 +1,30 @@
+use "react_devlang/ui" as ui
+use "../../src/system/org.devos.panel/native-tray.dev" as tray
+use "../../src/system/org.devos.panel/native-taskbar.dev" as tasks
+extern fn gtk_widget_get_sensitive(widget:*void):i32
+extern fn gtk_range_set_value(widget:*void,value:f64)
+extern fn rd_widget_live_count():i64
+fn check(value:bool,message:str) {unsafe {if !value {ui.rd_fail(message)}}}
+fn App(context:*ui.Context):ui.Node {
+    let phase=ui.useRef(context,0);let ticks=ui.useRef(context,0);let commands=ui.useText(context,ui.emptyText());let busy=ui.useRef(context,0)
+    let node=tray.View(context,fn(value:ui.Text) {commands.set(ui.concatText(Vec<ui.Text>(commands.get(),value,ui.text(";"))))},true,fn() {unsafe {ui.rd_fail("Quick settings service failed")}})
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let callback=callback_context(fn() {unsafe {
+            ticks.set(ticks.get()+1);if ticks.get()>600 {ui.rd_fail("Timed out testing native Quick settings")}
+            if phase.get()==0 && ui.find(context,"panel-devices")!=null && gtk_widget_get_sensitive(ui.find(context,"panel-devices"))!=0 {phase.set(1);ui.click(context,"panel-devices")}
+            else if phase.get()==1 && ui.find(context,"panel-bluetooth")!=null {phase.set(2);check(ui.click(context,"panel-bluetooth"),"Bluetooth button missing")}
+            else if phase.get()==2 && ui.equalText(ui.readText(context,"panel-bluetooth-detail"),ui.text("On")) && gtk_widget_get_sensitive(ui.find(context,"panel-volume"))!=0 {phase.set(3);gtk_range_set_value(ui.find(context,"panel-volume"),85.0)}
+            else if phase.get()==3 {if gtk_widget_get_sensitive(ui.find(context,"panel-volume"))==0 {busy.set(1)};if ui.equalText(ui.readText(context,"panel-volume-label"),ui.text("85%")) && gtk_widget_get_sensitive(ui.find(context,"panel-brightness"))!=0 {phase.set(4);gtk_range_set_value(ui.find(context,"panel-brightness"),55.0)}}
+            else if phase.get()==4 && ui.equalText(ui.readText(context,"panel-brightness-label"),ui.text("55%")) && gtk_widget_get_sensitive(ui.find(context,"panel-mute"))!=0 {phase.set(5);ui.click(context,"panel-mute")}
+            else if phase.get()==5 && ui.find(context,"panel-device-error")!=null {check(ui.equalText(ui.readText(context,"panel-device-error"),ui.text("permission denied by fixture")),"Device error was hidden");check(gtk_widget_get_sensitive(ui.find(context,"panel-brightness"))!=0,"Failed action left controls busy");check(busy.get()==1,"Pending command did not disable controls");phase.set(6);ui.click(context,"panel-wifi")}
+            else if phase.get()==6 && ui.find(context,"panel-quick-settings")==null {phase.set(7);ui.click(context,"panel-devices")}
+            else if phase.get()==7 && ui.find(context,"panel-quick-settings-open")!=null {phase.set(8);ui.click(context,"panel-quick-settings-open")}
+            else if phase.get()==8 && ui.find(context,"panel-quick-settings")==null {check(ui.equalText(commands.get(),ui.text("wifi;settings;")),"Settings destinations changed or repeated");phase.set(9);ui.click(context,"panel-devices")}
+            else if phase.get()==9 && ui.find(context,"panel-mute")!=null && gtk_widget_get_sensitive(ui.find(context,"panel-mute"))==0 {check(gtk_widget_get_sensitive(ui.find(context,"panel-bluetooth"))==0,"Removed Bluetooth remained enabled");check(gtk_widget_get_sensitive(ui.find(context,"panel-volume"))==0,"Missing audio slider remained enabled");check(gtk_widget_get_sensitive(ui.find(context,"panel-brightness"))!=0,"Audio removal disabled a remaining backlight");check(ui.equalText(ui.readText(context,"panel-volume-label"),ui.text("—")),"Unavailable volume retained old percentage");ui.close(context)}
+        }})
+        let timer=tasks.panel_timer(25,callback.call,callback.data);return fn() {unsafe {tasks.panel_untimer(timer,callback.data)}}
+    }},Vec<i64>())
+    return node
+}
+fn main():i32 {check(ui.run("Native Quick settings",640,64,App),"Quick settings failed");unsafe {check(rd_widget_live_count()==0,"Quick settings widgets leaked")};print("PASS native Quick settings actions, sliders, busy/error state, settings and cleanup");return 0}
+return main()
