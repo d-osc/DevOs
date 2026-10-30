@@ -110,7 +110,7 @@ fn TaskView(context:*ui.Context):ui.Node {
     return ui.Box(body,nodes)
 }
 fn run():i32 {
-    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.task-view.Native" }
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.taskview.Native" }
     unsafe { rd_identity(id) }
     return ui.run("Task View",980,720,TaskView) ? 0 : 1
 }

@@ -10,7 +10,8 @@ import {sendCommand, missingProcess} from './processes.js';
 class NativeOverlay {
     constructor(private name: 'launcher' | 'task-view' | 'snap-panel') {}
     private executable() { return `${ROOT}/dist/native/${this.name}`; }
-    private identity() { return shellApplicationId().replace('org.devos.Shell.', `org.devos.App.${this.name}.`); }
+    // The D-Bus object path is derived from the name, and a path cannot hold a hyphen: task-view and snap-panel are org.devos.App.taskview and snap.
+    private identity() { return shellApplicationId().replace('org.devos.Shell.', `org.devos.App.${{launcher: 'launcher', 'task-view': 'taskview', 'snap-panel': 'snap'}[this.name]}.`); }
     private spawn(logout: boolean) {
         const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
         launcher.setenv('DEV_OS_ROOT', ROOT, true);

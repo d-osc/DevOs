@@ -120,4 +120,8 @@ test.case("the native Snap window arranges two windows: the tracker is sent snap
     test.expect(strings.contains(log,"snap 11 devos-half-left") && strings.contains(log,"snap 12 devos-half-right") && strings.contains(log,"sash 11,0,0,5000,10000"),"the tracker received the commands: " + log)
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("the manifest is a settings manifest: a native manifest would make the session supervisor keep a Launcher window running",fn() {
+    let manifest = fs.readFileSync(t.root() + "/src/system/org.devos.launcher/extension.json","utf8")
+    test.expect(strings.contains(manifest,"\"kind\": \"settings\"") && !strings.contains(manifest,"\"native\"") && !strings.contains(manifest,"\"entry\""),"manifest: " + manifest)
+})
 return t.finish()
