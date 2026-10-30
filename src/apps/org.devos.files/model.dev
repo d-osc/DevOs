@@ -1,0 +1,163 @@
+# Files data rules in DevLang (model.ts / model.backend.ts, presentation.ts): name validation, file kinds, home-relative paths, path resolution,
+# the browsing history, a sorted directory listing (folders first, numbers compared as numbers, case ignored), create folder and rename.
+# No GTK here, so the native Files window and its tests can use it as it is. Entries are listed with one `find` call (type, size, mtime).
+use "std/fs"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+
+struct Entry { name: str, path: str, directory: bool, hidden: bool, size: i64, modified: i64 }
+
+# "" when the name is usable, otherwise the message to show.
+fn nameProblem(name:str):str {
+    if strings.equal(strings.trim(name),"") || strings.equal(name,".") || strings.equal(name,"..") || strings.contains(name,"/") || strings.contains(name,"\0") {
+        return "Enter a file name without / or special path components."
+    }
+    return ""
+}
+
+struct Kind { label: str, tag: str, color: str }
+fn extensionOf(name:str):str {
+    let parts = strings.split(name,".")
+    return parts.len() > 1 ? strings.toLowerCase(parts[parts.len() - 1]) : strings.toLowerCase(name)
+}
+fn fileKind(name:str, directory:bool):Kind {
+    if directory {
+        if strings.equal(name,"node_modules") || strings.equal(name,"vendor") || strings.equal(name,".venv") { return Kind("Dependencies","DEP","neutral") }
+        if strings.equal(name,".git") { return Kind("Git metadata","GIT","orange") }
+        return Kind("Folder","DIR","mint")
+    }
+    if strings.startsWith(name,".env") || strings.equal(name,"Dockerfile") || strings.equal(name,"Makefile") || strings.equal(name,".gitignore") { return Kind("Configuration","CFG","neutral") }
+    let ext = extensionOf(name)
+    if strings.equal(ext,"ts") { return Kind("TypeScript","TS","blue") }
+    if strings.equal(ext,"tsx") { return Kind("React / TSX","TSX","blue") }
+    if strings.equal(ext,"js") { return Kind("JavaScript","JS","yellow") }
+    if strings.equal(ext,"jsx") { return Kind("React / JSX","JSX","yellow") }
+    if strings.equal(ext,"json") { return Kind("JSON","{}","yellow") }
+    if strings.equal(ext,"yaml") || strings.equal(ext,"yml") { return Kind("YAML","YML","orange") }
+    if strings.equal(ext,"md") { return Kind("Markdown","MD","purple") }
+    if strings.equal(ext,"css") || strings.equal(ext,"scss") { return Kind("Stylesheet","CSS","purple") }
+    if strings.equal(ext,"html") { return Kind("HTML","HTML","orange") }
+    if strings.equal(ext,"py") { return Kind("Python","PY","blue") }
+    if strings.equal(ext,"rs") { return Kind("Rust","RS","orange") }
+    if strings.equal(ext,"go") { return Kind("Go","GO","blue") }
+    if strings.equal(ext,"sh") { return Kind("Shell script","SH","mint") }
+    if strings.equal(ext,"toml") { return Kind("TOML","TOML","orange") }
+    if strings.equal(ext,"svg") { return Kind("Vector image","SVG","purple") }
+    if strings.equal(ext,"png") || strings.equal(ext,"jpg") { return Kind("Image","IMG","purple") }
+    let tag = strings.toUpperCase(ext)
+    if strings.charLength(tag) > 5 { tag = strings.substring(tag,0,5) }
+    return Kind("File",strings.equal(tag,"") ? "FILE" : tag,"neutral")
+}
+
+fn compactPath(path:str, home:str):str {
+    if strings.equal(path,home) { return "~" }
+    if strings.startsWith(path,home + "/") { return "~" + strings.substring(path,strings.charLength(home),strings.charLength(path)) }
+    return path
+}
+fn expandHome(input:str, home:str):str {
+    if strings.equal(input,"~") { return home }
+    if strings.startsWith(input,"~/") { return home + strings.substring(input,1,strings.charLength(input)) }
+    return input
+}
+# An absolute path with "." and ".." resolved, relative inputs taken from `base`; "" for empty input.
+fn resolve(input:str, base:str, home:str):str {
+    if strings.equal(strings.trim(input),"") || strings.contains(input,"\0") { return "" }
+    let expanded = expandHome(input,home)
+    let full = strings.startsWith(expanded,"/") ? expanded : base + "/" + expanded
+    let stack = Vec<str>()
+    for part in strings.split(full,"/") {
+        if strings.equal(part,"") || strings.equal(part,".") { continue }
+        if strings.equal(part,"..") { if stack.len() > 0 { stack.pop() }; continue }
+        stack.push(part)
+    }
+    return "/" + strings.join(stack,"/")
+}
+fn parent(path:str):str {
+    let at = strings.lastIndexOf(path,"/")
+    return at <= 0 ? "/" : strings.substring(path,0,at)
+}
+
+# Browsing history: back, forward and visiting a new folder (which drops the forward part).
+struct Nav { items: Vec<str>, index: i64 }
+fn navStart():Nav { return Nav(Vec<str>(),-1) }
+fn visit(nav:Nav, path:str):Nav {
+    if nav.index >= 0 && strings.equal(nav.items[nav.index],path) { return nav }
+    let items = Vec<str>()
+    for i in 0..(nav.index + 1) { items.push(nav.items[i]) }
+    items.push(path)
+    return Nav(items,nav.index + 1)
+}
+fn canBack(nav:Nav):bool { return nav.index > 0 }
+fn canForward(nav:Nav):bool { return nav.index + 1 < (nav.items.len() as i64) }
+fn back(nav:Nav):Nav { return canBack(nav) ? Nav(nav.items,nav.index - 1) : nav }
+fn forward(nav:Nav):Nav { return canForward(nav) ? Nav(nav.items,nav.index + 1) : nav }
+fn current(nav:Nav):str { return nav.index >= 0 ? nav.items[nav.index] : "" }
+
+fn isDigit(c:str):bool { return strings.contains("0123456789",c) }
+# A sort key: lowercase, every run of digits padded to 20 characters so numbers compare as numbers.
+fn naturalKey(name:str):str {
+    let lower = strings.toLowerCase(name); let out = ""; let run = ""
+    for i in 0..(strings.charLength(lower) as i64) {
+        let c = strings.substring(lower,i,i + 1)
+        if isDigit(c) { run = run + c; continue }
+        if !strings.equal(run,"") { out = out + strings.repeat("0",20 - (strings.charLength(run) as i64)) + run; run = "" }
+        out = out + c
+    }
+    if !strings.equal(run,"") { out = out + strings.repeat("0",20 - (strings.charLength(run) as i64)) + run }
+    return out
+}
+
+struct Listing { error: str, entries: Vec<Entry> }
+# Entries of a folder: folders first, then natural name order. `find` prints name, type, size and mtime of each direct child.
+fn list(path:str):Listing {
+    let none = Vec<Entry>()
+    if !fs.is_dir(path) { return Listing("Not a folder: " + path,none) }
+    let ran = hw.run(Vec<str>("find",path,"-mindepth","1","-maxdepth","1","-printf","%f\t%y\t%s\t%T@\n"),20000)
+    if ran.code != 0 && strings.equal(strings.trim(ran.out),"") { return Listing("Could not read the folder.",none) }
+    let entries = Vec<Entry>(); let keys = Vec<str>()
+    for line in strings.split(ran.out,"\n") {
+        let cells = strings.split(line,"\t")
+        if cells.len() < 4 { continue }
+        let directory = strings.equal(cells[1],"d")
+        let seconds = strings.split(cells[3],".")[0]
+        entries.push(Entry(cells[0],path == "/" ? "/" + cells[0] : path + "/" + cells[0],directory,strings.startsWith(cells[0],"."),parse(cells[2]),parse(seconds)))
+        keys.push((directory ? "0" : "1") + naturalKey(cells[0]) + "\t" + cells[0] + "\t${entries.len() - 1}")
+    }
+    keys.sort()
+    let sorted = Vec<Entry>()
+    for key in keys { let parts = strings.split(key,"\t"); sorted.push(entries[parse(parts[parts.len() - 1])]) }
+    return Listing("",sorted)
+}
+fn parse(value:str):i64 {
+    let n = 0
+    for i in 0..(strings.charLength(value) as i64) {
+        let at = strings.indexOf("0123456789",strings.substring(value,i,i + 1))
+        if at < 0 { break }
+        n = n * 10 + at
+    }
+    return n
+}
+fn visible(entries:Vec<Entry>, showHidden:bool):Vec<Entry> {
+    let out = Vec<Entry>()
+    for entry in entries { if showHidden || !entry.hidden { out.push(entry) } }
+    return out
+}
+
+# "" on success, otherwise the message to show.
+fn createFolder(directory:str, name:str):str {
+    let problem = nameProblem(name)
+    if !strings.equal(problem,"") { return problem }
+    let target = directory + "/" + name
+    if fs.existsSync(target) { return "A file or folder named " + name + " already exists." }
+    fs.mkdirSync(target,false)
+    return fs.is_dir(target) ? "" : "Could not create the folder."
+}
+fn rename(directory:str, from:str, name:str):str {
+    let problem = nameProblem(name)
+    if !strings.equal(problem,"") { return problem }
+    let source = directory + "/" + from; let target = directory + "/" + name
+    if !fs.existsSync(source) { return "Select a file or folder first." }
+    if fs.existsSync(target) { return "A file or folder named " + name + " already exists." }
+    fs.renameSync(source,target)
+    return fs.existsSync(target) ? "" : "Could not change the name."
+}

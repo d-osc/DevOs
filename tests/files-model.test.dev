@@ -1,0 +1,64 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/apps/org.devos.files/model.dev" as m
+use "./lib/react-devlang.dev" as t
+
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn names(entries:Vec<m.Entry>):str {
+    let out = Vec<str>(); for e in entries { out.push(e.name) }
+    return strings.join(out,",")
+}
+
+test.case("file names that could leave the folder are refused",fn() {
+    for bad in Vec<str>("","   ",".","..","a/b","/etc","a\0b") { test.expect(!strings.equal(m.nameProblem(bad),""),"Accepted: " + bad) }
+    for good in Vec<str>("notes.txt",".hidden","a b","..x","日本語") { test.expect(strings.equal(m.nameProblem(good),""),"Refused: " + good) }
+})
+test.case("file kinds follow the extension, with folders and configuration files first",fn() {
+    test.expect(strings.equal(m.fileKind("node_modules",true).tag,"DEP") && strings.equal(m.fileKind(".git",true).tag,"GIT") && strings.equal(m.fileKind("src",true).tag,"DIR"),"Folder kinds wrong")
+    test.expect(strings.equal(m.fileKind(".env.local",false).tag,"CFG") && strings.equal(m.fileKind("Dockerfile",false).label,"Configuration") && strings.equal(m.fileKind(".gitignore",false).tag,"CFG"),"Configuration kinds wrong")
+    test.expect(strings.equal(m.fileKind("a.TSX",false).label,"React / TSX") && strings.equal(m.fileKind("x.json",false).tag,"{}") && strings.equal(m.fileKind("p.PNG",false).tag,"IMG") && strings.equal(m.fileKind("run.sh",false).color,"mint"),"Extension kinds wrong")
+    test.expect(strings.equal(m.fileKind("data.parquetfile",false).tag,"PARQU") && strings.equal(m.fileKind("README",false).tag,"READM") && strings.equal(m.fileKind("a.b",false).label,"File"),"Unknown kinds wrong")
+})
+test.case("paths are shown relative to the home folder and resolved like the file manager does",fn() {
+    test.expect(strings.equal(m.compactPath("/home/u","/home/u"),"~") && strings.equal(m.compactPath("/home/u/a/b","/home/u"),"~/a/b") && strings.equal(m.compactPath("/home/uu/a","/home/u"),"/home/uu/a"),"compactPath wrong")
+    test.expect(strings.equal(m.resolve("~","/x","/home/u"),"/home/u") && strings.equal(m.resolve("~/docs","/x","/home/u"),"/home/u/docs"),"Home expansion wrong")
+    test.expect(strings.equal(m.resolve("../b/./c","/home/u/a","/home/u"),"/home/u/b/c") && strings.equal(m.resolve("/a//b/..","/x","/h"),"/a") && strings.equal(m.resolve("../../..","/a","/h"),"/"),"Relative resolution wrong")
+    test.expect(strings.equal(m.resolve("","/x","/h"),"") && strings.equal(m.resolve("a\0","/x","/h"),""),"Empty input accepted")
+    test.expect(strings.equal(m.parent("/a/b"),"/a") && strings.equal(m.parent("/a"),"/") && strings.equal(m.parent("/"),"/"),"parent wrong")
+})
+test.case("history goes back and forward and visiting drops the forward part",fn() {
+    let n = m.navStart()
+    test.expect(!m.canBack(n) && !m.canForward(n),"An empty history can move")
+    n = m.visit(m.visit(m.visit(n,"/a"),"/b"),"/c")
+    test.expect(strings.equal(m.current(n),"/c") && m.canBack(n) && !m.canForward(n),"Visits wrong")
+    n = m.back(m.back(n))
+    test.expect(strings.equal(m.current(n),"/a") && !m.canBack(n) && m.canForward(n),"Back wrong")
+    test.expect(strings.equal(m.current(m.forward(n)),"/b"),"Forward wrong")
+    n = m.visit(n,"/z")
+    test.expect(strings.equal(m.current(n),"/z") && !m.canForward(n),"Visiting did not drop the forward part")
+    test.expect(m.visit(n,"/z").index == n.index,"Visiting the same folder twice added an entry")
+})
+test.case("a folder listing puts folders first and orders names naturally",fn() {
+    let d = temporary()
+    for dir in Vec<str>("beta","Alpha",".config") { fs.mkdirSync(d + "/" + dir,false) }
+    for f in Vec<str>("file10.txt","file2.txt","File1.txt","zeta","a.txt",".hidden") { fs.writeFileSync(d + "/" + f,"x") }
+    let all = m.list(d)
+    test.expect(strings.equal(all.error,"") && strings.equal(names(all.entries),".config,Alpha,beta,.hidden,a.txt,File1.txt,file2.txt,file10.txt,zeta"),"Order wrong: " + names(all.entries))
+    test.expect(strings.equal(names(m.visible(all.entries,false)),"Alpha,beta,a.txt,File1.txt,file2.txt,file10.txt,zeta"),"Hidden entries were shown")
+    test.expect(all.entries[0].directory && all.entries[0].hidden && all.entries[4].size == 1 && all.entries[4].modified > 1600000000 && strings.equal(all.entries[4].path,d + "/a.txt"),"Entry fields wrong")
+    test.expect(!strings.equal(m.list(d + "/nowhere").error,"") && !strings.equal(m.list(d + "/a.txt").error,""),"A missing folder or a file was listed")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("creating and renaming refuse bad names and never overwrite",fn() {
+    let d = temporary()
+    test.expect(strings.equal(m.createFolder(d,"new"),"") && fs.is_dir(d + "/new"),"A folder was not created")
+    test.expect(!strings.equal(m.createFolder(d,"new"),"") && !strings.equal(m.createFolder(d,"a/b"),"") && !strings.equal(m.createFolder(d,".."),""),"A bad or duplicate folder name was accepted")
+    fs.writeFileSync(d + "/a.txt","a"); fs.writeFileSync(d + "/b.txt","b")
+    test.expect(strings.equal(m.rename(d,"a.txt","c.txt"),"") && !fs.existsSync(d + "/a.txt") && strings.equal(fs.readFileSync(d + "/c.txt","utf8"),"a"),"Rename failed")
+    test.expect(!strings.equal(m.rename(d,"c.txt","b.txt"),"") && strings.equal(fs.readFileSync(d + "/b.txt","utf8"),"b") && fs.existsSync(d + "/c.txt"),"Rename overwrote a file")
+    test.expect(!strings.equal(m.rename(d,"missing","x"),"") && !strings.equal(m.rename(d,"c.txt","../x"),"") && fs.existsSync(d + "/c.txt"),"A bad rename was accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()
