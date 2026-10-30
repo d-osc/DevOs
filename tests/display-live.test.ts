@@ -1,6 +1,6 @@
 // Opt-in only: temporarily changes a real compositor's display scale.
 import {GLib} from '@dev-os/core';
-import {LinuxDisplays, modeId, type DisplayChange} from '../extensions/org.devos.settings/displays.js';
+import {LinuxDisplays, modeId, type DisplayChange} from '../src/apps/org.devos.settings/displays.js';
 const wait = (seconds: number) => new Promise<void>(resolve => GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, seconds, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): asserts value {if (!value) throw new Error(message);}
 async function verify() {

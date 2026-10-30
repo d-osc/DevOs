@@ -94,9 +94,9 @@ test('example config and every GJS UI module load', () => {
 
 test('remote editor arguments keep caller cwd, multiple files and spaces', () => {
     const opened: (string | undefined)[] = [];
-    const receiver = {startupError: null, commands: new Map([
-        ['editor', (_monitor: unknown, path?: string) => { opened.push(path); }],
-    ])} as unknown as InstanceType<typeof DesktopShell>;
+    const receiver = {startupError: null, processes: {launch: (role: string, command: string, path?: string) => {
+        assert(role === 'editor' && command === 'editor', 'Editor arguments route to its own process'); opened.push(path);
+    }}} as unknown as InstanceType<typeof DesktopShell>;
     const execute = DesktopShell.prototype.handleArguments.bind(receiver);
     equal(execute(['editor', 'first file.ts', 'file:///tmp/second%20file.ts'], '/tmp/caller directory'), 0);
     equal(opened, ['/tmp/caller directory/first file.ts', '/tmp/second file.ts']);

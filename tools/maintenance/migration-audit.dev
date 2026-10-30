@@ -1,0 +1,16 @@
+#!/usr/bin/env d
+use "std/json"
+use "../lib/tool.dev" as tool
+use "../../lib/migration-audit.dev" as migration
+fn main():i32 {
+    let report=migration.audit(tool.root());let output=tool.option("--output",tool.root()+"/build/migration-audit.json")
+    tool.jsonWrite(output,report)
+    print("PASS npm compatibility contracts: ${json.len(json.get(report,"npmPackages"))} packages")
+    let summary=json.get(report,"summary")
+    print("Remaining TS/JS: ${json.int(json.get(summary,"remainingTsJs"))}; system/apps: ${json.int(json.get(summary,"systemAndAppTsJs"))}; npm SDK source: ${json.int(json.get(summary,"npmSdkTsJs"))}")
+    print("Report: "+output)
+    if tool.has("--require-complete") && !json.bool(json.get(report,"complete")) {return 1}
+    return 0
+}
+return tool.main(main)
+

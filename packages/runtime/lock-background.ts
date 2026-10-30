@@ -1,5 +1,6 @@
 import Cairo from 'cairo';
-import {GLib, activeFamily, activeTheme, paletteFor, type ThemeFamily, type ThemeName} from '@dev-os/core';
+import {GLib} from '@dev-os/core/base';
+import {activeFamily, activeTheme, paletteFor, type ThemeFamily, type ThemeName} from '@dev-os/core/theme';
 import type {Config} from '@dev-os/config';
 
 /** Wallpaper only; authentication and the central password indicator belong to swaylock. */

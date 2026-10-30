@@ -1,6 +1,6 @@
 import {React, Gtk, GLib, createRoot} from '@dev-os/core';
-import {WifiSettings} from '../extensions/org.devos.settings/wifi-view.js';
-import type {WifiControls} from '../extensions/org.devos.settings/wifi.js';
+import {WifiSettings} from '../src/apps/org.devos.settings/wifi-view.js';
+import type {WifiControls} from '../src/apps/org.devos.settings/wifi.js';
 Gtk.init(null);
 const loop = new GLib.MainLoop(null, false);
 const window = new Gtk.Window(), box = new Gtk.Box(); window.add(box);

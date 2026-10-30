@@ -1,0 +1,51 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.panel/tray-model.dev" as tray
+use "../lib/hw.dev" as hw
+use "../src/system/org.devos.background/wire.dev" as wire
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("tray prepares network icons and exact audio tooltips",fn() {
+    for connected in Vec<bool>(false,true) {for wireless in Vec<bool>(false,true) {let value=tray.presentation({connected:connected,wireless:wireless,network:"Network",volume:30,muted:false},{})
+        t.equal(hw.jstr(value,"networkIcon",""),!connected ? "network-offline-symbolic" : wireless ? "network-wireless-signal-excellent-symbolic" : "network-wired-symbolic");t.equal(hw.jstr(value,"tooltip",""),"Network · Volume 30%")
+    }}
+    t.equal(hw.jstr(tray.presentation({volume:null,network:"Offline"},{}),"tooltip",""),"Offline · Audio unavailable")
+    t.equal(hw.jstr(tray.presentation({volume:50,muted:true,network:"Online"},{}),"tooltip",""),"Online · Muted")
+})
+test.case("tray preserves boosted labels but bounds slider values and distinguishes mute",fn() {
+    for volume in Vec<i64>(0,20,40,150) {let value=tray.presentation({volume:volume,muted:false},{});t.equal(hw.jstr(value,"audioIcon",""),volume==0 ? "audio-volume-muted-symbolic" : volume<40 ? "audio-volume-low-symbolic" : "audio-volume-high-symbolic");t.equal(hw.jstr(value,"volumeText",""),"${volume}%");test.expect(hw.jnum(value,"volume",0.0)<=100.0,"Slider exceeds 100%")}
+    let missing=tray.presentation({},{});test.expect(!hw.jbool(missing,"audioAvailable",true) && !hw.jbool(missing,"brightnessAvailable",true),"Missing hardware enabled sliders");t.equal(hw.jstr(missing,"brightnessText",""),"—")
+    let muted=tray.presentation({volume:20,muted:true,brightness:42},{});t.equal(hw.jstr(muted,"muteTooltip",""),"Unmute");t.equal(hw.jstr(muted,"brightnessText",""),"42%")
+})
+test.case("tray hides desktop battery but retains adapter-only and low battery states",fn() {
+    let desktop=hw.jget(tray.presentation({},{}),"battery");test.expect(!hw.jbool(desktop,"visible",true),"Desktop invented a battery")
+    let adapter=hw.jget(tray.presentation({},{acFound:true,acOnline:true,batteryFound:false}),"battery");test.expect(hw.jbool(adapter,"visible",false) && !hw.jbool(adapter,"found",true),"Adapter-only state lost");t.equal(hw.jstr(adapter,"text",""),"No battery data")
+    let low=hw.jget(tray.presentation({},{batteryFound:true,battery:15,batteryStatus:"Discharging"}),"battery");t.equal(hw.jstr(low,"className",""),"panel-battery-low");t.equal(hw.jstr(low,"text",""),"15%")
+    let charge=hw.jget(tray.presentation({},{batteryFound:true,battery:88,batteryStatus:"Charging"}),"battery");t.equal(hw.jstr(charge,"text",""),"88% · Charging");t.equal(hw.jstr(charge,"className",""),"panel-battery-charging")
+})
+test.case("tray wire escapes external labels and represents missing radios",fn() {
+    let frame=tray.frame({network:"ไทย\t100%\n",volume:null,wifi:null,bluetooth:null},{})
+    t.contains(frame,"ไทย%09100%25%0A");t.contains(frame,"\tNetworks\tUnavailable\t0\t0\t0\t0\t0\t0")
+    let records=strings.split(frame,wire.separator());test.expect(records.len()==2,"External labels injected a tray record")
+})
+test.case("device worker supports JSON clients and native tray frames without mutations",fn() {
+    tool.scope("panel-tray-worker-",fn(dir:str) {
+        for name in Vec<str>("wpctl","pactl","bluetoothctl","nmcli") {tool.write(dir+"/bin/"+name,"#!/bin/sh\nexit 1\n");tool.chmod(dir+"/bin/"+name,"755")}
+        tool.write(dir+"/sys/class/power_supply/BAT0/type","Battery");tool.write(dir+"/sys/class/power_supply/BAT0/capacity","61");tool.write(dir+"/sys/class/power_supply/BAT0/status","Discharging")
+        let env=Map<str,str>();env.set("PATH",dir+"/bin:/usr/bin:/bin");env.set("DEVOS_PANEL_SYS",dir+"/sys");env.set("DEVOS_PANEL_PROC",dir+"/proc")
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-devices.dev"),env,"bad\n{\"id\":7,\"connected\":true}\n{\"wire\":true,\"connected\":false}\n",15000);t.success(done)
+        let rows=strings.split(strings.trim(t.out(done)),"\n");test.expect(rows.len()==3 && json.has(json.parse(rows[0]),"error"),"Worker did not recover from malformed input");let reply=json.parse(rows[1]);test.expect(json.int(json.get(reply,"id"))==7 && hw.jbool(hw.jget(reply,"devices"),"connected",false),"JSON compatibility changed");t.contains(rows[2],"D\tnetwork-offline-symbolic\taudio-volume-muted-symbolic");t.contains(rows[2],"\t61%25\t")
+    })
+})
+test.case("native network facts load through GIO without a GUI runtime",fn() {
+    tool.scope("panel-tray-gio-",fn(dir:str) {
+        let library=dir+"/facts.so";tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror -shared -fPIC \"$1\" $(pkg-config --cflags --libs gio-2.0 gio-unix-2.0) -o \"$2\"","network-facts",t.root()+"/src/system/org.devos.panel/catalog-host.c",library),Map<str,str>(),"",15000)
+        let linked=tool.exec(Vec<str>("ldd",library));t.lacks(linked,"libgtk");t.lacks(linked,"mozjs")
+        for name in Vec<str>("wpctl","pactl","bluetoothctl","nmcli") {tool.write(dir+"/bin/"+name,"#!/bin/sh\nexit 1\n");tool.chmod(dir+"/bin/"+name,"755")}
+        let env=Map<str,str>();env.set("PATH",dir+"/bin:/usr/bin:/bin");env.set("DEVOS_PANEL_SYS",dir+"/sys");env.set("DEVOS_PANEL_PROC",dir+"/proc")
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-devices.dev","--ffi-lib",library),env,"{\"systemNetwork\":true}\n{\"wire\":true,\"systemNetwork\":true}\n",15000);t.success(done)
+        let rows=strings.split(strings.trim(t.out(done)),"\n");let value=json.parse(rows[0]);t.equal(json.kind(hw.jget(hw.jget(value,"devices"),"connected")),"bool");test.expect(strings.startsWith(rows[1],"D\tnetwork-"),"Native GIO network request did not yield a tray frame")
+    })
+})
+return t.finish()

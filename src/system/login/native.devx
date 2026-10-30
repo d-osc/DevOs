@@ -1,0 +1,136 @@
+# Native greeter candidate. Production stays on the existing UI until visual/power parity.
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn g_get_monotonic_time():i64
+extern fn login_timer(call:callback(*void):void,data:*void):u32
+extern fn login_untimer(id:u32,keep:*void)
+extern fn login_prepare(root:*void,preview:i32)
+extern fn login_browser()
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+struct Config {root:str,runner:str,service:str,preview:bool,smoke:fn(*ui.Context):void}
+struct Bridge {pipe:ui.IntRef,busy:ui.State,error:ui.TextState,code:ui.TextState,due:ui.IntRef}
+fn environment(name:str):str {unsafe {return rc_env(name)}}
+fn now():i64 {unsafe {return g_get_monotonic_time()/1000000}}
+fn bridge(context:*ui.Context):Bridge {return Bridge(ui.useRef(context,0),ui.useState(context,0),ui.useText(context,ui.emptyText()),ui.useText(context,ui.emptyText()),ui.useRef(context,0))}
+fn request(backend:Bridge,action:str,fields:ui.Text) {
+    if backend.pipe.get()==0 || backend.busy.get()!=0 {return}
+    backend.busy.set(1);backend.error.set(ui.emptyText())
+    channel.command(backend.pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"${action}\""),fields,ui.text("}"))))
+}
+fn field(frame:ui.Text,index:i64):ui.Text {let records=channel.split(frame,30);let fields=channel.split(records[0],9);return fields.len()>(index as usize) ? fields[index] : ui.emptyText()}
+fn is(frame:ui.Text,index:i64):bool {return ui.equalText(field(frame,index),ui.text("1"))}
+fn setup(context:*ui.Context,config:Config,backend:Bridge,poll:str,initial:bool,receive:fn(ui.Text):void):fn():void {unsafe {
+    let close=channel.connect(context,config.runner,config.service,config.root,fn(frame:ui.Text) {
+        backend.busy.set(0)
+        if ui.equalText(field(frame,0),ui.text("E")) {backend.error.set(field(frame,1));backend.code.set(ui.emptyText());return}
+        if !ui.equalText(field(frame,0),ui.text("S")) || channel.split(channel.split(frame,30)[0],9).len()<13 {backend.error.set(ui.text("Invalid login service response."));backend.code.set(ui.emptyText());return}
+        if field(frame,8).bytes.len()>0 {backend.code.set(field(frame,8));if !config.preview {unsafe {login_browser()}}}
+        let seconds=channel.integer(field(frame,7));if seconds<5 {seconds=5}
+        backend.due.set(now()+seconds)
+        receive(frame)
+    },fn(pipe:i64) {backend.pipe.set(pipe);channel.pause(pipe,true);if initial {request(backend,"get",ui.emptyText())}})
+    let tick=callback_context(fn() {if backend.code.get().bytes.len()>0 && backend.busy.get()==0 && now()>=backend.due.get() {request(backend,poll,ui.emptyText())}})
+    let timer=login_timer(tick.call,tick.data)
+    return fn() {unsafe {login_untimer(timer,tick.data)};close()}
+}}
+fn pair(name:str,value:ui.Text):ui.Text {return ui.concatText(Vec<ui.Text>(ui.text(",\"${name}\":"),channel.quote(value)))}
+fn usernameValid(value:ui.Text):bool {
+    if value.bytes.len()<1 || value.bytes.len()>31 {return false}
+    for i in 0..(value.bytes.len() as i64) {let ch=value.bytes[i];if ch>=97 && ch<=122 {continue};if i==0 || !(ch>=48 && ch<=57 || ch==95 || ch==45) {return false}}
+    return true
+}
+fn passwordLength(value:ui.Text):i64 {let count=0;for ch in value.bytes {if ch<128 || ch>=192 {count=count+(ch>=240 ? 2 : 1)}};return count}
+fn canCreate(username:ui.Text,password:ui.Text,confirm:ui.Text):bool {return usernameValid(username) && passwordLength(password)>=4 && ui.equalText(password,confirm)}
+fn App(context:*ui.Context,config:Config,accepted:*i64):ui.Node {
+    let auth=bridge(context);let enroll=bridge(context)
+    let users=ui.useText(context,ui.emptyText());let selected=ui.useState(context,0)
+    let username=ui.useText(context,ui.emptyText());let password=ui.useText(context,ui.emptyText())
+    let creating=ui.useState(context,0);let provider=ui.useState(context,0)
+    let github=ui.useText(context,ui.emptyText());let newUsername=ui.useText(context,ui.emptyText());let name=ui.useText(context,ui.emptyText())
+    let newPassword=ui.useText(context,ui.emptyText());let confirm=ui.useText(context,ui.emptyText())
+    ui.useEffect(context,fn():fn():void {
+        unsafe {login_prepare((*context).native,config.preview ? 1 : 0);rd_theme_follow((*context).native,"","${config.root}/dist/native/theme.vscode.${rd_default_theme()}.css")}
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {return setup(context,config,auth,"poll",true,fn(frame:ui.Text) {
+        password.set(ui.emptyText())
+        if is(frame,2) {unsafe {(*accepted)=1};ui.close(context);return}
+        if is(frame,12) {
+            users.set(frame);let records=channel.split(frame,30);let index=0;let chosen=ui.emptyText()
+            for i in 1..(records.len() as i64) {let row=channel.split(records[i],9);if row.len()<5 {continue};if chosen.bytes.len()==0 {chosen=row[1]};if ui.equalText(row[1],username.get()) {index=i-1;chosen=row[1];break}}
+            username.set(chosen);selected.set(index)
+        }
+        if ui.equalText(field(frame,1),ui.text("cancel")) {auth.code.set(ui.emptyText())}
+    })},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {return setup(context,config,enroll,"enroll-poll",false,fn(frame:ui.Text) {
+        if is(frame,5) {github.set(field(frame,9));newUsername.set(field(frame,10));enroll.code.set(ui.emptyText())}
+        if is(frame,4) && field(frame,10).bytes.len()>0 {username.set(field(frame,10));creating.set(0);provider.set(0);github.set(ui.emptyText());request(auth,"get",ui.emptyText())}
+        if ui.equalText(field(frame,1),ui.text("cancel")) {enroll.code.set(ui.emptyText())}
+    })},Vec<i64>())
+    let records=channel.split(users.value,30);let items=Vec<ui.Text>();let names=Vec<ui.Text>()
+    for i in 1..(records.len() as i64) {let row=channel.split(records[i],9);if row.len()<5 {continue};names.push(row[1]);items.push(ui.concatText(Vec<ui.Text>(row[2],ui.text(" · "),row[3].bytes.len()>0 ? ui.concatText(Vec<ui.Text>(ui.text("@"),row[3])) : row[1])))}
+    let busy=auth.busy.value!=0 || enroll.busy.value!=0
+    let passwordLogin=fn() {if auth.code.get().bytes.len()==0 && username.get().bytes.len()>0 && password.get().bytes.len()>0 {let fields=ui.concatText(Vec<ui.Text>(pair("username",username.get()),pair("password",password.get())));password.set(ui.emptyText());request(auth,"password",fields)}}
+    let reset=fn() {enroll.code.set(ui.emptyText());github.set(ui.emptyText());newUsername.set(ui.emptyText());name.set(ui.emptyText());newPassword.set(ui.emptyText());confirm.set(ui.emptyText());provider.set(0);request(enroll,"cancel",ui.emptyText())}
+    let create=fn() {if canCreate(newUsername.get(),newPassword.get(),confirm.get()) {
+        let fields=ui.concatText(Vec<ui.Text>(pair("provider",ui.text(provider.get()==2 ? "github" : "guest")),pair("username",newUsername.get()),pair("name",name.get()),pair("password",newPassword.get())))
+        newPassword.set(ui.emptyText());confirm.set(ui.emptyText());request(enroll,"enroll-create",fields)
+    }}
+    let selectOptions=ui.named("os-login-user");selectOptions.sensitive= !busy && auth.code.value.bytes.len()==0
+    let picker=ui.Select(selectOptions,items,selected.value,fn(index:i64) {if index>=0 && index<(names.len() as i64) {selected.set(index);username.set(names[index]);password.set(ui.emptyText())}})
+    ui.useEffect(context,fn():fn():void {config.smoke(context);return ui.noop},Vec<i64>(users.revision,auth.busy.value,enroll.busy.value,creating.value,provider.value,github.revision,auth.error.revision,enroll.error.revision,auth.code.revision,enroll.code.revision,password.revision,newPassword.revision,confirm.revision))
+    let loginFields = auth.code.value.bytes.len()>0 ? <Box className="login-code-card" spacing={12}>
+                        <TextLabel className="login-code">{auth.code.value}</TextLabel><Label className="login-subtitle" wrap>Authorize at github.com/login/device on this or another device.</Label>
+                        <Button id="os-login-cancel" disabled={busy} onClick={() => {auth.code.set(ui.emptyText());request(auth,"cancel",ui.emptyText())}}>Cancel</Button>
+                    </Box> : <Box spacing={12}>
+                        <PasswordEntry id="os-login-password" value={password.value} placeholder="Local password" disabled={busy || username.value.bytes.len()==0} onChange={value => password.set(value)} onActivate={passwordLogin}/>
+                        <Button id="os-login-local" className="login-primary" disabled={busy || username.value.bytes.len()==0 || password.value.bytes.len()==0} onClick={passwordLogin}>Sign in</Button>
+                        <Button id="os-login-github" className="login-secondary" disabled={busy || username.value.bytes.len()==0 || ui.equalText(username.value,ui.text("root"))} onClick={() => request(auth,"begin",pair("username",username.get()))}>Sign in with linked GitHub</Button>
+                        {is(users.value,3) && ui.equalText(username.value,ui.text("root")) ? <Label className="login-subtitle" wrap widthChars={44}>Live USB only: sign in as root with the password "root". Installed systems keep root locked.</Label> : <Fragment/>}
+                        <Label className="login-subtitle" wrap widthChars={44}>Each user has a separate home folder. Link GitHub from Accounts after your first local sign-in.</Label>
+                    </Box>
+    let chooser = provider.value==0 ? <Box spacing={12}>
+                        <Label className="login-subtitle" wrap>Choose an account for your personal OS profile.</Label>
+                        <Button id="new-user-github" className="login-primary" disabled={busy} onClick={() => {provider.set(2);request(enroll,"enroll-begin",ui.emptyText())}}>Use GitHub</Button>
+                        <Button id="new-user-guest" className="login-secondary" disabled={busy} onClick={() => provider.set(1)}>Use Guest / Local account</Button>
+                    </Box> : <Fragment/>
+    let enrollmentCode = enroll.code.value.bytes.len()>0 ? <Box className="login-code-card" spacing={10}>
+                        <TextLabel id="new-user-code" className="login-code">{enroll.code.value}</TextLabel><Label className="login-subtitle" wrap>Verify your GitHub account first at github.com/login/device.</Label>
+                        <Button onClick={() => {unsafe {login_browser()}}}>Open GitHub</Button><Label className="login-subtitle">Waiting for GitHub authorization…</Label>
+                    </Box> : <Fragment/>
+    let identity = provider.value==2 ? <Box className="login-code-card" spacing={6}><TextLabel id="new-user-verified">{ui.concatText(Vec<ui.Text>(ui.text("GitHub verified · @"),github.value))}</TextLabel><TextLabel>{newUsername.value}</TextLabel></Box> : <Box spacing={10}>
+                            <Entry id="accounts-new-name" value={name.value} placeholder="Display name" disabled={busy} onChange={value => name.set(value)}/>
+                            <Entry id="accounts-new-username" value={newUsername.value} placeholder="OS username" disabled={busy} onChange={value => newUsername.set(value)}/>
+                        </Box>
+    let details = provider.value==1 || github.value.bytes.len()>0 ? <Box spacing={10}>
+                        {identity}
+                        <Label className="login-subtitle" wrap>Set your OS password for local login and screen lock.</Label>
+                        <PasswordEntry id="accounts-new-password" value={newPassword.value} placeholder="OS password · at least 4 characters" disabled={busy} onChange={value => newPassword.set(value)}/>
+                        <PasswordEntry id="accounts-new-confirm" value={confirm.value} placeholder="Confirm OS password" disabled={busy} onChange={value => confirm.set(value)} onActivate={create}/>
+                        <Button id="accounts-create-user" className="login-primary" disabled={busy || !canCreate(newUsername.value,newPassword.value,confirm.value)} onClick={create}>Create OS user</Button>
+                    </Box> : <Fragment/>
+    let enrollmentForm = <Box spacing={14}>
+        <Label className="section-heading">New user</Label>{chooser}{enrollmentCode}{details}
+        {provider.value!=0 ? <Button id="new-user-back" disabled={busy} onClick={reset}>Choose another account type</Button> : <Fragment/>}
+        {enroll.error.value.bytes.len()>0 ? <TextLabel id="new-user-error" className="login-error" wrap widthChars={40}>{enroll.error.value}</TextLabel> : <Fragment/>}
+    </Box>
+    let loginForm = <Box spacing={14}><Icon name="avatar-default-symbolic" iconSize={72}/>{picker}{loginFields}</Box>
+    let switchButton = auth.code.value.bytes.len()==0 ? <Button id="os-login-new-user" className="login-secondary" disabled={busy} onClick={() => {if creating.get()!=0 {reset()};creating.set(creating.get()==0 ? 1 : 0);auth.error.set(ui.emptyText())}}>{creating.value==0 ? "New user" : "Back to sign in"}</Button> : <Fragment/>
+    let errorLabel = auth.error.value.bytes.len()>0 ? <TextLabel id="os-login-error" className="login-error" wrap widthChars={44}>{auth.error.value}</TextLabel> : <Fragment/>
+    let guest = <Button id="os-login-guest" className="login-secondary" disabled={busy || auth.code.value.bytes.len()>0 || creating.value!=0} onClick={() => request(auth,"guest",ui.emptyText())}>Continue as Guest</Button>
+    let card = <Box className="login-card" width={440} orientation="vertical" spacing={18}>
+        <Label className="login-eyebrow">YOUR PERSONAL WORKSPACE</Label><Label className="login-title">Sign in to DevOs</Label>
+        {creating.value==0 ? loginForm : enrollmentForm}{switchButton}{errorLabel}{guest}
+    </Box>
+    return <Box className="login-screen" orientation="vertical" expand>
+        <Box className="login-topbar" orientation="horizontal" spacing={10}><Icon name="computer-symbolic" iconSize={34}/><Label className="login-wordmark">DevOs</Label></Box>
+        <Scroll expand><Box halign="center" valign="center" expand margin={24}>{card}</Box></Scroll>
+        <Box className="login-bottom"><Label>DEVOS / LINUX USER LOGIN · NATIVE PREVIEW</Label></Box>
+    </Box>
+}
+fn run(config:Config):i32 {unsafe {let accepted=0;let pointer=&accepted;let ok=ui.run("DevOs · Sign in",900,720,fn(context:*ui.Context):ui.Node {return App(context,config,pointer)});return ok && accepted==1 ? 0 : 1}}
+
+
+

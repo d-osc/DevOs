@@ -1,0 +1,80 @@
+#!/usr/bin/env d
+# Installer worker. One JSON request per line; responses are presentation lines (see model.dev).
+# The password is written only to the helper's standard input, never to arguments, environment or files.
+use "std/args"
+use "std/io"
+use "std/fs"
+use "std/json"
+use "std/process"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "std/time"
+use "std/child_process"
+use "./model.dev" as model
+use "../../../lib/task-metrics.dev" as m
+use "../../../lib/task-view.dev" as view
+
+fn helper(root:str):str {
+    let override = process.getenv("DEV_OS_INSTALL_HELPER"); return strings.equal(override,"") ? root+"/bin/dev-os-install" : override
+}
+fn available():bool {
+    let flag = process.getenv("DEV_OS_INSTALL_LIVE_FLAG"); return fs.existsSync(strings.equal(flag,"") ? "/run/devos-live/root-session-enabled" : flag)
+}
+fn listDisks(root:str) {
+    let outcome = result.attempt(fn():child_process.Output { return child_process.execFileSync("sh",Vec<str>(helper(root),"disks","--json"),child_process.options()) })
+    if result.isErr(outcome) { print("E\tCould not list disks."); return }
+    let done = result.unwrap(outcome); let text = encoding.decode(done.stdout,"utf8")
+    if !done.success { let reason = strings.trim(text); print("E\t"+view.clean(strings.equal(reason,"") ? "Could not list disks." : reason)); return }
+    let rows = result.attempt(fn():json.Value { return json.parse(strings.equal(strings.trim(text),"") ? "[]" : text) })
+    if result.isErr(rows) { print("E\tCould not read the disk list."); return }
+    print(model.disks(result.unwrap(rows)))
+}
+fn emit(line:str):bool {
+    let shown = model.event(strings.trim(line)); if strings.equal(shown,"") { return false }
+    print(shown); return !strings.startsWith(shown,"S\t")
+}
+# Runs the helper with its output sent to a private file that is followed until the process ends.
+fn install(root:str,request:json.Value) {
+    let path = m.text(m.get(request,"path")); let size = m.num(m.get(request,"size")) as i64
+    let username = m.text(m.get(request,"username")); let hostname = m.text(m.get(request,"hostname")); let password = m.text(m.get(request,"password"))
+    if !strings.startsWith(path,"/dev/") || size <= 0 || !model.validUsername(username) || !model.validHostname(hostname) || strings.charLength(password) < 4 || strings.contains(password,"\n") { print("X\tThe installation request is invalid."); return }
+    if !available() { print("X\tThe installer runs only from the Live USB."); return }
+    let progress = process.getenv("XDG_RUNTIME_DIR"); if strings.equal(progress,"") { progress = "/tmp" }
+    progress = progress+"/devos-install-${time.now_ms()}.log"; fs.writeFileSync(progress,"")
+    let options = child_process.options(); options.timeoutMs = 300000; options.input = encoding.encode(password+"\n","utf8")
+    let child = child_process.spawn("sh",Vec<str>("-c","out=$1; shift; exec \"$@\" >\"$out\" 2>&1","sh",progress,"sh",helper(root),"run","--disk",path,"--confirm-erase",path,"--confirm-size","${size}","--username",username,"--hostname",hostname,"--password-stdin"),options)
+    let seen = 0; let finished = false; let last = ""
+    while true {
+        let ended = child.ready()
+        let text = fs.readFileSync(progress,"utf8"); let lines = strings.split(text,"\n")
+        let complete = ended ? lines.len() as i64 : (lines.len() as i64) - 1
+        while seen < complete {
+            let line = lines[seen]; seen = seen + 1
+            if emit(line) { finished = true } else if !strings.equal(strings.trim(line),"") && strings.equal(model.event(strings.trim(line)),"") { let trimmed = strings.trim(line); last = strings.charLength(trimmed) > 160 ? strings.substring(trimmed,0,160) : trimmed }
+        }
+        if ended { break }
+        time.sleep_ms(250)
+    }
+    child.wait()
+    fs.unlinkSync(progress)
+    if !finished { print("X\tThe installer stopped unexpectedly. Last output: "+view.clean(last)+" Log: /var/log/devos-install.log") }
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : ""
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        let outcome = result.attempt(fn():json.Value { return json.parse(line) })
+        if result.isErr(outcome) { print("E\tInvalid service request"); continue }
+        let request = result.unwrap(outcome)
+        if !strings.equal(json.kind(request),"object") { print("E\tExpected an object request"); continue }
+        let action = m.text(m.get(request,"action"))
+        if strings.equal(action,"available") { print(available() ? "A\t1" : "A\t0") }
+        else if strings.equal(action,"disks") { listDisks(root) }
+        else if strings.equal(action,"install") { install(root,request) }
+        else if strings.equal(action,"reboot") { result.attempt(fn():child_process.Output { return child_process.execFileSync("systemctl",Vec<str>("reboot"),child_process.options()) }) }
+        else { print("E\tUnknown service action") }
+    }
+    return 0
+}
+return main()

@@ -1,0 +1,47 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "../src/apps/org.devos.diskmanager/model.dev" as model
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn inventory():str {
+    return "{\"ok\":true,\"wsl\":true,\"devices\":[{\"name\":\"sda\",\"path\":\"/dev/sda\",\"type\":\"disk\",\"size\":512110190592,\"mountpoints\":[null],\"ro\":false,\"model\":\"Test Disk \",\"tran\":\"usb\",\"pttype\":\"gpt\",\"children\":[{\"path\":\"/dev/sda1\",\"type\":\"part\",\"size\":536870912,\"fstype\":\"vfat\",\"label\":\"EFI\",\"mountpoints\":[\"/boot\"],\"fsavail\":104857600,\"fsused\":1048576,\"uuid\":\"ABCD-1234\"},{\"path\":\"/dev/sda2\",\"type\":\"part\",\"size\":1073741824,\"mountpoints\":[null]}]}]}"
+}
+test.case("sizes match the original TiB/GiB/MiB formatting",fn() {
+    t.equal(model.size(1099511627776.0*2.0),"2.00 TiB"); t.equal(model.size(1073741824.0*1.5),"1.5 GiB"); t.equal(model.size(5242880.0),"5.0 MiB")
+})
+test.case("frame carries disk, capacity and partition presentation fields",fn() {
+    let frame = model.frame(json.parse(inventory()),"")
+    t.contains(frame,"S\t1\t"); t.contains(frame,"D\t/dev/sda\t476.9 GiB\tdrive-removable-media-symbolic\tTest Disk\t/dev/sda · 476.9 GiB · GPT\t536870912,1073741824")
+    t.contains(frame,"P\t/dev/sda\t/dev/sda1\t512.0 MiB\tvfat · EFI · /boot\t1.0 MiB used · 100.0 MiB available\tABCD-1234")
+    t.contains(frame,"P\t/dev/sda\t/dev/sda2\t1.0 GiB\tpart · Not mounted")
+    t.lacks(frame,"\n")
+})
+test.case("service answers requests and rejects invalid input",fn() {
+    if strings.equal(process.platform(),"win32") { return }
+    tool.scope("devos-disks-",fn(dir:str) {
+        tool.write(dir+"/helper.dev","#!/usr/bin/env d\nprint(\""+strings.replaceAll(inventory(),"\"","\\\"")+"\")\n")
+        let env = Map<str,str>(); env.set("DEV_OS_DISKS_HELPER",dir+"/helper.dev")
+        let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/apps/org.devos.diskmanager/service.dev","--",t.root()),env,"bad\n[]\n{\"action\":\"format\"}\n{\"action\":\"get\"}\n",30000)
+        t.success(done); t.contains(t.out(done),"E\tInvalid service request"); t.contains(t.out(done),"E\tUnknown service action"); t.contains(t.out(done),"D\t/dev/sda\t476.9 GiB")
+    })
+})
+test.case("service reports a missing helper without crashing",fn() {
+    if strings.equal(process.platform(),"win32") { return }
+    let env = Map<str,str>(); env.set("DEV_OS_DISKS_HELPER","/nonexistent/dev-os-disks")
+    let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/apps/org.devos.diskmanager/service.dev","--",t.root()),env,"{\"action\":\"get\"}\n",30000)
+    t.success(done); t.contains(t.out(done),"E\t")
+})
+test.case("native GTK app consumes the DevLang service and responds to controls",fn() {
+    if strings.equal(process.platform(),"win32") { return }
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/native-apps.sh"),Map<str,str>(),"",300000)
+    tool.scope("devos-disks-ui-",fn(dir:str) {
+        tool.write(dir+"/helper.dev","#!/usr/bin/env d\nprint(\""+strings.replaceAll(inventory(),"\"","\\\"")+"\")\n")
+        let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("DEV_OS_DISKS_HELPER",dir+"/helper.dev"); env.set("DEVOS_NATIVE_SMOKE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+        let done = tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",t.root()+"/dist/native/diskmanager"),env,"",30000)
+        t.success(done); t.contains(t.out(done),"PASS native Disk Manager service, refresh and cleanup")
+    })
+})
+return t.finish()

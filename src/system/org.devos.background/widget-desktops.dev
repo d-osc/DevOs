@@ -1,0 +1,79 @@
+# Per-desktop ownership and persisted widget data. Independent of GTK and renderer.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "./model.dev" as m
+fn keys():Vec<str> {return Vec<str>("widgetClock","widgetDate","widgetNote","widgetNoteText","widgetPosition","widgetLocations")}
+fn object(value:json.Value):bool {return strings.equal(json.kind(value),"object")}
+fn merge(base:json.Value,patch:json.Value):json.Value {let out=object(base) ? base : json.object();if object(patch) {for key in json.keys(patch) {out=json.set(out,key,json.get(patch,key))}};return out}
+fn parse(value:json.Value):json.Value {
+    if !strings.equal(json.kind(value),"string") {return json.object()}
+    let attempt=result.attempt(fn():json.Value {return json.parse(json.string(value))})
+    return result.isOk(attempt) && object(result.unwrap(attempt)) ? result.unwrap(attempt) : json.object()
+}
+fn active(desktops:json.Value,hasControls:bool):json.Value {
+    if !hasControls {return {key:"default",name:"Desktop",first:true,firstKey:"default"}}
+    if !strings.equal(json.kind(desktops),"array") || json.len(desktops)==0 {return json.null_value()}
+    let first=m.text(m.get(json.at(desktops,0),"name"))
+    for i in 0..(json.len(desktops) as i64) {
+        let desktop=json.at(desktops,i);if !m.flag(m.get(desktop,"active")) {continue}
+        let name=m.text(m.get(desktop,"name"));let duplicate=0
+        for j in 0..i {if strings.equal(name,m.text(m.get(json.at(desktops,j),"name"))) {duplicate=duplicate+1}}
+        return {key:json.stringify(json.value(Vec<json.Value>(json.value(name),json.value(duplicate)))),name:name,first:i==0,firstKey:json.stringify(json.value(Vec<json.Value>(json.value(first),json.value(0))))}
+    }
+    return json.null_value()
+}
+fn desktopMap(values:json.Value):json.Value {
+    let parsed=parse(m.get(values,"widgetDesktops"));let out=json.object()
+    for key in json.keys(parsed) {let entry=json.get(parsed,key);if object(entry) {out=json.set(out,key,entry)}}
+    return out
+}
+fn values(all:json.Value,desktop:json.Value):json.Value {
+    let out=json.value({widgetClock:false,widgetDate:false,widgetNote:false,widgetNoteText:"",widgetPosition:"right",widgetLocations:"{}"})
+    if json.is_null(desktop) {return out}
+    let stored=m.get(desktopMap(all),m.text(m.get(desktop,"key")))
+    let source=object(stored) ? stored : m.flag(m.get(desktop,"first")) && m.num(m.get(all,"widgetDesktopVersion"))!=1.0 ? all : json.object()
+    for key in keys() {if object(source) && json.has(source,key) {out=json.set(out,key,json.get(source,key))}}
+    return out
+}
+fn initialize(all:json.Value,desktop:json.Value):json.Value {
+    if json.is_null(desktop) || strings.equal(m.text(m.get(desktop,"key")),"default") || m.num(m.get(all,"widgetDesktopVersion"))==1.0 {return all}
+    let map=desktopMap(all);let first=m.text(m.get(desktop,"firstKey"))
+    if !json.has(map,first) {let original=merge(desktop,{key:first,first:true});map=json.set(map,first,values(all,original))}
+    return merge(all,{widgetDesktops:json.stringify(map),widgetDesktopVersion:1})
+}
+fn update(all:json.Value,desktop:json.Value,patch:json.Value):json.Value {
+    if json.is_null(desktop) {return all}
+    if strings.equal(m.text(m.get(desktop,"key")),"default") {return merge(all,patch)}
+    let initialized=initialize(all,desktop);let map=desktopMap(initialized)
+    map=json.set(map,m.text(m.get(desktop,"key")),merge(values(initialized,desktop),patch))
+    return json.set(initialized,"widgetDesktops",json.stringify(map))
+}
+fn locations(value:json.Value):json.Value {
+    let parsed=parse(value);let out=json.object()
+    for key in Vec<str>("widgetClock","widgetDate","widgetNote") {
+        let point=m.get(parsed,key);let x=m.get(point,"x");let y=m.get(point,"y")
+        if !strings.equal(json.kind(x),"number") || !strings.equal(json.kind(y),"number") {continue}
+        let a=json.float(x);let b=json.float(y)
+        out=json.set(out,key,{x:a<0.0 ? 0.0 : a>1.0 ? 1.0 : a,y:b<0.0 ? 0.0 : b>1.0 ? 1.0 : b})
+    }
+    return out
+}
+# Three-way merge: a settings draft must not overwrite a drag or another desktop.
+fn apply(latest:json.Value,saved:json.Value,draft:json.Value):json.Value {
+    let next=merge(json.object(),draft)
+    for key in keys() {
+        if strings.equal(json.stringify(m.get(draft,key)),json.stringify(m.get(saved,key))) && json.has(latest,key) {next=json.set(next,key,json.get(latest,key))}
+    }
+    let scoped=desktopMap(latest);let baseline=desktopMap(saved);let edits=desktopMap(draft)
+    for scope in json.keys(edits) {
+        for key in keys() {
+            let edited=m.get(json.get(edits,scope),key)
+            if !strings.equal(json.stringify(edited),json.stringify(m.get(m.get(baseline,scope),key))) {
+                scoped=json.set(scoped,scope,merge(m.get(scoped,scope),json.set(json.object(),key,edited)))
+            }
+        }
+    }
+    let old=m.num(m.get(latest,"widgetDesktopVersion"));let proposed=m.num(m.get(draft,"widgetDesktopVersion"))
+    return merge(next,{widgetDesktops:json.stringify(scoped),widgetDesktopVersion:old>proposed ? old : proposed})
+}

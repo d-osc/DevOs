@@ -1,0 +1,42 @@
+# Shared DevLang implementation of the @dev-os/config data contract.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "./hw.dev" as hw
+use "./desktop.dev" as util
+fn defaults():json.Value { return {name:"Dev OS",panel_height:36,clock_format:"%H:%M",terminal:["dev-os-terminal"],files:["thunar","~"],lock:["dev-os-lock"],autostart:[]} }
+fn command(value:json.Value,key:str) {
+    util.require(strings.equal(json.kind(value),"array") && json.len(value)>0,key+" must be a non-empty array of non-empty command arguments")
+    for i in 0..(json.len(value) as i64) {
+        let item=json.at(value,i)
+        util.require(strings.equal(json.kind(item),"string") && strings.charLength(json.string(item))>0 && !strings.contains(json.string(item),encoding.decode(Vec<u8>(0),"utf8")),key+" must be a non-empty array of non-empty command arguments")
+    }
+}
+fn validate(value:json.Value):json.Value {
+    util.require(hw.isObject(value),"Config must be a JSON object")
+    let out=defaults()
+    for key in json.keys(value) {
+        if strings.equal(key,"accent") || strings.equal(key,"background") { continue }
+        util.require(json.has(out,key),"Unknown settings: "+key)
+        let item=json.get(value,key)
+        if strings.equal(key,"name") || strings.equal(key,"clock_format") { util.require(strings.equal(json.kind(item),"string") && strings.charLength(strings.trim(json.string(item)))>0,key+" must be a non-empty string") }
+        else if strings.equal(key,"panel_height") { util.require(strings.equal(json.kind(item),"number") && json.float(item)>=32.0 && json.float(item)<=96.0 && json.float(item)==(json.float(item) as i64) as f64,"panel_height must be an integer between 32 and 96") }
+        else if strings.equal(key,"autostart") {
+            util.require(strings.equal(json.kind(item),"array"),"autostart must be an array of command arrays")
+            for i in 0..(json.len(item) as i64) { command(json.at(item,i),"autostart") }
+        } else { command(item,key) }
+        out=json.set(out,key,item)
+    }
+    return out
+}
+fn configPath():str { return hw.configHome()+"/dev-os/config.json" }
+fn load(path:str):json.Value {
+    if !fs.existsSync(path) {
+        if strings.equal(path,configPath()) { util.require(!fs.existsSync(strings.substring(path,0,strings.charLength(path)-5)+".toml"),"Found legacy configuration; run d tools/maintenance/migrate-config.dev -- first.") }
+        return defaults()
+    }
+    return validate(json.parse(fs.readFileSync(path,"utf8")))
+}
+fn expandHome(value:str):str { if strings.equal(value,"~") { return hw.home() }; return strings.startsWith(value,"~/") ? hw.home()+strings.substring(value,1,strings.charLength(value)) : value }

@@ -1,0 +1,70 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.background/model.dev" as model
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn base():json.Value { return {name:"DevOs",background:"#202020",accent:"#00aaff",foreground:"#ffffff",muted:"#888888"} }
+fn monitor():json.Value { return {x:0,y:0,width:1280,height:720} }
+test.case("appearance keeps every theme color and defaults",fn() {
+    let view=model.config(base(),json.object())
+    t.equal(json.string(json.get(view,"mode")),"design"); t.equal(json.string(json.get(view,"style")),"dunes")
+    t.equal(json.string(json.get(view,"background")),"#202020"); t.equal(json.string(json.get(view,"accent")),"#00aaff")
+    t.equal(json.string(json.get(view,"fit")),"cover"); t.equal(json.string(json.get(view,"imagePath")),"")
+})
+test.case("all 24 original styles survive validation",fn() {
+    test.expect(model.styles().len()==24,"Lost a background style")
+    for style in model.styles() { t.equal(json.string(json.get(model.config(base(),{style:style}),"style")),style) }
+})
+test.case("picture path preserves Unicode and contain and stretch",fn() {
+    for fit in Vec<str>("contain","stretch","cover") {
+        let value=model.config(base(),{mode:"picture",imagePath:"/tmp/ภาพ พื้นหลัง.png",fit:fit})
+        t.equal(json.string(json.get(value,"imagePath")),"/tmp/ภาพ พื้นหลัง.png"); t.equal(json.string(json.get(value,"fit")),fit)
+    }
+})
+test.case("damaged fields default independently",fn() {
+    let value=model.config(base(),{mode:7,style:false,fit:"missing",imagePath:8,useDesktopColor:false,color:"#zzff00"})
+    t.equal(json.string(json.get(value,"mode")),"design"); t.equal(json.string(json.get(value,"style")),"dunes")
+    t.equal(json.string(json.get(value,"fit")),"cover"); t.equal(json.string(json.get(value,"background")),"#202020")
+})
+test.case("desktop color needs explicit false and exactly six hex digits",fn() {
+    t.equal(json.string(json.get(model.config(base(),{mode:"solid",useDesktopColor:false,color:"#aABb12"}),"background")),"#aABb12")
+    for color in Vec<str>("#123","#1234567","red","#12345g") { t.equal(json.string(json.get(model.config(base(),{useDesktopColor:false,color:color}),"background")),"#202020") }
+    t.equal(json.string(json.get(model.config(base(),{useDesktopColor:"false",color:"#abcdef"}),"background")),"#202020")
+})
+test.case("animation timing follows original fast scenes and battery",fn() {
+    for style in Vec<str>("matrix","terminal","circuit","radar","network","meteors") { test.expect(model.interval(style,false)==67 && model.interval(style,true)==134,"Fast scene cadence changed") }
+    test.expect(model.interval("flow",false)==100 && model.interval("flow",true)==200,"Ambient cadence changed")
+})
+test.case("coverage respects active workspace, sticky and minimized windows",fn() {
+    let desktops=json.parse("[{\"id\":2,\"active\":true}]")
+    test.expect(!model.covered(json.parse("[{\"maximized\":true,\"desktop\":1}]"),desktops,monitor(),true),"Other desktop must not pause")
+    test.expect(model.covered(json.parse("[{\"maximized\":true,\"desktop\":1,\"sticky\":true}]"),desktops,monitor(),true),"Sticky window should pause")
+    test.expect(!model.covered(json.parse("[{\"maximized\":true,\"minimized\":true}]"),desktops,monitor(),true),"Minimized window must not pause")
+})
+test.case("multi-monitor coverage uses window center and negative origins",fn() {
+    let windows=json.parse("[{\"fullscreen\":true,\"geometry\":{\"x\":-1280,\"y\":0,\"width\":1280,\"height\":720}}]")
+    test.expect(!model.covered(windows,json.array(),monitor(),false),"Adjacent monitor must continue")
+    test.expect(model.covered(windows,json.array(),{x:-1280,y:0,width:1280,height:720},false),"Covered monitor must pause")
+    test.expect(!model.covered(json.parse("[{\"maximized\":true}]"),json.array(),monitor(),false),"Unknown geometry cannot pause every monitor")
+})
+test.case("power source sampling gives AC precedence",fn() {
+    tool.scope("devos-background-power-",fn(dir:str) {
+        tool.write(dir+"/BAT0/type","Battery\n"); tool.write(dir+"/BAT0/status","Discharging\n")
+        test.expect(model.onBattery(dir),"Discharging battery not detected")
+        tool.write(dir+"/AC/type","Mains\n"); tool.write(dir+"/AC/online","1\n")
+        test.expect(!model.onBattery(dir),"Online AC must win")
+        test.expect(!model.onBattery(dir+"/missing"),"Missing sysfs must not crash")
+    })
+})
+test.case("real worker survives malformed input and produces independent monitor views",fn() {
+    let request={id:9,config:base(),values:{style:"matrix"},monitors:[{x:0,y:0,width:1280,height:720},{x:-1280,y:0,width:1280,height:720}],windows:[{fullscreen:true,geometry:{x:0,y:0,width:1280,height:720}}],desktops:[]}
+    let env=Map<str,str>(); env.set("DEVOS_BACKGROUND_POWER_ROOT","/nonexistent-devos-test-power")
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/service.dev"),env,"not json\n"+json.stringify(request)+"\n",30000)
+    t.success(done); let lines=strings.split(strings.trim(t.out(done)),"\n"); test.expect(lines.len()==2,t.out(done))
+    t.contains(lines[0],"Invalid background"); let reply=json.parse(lines[1]); test.expect(json.int(json.get(reply,"id"))==9,"Request identity lost")
+    let views=json.get(reply,"views"); test.expect(json.len(views)==2,"Lost monitor")
+    test.expect(json.bool(json.get(json.at(views,0),"paused")) && !json.bool(json.get(json.at(views,1),"paused")),"Monitor state leaked")
+    test.expect(json.int(json.get(json.at(views,1),"interval"))==67,"Worker cadence differs")
+})
+return t.finish()

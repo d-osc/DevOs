@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -d "$base/src/system" ]; then default_root=$base; else default_root="$base/share/dev-os"; fi
+root=${DEV_OS_ROOT:-$default_root}
+if [ ! -r "$root/dist/native/libsupervisor.so" ]; then
+    printf '%s\n' 'Native supervisor host is missing. Run sh tools/build/native-supervisor.sh.' >&2
+    exit 1
+fi
+exec devrun "$root/src/system/supervisor.dev" --ffi-lib "$root/dist/native/libsupervisor.so" -- "$@"

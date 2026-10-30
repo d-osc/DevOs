@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as wire
+extern fn rc_env(name:str):str
+extern fn panel_image(root:*void,id:*u8,serialized:*u8,fallback:*u8)
+extern fn panel_messages(call:callback(*u8,i64,*void):void,data:*void):*void
+extern fn panel_messages_free(handle:*void,keep:*void)
+# Forward raw shell messages to the data worker. Keep the closure alive until unsubscribe.
+fn subscribe(context:*ui.Context,pipe:ui.IntRef) {
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if !(*context).alive {return ui.noop}
+        let receive=callback_context(fn(bytes:*u8,length:i64) {unsafe {
+            if !(*context).alive {return};let text=Vec<u8>();for i in 0..length {text.push(bytes[i])}
+            channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"clock\":true,\"notify\":"),channel.quote(ui.Text(text)),ui.text("}"))))
+        }})
+        let subscription=panel_messages(receive.call,receive.data)
+        return fn() {unsafe {panel_messages_free(subscription,receive.data)}}
+    }},Vec<i64>())
+}
+fn View(context:*ui.Context,frame:ui.Text,clear:fn():void):ui.Node {
+    let open=ui.useState(context,0);let count=ui.text("0");let tooltip=ui.text("Desktop alerts");let cards=Vec<ui.Node>()
+    for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()==3 && ui.equalText(fields[0],ui.text("A")) {count=fields[1];tooltip=wire.decoded(fields[2])};if fields.len()==3 && ui.equalText(fields[0],ui.text("N")) {let props=ui.props();props.className=ui.text("alert-card");props.spacing=6;props.margin=12;let time=ui.props();time.className=ui.text("popup-muted");time.xalign=0.0;let message=ui.props();message.wrap=true;message.xalign=0.0;message.widthChars=38;cards.push(ui.Box(props,Vec<ui.Node>(ui.withProps(ui.TextLabel(wire.decoded(fields[1])),time),ui.withProps(ui.TextLabel(wire.decoded(fields[2])),message))))}}
+    let image=ui.named("panel-alert-icon");image.iconSize=16;let contents=Vec<ui.Node>(ui.Icon(image,"notifications-symbolic"));let populated=!ui.equalText(count,ui.text("0"));if populated {let number=ui.named("panel-alert-count");number.className=ui.text("alert-count");contents.push(ui.withProps(ui.TextLabel(count),number))};let box=ui.props();box.vertical=false;box.spacing=5;let button=ui.named("panel-alert");button.className=populated ? ui.text("alert-button has-alerts") : ui.text("alert-button")
+    let nodes=Vec<ui.Node>(ui.WidgetButton(button,ui.Box(box,contents),fn() {open.set(open.get()==0 ? 1 : 0)}))
+    if open.value!=0 {let title=ui.props();title.className=ui.text("popup-title");title.expand=true;title.xalign=0.0;let clearButton=ui.named("panel-alert-clear");clearButton.sensitive=populated;let heading=ui.props();heading.vertical=false;let children=Vec<ui.Node>(ui.Box(heading,Vec<ui.Node>(ui.withProps(ui.Label("Desktop alerts"),title),ui.Button(clearButton,"Clear",clear))))
+        if populated {let list=ui.props();list.spacing=8;let scroll=ui.props();scroll.height=cards.len()>3 ? 320 : (cards.len()*80) as i32;children.push(ui.Scroll(scroll,ui.Box(list,cards)))} else {let empty=ui.named("panel-alert-empty");empty.className=ui.text("alerts-empty");empty.spacing=12;empty.margin=24;let muted=ui.props();muted.className=ui.text("popup-muted");children.push(ui.Box(empty,Vec<ui.Node>(ui.Icon(ui.props(),"notifications-symbolic"),ui.Label("No new notifications"),ui.withProps(ui.Label("You're all caught up."),muted))))}
+        let body=ui.props();body.width=320;body.margin=20;body.spacing=16;let popup=ui.named("panel-alert-popup");popup.className=ui.text("panel-popup");nodes.push(ui.Popover(popup,ui.text("panel-alert"),ui.Box(body,children),fn() {open.set(0)}))
+    }
+    ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {let id=ui.nativeText(ui.text("panel-alert"));let text=ui.nativeText(tooltip);wire.panel_tooltip((*context).native,id,text);wire.rd_buffer_free(id as *void);wire.rd_buffer_free(text as *void);let iconId=ui.nativeText(ui.text("panel-alert-icon"));let root=rc_env("DEV_OS_ROOT");let icon=ui.nativeText(ui.text("${root}/src/system/org.devos.panel/icons/bell-symbolic.svg"));let fallback=ui.nativeText(ui.text("notifications-symbolic"));panel_image((*context).native,iconId,icon,fallback);wire.rd_buffer_free(iconId as *void);wire.rd_buffer_free(icon as *void);wire.rd_buffer_free(fallback as *void)};return ui.noop}},Vec<i64>(wire.key(tooltip),open.value))
+    let props=ui.props();props.vertical=false;return ui.Box(props,nodes)
+}

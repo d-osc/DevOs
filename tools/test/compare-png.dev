@@ -1,0 +1,36 @@
+#!/usr/bin/env d
+use "std/args"
+use "../lib/tool.dev" as tool
+extern fn gdk_pixbuf_new_from_file(path:str,error:*void):*void
+extern fn gdk_pixbuf_get_width(image:*void):i32
+extern fn gdk_pixbuf_get_height(image:*void):i32
+extern fn gdk_pixbuf_get_rowstride(image:*void):i32
+extern fn gdk_pixbuf_get_n_channels(image:*void):i32
+extern fn gdk_pixbuf_get_pixels(image:*void):*u8
+extern fn g_object_unref(image:*void)
+extern fn memcmp(left:*u8,right:*u8,size:usize):i32
+fn main():i32 {unsafe {
+    tool.require(args.len()==2,"Supply two PNG paths (and --ffi-lib libgdk_pixbuf-2.0.so.0)")
+    let left=gdk_pixbuf_new_from_file(args.get(0),null);let right=gdk_pixbuf_new_from_file(args.get(1),null)
+    tool.require(left!=null && right!=null,"Could not decode PNG")
+    let width=gdk_pixbuf_get_width(left);let height=gdk_pixbuf_get_height(left)
+    tool.require(width==gdk_pixbuf_get_width(right) && height==gdk_pixbuf_get_height(right),"PNG dimensions differ")
+    let a=gdk_pixbuf_get_pixels(left);let b=gdk_pixbuf_get_pixels(right);let ac=gdk_pixbuf_get_n_channels(left);let bc=gdk_pixbuf_get_n_channels(right)
+    let astride=gdk_pixbuf_get_rowstride(left);let bstride=gdk_pixbuf_get_rowstride(right);let changed=0;let maximum=0
+    # PNG images with tightly packed, identical pixels need no interpreter loop.
+    if ac==bc && astride==bstride && astride==width*ac && memcmp(a,b,(height as usize)*(astride as usize))==0 {
+        g_object_unref(left);g_object_unref(right);print("Changed pixels: 0; maximum channel delta: 0");return 0
+    }
+    for y in 0..(height as i64) {for x in 0..(width as i64) {
+        let different=false
+        for c in 0..4 {
+            let av=c<ac as i64 ? a[y*astride as i64+x*ac as i64+c] as i64 : 255
+            let bv=c<bc as i64 ? b[y*bstride as i64+x*bc as i64+c] as i64 : 255
+            let delta=av>bv ? av-bv : bv-av;if delta>maximum {maximum=delta};if delta!=0 {different=true}
+        }
+        if different {changed+=1}
+    }}
+    g_object_unref(left);g_object_unref(right);print("Changed pixels: ${changed}; maximum channel delta: ${maximum}")
+    return changed==0 ? 0 : 1
+}}
+return tool.main(main)

@@ -1,0 +1,46 @@
+# Installer wizard rules shared by the worker and the native UI.
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../../../lib/task-metrics.dev" as m
+use "../../../lib/task-view.dev" as view
+
+fn lower(ch:u8):bool { return ch >= 97 && ch <= 122 }
+fn digit(ch:u8):bool { return ch >= 48 && ch <= 57 }
+// ^[a-z][a-z0-9_-]{0,31}$
+fn validUsername(value:str):bool {
+    let bytes = encoding.encode(value,"utf8"); let count = bytes.len() as i64
+    if count < 1 || count > 32 || !lower(bytes[0]) { return false }
+    for ch in bytes { if !lower(ch) && !digit(ch) && ch != 95 && ch != 45 { return false } }
+    return true
+}
+// ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+fn validHostname(value:str):bool {
+    let bytes = encoding.encode(value,"utf8"); let count = bytes.len() as i64
+    if count < 1 || count > 63 { return false }
+    for i in 0..count { let ch = bytes[i]; if !lower(ch) && !digit(ch) && (ch != 45 || i == 0 || i == count-1) { return false } }
+    return true
+}
+fn gib(bytes:f64):str { return "${(bytes/1073741824.0+0.5) as i64} GiB" }
+// A <US> wait: L is the disk list, S a step, D done, X install failure, E request failure (tab fields, ASCII 30 between disks).
+fn disk(row:json.Value):str {
+    return view.clean(m.text(m.get(row,"name")))+"\t"+view.clean(m.text(m.get(row,"path")))+"\t${m.num(m.get(row,"size")) as i64}\t"+view.clean(m.text(m.get(row,"model")))+"\t"+gib(m.num(m.get(row,"size")))+"\t"+(strings.equal(json.kind(m.get(row,"removable")),"bool") && json.bool(m.get(row,"removable")) ? "1" : "0")+"\t"+view.clean(m.text(m.get(row,"contents")))
+}
+fn disks(rows:json.Value):str {
+    let out = "L"
+    if strings.equal(json.kind(rows),"array") { for i in 0..(json.len(rows) as i64) { out = out+view.separator()+disk(json.at(rows,i)) } }
+    return out
+}
+// One line of `dev-os-install run` output -> presentation line, or "" for tool chatter.
+fn event(line:str):str {
+    if strings.startsWith(line,"STEP ") {
+        let rest = strings.substring(line,5,strings.charLength(line)); let parts = strings.split(rest," ")
+        if parts.len() < 2 { return "" }
+        let numbers = strings.split(parts[0],"/"); if numbers.len() != 2 { return "" }
+        let message = ""; for i in 1..(parts.len() as i64) { message = message+(i > 1 ? " " : "")+parts[i] }
+        return "S\t"+view.clean(numbers[0])+"\t"+view.clean(numbers[1])+"\t"+view.clean(message)
+    }
+    if strings.startsWith(line,"ERROR ") { return "X\t"+view.clean(strings.substring(line,6,strings.charLength(line))) }
+    if strings.startsWith(line,"DONE") { return "D\t"+view.clean(strings.trim(strings.substring(line,4,strings.charLength(line)))) }
+    return ""
+}

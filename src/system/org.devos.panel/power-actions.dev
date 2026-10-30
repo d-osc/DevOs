@@ -1,0 +1,22 @@
+# Desktop power sequencing. Authorization precedes overlays when logind requires a challenge.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+struct Pending {action:str,token:i64,accepted:bool}
+fn empty(token:i64):Pending {return Pending("",token,false)}
+fn method(action:str):str {if strings.equal(action,"restart") {return "Reboot"};if strings.equal(action,"shutdown") {return "PowerOff"};if strings.equal(action,"sleep") {return "Suspend"};result.raise("Unknown power action");return ""}
+fn supported(status:str):bool {return strings.equal(status,"yes") || strings.equal(status,"challenge")}
+fn capabilities(reboot:str,shutdown:str,lock:bool):str {return "P\t${lock ? 1 : 0}\t${supported(reboot) ? 1 : 0}\t${supported(shutdown) ? 1 : 0}"}
+fn begin(previous:Pending,request:json.Value,status:str,lock:bool):Pending {
+    if !strings.equal(previous.action,"") {result.raise("A power request is already in progress.")}
+    let value=hw.jget(request,"action");if !strings.equal(json.kind(value),"string") {result.raise("Invalid power action")};let action=json.string(value);method(action)
+    if strings.equal(action,"sleep") ? !lock : !supported(status) {result.raise("This power action is unavailable on this system.")}
+    return Pending(action,previous.token+1,false)
+}
+fn authorizeFirst(state:Pending,status:str):bool {return !strings.equal(state.action,"sleep") && !strings.equal(status,"yes")}
+fn loading(state:Pending):str {return "L\t${state.token}\t"+state.action+"\t"+(strings.equal(state.action,"restart") ? "Restarting…" : "Shutting down…")}
+fn ready(state:Pending,request:json.Value):bool {
+    let token=hw.jget(request,"ready");if strings.equal(state.action,"") || !strings.equal(json.kind(token),"number") || json.float(token)!=(state.token as f64) {result.raise("This power request is no longer pending.")}
+    return !state.accepted
+}

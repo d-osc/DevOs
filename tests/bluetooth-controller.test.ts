@@ -1,4 +1,4 @@
-import {Bluetooth} from '../extensions/org.devos.settings/bluetooth.js';
+import {Bluetooth} from '../src/apps/org.devos.settings/bluetooth.js';
 function assert(value: unknown, message: string) {if (!value) throw new Error(message);}
 let scanned = '';
 const controller = new Bluetooth({scan: async (adapter, read) => {scanned=adapter;return read();},destroy:()=>{}});

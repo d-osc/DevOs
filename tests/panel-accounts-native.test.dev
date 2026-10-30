@@ -1,0 +1,29 @@
+use "std/test"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "std/encoding"
+use "../src/system/org.devos.panel/accounts-model.dev" as model
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("account presentation excludes current user and escapes Unicode",fn() {
+    let system=json.value({currentUser:"alice",binding:{login:"alice",id:0},users:json.value(Vec<json.Value>({username:"alice",name:"Alice"},{username:"bob",name:"ไทย\t100%",github:"bob",githubId:0}))})
+    let frame=model.frame(system,"fallback");t.contains(frame,"U\talice\t@alice\t");t.contains(frame,"V\tbob\tไทย%09100%25\t@bob\t");t.lacks(frame,"V\talice")
+    t.equal(model.frame(json.null_value(),"local"),"U\tlocal\tLocal account\t")
+})
+test.case("account switching accepts only current catalog members and explicit chooser",fn() {
+    let system=json.value({currentUser:"alice",users:json.value(Vec<json.Value>({username:"alice"},{username:"bob"}))})
+    let selected=model.choose(system,json.value("bob"));test.expect(selected.len()==2,"User target lost");t.equal(selected[1],"bob");test.expect(model.choose(system,json.value("")).len()==1,"Chooser needs no target")
+    for value in Vec<json.Value>(json.value("alice"),json.value("removed"),json.value(7)) {test.expect(!result.isOk(result.attempt(fn():Vec<str> {return model.choose(system,value)})),"Invalid or stale user accepted")}
+})
+test.case("avatar identities reject unsafe numbers and deduplicate downloads",fn() {
+    for value in Vec<json.Value>(json.value(-1),json.value(0),json.value(1.5),json.value(9007199254740992.0),json.value("7")) {test.expect(model.githubId(value)==0,"Invalid avatar ID accepted")}
+    let ids=model.avatarIds({binding:{id:7},users:json.value(Vec<json.Value>({githubId:7},{githubId:8},{githubId:-1}))});test.expect(ids.len()==2 && ids[0]==7 && ids[1]==8,"Avatar downloads duplicated")
+})
+test.case("account worker remains read-only and recovers from invalid selections",fn() {
+    tool.scope("panel-accounts-",fn(dir:str) {
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",dir);env.set("XDG_CONFIG_HOME",dir+"/config");env.set("XDG_RUNTIME_DIR",dir+"/runtime");env.set("XDG_CACHE_HOME",dir+"/cache");env.set("USER","fixture");tool.write(dir+"/runtime/.keep","")
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-accounts.dev","--ffi-lib",t.root()+"/dist/native/libpanel-taskbar.so"),env,"{}\n{\"switch\":\"missing\"}\n{}\n",15000);t.success(done);t.contains(t.out(done),"E\tThis user is no longer available.");test.expect(tool.count(t.out(done),"U\tfixture\tLocal account\t")==2,"Worker failed to recover")
+    })
+})
+return t.finish()

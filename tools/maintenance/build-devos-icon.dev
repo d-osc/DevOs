@@ -1,0 +1,155 @@
+#!/usr/bin/env d
+# The Dev OS mark. data/icons/devos/devos-mark.svg is the master; this derives everything else from it:
+#   devos-mark-transparent.svg    no background, the original light shapes (greeter, dark UI)
+#   devos-mark-currentcolor.svg   transparent background, shapes in currentColor (docs, web, theme-aware use)
+#   hicolor/scalable/apps/dev-os.svg           app icon (the master as is)
+#   hicolor/scalable/apps/dev-os-symbolic.svg  monochrome, recoloured by GTK like the other symbolic icons
+#   hicolor/<n>x<n>/apps/dev-os.png            rasterised app icon, for consumers that cannot read SVG
+# The PNGs come from a small anti-aliased rasteriser of the same three shapes, so no SVG renderer is needed.
+use "std/fs"
+use "std/path"
+use "std/regex"
+use "std/strings"
+use "std/compression"
+use "std/encoding"
+use "../lib/tool.dev" as tool
+
+fn put(root: str, relative: str, text: str) { tool.write(root + "/" + relative, text) }
+fn putBytes(root: str, relative: str, data: Vec<u8>) {
+    let file = root + "/" + relative
+    fs.mkdirSync(path.dirname(file), true)
+    tool.require(fs.write_bytes(file, data), "Could not write " + file)
+}
+fn removeAll(pattern: str, flags: str, text: str): str {
+    let compiled = regex.compile(pattern, flags)
+    let result = compiled.replaceAll(text, "")
+    compiled.close()
+    return result
+}
+fn removeFirst(pattern: str, text: str): str {
+    let compiled = regex.compile(pattern, "")
+    let result = compiled.replace(text, "")
+    compiled.close()
+    return result
+}
+# Comments and the dark background square go; the shapes stay.
+fn strip(svg: str): str {
+    return removeFirst("\\s*<rect width=\"100\" height=\"100\"[^>]*/>", removeAll("\\s*<!--[\\s\\S]*?-->", "", svg))
+}
+# The shapes only fill x 22..86, y 32..72 of the master box. Variants without the dark square crop to a square around them
+# (same shapes and proportions) so they fill their slot instead of floating small and off-centre.
+fn shapes(master: str, fill: str): str { return strings.replaceAll(strip(master), "#EAEAEA", fill) }
+fn fitted(svg: str): str { return strings.replaceAll(svg, "viewBox=\"0 0 100 100\"", "viewBox=\"18 16 72 72\"") }
+
+# Geometry of the master, in its 100 x 100 space: a rounded rectangle and a circle.
+fn inside(x: f64, y: f64): bool {
+    let dx = x - 81.0
+    let dy = y - 67.0
+    if dx * dx + dy * dy <= 25.0 { return true }
+    let cx = x
+    if cx < 24.0 { cx = 24.0 }
+    if cx > 60.0 { cx = 60.0 }
+    let cy = y
+    if cy < 34.0 { cy = 34.0 }
+    if cy > 62.0 { cy = 62.0 }
+    return x >= 22.0 && x <= 62.0 && y >= 32.0 && y <= 64.0 && (x - cx) * (x - cx) + (y - cy) * (y - cy) <= 4.0
+}
+
+fn crcTable(): Vec<i64> {
+    let table = Vec<i64>()
+    for n in 0..256 {
+        let c: i64 = n
+        for k in 0..8 {
+            if (c & 1) == 1 { c = 3988292384 ^ (c >> 1) } else { c = c >> 1 }
+        }
+        table.push(c)
+    }
+    return table
+}
+fn crc32(table: Vec<i64>, data: Vec<u8>): i64 {
+    let c: i64 = 4294967295
+    for i in 0..(data.len() as i64) {
+        c = table[(c ^ (data[i] as i64)) & 255] ^ (c >> 8)
+    }
+    return c ^ 4294967295
+}
+fn be32(value: i64): Vec<u8> {
+    let out = Vec<u8>()
+    out.push(((value >> 24) & 255) as u8)
+    out.push(((value >> 16) & 255) as u8)
+    out.push(((value >> 8) & 255) as u8)
+    out.push((value & 255) as u8)
+    return out
+}
+fn chunk(table: Vec<i64>, kind: str, data: Vec<u8>): Vec<u8> {
+    let body = Vec<u8>()
+    for byte in encoding.encode(kind, "utf8") { body.push(byte) }
+    for byte in data { body.push(byte) }
+    let out = Vec<u8>()
+    for byte in be32(data.len() as i64) { out.push(byte) }
+    for byte in body { out.push(byte) }
+    for byte in be32(crc32(table, body)) { out.push(byte) }
+    return out
+}
+fn png(table: Vec<i64>, size: i64): Vec<u8> {
+    let samples: i64 = 4
+    let raw = Vec<u8>()
+    for y in 0..size {
+        raw.push(0 as u8)
+        for x in 0..size {
+            let hit: i64 = 0
+            for sy in 0..samples {
+                for sx in 0..samples {
+                    let px = ((x as f64) + (((sx as f64) + 0.5) / (samples as f64))) * 100.0 / (size as f64)
+                    let py = ((y as f64) + (((sy as f64) + 0.5) / (samples as f64))) * 100.0 / (size as f64)
+                    if inside(px, py) { hit += 1 }
+                }
+            }
+            let a = (hit as f64) / ((samples * samples) as f64)
+            # background #242424, light #eaeaea (36 and 234 per channel); Math.round rounds half up
+            let value = ((36.0 + (234.0 - 36.0) * a) + 0.5) as i64
+            raw.push(value as u8)
+            raw.push(value as u8)
+            raw.push(value as u8)
+        }
+    }
+    let header = Vec<u8>()
+    for byte in be32(size) { header.push(byte) }
+    for byte in be32(size) { header.push(byte) }
+    header.push(8 as u8)
+    header.push(2 as u8)
+    header.push(0 as u8)
+    header.push(0 as u8)
+    header.push(0 as u8)
+    let out = Vec<u8>()
+    out.push(137 as u8)
+    out.push(80 as u8)
+    out.push(78 as u8)
+    out.push(71 as u8)
+    out.push(13 as u8)
+    out.push(10 as u8)
+    out.push(26 as u8)
+    out.push(10 as u8)
+    for byte in chunk(table, "IHDR", header) { out.push(byte) }
+    for byte in chunk(table, "IDAT", compression.zlib(raw, 9)) { out.push(byte) }
+    for byte in chunk(table, "IEND", Vec<u8>()) { out.push(byte) }
+    return out
+}
+
+fn main(): i32 {
+    let root = tool.option("--root", tool.root())
+    let master = tool.read(root + "/data/icons/devos/devos-mark.svg")
+    let sized = " width=\"100%\" height=\"100%\""
+    put(root, "data/icons/devos/devos-mark-currentcolor.svg", strings.replaceAll(fitted(shapes(master, "currentColor")), sized, ""))
+    put(root, "data/icons/devos/devos-mark-transparent.svg", fitted(shapes(master, "#EAEAEA")))
+    put(root, "data/icons/hicolor/scalable/apps/dev-os.svg", master)
+    put(root, "data/icons/hicolor/scalable/apps/dev-os-symbolic.svg", strings.replaceAll(fitted(shapes(master, "#2e3436")), sized, " width=\"16\" height=\"16\""))
+    let table = crcTable()
+    let sizes = Vec<i64>(16, 24, 32, 48, 64, 128, 256, 512)
+    for size in sizes {
+        putBytes(root, "data/icons/hicolor/${size}x${size}/apps/dev-os.png", png(table, size))
+    }
+    print("Wrote the Dev OS mark: master variants and ${sizes.len()} PNG sizes.")
+    return 0
+}
+return tool.main(main)

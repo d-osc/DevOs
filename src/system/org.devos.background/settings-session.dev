@@ -1,0 +1,151 @@
+# Settings owns its saved baseline and draft in the data process. UI events never
+# provide a replacement preferences document or choose their own merge policy.
+use "std/json"
+use "std/fs"
+use "std/strings"
+use "std/result"
+use "std/uuid"
+use "./model.dev" as m
+use "./widget-desktops.dev" as widgets
+use "./preferences.dev" as prefs
+use "./settings.dev" as settings
+use "./context-menu.dev" as menu
+use "../../services/window-state.dev" as shell
+use "./appearance.dev" as appearance
+use "./wire.dev" as wire
+struct State {file:str,defaults:json.Value,saved:json.Value,draft:json.Value,desktop:json.Value,tracking:shell.Snapshot,editor:str,title:str,command:str,status:str}
+fn empty():State {return State("",json.object(),json.object(),json.object(),widgets.active(json.array(),false),shell.empty(),"","","","")}
+fn defaults(root:str):json.Value {
+    let manifest=json.parse(fs.readFileSync(root+"/src/system/org.devos.background/extension.json","utf8"));let out=json.object();let groups=json.get(manifest,"settings")
+    for i in 0..(json.len(groups) as i64) {let fields=m.get(json.at(groups,i),"fields");for j in 0..(json.len(fields) as i64) {let field=json.at(fields,j);out=json.set(out,m.text(m.get(field,"key")),m.get(field,"default"))}}
+    return out
+}
+fn choices(key:str):Vec<str> {
+    if strings.equal(key,"mode") {return Vec<str>("design","solid","picture")}
+    if strings.equal(key,"style") {return m.styles()}
+    if strings.equal(key,"fit") {return Vec<str>("cover","contain","stretch")}
+    if strings.equal(key,"widgetPosition") {return Vec<str>("left","right")}
+    return Vec<str>()
+}
+fn booleanKeys():Vec<str> {return Vec<str>("useDesktopColor","widgetClock","widgetDate","widgetNote","contextEnabled","menuWidgets","menuApplications","menuTerminal","menuFiles","menuBackground","menuSettings","menuReload","menuLock","menuLogout")}
+fn choiceTitles(key:str):Vec<str> {
+    if strings.equal(key,"mode") {return Vec<str>("DevOs design","Solid color","Picture")}
+    if strings.equal(key,"fit") {return Vec<str>("Fill (crop to fit)","Fit (show whole picture)","Stretch")}
+    if strings.equal(key,"widgetPosition") {return Vec<str>("Top left","Top right")}
+    let out=Vec<str>();for value in choices(key) {out.push(strings.toUpperCase(strings.substring(value,0,1))+strings.substring(value,1,strings.charLength(value)))};return out
+}
+fn editable(key:str):bool {return m.has(booleanKeys(),key) || choices(key).len()>0 || m.has(Vec<str>("imagePath","color","widgetNoteText"),key)}
+fn customList(state:State):json.Value {return menu.custom(m.get(state.draft,"contextCustomItems"))}
+fn patch(state:State,key:str,value:json.Value):State {
+    let next=state;let change=json.set(json.object(),key,value)
+    if m.has(widgets.keys(),key) {
+        if json.is_null(next.desktop) {result.raise("Waiting for the current desktop")}
+        if strings.equal(key,"widgetPosition") {change=json.set(change,"widgetLocations","{}")}
+        next.draft=widgets.update(next.draft,next.desktop,change)
+    } else {next.draft=widgets.merge(next.draft,change)}
+    next.status="";return next
+}
+fn handle(state:State,request:json.Value,validatePicture:fn(str):void):State {
+    let next=state;let action=m.text(m.get(request,"action"))
+    if strings.equal(action,"configure") {
+        let file=m.text(m.get(request,"preferences"));if strings.equal(file,"") {result.raise("A Background preferences file is required")}
+        let all=defaults(m.text(m.get(request,"root")));let loaded=prefs.load(file,all)
+        next=empty();next.file=file;next.defaults=all;next.saved=widgets.merge(all,json.get(loaded,"values"));next.draft=next.saved
+        next.desktop=widgets.active(m.get(request,"desktops"),json.has(request,"desktops"));return next
+    }
+    if strings.equal(action,"get") {return next}
+    if strings.equal(next.file,"") {result.raise("Background settings are not configured")}
+    if strings.equal(action,"tracker") {next.tracking=shell.consume(next.tracking,m.get(request,"event"));next.desktop=widgets.active(next.tracking.desktops,next.tracking.known);return next}
+    if strings.equal(action,"tracker-batch") {
+        let events=m.get(request,"events");if !strings.equal(json.kind(events),"array") || json.len(events)>1024 {result.raise("Invalid tracker batch")}
+        for i in 0..(json.len(events) as i64) {next.tracking=shell.consume(next.tracking,json.at(events,i))}
+        next.desktop=widgets.active(next.tracking.desktops,next.tracking.known);return next
+    }
+    if strings.equal(action,"desktop") {next.desktop=widgets.active(m.get(request,"desktops"),json.has(request,"desktops"));return next}
+    if strings.equal(action,"viewport") {return next}
+    if strings.equal(action,"reset") {next.draft=next.saved;next.status="";next.editor="";next.title="";next.command="";return next}
+    if strings.equal(action,"apply") {
+        settings.plan(next.saved,next.saved,next.draft)
+        if strings.equal(m.text(m.get(next.draft,"mode")),"picture") {validatePicture(m.text(m.get(next.draft,"imagePath")))}
+        let saved=next.saved;let draft=next.draft;let baseline=next.defaults
+        next.draft=prefs.edit(next.file,baseline,fn(latest:json.Value):json.Value {return settings.plan(widgets.merge(baseline,latest),saved,draft)})
+        next.saved=next.draft;next.status="Background applied to all displays.";return next
+    }
+    if strings.equal(action,"edit") || strings.equal(action,"toggle") {
+        let key=m.text(m.get(request,"key"));if !editable(key) {result.raise("Unknown background setting")}
+        let current=m.has(widgets.keys(),key) ? widgets.values(next.draft,next.desktop) : next.draft;let value=m.get(request,"value")
+        if m.has(booleanKeys(),key) {if !strings.equal(action,"toggle") {result.raise("Use the toggle action for this setting")};value=json.value(!m.flag(m.get(current,key)))}
+        else if choices(key).len()>0 {
+            let index=m.get(request,"index");let options=choices(key);let n=m.num(index)
+            if !strings.equal(json.kind(index),"number") || n<0.0 || n>=(options.len() as f64) || n!=(n as i64) as f64 {result.raise("Invalid background selection")};value=json.value(options[n as i64])
+        } else {
+            if !strings.equal(json.kind(value),"string") {result.raise("Enter text for this setting")}
+            if strings.equal(key,"widgetNoteText") && strings.charLength(json.string(value))>2000 {value=json.value(strings.substring(json.string(value),0,2000))}
+        }
+        return patch(next,key,value)
+    }
+    if strings.equal(action,"preset") {
+        let value=m.text(m.get(request,"value"));if !m.hex(value) {result.raise("Invalid background color")}
+        next=patch(next,"color",json.value(value));return patch(next,"useDesktopColor",json.value(false))
+    }
+    if strings.equal(action,"picture") {
+        next=patch(next,"imagePath",m.get(request,"value"));return patch(next,"mode",json.value("picture"))
+    }
+    if strings.equal(action,"positions-reset") {return patch(next,"widgetLocations",json.value("{}"))}
+    if strings.equal(action,"custom-clear") {next=patch(next,"contextCustomItems",json.value("[]"));next.editor="";return next}
+    if strings.equal(action,"custom-form") {
+        let key=m.text(m.get(request,"key"));let value=m.text(m.get(request,"value"))
+        if strings.equal(key,"title") {next.title=value} else if strings.equal(key,"command") {next.command=value} else {result.raise("Unknown action editor field")};return next
+    }
+    if strings.equal(action,"custom-cancel") {next.editor="";next.title="";next.command="";return next}
+    let entries=customList(next);let id=m.text(m.get(request,"key"));let found=false;let output=json.array()
+    if strings.equal(action,"custom-save") {
+        id=next.editor
+        if strings.equal(id,"") {
+            while true {id="custom-"+uuid.v4();let duplicate=false;for i in 0..(json.len(entries) as i64) {if strings.equal(m.text(m.get(json.at(entries,i),"id")),id) {duplicate=true}};if !duplicate {break}}
+        }
+        let enabled=true;for i in 0..(json.len(entries) as i64) {let item=json.at(entries,i);if strings.equal(m.text(m.get(item,"id")),id) {enabled=m.flag(m.get(item,"enabled"))}}
+        let item=json.value({id:id,title:next.title,command:next.command,target:"background",enabled:enabled})
+        for i in 0..(json.len(entries) as i64) {let existing=json.at(entries,i);if strings.equal(m.text(m.get(existing,"id")),id) {output=json.push(output,item);found=true} else {output=json.push(output,existing)}}
+        if !found {output=json.push(output,item)};menu.custom(json.value(json.stringify(output)))
+        next=patch(next,"contextCustomItems",json.value(json.stringify(output)));next.editor="";next.title="";next.command="";return next
+    }
+    for i in 0..(json.len(entries) as i64) {
+        let item=json.at(entries,i)
+        if strings.equal(m.text(m.get(item,"id")),id) {
+            found=true
+            if strings.equal(action,"custom-edit") {next.editor=id;next.title=m.text(m.get(item,"title"));next.command=m.text(m.get(item,"command"));return next}
+            if strings.equal(action,"custom-delete") {continue}
+            if strings.equal(action,"custom-toggle") {item=json.set(item,"enabled",!m.flag(m.get(item,"enabled")))} else {result.raise("Unknown custom action operation")}
+        };output=json.push(output,item)
+    }
+    if !found {result.raise("This custom action no longer exists")}
+    next=patch(next,"contextCustomItems",json.value(json.stringify(output)))
+    if strings.equal(next.editor,id) && strings.equal(action,"custom-delete") {next.editor="";next.title="";next.command=""};return next
+}
+fn dirty(state:State):bool {return !strings.equal(json.stringify(state.saved),json.stringify(state.draft))}
+fn field(state:State,key:str,title:str,kind:str,visible:bool,enabled:bool):str {
+    let scoped=m.has(widgets.keys(),key);let values=scoped ? widgets.values(state.draft,state.desktop) : state.draft;let value=m.get(values,key);let options=choices(key);let text=m.text(value)
+    if strings.equal(kind,"bool") {text=m.flag(value) ? "1" : "0"}
+    if strings.equal(kind,"select") {text="0";for i in 0..(options.len() as i64) {if strings.equal(options[i],m.text(value)) {text="${i}"}}}
+    return wire.separator()+"F\t"+key+"\t"+kind+"\t"+wire.encoded(title)+"\t"+wire.encoded(text)+"\t"+wire.encoded(strings.join(choiceTitles(key),wire.optionSeparator()))+"\t"+(visible ? "1" : "0")+"\t"+(enabled && (!scoped || !json.is_null(state.desktop)) && !strings.equal(state.file,"") ? "1" : "0")
+}
+fn response(state:State,ack:i64,error:str):str {
+    let scope=json.is_null(state.desktop) ? "Waiting for the current desktop…" : "Widgets on "+m.text(m.get(state.desktop,"name"))
+    let out="K\t${ack}\t"+(dirty(state) ? "1" : "0")+"\t"+wire.encoded(error)+"\t"+wire.encoded(state.status)+"\t"+wire.encoded(scope)
+    let config=appearance.view(state.draft)
+    out=out+wire.separator()+"B\t${json.int(json.get(config,"mode"))}\t${json.int(json.get(config,"style"))}\t${json.int(json.get(config,"fit"))}\t"+wire.encoded(json.string(json.get(config,"imagePath")))+"\t"+wire.encoded(json.string(json.get(config,"color")))
+    let mode=m.text(m.get(state.draft,"mode"));let widgetValues=widgets.values(state.draft,state.desktop);let context=m.flag(m.get(state.draft,"contextEnabled"))
+    out=out+field(state,"mode","Personalize your background","select",true,true)+field(state,"style","Design","select",strings.equal(mode,"design"),true)
+    out=out+field(state,"imagePath","Picture file","file",strings.equal(mode,"picture"),true)+field(state,"fit","Choose a fit","select",strings.equal(mode,"picture"),true)
+    out=out+field(state,"useDesktopColor","Use theme background color","bool",true,true)+field(state,"color","Background color","text",true,!m.flag(m.get(state.draft,"useDesktopColor")))
+    out=out+field(state,"widgetClock","Clock widget","bool",true,true)+field(state,"widgetDate","Date widget","bool",true,true)+field(state,"widgetNote","Note widget","bool",true,true)
+    out=out+field(state,"widgetPosition","Arrange widgets","select",true,true)+field(state,"widgetNoteText","Note text","multiline",m.flag(m.get(widgetValues,"widgetNote")),true)
+    out=out+field(state,"contextEnabled","Enable desktop context menu","bool",true,true)
+    let standard=menu.defaults();for i in 0..(json.len(standard) as i64) {let item=json.at(standard,i);out=out+field(state,m.text(m.get(item,"key")),m.text(m.get(item,"title")),"bool",true,context)}
+    let preview=menu.view(state.draft);for i in 0..(json.len(preview) as i64) {let item=json.at(preview,i);out=out+wire.separator()+"M\t"+wire.encoded(m.text(m.get(item,"title")))+"\t"+wire.encoded(m.text(m.get(item,"icon")))}
+    let parsed=result.attempt(fn():json.Value {return customList(state)})
+    if result.isErr(parsed) {out=out+wire.separator()+"I\t"+wire.encoded("Saved custom actions are invalid. Clear them to add new actions.")}
+    else {let items=result.unwrap(parsed);for i in 0..(json.len(items) as i64) {let item=json.at(items,i);out=out+wire.separator()+"C\t"+m.text(m.get(item,"id"))+"\t"+wire.encoded(m.text(m.get(item,"title")))+"\t"+wire.encoded(m.text(m.get(item,"command")))+"\t"+(m.flag(m.get(item,"enabled")) ? "1" : "0")}}
+    return out+wire.separator()+"E\t"+wire.encoded(state.editor)+"\t"+wire.encoded(state.title)+"\t"+wire.encoded(state.command)
+}

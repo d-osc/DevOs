@@ -1,6 +1,6 @@
 import {Gio, GLib} from '@dev-os/core';
 import System from 'system';
-import {nativeWifiHelper, normalizeWifiNetworks, parseNativeWifiResponse, WindowsWifi} from '../extensions/org.devos.settings/wifi.js';
+import {nativeWifiHelper, normalizeWifiNetworks, parseNativeWifiResponse, WindowsWifi} from '../src/apps/org.devos.settings/wifi.js';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 const network = {ssid: 'Cafe: "ไทย"', profile: '', adapter: 'Test Wi-Fi', interfaceId: '11111111-1111-1111-1111-111111111111',

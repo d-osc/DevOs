@@ -1,0 +1,56 @@
+# Source-runtime settings and monitor/window processing. No GTK in the worker.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/crypto"
+use "../../../lib/display-care.dev" as care
+use "../../../lib/hw.dev" as hw
+use "./geometry.dev" as geometry
+
+fn get(value:json.Value,key:str):json.Value { return strings.equal(json.kind(value),"object") && json.has(value,key) ? json.get(value,key) : json.null_value() }
+fn num(value:json.Value):i64 { return strings.equal(json.kind(value),"number") ? json.int(value) : 0 }
+fn flag(value:json.Value):bool { return strings.equal(json.kind(value),"bool") && json.bool(value) }
+fn rectContains(bounds:json.Value,x:i64,y:i64):bool {
+    return geometry.contains(bounds,x,y)
+}
+fn checkedSetting(key:str,value:json.Value):json.Value {
+    let checked=result.attempt(fn():json.Value {
+        return care.validate(key,strings.equal(json.kind(value),"string") ? json.string(value) : json.stringify(value))
+    })
+    return result.isOk(checked) ? result.unwrap(checked) : json.null_value()
+}
+fn settings(saved:json.Value):json.Value {
+    let values=care.defaults()
+    if !strings.equal(json.kind(saved),"object") { return values }
+    for key in care.settingKeys() {
+        let value=get(saved,key); let kind=json.kind(value)
+        let allowed=strings.equal(key,"splendid") ? strings.equal(kind,"string") : care.isBoolKey(key) ? strings.equal(kind,"bool") : strings.equal(kind,"number")
+        if !allowed { continue }
+        let checked=checkedSetting(key,value)
+        if !json.is_null(checked) { values=json.set(values,key,checked) }
+    }
+    return values
+}
+fn frame(request:json.Value,values:json.Value,battery:care.Battery,idle:str):str {
+    let monitors=get(request,"monitors"); let windows=get(request,"windows")
+    let out="S\t${num(get(request,"generation"))}"
+    if !strings.equal(json.kind(monitors),"array") || !strings.equal(json.kind(windows),"array") { return out }
+    let strength=0
+    if geometry.edgeActive(num(get(values,"edgeBrightness")),battery.present,battery.onBattery) {strength=geometry.edgePercent(num(get(values,"edgeBrightness")))}
+    let token=strings.equal(idle,"") ? "" : crypto.hashText("sha256",idle)
+    for i in 0..(json.len(monitors) as i64) {
+        let monitor=json.at(monitors,i); let target=false; let hole={x:0,y:0,width:0,height:0}
+        for n in 0..(json.len(windows) as i64) {
+            let window=json.at(windows,n); let geometry=get(window,"geometry"); let area=get(geometry,"area")
+            if flag(get(window,"active")) && !flag(get(window,"minimized")) && !json.is_null(geometry) && rectContains(monitor,num(get(area,"x"))+1,num(get(area,"y"))+1) {
+                target=flag(get(values,"targetMode")) && !flag(get(window,"fullscreen"))
+                if target { hole={x:num(get(geometry,"x"))-num(get(area,"x")),y:num(get(geometry,"y"))-num(get(area,"y")),width:num(get(geometry,"width")),height:num(get(geometry,"height"))} }
+                break
+            }
+        }
+        let saver=flag(get(values,"pixelRefresh")) && !strings.equal(token,"")
+        out=out+"\t${i},${target ? 1 : 0},${num(get(hole,"x"))},${num(get(hole,"y"))},${num(get(hole,"width"))},${num(get(hole,"height"))},${strength},${saver ? 1 : 0},${token},${num(get(monitor,"id"))}"
+    }
+    return out
+}
+fn current(request:json.Value):str { return frame(request,settings(hw.loadJson(care.statePath())),care.batteryState(),hw.readTrim(care.flagPath())) }

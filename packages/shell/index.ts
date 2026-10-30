@@ -10,16 +10,15 @@ import {Windows} from '@dev-os/services/windows';
 import {SettingsPages} from '@dev-os/core';
 import {requestSessionVersion} from '@dev-os/runtime/session-version';
 import {shellApplicationId, controlInterface} from '@dev-os/runtime/remote';
-import {LockScreen} from '@dev-os/runtime/lock';
-import {SleepGuard} from '@dev-os/runtime/sleep';
-import {LidStandby} from '@dev-os/runtime/lid';
+import {appForCommand, processApplicationId, sendCommand, type BaseApp} from '@dev-os/runtime/processes';
+import {AppProcesses} from './app-processes.js';
 
 /** Report a boot milestone to devos-splash without waiting for it or failing when it is not installed. */
 function splashStep(step: string): void {
     try { GLib.spawn_command_line_async(`devos-splash --step ${step}`); } catch { /* no boot animation here */ }
 }
 
-interface ShellOptions {config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]; preferences?: ExtensionManager;}
+interface ShellOptions {appConfig?: {get(): Config; save(value: unknown): void | Promise<void>}; config: Config; uiDefinitions: UIExtension[]; userDefinitions?: UIExtension[]; preferences?: ExtensionManager; app?: BaseApp; initializeSettings?(context: UIContext): () => void;}
 
 export const DesktopShell = GObject.registerClass(class ShellApplication extends Gtk.Application {
     // GObject calls _init inside super(). Emitting JS fields afterwards would
@@ -43,17 +42,22 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     declare windows: Windows | undefined;
     declare settingsPages: SettingsPages;
     declare control: Gio.DBusExportedObject | undefined;
-    declare lockScreen: LockScreen;
-    declare sleepGuard: SleepGuard | undefined;
-    declare lidStandby: LidStandby | undefined;
+    declare app: BaseApp | undefined;
+    declare appConfig: ShellOptions['appConfig'];
+    declare processes: AppProcesses;
+    declare initializeSettings: ShellOptions['initializeSettings'];
+    declare settingsCleanup: (() => void) | undefined;
+    declare stopWatching: (() => void) | undefined;
     constructor(options: ShellOptions) {
         super(options as unknown as Gtk.Application.ConstructorProps);
     }
 
-    _init({config, uiDefinitions, userDefinitions = [], preferences}: ShellOptions) {
-        super._init({application_id: shellApplicationId(),
+    _init({config, uiDefinitions, userDefinitions = [], preferences, app, appConfig, initializeSettings}: ShellOptions) {
+        super._init({application_id: app ? processApplicationId(app) : shellApplicationId(),
             flags: Gio.ApplicationFlags.HANDLES_COMMAND_LINE});
         this.config = config;
+        this.app = app; this.initializeSettings = initializeSettings;
+        this.processes = new AppProcesses(message => this.showMessage(message));
         this.uiDefinitions = uiDefinitions;
         this.userDefinitions = userDefinitions; this.userRuntimes = [];
         this.ui = new UIRuntime();
@@ -67,27 +71,35 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         this.messageSource = 0;
         this.signalSources = [];
         this.quitting = false;
+        this.appConfig = appConfig;
         this.extensions = preferences ?? new ExtensionManager();
         this.settingsPages = new SettingsPages();
         this.control = undefined;
-        this.lockScreen = new LockScreen();
-        this.sleepGuard = undefined;
-        this.lidStandby = undefined;
     }
 
     vfunc_startup() {
         super.vfunc_startup();
         const display = Gdk.Display.get_default();
         if (display) this.display = display;
-        if (!this.display || !GtkLayerShell.is_supported()) {
+        if (!this.display || (!this.app && !GtkLayerShell.is_supported())) {
             this.startupError = 'This display does not support Wayland layer-shell. ' +
                 'Run bin/dev-os-session --nested to start a labwc compositor.';
             return;
         }
         this.hold();
-        this.windows = new Windows();
+        if (!this.app || this.app === 'settings') this.windows = new Windows({memoryPolicy: !this.app});
         try { this.ui.start(this.uiDefinitions, this.uiContext()); }
-        catch (error) { this.windows.destroy(); this.startupError = `UI activation failed: ${String(error)}`; this.release(); return; }
+        catch (error) { this.windows?.destroy(); this.startupError = `UI activation failed: ${String(error)}`; this.release(); return; }
+        this.settingsCleanup = this.initializeSettings?.(this.uiContext());
+        if (!this.app) {
+            const switchUser = new Gio.SimpleAction({name: 'devos-switch-user', parameter_type: new GLib.VariantType('s')});
+            switchUser.connect('activate', (_action, username) => this.processes.launch('settings', 'session.switch-user', username?.get_string()[0] || undefined));
+            this.add_action(switchUser);
+        }
+        this.stopWatching = this.extensions.watch(() => {
+            try {this.config = this.appConfig?.get() ?? loadConfig(); for (const listener of this.reloadListeners) listener();}
+            catch (error) {this.showMessage(String(error));}
+        });
         for (const definition of this.userDefinitions) {
             const runtime = new UIRuntime();
             try { runtime.start([definition], this.uiContext()); this.userRuntimes.push(runtime); }
@@ -109,17 +121,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             },
         });
         this.control.export(this.get_dbus_connection()!, `${this.get_dbus_object_path()!}/control`);
-        // Lock before sleeping so waking shows the lock screen immediately. DEV_OS_LOCK_ON_SLEEP=0 opts out.
-        if (GLib.getenv('DEV_OS_LOCK_ON_SLEEP') !== '0') {
-            this.sleepGuard = new SleepGuard(ready => {
-                if (!this.lockScreen.start(this.config, message => { if (!this.quitting) this.showMessage(message); }, ready)) ready();
-            });
-            this.sleepGuard.start();
-        }
-        this.lidStandby = new LidStandby(ready => this.lockScreen.start(this.config,
-            message => { if (!this.quitting) this.showMessage(message); }, ready),
-            message => { if (!this.quitting) this.showMessage(message); });
-        this.lidStandby.start();
+        if (this.app) {print(`Dev OS app ready: ${this.app} [process ${this.get_application_id()}]`); return;}
         print(`Dev OS shell ready on ${GLib.getenv('WAYLAND_DISPLAY')} (${this.display.get_n_monitors()} output(s)) [GJS]`);
         // Boot animation milestones (fire-and-forget; absent outside the Dev OS image): the shell runs, then its first frames are on screen.
         splashStep('shell');
@@ -146,7 +148,19 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     handleArguments(args: string[], cwd: string): number {
         if (this.startupError) { printerr(this.startupError); return 1; }
         const command = args[0] ?? 'shell';
+        if (this.app) {
+            if (appForCommand(command) !== this.app) throw new Error(`Command ${command} does not belong to ${this.app}`);
+            const local = command === 'terminal' ? 'terminal.native' : command;
+            if (command === 'session.switch-user') {this.commands.get(command)?.(undefined, args[1]); return 0;}
+            if (args.length > 1) for (const path of args.slice(1)) this.invokeWithPath(local, GLib.canonicalize_filename(path.startsWith('file:') ? Gio.File.new_for_uri(path).get_path()! : path, cwd));
+            else this.invoke(local);
+            return 0;
+        }
+        if (appForCommand(command) && !['terminal', 'files', 'editor', 'package-install'].includes(command)) {this.invoke(command); return 0;}
         switch (command) {
+        case 'session.restart': case 'session.quit': this.quit(); break;
+        case 'services.message': this.showMessage(args[1] ?? ''); break;
+        case 'screenshot': case 'screenshot-app': this.invoke(command); break;
         case 'window-next': this.windows?.gesture('next'); break;
         case 'window-previous': this.windows?.gesture('previous'); break;
         case 'window-restore': this.windows?.gesture('restore'); break;
@@ -155,6 +169,8 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         case 'network': this.invoke('settings.network'); break;
         case 'language': this.invoke('settings.language'); break;
         case 'time': this.invoke('settings.time'); break;
+        case 'accounts': this.invoke('settings.accounts'); break;
+        case 'switch-user': this.processes.launch('settings', 'session.switch-user', args[1]); break;
         case 'vpn': case 'hotspot': case 'airplane': case 'proxy': case 'advanced': case 'mouse': case 'keyboard': case 'bluetooth-add': case 'printers': case 'touchpad': case 'system': case 'display': case 'sound': case 'power': case 'storage': case 'about': this.invoke(`settings.${command}`); break;
         case 'reload': return this.reloadConfig() ? 0 : 1;
         case 'terminal': case 'files': case 'lock': return this.runCommand(command) ? 0 : 1;
@@ -169,8 +185,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             break;
         }
         case 'editor': {
-            const open = this.commands.get('editor');
-            if (!open) throw new Error('Editor extension is unavailable');
+            const open: UICommand = (_monitor, path) => this.processes.launch('editor', 'editor', path);
             const paths = args.slice(1);
             if (!paths.length) open();
             for (const path of paths) {
@@ -185,14 +200,19 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     }
 
     invokeWithPath(command: string, path: string): void {
+        if (!this.app) {const app = appForCommand(command); if (app) {this.processes.launch(app, command, path); return;}}
         const handler = this.commands.get(command);
         if (!handler) throw new Error(`No extension handles command ${command}`);
         handler(undefined, path);
     }
 
     invoke(command: string, monitor?: Gdk.Monitor): void {
+        if (!this.app) {const app = appForCommand(command); if (app) {this.processes.launch(app, command); return;}}
         const handler = this.commands.get(command);
-        if (!handler) throw new Error(`No extension handles command ${command}`);
+        if (!handler) {
+            if (this.app && appForCommand(command) !== this.app) {void sendCommand(shellApplicationId(), [command]).catch(error => this.showMessage(String(error))); return;}
+            throw new Error(`No extension handles command ${command}`);
+        }
         handler(monitor);
     }
 
@@ -206,20 +226,29 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
             settingsPages: this.settingsPages,
             registerSettingsPage: (id, page) => this.settingsPages.register(id, page),
             config: () => this.config,
-            saveCore: value => { saveConfig(value); },
+            saveCore: value => {if (this.appConfig) return this.appConfig.save(value); saveConfig(value);},
             monitors: () => Array.from({length: this.display.get_n_monitors()}, (_, index) => this.display.get_monitor(index)!),
-            runCommand: (command, directory) => this.runCommand(command, directory), reload: () => this.reloadConfig(), quit: () => this.quit(),
+            runCommand: (command, directory) => this.runCommand(command, directory), reload: () => {
+                if (this.app) void sendCommand(shellApplicationId(), ['reload']).catch(error => this.showMessage(String(error)));
+                return this.reloadConfig();
+            }, quit: () => {
+                if (this.app) void sendCommand(shellApplicationId(), ['session.quit']).catch(error => this.showMessage(String(error)));
+                else this.quit();
+            },
             useInstalledVersion: async root => {
                 await requestSessionVersion(root);
+                if (this.app) {await sendCommand(shellApplicationId(), ['session.restart']); return;}
                 GLib.idle_add(GLib.PRIORITY_DEFAULT, () => { this.quit(); return GLib.SOURCE_REMOVE; });
             },
             invoke: (command, monitor) => this.invoke(command, monitor),
             openEditor: path => {
+                if (!this.commands.has('editor')) {this.processes.launch('editor', 'editor', path); return true;}
                 const handler = this.commands.get('editor');
                 if (!handler) return false;
                 handler(undefined, path); return true;
             },
             openPackage: path => {
+                if (!this.commands.has('package-install')) {this.processes.launch('appstore', 'package-install', path); return true;}
                 if (!this.commands.has('package-install')) return false;
                 this.invokeWithPath('package-install', path); return true;
             },
@@ -241,7 +270,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
 
     reloadConfig() {
         let config;
-        try { config = loadConfig(); }
+        try { config = this.appConfig?.get() ?? loadConfig(); }
         catch (error) { this.showMessage((error instanceof Error ? error.message : String(error))); return false; }
         this.config = config; this.extensions.reload();
         for (const listener of this.reloadListeners) listener();
@@ -250,22 +279,15 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     }
 
     runCommand(command: Command, directory?: string): boolean {
-        if (command === 'files' && this.commands.has('files')) {
-            try { this.invoke('files'); return true; }
-            catch (error) { this.showMessage(`Could not open Files: ${String(error)}`); return false; }
+        if (command === 'lock') {
+            const args = this.config.lock.map(expandHome), executable = args.length === 1 && args[0] === 'dev-os-lock' ? 'swaylock' : args[0];
+            if (!GLib.find_program_in_path(executable)) {this.showMessage(`Install ${executable} or change 'lock' in config.json.`); return false;}
+            this.processes.launch('services', 'lock'); return true;
         }
+        if (command === 'files') {this.processes.launch('files', 'files'); return true;}
         const args = this.config[command].map(expandHome);
-        if (command === 'lock' && args.length === 1 && args[0] === 'dev-os-lock')
-            return this.lockScreen.start(this.config, message => {
-                if (!this.quitting) this.showMessage(message);
-            });
         if (command === 'terminal' && args.length === 1 && ['dev-os-terminal', 'foot'].includes(args[0])) {
-            try {
-                const open = this.commands.get('terminal.native');
-                if (!open) throw new Error('Terminal extension is unavailable');
-                open(undefined, directory);
-                return true;
-            } catch (error) { this.showMessage(`Could not open Terminal: ${String(error)}`); return false; }
+            this.processes.launch('terminal', 'terminal.native', directory); return true;
         }
         if (!GLib.find_program_in_path(args[0])) {
             this.showMessage(`Install ${args[0]} or change '${command}' in config.json.`);
@@ -287,6 +309,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
     }
 
     showMessage(message: string) {
+        try {Gio.DBus.session.emit_signal(null, '/org/devos/Panel', 'org.devos.Panel', 'Message', new GLib.Variant('(s)', [message]));} catch (error) {printerr(String(error));}
         printerr(`Dev OS: ${message}`);
         for (const listener of this.messages) listener(message);
         if (this.messageSource) GLib.source_remove(this.messageSource);
@@ -300,8 +323,7 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         this.control?.unexport(); this.control = undefined;
         if (this.messageSource) GLib.source_remove(this.messageSource);
         this.signalSources.forEach(source => GLib.source_remove(source));
-        this.sleepGuard?.destroy(); this.sleepGuard = undefined;
-        this.lidStandby?.destroy(); this.lidStandby = undefined;
+        this.processes.destroy(); this.stopWatching?.(); this.settingsCleanup?.();
         this.displaySignals.forEach(id => this.display.disconnect(id));
         for (const runtime of this.userRuntimes.reverse()) runtime.stop();
         this.userRuntimes = [];

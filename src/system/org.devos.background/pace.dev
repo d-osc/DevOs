@@ -1,0 +1,2 @@
+# Style IDs follow model.styles(); settings/backend provide the battery flag.
+fn interval(style:i32,battery:bool):i32 {return (style==17 || style>=19 && style<=23 ? 67 : 100)*(battery ? 2 : 1)}

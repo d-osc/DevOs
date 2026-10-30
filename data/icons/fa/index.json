@@ -2,6 +2,7 @@
  "mapping": {
   "dev-os-browser": "globe",
   "dev-os-camera": "camera",
+  "dev-os-screenshot": "camera-viewfinder",
   "dev-os-terminal": "terminal",
   "dev-os-microphone": "microphone",
   "dev-os-files": "folder-open",
@@ -118,7 +119,7 @@
   "battery-empty": "battery-empty",
   "battery-missing": "battery-slash",
   "battery-good-charging": "battery-bolt",
-  "display-brightness": "brightness",
+  "display-brightness": "sun",
   "preferences-system-notifications": "bell",
   "power-profile-power-saver": "leaf",
   "power-profile-performance": "bolt",

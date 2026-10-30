@@ -1,0 +1,100 @@
+#!/usr/bin/env d
+# Process/crash isolation in a disposable compositor. Never touches the active desktop.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+
+fn appPid(session: smoke.Session, role: str): i64 {
+    if strings.equal(role,"taskmanager") {
+        let ids = smoke.processIds(session.runtime,session.root+"/dist/native/taskmanager")
+        return ids.len() == 1 ? ids[0] : 0
+    }
+    for pid in smoke.processIds(session.runtime, session.root + "/dist/app-host.js") {
+        for argument in smoke.fields("/proc/" + json.stringify(pid) + "/cmdline") { if strings.equal(argument, role) { return pid } }
+    }
+    return 0
+}
+fn dataPid(session: smoke.Session, role: str): i64 {
+    if strings.equal(role,"taskmanager") {
+        for pid in smoke.processIds(session.runtime,session.root+"/src/services/taskmanager.dev") {
+            if strings.equal(strings.trim(tool.read("/proc/${pid}/comm")),"devrun") { return pid }
+        }
+        return 0
+    }
+    for pid in smoke.processIds(session.runtime, session.root + "/dist/app-service-host.js") {
+        for argument in smoke.fields("/proc/" + json.stringify(pid) + "/cmdline") {if strings.equal(argument, role) {return pid}}
+    }
+    return 0
+}
+fn singlePid(session: smoke.Session, entry: str): i64 {
+    let ids = smoke.processIds(session.runtime, session.root + "/dist/" + entry + ".js")
+    return ids.len() == 1 ? ids[0] : 0
+}
+fn kill(pid: i64, signal: str) {tool.checked(Vec<str>("kill", "-" + signal, json.stringify(pid)), Map<str,str>(), "", 5000)}
+fn main(): i32 {
+    let managed = Vec<i64>()
+    smoke.withSession("process-isolation", Map<str,str>(), fn(session: smoke.Session) {
+        let env = smoke.environment(session)
+        tool.waitFor(fn(): bool {return singlePid(session, "services-host") > 0}, 15000, "Services did not start")
+        let shell = singlePid(session, "main")
+        let services = singlePid(session, "services-host")
+        tool.require(!strings.contains(tool.read("/proc/" + json.stringify(services) + "/maps"), "libgtk-3"), "OS services loaded the GUI toolkit")
+        for command in Vec<str>("files", "terminal", "settings", "editor", "camera", "microphone", "task-manager", "browser", "disk-manager", "app-store", "installer", "screenshot-app") {smoke.remote(session, env, command)}
+        tool.waitFor(fn(): bool {return appPid(session, "files") > 0 && appPid(session, "terminal") > 0 && appPid(session, "settings") > 0 && appPid(session, "screenshot") > 0}, 20000, "Base app processes did not start")
+        for role in Vec<str>("files", "terminal", "settings", "editor", "camera", "microphone", "taskmanager", "browser", "diskmanager", "appstore", "installer", "screenshot") {
+            tool.waitFor(fn(): bool {return appPid(session, role) > 0 && dataPid(session, role) > 0}, 20000, "Missing UI/data processes: " + role)
+            let data = dataPid(session, role)
+            tool.require(data != appPid(session, role), "App UI and data share a PID: " + role)
+            tool.require(!strings.contains(tool.read("/proc/" + json.stringify(data) + "/maps"), "libgtk-3"), "Data service loaded GTK: " + role)
+            managed.push(appPid(session, role)); managed.push(data)
+        }
+        let data = dataPid(session, "files")
+        kill(data, "STOP")
+        smoke.remote(session, env, "files")
+        smoke.remote(session, env, "launcher")
+        kill(data, "CONT")
+        let files = appPid(session, "files")
+        let terminal = appPid(session, "terminal")
+        tool.require(shell != services && shell != files && files != terminal, "Process boundaries overlap")
+        # A frozen app cannot freeze the shell's command loop.
+        kill(files, "STOP")
+        smoke.remote(session, env, "launcher")
+        smoke.remote(session, env, "launcher")
+        kill(files, "CONT")
+        smoke.remote(session, env, "files"); time.sleep_ms(300)
+        tool.require(appPid(session, "files") == files, "Reopening Files duplicated its process")
+        kill(files, "KILL")
+        tool.waitFor(fn(): bool {return appPid(session, "files") == 0}, 5000, "Files did not exit")
+        tool.require(singlePid(session, "main") == shell && appPid(session, "terminal") == terminal, "App crash affected shell or sibling app")
+        smoke.remote(session, env, "files")
+        tool.waitFor(fn(): bool {return appPid(session, "files") > 0 && appPid(session, "files") != files}, 15000, "Files did not recover")
+        let recoveredFiles = appPid(session, "files")
+        kill(shell, "KILL")
+        tool.waitFor(fn(): bool {return singlePid(session, "main") > 0 && singlePid(session, "main") != shell}, 15000, "Shell was not restarted")
+        tool.require(singlePid(session, "services-host") == services && appPid(session, "terminal") == terminal && appPid(session, "files") == recoveredFiles, "Shell crash affected services or apps")
+        time.sleep_ms(1200)
+        let recoveredShell = singlePid(session, "main")
+        kill(services, "KILL")
+        tool.waitFor(fn(): bool {return singlePid(session, "services-host") > 0 && singlePid(session, "services-host") != services}, 15000, "Services were not restarted")
+        tool.require(singlePid(session, "main") == recoveredShell && appPid(session, "terminal") == terminal, "Service crash affected the GUI")
+        smoke.remote(session, env, "files")
+        managed.push(singlePid(session, "main")); managed.push(singlePid(session, "services-host"))
+        for role in Vec<str>("files", "terminal", "settings", "screenshot") {managed.push(appPid(session, role))}
+        # This Files process belongs to the old, already-exited shell's group.
+        # Even a stopped app there must be killed when the whole session closes.
+        kill(recoveredFiles, "STOP")
+        fs.mkdirSync(session.root + "/build/process-isolation", true)
+        tool.copy(session.log, session.root + "/build/process-isolation/session.log")
+        print("PASS: all 12 base apps have separate UI/data processes, stopped data worker leaves UI responsive, singleton reuse, frozen-app responsiveness, app recovery, independent shell/service restart")
+    })
+    tool.waitFor(fn(): bool {
+        for pid in managed {if pid > 0 && fs.existsSync("/proc/" + json.stringify(pid)) {return false}}
+        return true
+    }, 10000, "A managed process survived session cleanup")
+    print("PASS: session exit cleans up shell, services and base app processes")
+    return 0
+}
+return tool.main(main)

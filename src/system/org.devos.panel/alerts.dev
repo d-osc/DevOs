@@ -1,0 +1,14 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/wire.dev" as wire
+fn append(previous:json.Value,message:json.Value,time:str):json.Value {
+    if !strings.equal(json.kind(message),"string") {result.raise("Invalid desktop alert")};let text=json.string(message);if strings.equal(text,"") {return previous}
+    if strings.charLength(text)>8192 {text=strings.substring(text,0,8192)}
+    let out=json.array();out=json.push(out,{message:text,time:time});for i in 0..(json.len(previous) as i64) {if i>=29 {break};out=json.push(out,json.at(previous,i))};return out
+}
+fn frame(items:json.Value):str {
+    let tooltip=json.len(items)>0 ? hw.jstr(json.at(items,0),"message","Desktop alerts") : "Desktop alerts";let out="A\t${json.len(items)}\t"+wire.encoded(tooltip)
+    for i in 0..(json.len(items) as i64) {if i>=5 {break};let item=json.at(items,i);out=out+wire.separator()+"N\t"+wire.encoded(hw.jstr(item,"time",""))+"\t"+wire.encoded(hw.jstr(item,"message",""))};return out
+}

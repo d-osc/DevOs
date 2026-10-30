@@ -5,12 +5,12 @@ IMAGE_FEATURES = "package-management"
 PACKAGE_EXCLUDE += "foot byobu vim vim-common vim-tiny vim-tools vim-syntax vim-help vim-tutor gvim"
 # No VS Code, Chrome, Rust, Node.js/nvm, Python or QEMU in the image: the Settings helpers (bin/dev-os-*) are DevLang scripts.
 IMAGE_INSTALL = "packagegroup-core-boot kernel-modules os-release devos-shell devos-session \
-    gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc swaylock \
+    gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc swaylock grim \
     dbus util-linux-setsid util-linux-lscpu libnm networkmanager networkmanager-nmcli \
     network-manager-applet gnome-control-center \
     coreutils tar findutils openssl-bin efibootmgr util-linux-findmnt cups git devos-pm devlang gh bluez5 bluez5-noinst-tools pipewire pipewire-pulse pipewire-tools pipewire-modules-echo-cancel pipewire-spa-plugins-aec-webrtc pipewire-modules-filter-chain pipewire-spa-plugins-filter-graph pipewire-spa-plugins-filter-graph-plugin-builtin wireplumber devos-x2-wireless-firmware devos-x2-audio-topology alsa-ucm-conf \
-    polkit polkit-gnome kmod pciutils usbutils iproute2 iproute2-tc iw rfkill wireless-regdb-static \
-    adwaita-icon-theme shared-mime-info xdg-utils ca-certificates sudo curl fontconfig \
+    polkit polkit-gnome kmod pciutils usbutils iproute2 iproute2-tc iproute2-ss iw rfkill wireless-regdb-static \
+    adwaita-icon-theme shared-mime-info xdg-utils ca-certificates sudo curl xz zstd fontconfig \
     ttf-dejavu-sans ttf-tlwg xkeyboard-config tzdata \
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libcamera libcamera-gst v4l-utils alsa-utils \
     wlr-randr wlopm power-profiles-daemon \

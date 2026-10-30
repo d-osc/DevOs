@@ -51,7 +51,7 @@ fn hasWhitespace(text: str): bool {
 
 fn buildRuntimeArchive(root: str, archive: str): bool {
     let listPath = archive + ".list"
-    let find = "cd " + root + " && find bin lib dist config data extensions -type f ! -path \"*__pycache__*\" ! -path \"*/types/*\" ! -name \"*.pyc\" ! -name \"*.ps1\" ! -name \"*-test.js\" 2>/dev/null | sort"
+    let find = "cd " + root + " && find bin lib dist config data src/apps src/system src/extensions src/services -type f ! -path \"*__pycache__*\" ! -path \"*/types/*\" ! -path \"*/.dev-cache/*\" ! -path \"*/.devx/*\" ! -name \"*.o\" ! -name \"*.pyc\" ! -name \"*.ps1\" ! -name \"*-test.js\" 2>/dev/null | sort"
     let extras = Vec<str>("native/window-tracker.c", "native/protocols/wlr-foreign-toplevel-management-unstable-v1.xml",
         "native/protocols/devos-workspaces-v1.xml", "native/devos_accounts_system.dev", "native/privileged.dev", "native/devos-account-admin",
         "native/devos-pam-auth", "native/devos-account-askpass", "native/devos-account-askpass.dev", "native/devos_app_store.dev", "native/devos-app-store-admin", "native/devos-radio-admin", "native/radio-system.dev", "native/devos-battery-care", "native/devos-fan-profile", "native/devos-swap", "native/devos-system-update", "native/devos-keyboard", "native/devos-connectivity")
@@ -151,7 +151,7 @@ fn main(): i32 {
     provenance = json.set(provenance, "desktop_build", json.parse(fs.readFileSync(root + "/dist/build-info.json", "utf8")))
     fs.writeFileSync(payload + "/provenance.json", json.pretty(provenance) + "\n")
     for i in 0..1 {
-        let names = Vec<str>("patch-touchpad.dev", "devos-touchpad.h", "patch-task-view-gesture.dev", "devos-task-view.h", "devos-desktop-animation.h", "devos-window-animation.c", "patch-task-view-workspaces.dev", "devos-workspaces.c")
+        let names = Vec<str>("patch-touchpad.dev", "devos-touchpad.h", "patch-menu-shape.dev", "devos-menu-shape.h", "patch-tab-drag.dev", "devos-tab-drag.h", "patch-task-view-gesture.dev", "devos-task-view.h", "devos-desktop-animation.h", "devos-window-animation.c", "patch-task-view-workspaces.dev", "devos-workspaces.c")
         for n in 0..(names.len() as i64) {
             posix.shell("cp -f " + root + "/tools/setup/" + names[n] + " " + payload + "/" + names[n])
         }

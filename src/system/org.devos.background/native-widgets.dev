@@ -1,0 +1,47 @@
+# Native UI only: gestures, placement and displayed text. The service owns values.
+use "react_devlang/ui" as ui
+extern fn bg_card_new(parent:*void,name:str,title:str,body:*u8,bodyClass:str):*void
+extern fn bg_card_watch(card:*void,event:callback(i32,f64,f64,*void):void,data:*void)
+extern fn bg_card_text(card:*void,text:*u8,length:i64)
+extern fn bg_card_x(card:*void):i32
+extern fn bg_card_y(card:*void):i32
+extern fn bg_card_limit(card:*void,axis:i32):i32
+extern fn bg_card_place(card:*void,x:i32,y:i32)
+extern fn bg_card_free(card:*void,keep:*void)
+struct Props {enabled:bool,name:str,title:str,body:ui.Text,bodyClass:str,x:i64,y:i64,left:bool,index:i64,scope:i64,revision:i64,moved:fn(f64,f64):void,removed:fn():void}
+fn bounded(value:f64,limit:i32):i32 {let high=limit as f64;return ((value<0.0 ? 0.0 : value>high ? high : value)+0.5) as i32}
+fn place(card:*void,x:f64,y:f64) {unsafe {bg_card_place(card,bounded(x,bg_card_limit(card,0)),bounded(y,bg_card_limit(card,1)))}}
+fn layout(card:*void,x:i64,y:i64,left:bool,index:i64) {unsafe {
+    let w=bg_card_limit(card,0) as f64;let h=bg_card_limit(card,1) as f64
+    place(card,x>=0 ? (x as f64)/1000000.0*w : left ? 24.0 : w-24.0,y>=0 ? (y as f64)/1000000.0*h : 80.0+(index as f64)*145.0)
+}}
+fn widget(context:*ui.Context,parent:str,props:Props) {
+    let handle=ui.useRef(context,0);let x=ui.useRef(context,props.x);let y=ui.useRef(context,props.y)
+    let startX=ui.useRef(context,0);let startY=ui.useRef(context,0);let dragging=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if !props.enabled {return ui.noop}
+        let owner=ui.find(context,parent);let body=ui.nativeText(props.body);let card=bg_card_new(owner,props.name,props.title,body,props.bodyClass);ui.rd_buffer_free(body as *void)
+        if card==null {ui.rd_fail("Desktop widget requires an Overlay")}
+        handle.set(card as i64);x.set(props.x);y.set(props.y)
+        let events=callback_context(fn(phase:i32,dx:f64,dy:f64) {unsafe {
+            if phase==1 {dragging.set(1);startX.set(bg_card_x(card) as i64);startY.set(bg_card_y(card) as i64)}
+            if phase==2 || phase==3 {place(card,(startX.get() as f64)+dx,(startY.get() as f64)+dy)}
+            if phase==3 {
+                dragging.set(0);let w=bg_card_limit(card,0);let h=bg_card_limit(card,1);let nx=w>0 ? (bg_card_x(card) as f64)/(w as f64) : 0.0;let ny=h>0 ? (bg_card_y(card) as f64)/(h as f64) : 0.0
+                x.set((nx*1000000.0+0.5) as i64);y.set((ny*1000000.0+0.5) as i64);props.moved(nx,ny)
+            }
+            if phase==4 {props.removed()}
+            if phase==5 {dragging.set(0);layout(card,x.get(),y.get(),props.left,props.index)}
+            if phase==6 && dragging.get()==0 {layout(card,x.get(),y.get(),props.left,props.index)}
+        }})
+        bg_card_watch(card,events.call,events.data);layout(card,x.get(),y.get(),props.left,props.index)
+        return fn() {unsafe {handle.set(0);bg_card_free(card,events.data)}}
+    }},Vec<i64>(props.enabled ? 1 : 0,props.scope))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if handle.get()!=0 {let value=ui.nativeText(props.body);bg_card_text(handle.get() as *void,value,props.body.bytes.len() as i64);ui.rd_buffer_free(value as *void)}
+        return ui.noop
+    }},Vec<i64>(props.revision,props.enabled ? 1 : 0,props.scope))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        x.set(props.x);y.set(props.y);if handle.get()!=0 && dragging.get()==0 {layout(handle.get() as *void,x.get(),y.get(),props.left,props.index)};return ui.noop
+    }},Vec<i64>(props.x,props.y,props.left ? 1 : 0,props.scope))
+}

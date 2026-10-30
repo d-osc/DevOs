@@ -1,0 +1,103 @@
+# Native boot animation. All drawing and milestone/fade decisions are DevLang.
+use "react_devlang/ui" as ui
+use "../../lib/splash-model.dev" as scene
+use "./splash-font.dev" as font
+extern fn bs_env(name:str):str
+extern fn bs_env_number(name:str,fallback:f64):f64
+extern fn bs_exists(directory:str,name:str,is_directory:i32):i32
+extern fn bs_touch(directory:str,name:str)
+extern fn bs_now():f64
+extern fn bs_log(message:str)
+extern fn bs_new():*void
+extern fn bs_callbacks(host:*void,event:callback(i32,i32,i32,*void):void,events:*void,draw:callback(*void,i32,i32,*void):void,drawing:*void)
+extern fn bs_redraw(host:*void,x:i32,y:i32,width:i32,height:i32,full:i32)
+extern fn bs_opacity(host:*void,value:f64)
+extern fn bs_stop(host:*void)
+extern fn bs_run(host:*void)
+extern fn bs_free(host:*void)
+extern fn cairo_set_operator(cr:*void,op:i32)
+extern fn cairo_set_source_rgba(cr:*void,r:f64,g:f64,b:f64,a:f64)
+extern fn cairo_paint(cr:*void)
+extern fn cairo_set_line_width(cr:*void,width:f64)
+extern fn cairo_set_line_cap(cr:*void,cap:i32)
+extern fn cairo_new_path(cr:*void)
+extern fn cairo_new_sub_path(cr:*void)
+extern fn cairo_arc(cr:*void,x:f64,y:f64,r:f64,from:f64,to:f64)
+extern fn cairo_close_path(cr:*void)
+extern fn cairo_stroke(cr:*void)
+extern fn cairo_fill(cr:*void)
+struct Model {host:*void,steps:str,font:Vec<u8>,started:f64,fade:f64,timeout:f64,reason:str,stage:i32,width:i32,height:i32,drew:bool,announced:bool,finished:bool,frameTime:f64}
+fn rgba(cr:*void,r:f64,g:f64,b:f64,alpha:f64) {unsafe {cairo_set_source_rgba(cr,r/255.0,g/255.0,b/255.0,alpha)}}
+fn dots(cr:*void,text:ui.Text,x:f64,y:f64,pitch:f64,radius:f64,glyphs:Vec<u8>) {unsafe {
+    for code in text.bytes {
+        let glyph=(code<32 || code>126 ? 31 : code as i64-32)*5
+        for col in 0..5 {for row in 0..7 {
+            if ((glyphs[glyph+col] as i64 >> row) & 1)!=0 {cairo_new_sub_path(cr);cairo_arc(cr,x+(col as f64+0.5)*pitch,y+(row as f64+0.5)*pitch,radius,0.0,scene.tau())}
+        }}
+        x=x+6.0*pitch
+    }
+}}
+fn rounded(cr:*void,x:f64,y:f64,w:f64,h:f64,r:f64) {unsafe {
+    let tau=scene.tau();cairo_new_sub_path(cr);cairo_arc(cr,x+w-r,y+r,r,0.0-tau/4.0,0.0);cairo_arc(cr,x+w-r,y+h-r,r,0.0,tau/4.0)
+    cairo_arc(cr,x+r,y+h-r,r,tau/4.0,tau/2.0);cairo_arc(cr,x+r,y+r,r,tau/2.0,tau*3.0/4.0);cairo_close_path(cr)
+}}
+fn paint(model:*Model,cr:*void,width:i32,height:i32) {unsafe {
+    let layout=scene.layout(width as f64,height as f64);let u=layout.u;let cx=layout.cx;let cy=layout.cy;let radius=layout.radius;let stroke=layout.stroke;let tau=scene.tau()
+    cairo_set_operator(cr,1);cairo_set_source_rgba(cr,0.0,0.0,0.0,1.0);cairo_paint(cr);cairo_set_operator(cr,2)
+    cairo_set_line_width(cr,stroke);rgba(cr,57.0,148.0,188.0,0.1);cairo_new_path(cr);cairo_arc(cr,cx,cy,radius,0.0,tau);cairo_stroke(cr)
+    let k=0.62*u;let ox=cx-54.0*k;let oy=cy-52.0*k
+    rgba(cr,110.0,110.0,110.0,1.0);rounded(cr,ox+22.0*k,oy+32.0*k,40.0*k,32.0*k,2.0*k);cairo_fill(cr)
+    cairo_new_path(cr);cairo_arc(cr,ox+81.0*k,oy+67.0*k,5.0*k,0.0,tau);cairo_fill(cr)
+    let pitch=5.2*u;let wx=cx-(6.0*6.0*pitch-pitch)/2.0;let wy=layout.word-3.5*pitch
+    rgba(cr,191.0,191.0,191.0,1.0);cairo_new_path(cr);dots(cr,ui.text("DEV"),wx,wy,pitch,pitch*0.43,(*model).font);cairo_fill(cr)
+    rgba(cr,72.0,160.0,199.0,1.0);cairo_new_path(cr);dots(cr,ui.text("OS"),wx+24.0*pitch,wy,pitch,pitch*0.43,(*model).font);cairo_fill(cr)
+    let status=ui.text(scene.status((*model).stage));let sp=scene.max(2.4,3.0*u)
+    rgba(cr,110.0,110.0,110.0,1.0);cairo_new_path(cr);dots(cr,status,cx-(status.bytes.len() as f64*6.0*sp-sp)/2.0,layout.line-3.5*sp,sp,sp*0.44,(*model).font);cairo_fill(cr)
+    let elapsed=(*model).frameTime>=0.0 ? (*model).frameTime : bs_now()-(*model).started
+    let arc=scene.arc(elapsed);cairo_set_line_width(cr,stroke);cairo_set_line_cap(cr,0)
+    for i in 0..56 {
+        let f=(i as f64+0.5)/56.0;let from=arc.head-arc.length*(i as f64+1.0)/56.0;let to=arc.head-arc.length*i as f64/56.0
+        let blend=scene.pow(1.0-f,3.0);rgba(cr,57.0+15.0*blend,148.0+12.0*blend,188.0+11.0*blend,scene.pow(1.0-f,1.7))
+        cairo_new_path(cr);cairo_arc(cr,cx,cy,radius,from,to);cairo_stroke(cr)
+    }
+    let hx=cx+radius*scene.cos(arc.head);let hy=cy+radius*scene.sin(arc.head)
+    for grow in 2..5 {
+        # The glow layers use the same outer-to-inner compositing order.
+        let size=6-grow;let alpha=size==4 ? 0.05 : size==3 ? 0.08 : 0.12
+        rgba(cr,57.0,148.0,188.0,alpha);cairo_new_path(cr);cairo_arc(cr,hx,hy,stroke*size as f64*0.5,0.0,tau);cairo_fill(cr)
+    }
+    rgba(cr,72.0,160.0,199.0,1.0);cairo_new_path(cr);cairo_arc(cr,hx,hy,stroke/2.0,0.0,tau);cairo_fill(cr);(*model).drew=true
+}}
+fn finish(model:*Model,reason:str) {unsafe {
+    if (*model).finished {return};(*model).finished=true;let tenths=((bs_now()-(*model).started)*10.0+0.5) as i64
+    bs_log("closed: ${reason} after ${tenths/10}.${tenths%10} s");bs_stop((*model).host)
+}}
+fn tick(model:*Model,kind:i32,width:i32,height:i32) {unsafe {
+    if (*model).finished {return}
+    let elapsed=bs_now()-(*model).started
+    if kind==2 {finish(model,"Esc");return};if kind==3 {finish(model,"interrupted");return}
+    if kind==0 {
+        let layout=scene.layout(width as f64,height as f64);let extent=layout.radius+6.0*layout.stroke
+        let full=width!=(*model).width || height!=(*model).height;(*model).width=width;(*model).height=height
+        bs_redraw((*model).host,(layout.cx-extent) as i32,(layout.cy-extent) as i32,(extent*2.0+1.0) as i32,(extent*2.0+1.0) as i32,full ? 1 : 0)
+        if (*model).fade>=0.0 {let alpha=scene.opacity(elapsed,(*model).fade);bs_opacity((*model).host,alpha);if alpha<=0.0 {finish(model,(*model).reason)}}
+        return
+    }
+    if (*model).drew && !(*model).announced {(*model).announced=true;bs_touch((*model).steps,"window");bs_log("first frame drawn")}
+    let names=Vec<str>("system","session","compositor","window","shell","ready");let stage=(*model).stage
+    for i in 0..5 {if i!=3 && bs_exists((*model).steps,names[i],0)!=0 {stage=i as i32}}
+    if stage!=(*model).stage {(*model).stage=stage;bs_redraw((*model).host,0,0,width,height,1);bs_log("status "+scene.status(stage))}
+    if (*model).fade<0.0 && bs_exists((*model).steps,"ready",0)!=0 {(*model).fade=elapsed;bs_log("ready: fading out")}
+    if (*model).fade<0.0 && elapsed>(*model).timeout {(*model).fade=elapsed;(*model).reason="watchdog";bs_log("watchdog: not ready, closing")}
+    if (*model).fade<0.0 && bs_exists((*model).steps,"",1)==0 {(*model).fade=elapsed;(*model).reason="splash directory vanished";bs_log("splash directory vanished: closing")}
+}}
+fn main():i32 {unsafe {
+    let steps=bs_env("DEVOS_SPLASH_STEPS");if ui.text(steps).bytes.len()==0 {steps="/run/devos-splash.d"}
+    if bs_exists(steps,"",1)==0 {return 0}
+    let host=bs_new();if host==null {return 1}
+    let model=Model(host,steps,font.bytes(),bs_now(),-1.0,bs_env_number("DEVOS_SPLASH_WINDOW_TIMEOUT",45.0),"ready",-1,0,0,false,false,false,bs_env_number("DEVOS_SPLASH_FRAME_TIME",-1.0));let pointer=&model
+    let events=callback_context(fn(kind:i32,width:i32,height:i32) {tick(pointer,kind,width,height)})
+    let drawing=callback_context(fn(cr:*void,width:i32,height:i32) {paint(pointer,cr,width,height)})
+    bs_callbacks(host,events.call,events.data,drawing.call,drawing.data);bs_run(host);bs_free(host);return 0
+}}
+return main()

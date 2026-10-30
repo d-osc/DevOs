@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 #include <linux/input-event-codes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -23,6 +24,9 @@ static void removed(void *data, struct wl_registry *registry, uint32_t name) { (
 static const struct wl_registry_listener registry_listener = {.global = global, .global_remove = removed};
 static uint32_t timestamp(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000); }
 int main(void) {
+    unsigned delay = 150000;
+    const char *configured = getenv("DEVOS_POINTER_DELAY_US");
+    if (configured && *configured) {char *end;long value=strtol(configured,&end,10);if(!*end && value>=0 && value<=150000)delay=(unsigned)value;}
     struct wl_display *display = wl_display_connect(NULL); if (!display) return 1;
     struct wl_registry *registry = wl_display_get_registry(display); wl_registry_add_listener(registry, &registry_listener, NULL);
     if (wl_display_roundtrip(display) < 0 || !manager) return 1;
@@ -47,7 +51,7 @@ int main(void) {
             zwlr_virtual_pointer_v1_frame(pointer);
         } else return 1;
         if (wl_display_roundtrip(display) < 0) break;
-        usleep(150000); puts("ok"); fflush(stdout);
+        usleep(delay); puts("ok"); fflush(stdout);
     }
     zwlr_virtual_pointer_v1_destroy(pointer); zwlr_virtual_pointer_manager_v1_destroy(manager);
     if (seat) wl_seat_destroy(seat);

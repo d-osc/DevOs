@@ -1,0 +1,34 @@
+use "std/test"
+use "std/json"
+use "std/fs"
+use "std/strings"
+use "../src/system/org.devos.panel/layout.dev" as layout
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("native panel layout preserves defaults and Desktop height inheritance",fn() {
+    t.equal(layout.wire({},json.null_value()),"L\t0\t36\t16\t12\t2\t1\t1")
+    test.expect(json.int(json.get(layout.options({height:0},json.value(52)),"height"))==52,"Zero did not inherit Desktop height")
+    test.expect(json.int(json.get(layout.options({height:31},json.value(44)),"height"))==44,"Subminimum height did not inherit Desktop")
+})
+test.case("native layout clamps before integer conversion and rounds original bounds",fn() {
+    let value=layout.options({position:"top",height:1e100,iconSize:100,spacing:-20,itemSpacing:3.5,showPinned:false,showDate:false},json.value(36))
+    t.equal(layout.wire(value,json.value(36)),"L\t1\t96\t28\t0\t4\t0\t0")
+    test.expect(json.int(json.get(layout.options({height:0},json.value(-20)),"height"))==32,"Desktop height not clamped")
+    test.expect(json.int(json.get(layout.options({iconSize:1},json.value(36)),"iconSize"))==14,"Icon lower bound changed")
+})
+test.case("bad types retain defaults and only top selects the upper edge",fn() {
+    t.equal(layout.wire({position:"left",height:"60",spacing:true,showPinned:"false",showDate:0},json.value("60")),"L\t0\t36\t16\t12\t2\t1\t1")
+})
+test.case("layout worker reads saved preferences and core config without writing",fn() {
+    tool.scope("panel-layout-service-",fn(dir:str) {
+        tool.write(dir+"/dev-os/config.json","{\"panel_height\":52}")
+        let env=Map<str,str>();env.set("XDG_CONFIG_HOME",dir)
+        let command=Vec<str>(t.runner(),t.root()+"/src/services/panel-layout.dev")
+        let defaults=tool.run(command,env,"{}\n",15000);t.success(defaults);t.equal(strings.trim(t.out(defaults)),"L\t0\t52\t16\t12\t2\t1\t1")
+        test.expect(!fs.existsSync(dir+"/dev-os/extensions/org.devos.panel.json"),"Opening layout service wrote preferences")
+        tool.write(dir+"/dev-os/extensions/org.devos.panel.json","{\"version\":1,\"enabled\":true,\"values\":{\"position\":\"top\",\"height\":44,\"showPinned\":false}}")
+        let saved=tool.run(command,env,"bad\n{}\n",15000);t.success(saved);let frames=strings.split(strings.trim(t.out(saved)),"\n")
+        t.contains(frames[0],"E\t");t.equal(frames[1],"L\t1\t44\t16\t12\t2\t0\t1")
+    })
+})
+return t.finish()

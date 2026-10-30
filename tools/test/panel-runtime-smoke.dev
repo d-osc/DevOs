@@ -1,0 +1,65 @@
+use "std/strings"
+use "std/fs"
+use "std/child_process"
+use "std/json"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn children(pid:i64):Vec<str> {
+    let raw=strings.trim(tool.read("/proc/${pid}/task/${pid}/children"))
+    if raw=="" {return Vec<str>()};return strings.split(raw," ")
+}
+fn main():i32 {
+    let root=tool.root();let extras=Map<str,str>();extras.set("WLR_HEADLESS_OUTPUTS","2");extras.set("DEVOS_PANEL_RENDERER","native-preview")
+    smoke.withSession("panel-runtime",extras,fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("GDK_BACKEND","wayland");env.set("NO_AT_BRIDGE","1")
+        env.set("DEVOS_PANEL_PREFERENCES",session.base+"/preferences.json")
+        tool.write(session.base+"/preferences.json","{\"version\":1,\"enabled\":true,\"values\":{\"style\":\"radar\",\"widgetClock\":true}}")
+        let log=session.base+"/panel-runtime.log";tool.write(log,"")
+        let child=smoke.launch(Vec<str>(root+"/dist/native/system-panel"),env,log)
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"output 1 started")},15000,"Panel did not start on both outputs")
+        let original=children(child.pid());tool.require(original.len()==2,"Expected one UI process per output")
+        for pid in original {tool.require(!strings.contains(tool.read("/proc/"+pid+"/maps"),"mozjs"),"Panel loaded MozJS")}
+        tool.checked(Vec<str>("kill","-KILL",original[0]),env,"",5000)
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));let current=children(child.pid());if current.len()!=2 {return false};return current[0]!=original[0] && current[1]!=original[0]},10000,"Panel did not replace crashed UI")
+        let current=children(child.pid());tool.require(current[0]==original[1] || current[1]==original[1],"Unrelated output restarted")
+        tool.checked(Vec<str>("kill","-TERM","${child.pid()}"),env,"",5000)
+        tool.waitFor(fn():bool {return child.ready()},5000,"Panel manager did not stop")
+        let done=child.wait();tool.require(done.success,tool.read(log))
+        for pid in current {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid)},5000,"Panel UI survived manager shutdown")}
+        tool.write(log,"");let crashed=smoke.launch(Vec<str>(root+"/dist/native/system-panel"),env,log)
+        tool.waitFor(fn():bool {tool.require(!crashed.ready(),tool.read(log));return strings.contains(tool.read(log),"output 1 started")},15000,"Second manager did not start")
+        let owned=children(crashed.pid());tool.require(owned.len()==2,"Second manager has wrong output count")
+        tool.checked(Vec<str>("kill","-KILL","${crashed.pid()}"),env,"",5000)
+        crashed.wait()
+        for pid in owned {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid) || strings.contains(tool.read("/proc/"+pid+"/status"),"State:\tZ")},5000,"Panel UI survived manager crash")}
+        print("PASS native panel manages two outputs, replaces crashed UI independently and shuts down owned processes")
+    })
+    if tool.has("--preview-only") {return 0}
+    let production=Map<str,str>();production.set("DEVOS_NATIVE_SYSTEMS","1");production.set("WLR_HEADLESS_OUTPUTS","2");production.set("DEVOS_PANEL_LAYOUT_TRACE","1")
+    smoke.withSession("panel-production",production,fn(session:smoke.Session) {
+        tool.waitFor(fn():bool {return smoke.processIds(session.runtime,root+"/dist/native/system-panel").len()==1},15000,"Session did not launch native panel manager")
+        let managers=smoke.processIds(session.runtime,root+"/dist/native/system-panel");let manager=managers[0]
+        tool.waitFor(fn():bool {return children(manager).len()==2},10000,"Production panel did not open both monitors")
+        for pid in children(manager) {tool.require(!strings.contains(tool.read("/proc/"+pid+"/maps"),"mozjs"),"Production panel UI loaded MozJS")}
+        let env=smoke.environment(session);let outputs=children(manager)
+        let uiPid:i64=json.int(json.parse(outputs[0]))
+        tool.waitFor(fn():bool {return children(uiPid).len()>=7},10000,"Production UI did not start data and tracker processes")
+        let service=""
+        for pid in children(uiPid) {if strings.contains(tool.read("/proc/"+pid+"/cmdline"),"panel-layout.dev") {service=pid}}
+        tool.require(service!="","Production data service is missing")
+        let interpreters=children(json.int(json.parse(service)))
+        tool.checked(Vec<str>("kill","-KILL",service),env,"",5000)
+        let recovered=result.run(fn() {tool.waitFor(fn():bool {let current=children(manager);if current.len()!=2 {return false};return current[0]!=outputs[0] && current[1]!=outputs[0]},10000,"Disconnected data service did not recover its UI")})
+        tool.write(root+"/build/react-devlang/panel/production-session.log",tool.read(session.log));result.unwrap(recovered)
+        for pid in interpreters {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid) || strings.contains(tool.read("/proc/"+pid+"/status"),"State:\tZ")},5000,"Data interpreter survived UI recovery")}
+        let shells=smoke.processIds(session.runtime,root+"/dist/main.js");tool.require(shells.len()==1,"Expected one shell before crash")
+        tool.checked(Vec<str>("kill","-KILL","${shells[0]}"),env,"",5000)
+        tool.waitFor(fn():bool {let current=smoke.processIds(session.runtime,root+"/dist/main.js");return current.len()==1 && current[0]!=shells[0]},15000,"Shell did not recover")
+        let retained=smoke.processIds(session.runtime,root+"/dist/native/system-panel");tool.require(retained.len()==1 && retained[0]==manager,"Shell restart duplicated or restarted panel manager")
+        for pid in children(manager) {tool.waitFor(fn():bool {return strings.contains(tool.read(session.log),"PANEL FRAME "+pid+"\n")},15000,"Recovered native panel did not render its data frame")}
+        smoke.screenshot(env,root+"/build/screenshots/panel-production-native.png")
+        print("PASS real session launches native panel manager with one native UI per monitor")
+    });return 0
+}
+return tool.main(main)

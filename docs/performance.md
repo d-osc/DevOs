@@ -65,6 +65,24 @@ Regression checks cover unchanged icons, controlled inputs, callback replacement
 cached launcher selection, editor paths with spaces and caller cwd, and remote
 commands with the React runtime absent from the client.
 
+## Rounded windows and native dragging (2026-10-27)
+
+The UX3407NA installed UKI currently requests `devos.renderer=pixman`, so the
+compositor runs on the CPU. The rounded-window draw handler previously cleared
+the whole opaque region and rendered through an intermediate Cairo group. That
+made even solid windows require blending and drawing the layers behind them.
+The handler now clips GTK's native draw directly and advertises a conservative
+opaque interior, excluding the rounded corners and antialiased edge. Transparent
+window or titlebar backgrounds keep an empty hint. Animation scene copies retain
+the original opaque region too.
+
+`window-shape-test` checks real GTK drawing, transparent corner pixels and opaque
+content, plus conservative region geometry. Compositor smoke tests cover native
+window controls and desktop animation. These checks do not measure frame pacing
+on the installed laptop or establish that its GPU driver works. Collect the
+installed kernel command line, `/dev/dri` nodes and renderer lines from
+`~/.local/state/devos/devos-desktop.log` before changing its renderer fallback.
+
 ## Resource measurements 2026-10-25 (swap, wallpapers, helpers)
 
 Measured in WSL2 Ubuntu aarch64 on the dev machine (Snapdragon-class, not the UX3407NA), headless labwc with pixman, `measure.sh`-style
@@ -100,3 +118,29 @@ used to keep running); `devos-memory` sleeps 30 s instead of 5 s without managed
 `devos-battery-care` is skipped on machines without a charge limit; background helpers are `Nice=10`, low CPU/IO weight and memory-limited;
 apps start at `OOMScoreAdjust=300`; sysctl tuning for zram, reclaim and dirty-page limits. `tests/wallpaper-bench.test.ts` fails if any style
 needs more than half a core at 2880x1800.
+
+## GPU renderer selection
+
+New UX3407NA USB and installed UKIs request `devos.renderer=auto` rather than
+forcing Pixman. Native sessions let wlroots select the renderer. Existing UKIs
+keep their embedded command line until rebuilt and installed; this source change
+does not modify an installed system. QEMU TCG and headless tests retain Pixman.
+A kernel command line of `devos.renderer=pixman` still selects safe software rendering.
+
+On Windows use `.\dev.ps1 run -Renderer auto` (the default). WSL auto mode
+checks `glxinfo -B` with a five-second timeout: only `Accelerated: yes` selects
+GLES2; missing tools or a software driver select Pixman. Use
+`.\dev.ps1 run -Renderer gles2` to explicitly test GPU rendering or
+`.\dev.ps1 run -Renderer pixman` for software rendering. Linux sessions accept
+`DEV_OS_RENDERER=gles2 bin/dev-os-session` and `DEV_OS_RENDERER=pixman bin/dev-os-session`.
+Explicit GPU selection clears inherited software-only GL/WebKit flags.
+
+Browser and Monaco editor allow WebKit's default acceleration policy on native
+accelerated sessions and explicitly selected WSL GLES2/Vulkan sessions. Software
+sessions keep WebKit acceleration disabled. GTK/Cairo wallpapers still draw on
+the CPU; this change enables compositor/WebKit acceleration, not GPU wallpaper drawing.
+
+The development WSL environment checked during this change reports Mesa llvmpipe,
+`Accelerated: no`; it therefore continues using Pixman in auto mode. DRM device
+nodes alone do not prove GPU acceleration. Verify renderer lines in the desktop
+log and the actual driver on the target laptop before claiming GPU performance.

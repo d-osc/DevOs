@@ -1,0 +1,129 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-settings-model.dev" as model
+use "./native-theme.dev" as theme
+use "./native-shell.dev" as shell
+use "./native-view.devx" as view
+use "./scene.dev" as scene
+extern fn rc_env(name:str):str
+extern fn rd_identity(id:str)
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn bg_flush_stdout()
+extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
+fn label(value:ui.Text,style:str):ui.Node {let props=ui.props();props.className=ui.text(style);props.wrap=true;return ui.withProps(ui.TextLabel(value),props)}
+fn box(children:Vec<ui.Node>,horizontal:bool,style:str):ui.Node {let props=ui.props();props.vertical=!horizontal;props.spacing=10;props.className=ui.text(style);return ui.Box(props,children)}
+fn button(name:str,title:str,enabled:bool,clicked:fn():void):ui.Node {let props=ui.named(name);props.sensitive=enabled;return ui.Button(props,title,clicked)}
+fn field(context:*ui.Context,item:model.Field,ack:i64,busy:bool,send:fn(ui.Text):i64,browse:fn():void):ui.Node {
+    let value=ui.useText(context,item.value);let edited=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {if ack>=edited.get() {value.set(item.value)};return ui.noop},Vec<i64>(ack))
+    let options=ui.props();options.id=ui.concatText(Vec<ui.Text>(ui.text("background-"),item.key));options.sensitive=item.enabled && !busy;options.expand=true
+    let kind=item.kind;let control=ui.Box(ui.props(),Vec<ui.Node>())
+    if ui.equalText(kind,ui.text("bool")) {
+        options.expand=false;options.valign=3;options.halign=2
+        control=ui.Switch(options,channel.integer(value.value)==1,fn(active:bool) {value.set(ui.text(active ? "1" : "0"));edited.set(send(model.keyed("toggle",item.key)))})
+    } else if ui.equalText(kind,ui.text("select")) {
+        options.expand=false;options.width=240
+        control=ui.Select(options,item.options,channel.integer(value.value),fn(index:i64) {value.set(ui.scalarText(index));edited.set(send(model.selection(item.key,index)))})
+    } else {
+        let changed=fn(input:ui.Text) {value.set(input);edited.set(send(model.value("edit",item.key,input)))}
+        if ui.equalText(kind,ui.text("multiline")) {options.height=100;control=ui.TextArea(options,value.value,changed)}
+        else {control=ui.Entry(options,value.value,changed)}
+    }
+    let row=Vec<ui.Node>()
+    let caption=label(item.title,"settings-field-title");caption.props.expand=true;row.push(caption)
+    row.push(control)
+    if ui.equalText(kind,ui.text("file")) {row.push(button("background-browse","Browse…",!busy,browse))}
+    let root=ui.props();root.visible=item.visible;root.spacing=8;root.vertical=!(ui.equalText(kind,ui.text("bool")) || ui.equalText(kind,ui.text("select")));root.sensitive=item.enabled && !busy;root.className=ui.text("settings-field");return ui.Box(root,row)
+}
+fn formField(item:model.Field,index:i64,form:model.Form,browse:fn():void):ui.Node {
+    let props=ui.keyed(index);return ui.component(9100,props,fn(context:*ui.Context):ui.Node {return field(context,item,form.ack,form.busy,form.send,browse)})
+}
+fn editorInput(context:*ui.Context,name:str,key:str,server:ui.Text,form:model.Form):ui.Node {
+    let value=ui.useText(context,server);let edited=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {if form.ack>=edited.get() {value.set(server)};return ui.noop},Vec<i64>(form.ack))
+    let props=ui.named(name);props.sensitive=!form.busy
+    return ui.Entry(props,value.value,fn(input:ui.Text) {value.set(input);edited.set(form.send(model.value("custom-form",ui.text(key),input)))})
+}
+fn customEditor(context:*ui.Context,form:model.Form):ui.Node {
+    let title=editorInput(context,"files-custom-title","title",form.title,form)
+    let command=editorInput(context,"files-custom-command","command",form.command,form)
+    let rows=Vec<ui.Node>(label(ui.text("Custom actions"),"section-heading"),label(ui.text("${form.custom.len()} / 50 · Only custom actions can be edited or removed."),"settings-description"))
+    if form.invalidCustom.bytes.len()>0 {
+        rows.push(label(form.invalidCustom,"error"));rows.push(button("files-custom-clear-invalid","Clear invalid custom actions",!form.busy,fn() {form.send(model.fragment("custom-clear"))}))
+    } else {
+        for i in 0..(form.custom.len() as i64) {
+            let item=form.custom[i];let toggle=ui.props();toggle.sensitive=!form.busy;toggle.valign=3;toggle.id=ui.concatText(Vec<ui.Text>(ui.text("files-custom-toggle-"),item.id))
+            let actions=Vec<ui.Node>(label(item.title,"settings-field-title"),ui.Switch(toggle,item.enabled,fn(value:bool) {form.send(model.keyed("custom-toggle",item.id))}),
+                button("files-custom-edit","Edit",!form.busy,fn() {form.send(model.keyed("custom-edit",item.id))}),button("files-custom-delete","Remove",!form.busy,fn() {form.send(model.keyed("custom-delete",item.id))}))
+            let card=box(Vec<ui.Node>(box(actions,true,""),label(item.command,"settings-description")),false,"files-custom-item");card.props.key=1000+i;rows.push(card)
+        }
+        rows.push(label(ui.text(form.editor.bytes.len()>0 ? "Edit custom action" : "New custom action"),"settings-field-title"));rows.push(title);rows.push(command)
+        rows.push(label(ui.text("Commands run in your home folder. {path} and {directory} refer to your home folder. Shell operators and ~ are not expanded."),"settings-description"))
+        rows.push(box(Vec<ui.Node>(button("files-custom-cancel","Clear form",!form.busy,fn() {form.send(model.fragment("custom-cancel"))}),button("files-custom-save",form.editor.bytes.len()>0 ? "Save item" : "Add item",!form.busy && form.title.bytes.len()>0 && form.command.bytes.len()>0,fn() {form.send(model.fragment("custom-save"))})),true,""))
+        rows.push(label(ui.text("Add or save the item, then Apply to update Background."),"settings-description"))
+    }
+    return box(rows,false,"settings-card files-settings-card")
+}
+fn presets(form:model.Form):ui.Node {
+    let colors=Vec<str>("#101b25","#171923","#18332e","#28344f","#3c2948","#482d2d","#c4b8a4","#e7e8ec");let nodes=Vec<ui.Node>()
+    for i in 0..(colors.len() as i64) {
+        let color=colors[i];let options=ui.props();options.width=24;options.height=24
+        let sample=ui.DrawingArea(options,fn(cr:*void,width:i32,height:i32) {unsafe {scene.rgb(cr,scene.color(ui.text(color)));scene.cairo_paint(cr)}})
+        let props=ui.keyed(i);props.sensitive=!form.busy;props.id=ui.concatText(Vec<ui.Text>(ui.text("background-color-"),ui.text(color)))
+        nodes.push(ui.WidgetButton(props,sample,fn() {form.send(ui.concatText(Vec<ui.Text>(model.fragment("preset"),ui.text(",\"value\":"),channel.quote(ui.text(color)))))}))
+    };return box(nodes,true,"")
+}
+fn App(context:*ui.Context,file:ui.Text,cache:*scene.Cache,frame:*view.Frame,photo:*void,tracking:bool):ui.Node {
+    theme.useTheme(context);let form=model.useForm(context,file);let picker=ui.useRef(context,0);let imageError=ui.useText(context,ui.emptyText())
+    ui.useEffect(context,fn():fn():void {unsafe {let root=rc_env("DEV_OS_ROOT");rd_app_header_for((*context).native,"Background","${root}/data/icons","settings","dev-os-settings");return ui.noop}},Vec<i64>())
+    if tracking {shell.useTransport(context,
+        fn(event:ui.Text) {form.send(ui.concatText(Vec<ui.Text>(model.fragment("tracker"),ui.text(",\"event\":"),event)))},
+        fn(events:ui.Text) {form.send(ui.concatText(Vec<ui.Text>(model.fragment("tracker-batch"),ui.text(",\"events\":"),events)))},fn(value:ui.Text) {},0)}
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let selected=callback_context(fn(bytes:*u8,length:i64) {form.send(ui.concatText(Vec<ui.Text>(model.fragment("picture"),ui.text(",\"value\":"),channel.quote(view.owned(bytes,length)))) )})
+        let dialog=view.bg_picker_new((*context).native,selected.call,selected.data);picker.set(dialog as i64)
+        return fn() {unsafe {view.bg_picker_free(dialog,selected.data)}}
+    }},Vec<i64>())
+    let browse=fn() {unsafe {view.bg_picker_show(picker.get() as *void)}}
+    let preview=view.AppWithImageStatus(context,cache,frame,photo,true,form.appearance,form.appearanceRevision,false,0,fn(error:ui.Text) {imageError.set(error)});preview.props.height=240;preview.props.expand=false
+    let wallpaper=Vec<ui.Node>();let widgets=Vec<ui.Node>(label(form.scope,"settings-description"));let contextMenu=Vec<ui.Node>(label(ui.text("Desktop right-click menu"),"section-heading"))
+    for i in 0..(form.fields.len() as i64) {
+        let item=form.fields[i];let node=formField(item,i+1,form,browse)
+        if i<6 {wallpaper.push(node)} else if i<11 {widgets.push(node)} else {contextMenu.push(node)}
+    }
+    wallpaper.push(presets(form));widgets.push(button("desktop-widget-reset-positions","Reset positions",!form.busy,fn() {form.send(model.fragment("positions-reset"))}))
+    contextMenu.push(label(ui.text("MENU PREVIEW"),"settings-eyebrow"));for item in form.preview {let icon=ui.props();icon.iconSize=15;contextMenu.push(box(Vec<ui.Node>(ui.element(11,icon,item.icon,Vec<ui.Node>()),label(item.title,"")),true,"files-preview-menu-row"))}
+    let customProps=ui.keyed(301);let custom=ui.component(9101,customProps,fn(child:*ui.Context):ui.Node {return customEditor(child,form)})
+    let message=form.error.bytes.len()>0 ? form.error : imageError.value
+    let error=label(message,"settings-error-banner");error.props.id=ui.text("background-error");error.props.visible=message.bytes.len()>0;error.props.widthChars=60
+    let content=box(Vec<ui.Node>(box(Vec<ui.Node>(preview),false,"background-preview-frame"),label(ui.text("Preview · Changes are saved only when you click Apply."),"settings-description"),box(wallpaper,false,"settings-card background-settings-card"),box(widgets,false,"settings-card background-settings-card"),box(contextMenu,false,"settings-card background-settings-card"),custom),false,"settings-form")
+    let scrollProps=ui.props();scrollProps.expand=true;let scroll=ui.Scroll(scrollProps,content)
+    let status=form.busy ? ui.text("Applying background…") : form.error.bytes.len()>0 ? ui.text("Review the error above before applying.") : form.status.bytes.len()>0 ? form.status : ui.text(form.dirty ? "Unsaved changes" : "Your saved background is up to date.")
+    let statusProps=ui.named("background-status");statusProps.expand=true;statusProps.wrap=true;statusProps.className=ui.text("settings-description")
+    let actions=box(Vec<ui.Node>(ui.withProps(ui.TextLabel(status),statusProps),button("background-reset","Reset",form.dirty && !form.busy,fn() {form.send(model.fragment("reset"))}),button("background-apply","Apply",form.dirty && !form.busy,form.apply)),true,"settings-action-bar")
+    return <Box id="settings" className="settings-content" margin={18} spacing={12} expand><Box className="settings-page-header" spacing={6}><Label className="settings-eyebrow">PERSONALIZATION</Label><Label className="heading">Background</Label><Label className="settings-description">Choose a picture, a solid color, or the DevOs design for all your displays.</Label></Box>{scroll}{error}{actions}</Box>
+}
+fn run():i32 {unsafe {
+    let production=ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_ROLE")),ui.text("settings"))
+    let file=ui.text(rc_env("DEVOS_BACKGROUND_PREFERENCES"))
+    if production && file.bytes.len()==0 {
+        let directory=ui.text(rc_env("XDG_CONFIG_HOME"))
+        if directory.bytes.len()==0 {directory=ui.concatText(Vec<ui.Text>(ui.text(rc_env("HOME")),ui.text("/.config")))}
+        file=ui.concatText(Vec<ui.Text>(directory,ui.text("/dev-os/extensions/org.devos.background.json")))
+    }
+    if file.bytes.len()==0 || (!production && !ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_SETTINGS_PREVIEW")),ui.text("1"))) {print("Set DEVOS_BACKGROUND_ROLE=settings or explicit preview preferences to run native Settings.");return 1}
+    let identity=rc_env("DEV_OS_NATIVE_ID");rd_identity(identity)
+    let cache=scene.cache();let frame=view.Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=view.bg_picture_new()
+    let trace=ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_SETTINGS_TRACE")),ui.text("1"))
+    let ok=ui.run("DevOs · Background Settings",900,820,fn(context:*ui.Context):ui.Node {
+        ui.useEffect(context,fn():fn():void {unsafe {view.bg_prepare((*context).native,0,0);if rd_control((*context).native,identity,"settings.background")==0 {ui.close(context)};return ui.noop}},Vec<i64>())
+        let content=App(context,file,painter,image,photo,true);let announced=ui.useRef(context,0)
+        ui.useEffect(context,fn():fn():void {unsafe {
+            if !trace {return ui.noop}
+            let callback=callback_context(fn() {unsafe {if announced.get()==0 && (*image).surface!=0 && ui.find(context,"background-mode")!=null {announced.set(1);print("BACKGROUND SETTINGS READY");bg_flush_stdout()}}})
+            let timer=view.bg_timer(50,callback.call,callback.data);return fn() {unsafe {view.bg_untimer(timer,callback.data)}}
+        }},Vec<i64>())
+        return content
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);view.bg_picture_free(photo);return ok ? 0 : 1
+}}

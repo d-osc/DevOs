@@ -10,7 +10,7 @@ export function repoInput(input: string): string {
 export function manifestForRelease(raw: unknown, releaseVersion: string, protectedIds: string[]): ExtensionManifest {
     const manifest = validateManifest(raw);
     if (manifest.system || protectedIds.includes(manifest.id)) throw new Error('Store packages cannot replace a system extension');
-    if (manifest.kind === 'ui' && /^(?:react-gtk|core|extensions|updates|runtime|services|compat|config|shell|supervisor)(?:-|\.js$)/.test(manifest.entry!)) throw new Error('Shared package entry names are reserved for the shared desktop runtime');
+    if (manifest.kind === 'ui' && /^(?:react-gtk|core|extensions|updates|runtime|services|compat|config|shell|supervisor)(?:-|\.js$)/.test(manifest.entry ?? '')) throw new Error('Shared package entry names are reserved for the shared desktop runtime');
     if (version(manifest.version) !== releaseVersion) throw new Error('Extension version must match the stable release tag');
     return manifest;
 }

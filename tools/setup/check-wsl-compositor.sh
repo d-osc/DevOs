@@ -5,11 +5,14 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 source_dir="$project_root/build/wsl/labwc-source"
 binary="$project_root/build/wsl/bin/labwc"
 test -d "$source_dir/.git" && test -x "$binary" || exit 1
-for asset in tools/setup/patch-task-view-workspaces.dev tools/setup/devos-workspaces.c native/protocols/devos-workspaces-v1.xml tools/setup/patch-task-view-gesture.dev tools/setup/devos-task-view.h tools/setup/devos-desktop-animation.h tools/setup/devos-window-animation.c; do
+for asset in tools/setup/patch-task-view-workspaces.dev tools/setup/devos-workspaces.c native/protocols/devos-workspaces-v1.xml tools/setup/patch-task-view-gesture.dev tools/setup/devos-task-view.h tools/setup/devos-desktop-animation.h tools/setup/devos-window-animation.c tools/setup/patch-touchpad.dev tools/setup/devos-touchpad.h tools/setup/patch-menu-shape.dev tools/setup/devos-menu-shape.h tools/setup/patch-tab-drag.dev tools/setup/devos-tab-drag.h; do
     test "$project_root/$asset" -nt "$binary" && exit 1
 done
-for fix in window-menu tab-drag-focus tab-drag-escape app-icons; do
+for fix in window-menu tab-drag-focus app-icons; do
     patch="$project_root/tools/setup/patches/labwc-$fix.patch"
     test "$patch" -nt "$binary" && exit 1
     git -C "$source_dir" apply --reverse --check "$patch" >/dev/null 2>&1 || exit 1
 done
+grep -q 'devos_touchpad_button(seat, event)' "$source_dir/src/input/cursor.c" || exit 1
+grep -q 'DEVOS_MENU_SHAPE_V1' "$source_dir/src/menu/menu.c" || exit 1
+grep -q 'devos_tab_drag_key(server, event' "$source_dir/src/input/keyboard.c" || exit 1

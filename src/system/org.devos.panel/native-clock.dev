@@ -1,0 +1,20 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-taskbar.dev" as tasks
+fn render(frame:ui.Text,showDate:bool,opened:bool,toggle:fn():void,settings:fn():void,settingsReady:bool):ui.Node {
+    let fields=channel.split(frame,9);let time=ui.named("panel-clock-time");time.className=ui.text("clock-time");time.xalign=1.0
+    let labels=Vec<ui.Node>(ui.withProps(ui.TextLabel(fields.len()>=4 ? tasks.decoded(fields[1]) : ui.text("…")),time))
+    if showDate {let date=ui.named("panel-clock-date");date.className=ui.text("clock-date");date.xalign=1.0;labels.push(ui.withProps(ui.TextLabel(fields.len()>=4 ? tasks.decoded(fields[2]) : ui.emptyText()),date))}
+    let stack=ui.props();stack.spacing=0;let button=ui.named("panel-clock");button.className=showDate ? ui.text("clock-button") : ui.text("clock-button clock-single-line")
+    let children=Vec<ui.Node>(ui.WidgetButton(button,ui.Box(stack,labels),toggle))
+    if opened && fields.len()>=7 {let heading=ui.named("panel-calendar-weekday");heading.className=ui.text("popup-title");heading.xalign=0.0;let date=ui.named("panel-calendar-date");date.className=ui.text("calendar-date");date.xalign=0.0;let detail=ui.named("panel-calendar-detail");detail.className=ui.text("popup-muted");detail.xalign=0.0;let action=ui.named("panel-time-settings");action.sensitive=settingsReady
+        let contents=ui.props();contents.width=280;contents.spacing=12;contents.margin=24
+        let popup=ui.named("panel-clock-popup");popup.className=ui.text("panel-popup")
+        children.push(ui.Popover(popup,ui.text("panel-clock"),ui.Box(contents,Vec<ui.Node>(ui.withProps(ui.TextLabel(tasks.decoded(fields[4])),heading),ui.withProps(ui.TextLabel(tasks.decoded(fields[5])),date),ui.withProps(ui.TextLabel(tasks.decoded(fields[6])),detail),ui.Button(action,"Time settings",settings))),toggle))
+    };let root=ui.props();root.vertical=false;return ui.Box(root,children)
+}
+fn View(context:*ui.Context,frame:ui.Text,showDate:bool,settings:fn():void,ready:bool):ui.Node {
+    let open=ui.useState(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {let fields=channel.split(frame,9);if fields.len()>=4 {let id=ui.nativeText(ui.text("panel-clock"));let text=ui.nativeText(tasks.decoded(fields[3]));tasks.panel_tooltip((*context).native,id,text);tasks.rd_buffer_free(id as *void);tasks.rd_buffer_free(text as *void)}};return ui.noop}},Vec<i64>(tasks.key(frame),showDate ? 1 : 0))
+    return render(frame,showDate,open.value!=0,fn() {open.set(open.get()==0 ? 1 : 0)},fn() {open.set(0);settings()},ready)
+}

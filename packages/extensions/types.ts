@@ -17,6 +17,8 @@ export interface ExtensionManifest {
     kind?: 'settings' | 'ui';
     system?: boolean;
     entry?: string;
+    /** Name of a DevLang executable under dist/native; system UI only, replaces `entry`. */
+    native?: string;
     order?: number;
     id: string;
     name: string;
@@ -42,8 +44,9 @@ export interface SettingsHost {
     readonly diagnostics?: string[];
     list(): ExtensionInfo[];
     get(id: string): ExtensionInfo;
-    update(id: string, enabled: boolean, values: SettingsValues): void;
+    update(id: string, enabled: boolean, values: SettingsValues): void | Promise<void>;
     subscribe(listener: () => void): () => void;
     settingsFile?(id: string): string;
-    reloadSettingsFile?(path: string): void;
+    ensureSettingsFile?(id: string): Promise<string>;
+    reloadSettingsFile?(path: string): void | Promise<void>;
 }

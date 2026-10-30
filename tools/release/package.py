@@ -31,7 +31,7 @@ NOTES_DIR = os.environ.get('RELEASE_NOTES_DIR', 'docs/releases')
 VERSION = re.compile(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-ux3407na-dev)?')
 
 # Mirrors buildRuntimeArchive in distro/oe/prepare.dev (tests/release-package.test.py keeps them in step).
-RUNTIME_DIRS = ('bin', 'lib', 'dist', 'config', 'data', 'extensions')
+RUNTIME_DIRS = ('bin', 'lib', 'dist', 'config', 'data', 'src/apps', 'src/system', 'src/extensions', 'src/services')
 RUNTIME_EXTRAS = (
     'native/window-tracker.c', 'native/protocols/wlr-foreign-toplevel-management-unstable-v1.xml',
     'native/protocols/devos-workspaces-v1.xml', 'native/devos_accounts_system.dev', 'native/privileged.dev',
@@ -80,7 +80,7 @@ def excluded(relative):
 def runtime_skipped(relative):
     """The `find ... ! -path` filters of buildRuntimeArchive, applied to a relative path."""
     name = relative.rsplit('/', 1)[-1]
-    return '__pycache__' in relative or '/types/' in relative or name.endswith(('.pyc', '.ps1', '-test.js'))
+    return '__pycache__' in relative or '/types/' in relative or '/.dev-cache/' in relative or '/.devx/' in relative or name.endswith(('.pyc', '.ps1', '-test.js', '.o'))
 
 
 def walk(root, directory):
@@ -100,6 +100,10 @@ def runtime_files(root=ROOT):
     for directory in (*RUNTIME_DIRS, *RUNTIME_ASSETS, *RUNTIME_PROFILES):
         files.update(walk(root, directory))
     files = {name for name in files if not runtime_skipped(name)}
+    for name in ('taskmanager', 'system-displaycare', 'libsupervisor.so', 'boot-splash'):
+        native = root / 'dist/native' / name
+        if not native.is_file() or native.read_bytes()[:4] != b'\x7fELF':
+            fail(f'Native {name} is missing; run `sh tools/build/native-apps.sh` inside Linux/WSL first')
     for extra in RUNTIME_EXTRAS:
         if not (root / extra).is_file():
             fail(f'{extra} is listed in distro/oe/prepare.dev but missing')
@@ -126,7 +130,8 @@ def commit_time(root):
 def mode_of(path):
     # Files committed from Windows lose the executable bit, so decide by content: scripts start with #!.
     with open(path, 'rb') as handle:
-        return 0o755 if handle.read(2) == b'#!' else 0o644
+        signature = handle.read(4)
+        return 0o755 if signature.startswith(b'#!') or signature == b'\x7fELF' else 0o644
 
 
 def write_archive(destination, prefix, root, names, extra=None, mtime=0):

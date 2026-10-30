@@ -1,0 +1,27 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../src/system/org.devos.panel/alerts.dev" as alerts
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("alerts bound history and preserve escaped Unicode text",fn() {
+    let items=json.array();for i in 0..40 {items=alerts.append(items,json.value("Alert ${i}"),"12:34")}
+    test.expect(json.len(items)==30,"Unbounded alert history");t.equal(json.string(json.get(json.at(items,0),"message")),"Alert 39")
+    t.equal(json.string(json.get(json.at(items,29),"message")),"Alert 10")
+    let frame=alerts.frame(alerts.append(items,json.value("ไทย\t100%\nnext"),"09:10"));t.contains(frame,"A\t30\tไทย%09100%25%0Anext");test.expect(tool.count(frame,"N\t")==5,"Popup list was not limited")
+    test.expect(json.len(alerts.append(items,json.value(""),""))==30,"Empty alert added")
+    let invalid=result.attempt(fn():json.Value {return alerts.append(items,json.value(7),"")});test.expect(!result.isOk(invalid),"Non-text alert accepted")
+    let long="";for i in 0..8200 {long=long+"ก"};let bounded=alerts.append(json.array(),json.value(long),"");test.expect(strings.charLength(json.string(json.get(json.at(bounded,0),"message")))==8192,"Alert text was not bounded")
+})
+test.case("layout worker keeps alerts across polls and clears only once",fn() {
+    tool.scope("panel-alerts-",fn(dir:str) {
+        let env=Map<str,str>();env.set("XDG_CONFIG_HOME",dir)
+        let input="{\"alerts\":true,\"notify\":\"Hello ไทย\"}\n{}\n{\"notify\":42}\n{}\n{\"clearAlerts\":true}\n{\"notify\":\"After clear\"}\n{}\n"
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-layout.dev","--ffi-lib",t.root()+"/dist/native/libpanel-clock.so"),env,input,15000);t.success(done)
+        let lines=strings.split(strings.trim(t.out(done)),"\n");test.expect(lines.len()==7,"Missing worker replies")
+        for i in Vec<i64>(0,1,3) {t.contains(lines[i],"A\t1\tHello ไทย")};t.contains(lines[2],"E\t");t.contains(lines[4],"A\t0\tDesktop alerts")
+        for i in Vec<i64>(5,6) {t.contains(lines[i],"A\t1\tAfter clear");t.lacks(lines[i],"Hello ไทย")}
+    })
+})
+return t.finish()

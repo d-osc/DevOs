@@ -1,0 +1,17 @@
+use "std/json"
+use "std/encoding"
+extern fn pa_open():*void
+extern fn pa_poll(catalog:*void):i64
+extern fn pa_scan(catalog:*void):i64
+extern fn pa_text(catalog:*void,index:i64,field:i32):*u8
+extern fn pa_length(text:*u8):i64
+extern fn pa_free(text:*void)
+extern fn pa_close(catalog:*void)
+fn field(catalog:*void,index:i64,key:i32):json.Value {unsafe {
+    let text=pa_text(catalog,index,key);if text==null {return json.null_value()}
+    let bytes=Vec<u8>();for i in 0..pa_length(text) {bytes.push(text[i])};pa_free(text as *void)
+    return json.value(encoding.decode(bytes,"utf8"))
+}}
+fn snapshot(catalog:*void):json.Value {let out=json.array();let count:i64=0;unsafe {count=pa_scan(catalog)}
+    for i in 0..count {out=json.push(out,{id:field(catalog,i,0),title:field(catalog,i,1),wmclass:field(catalog,i,2),icon:field(catalog,i,3)})};return out
+}

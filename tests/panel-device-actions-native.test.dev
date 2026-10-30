@@ -1,0 +1,58 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/fs"
+use "../src/system/org.devos.panel/device-actions.dev" as actions
+use "../src/system/org.devos.background/wire.dev" as wire
+use "../tools/lib/tool.dev" as tool
+use "../lib/desktop.dev" as util
+use "./lib/react-devlang.dev" as t
+fn state():json.Value {return {audio:"wpctl",brightness:50,wifi:true,bluetooth:false}}
+test.case("native device plans clamp numeric values and preserve backend arguments",fn() {
+    t.equal(strings.join(actions.plan({action:"volume",value:150.7},state()),"|"),"wpctl|set-volume|@DEFAULT_AUDIO_SINK@|100%")
+    t.equal(strings.join(actions.plan({action:"brightness",value:-50},state()),"|"),"dev-os-backlight|--|set|1")
+    t.equal(strings.join(actions.plan({action:"volume",value:31.5},json.set(state(),"audio","pactl")),"|"),"pactl|set-sink-volume|@DEFAULT_SINK@|32%")
+    t.equal(strings.join(actions.plan({action:"mute"},state()),"|"),"wpctl|set-mute|@DEFAULT_AUDIO_SINK@|toggle")
+})
+test.case("radio plans use fresh service state and unavailable hardware is a no-op",fn() {
+    t.equal(strings.join(actions.plan({action:"wifi"},state()),"|"),"nmcli|radio|wifi|off")
+    t.equal(strings.join(actions.plan({action:"bluetooth"},state()),"|"),"bluetoothctl|power|on")
+    for action in Vec<str>("volume","brightness","mute","wifi","bluetooth") {test.expect(actions.plan(json.value({action:action,value:20}),json.object()).len()==0,"Unavailable hardware produced a command")}
+})
+fn script(path:str,body:str) {tool.write(path,"#!/bin/sh\n"+body+"\n");tool.chmod(path,"755")}
+test.case("one-shot worker executes at most one mutation and preserves command failures",fn() {
+    tool.scope("panel-action-worker-",fn(dir:str) {
+        let log=dir+"/actions";let failure=dir+"/fail";tool.write(log,"")
+        script(dir+"/bin/wpctl","if [ \"$1\" = get-volume ]; then echo 'Volume: 0.6'; exit 0; fi\nprintf '%s\\n' \"wpctl $*\" >> "+util.quote(log)+"\nif [ -f "+util.quote(failure)+" ]; then echo 'permission denied by fixture' >&2; exit 7; fi")
+        script(dir+"/bin/pactl","echo 'fake unused backend'; exit 1")
+        script(dir+"/bin/nmcli","if [ $# -eq 2 ]; then echo enabled; else printf '%s\\n' \"nmcli $*\" >> "+util.quote(log)+"; fi")
+        script(dir+"/bin/bluetoothctl","if [ \"$1\" = show ]; then echo 'Powered: no'; else printf '%s\\n' \"bluetoothctl $*\" >> "+util.quote(log)+"; fi")
+        script(dir+"/bin/dev-os-backlight","printf '%s\\n' \"backlight $*\" >> "+util.quote(log))
+        fs.mkdirSync(dir+"/sys/class/net/wlan0/wireless",true);tool.write(dir+"/sys/class/backlight/panel/max_brightness","100");tool.write(dir+"/sys/class/backlight/panel/brightness","50")
+        let env=Map<str,str>();env.set("PATH",dir+"/bin:/usr/bin:/bin");env.set("DEVOS_PANEL_SYS",dir+"/sys");env.set("DEVOS_PANEL_PROC",dir+"/proc")
+        let runner=strings.trim(tool.exec(Vec<str>("sh","-c","command -v d")))
+        let command=Vec<str>(runner,t.root()+"/src/services/panel-device-action.dev")
+        let done=tool.run(command,env,"{\"action\":\"volume\",\"value\":200}\n{\"action\":\"mute\"}\n",15000)
+        t.success(done);t.equal(strings.trim(tool.read(log)),"wpctl set-volume @DEFAULT_AUDIO_SINK@ 100%")
+        let invalid=tool.run(command,env,"{\"action\":\"volume\",\"value\":\"5; arbitrary command\"}\n",15000)
+        test.expect(!invalid.success,"Invalid action value accepted");t.equal(strings.trim(tool.read(log)),"wpctl set-volume @DEFAULT_AUDIO_SINK@ 100%")
+        tool.write(failure,"1");let denied=tool.run(command,env,"{\"action\":\"mute\"}\n",15000)
+        test.expect(!denied.success,"Command failure was hidden");t.contains(t.out(denied),"permission denied by fixture")
+        test.expect(strings.split(strings.trim(tool.read(log)),"\n").len()==2,"A mutation was retried")
+    })
+})
+test.case("persistent device actions use fresh state and polling never repeats mutations",fn() {
+    tool.scope("panel-action-persistent-",fn(dir:str) {
+        let log=dir+"/actions";let radio=dir+"/radio";tool.write(log,"");tool.write(radio,"no")
+        script(dir+"/bin/wpctl","if [ \"$1\" = get-volume ]; then echo 'Volume: 0.6'; exit 0; fi\nprintf '%s\\n' \"wpctl $*\" >> "+util.quote(log)+"\nif [ \"$1\" = set-mute ]; then echo 'permission denied by fixture' >&2; exit 7; fi")
+        script(dir+"/bin/pactl","exit 1");script(dir+"/bin/nmcli","exit 1")
+        script(dir+"/bin/bluetoothctl","if [ \"$1\" = show ]; then printf 'Powered: '; cat "+util.quote(radio)+"; echo; else printf '%s\\n' \"bluetoothctl $*\" >> "+util.quote(log)+"; if [ \"$2\" = on ]; then echo yes > "+util.quote(radio)+"; else echo no > "+util.quote(radio)+"; fi; fi")
+        let env=Map<str,str>();env.set("PATH",dir+"/bin:/usr/bin:/bin");env.set("DEVOS_PANEL_SYS",dir+"/sys");env.set("DEVOS_PANEL_PROC",dir+"/proc")
+        let requests=Vec<json.Value>({wire:true,action:{action:"volume",value:150}},{wire:true},{wire:true,action:{action:"bluetooth"}},{wire:true},{wire:true,action:{action:"bluetooth"}},{wire:true,action:{action:"mute"}},{wire:true},{wire:true,action:{action:"volume",value:"bad"}},{wire:true})
+        let input="";for request in requests {input=input+json.stringify(request)+"\n"}
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-devices.dev"),env,input,20000);t.success(done)
+        t.equal(strings.trim(tool.read(log)),"wpctl set-volume @DEFAULT_AUDIO_SINK@ 100%\nbluetoothctl power on\nbluetoothctl power off\nwpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
+        t.contains(t.out(done),"E\tpermission denied by fixture");t.contains(t.out(done),"E\tA numeric device value is required");test.expect(tool.count(t.out(done),wire.separator()+"A")==3,"Polling replayed a successful device action")
+    })
+})
+return t.finish()

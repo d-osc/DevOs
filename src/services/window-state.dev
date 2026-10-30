@@ -1,0 +1,36 @@
+# Atomic workspace batches and window events from the existing native tracker.
+use "std/json"
+use "std/strings"
+fn get(value:json.Value,key:str):json.Value {return strings.equal(json.kind(value),"object") && json.has(value,key) ? json.get(value,key) : json.null_value()}
+fn num(value:json.Value):f64 {return strings.equal(json.kind(value),"number") ? json.float(value) : 0.0}
+fn text(value:json.Value):str {return strings.equal(json.kind(value),"string") ? json.string(value) : ""}
+struct Snapshot {windows:json.Value,desktops:json.Value,draft:json.Value,known:bool,supported:bool,collecting:bool}
+fn empty():Snapshot {return Snapshot(json.object(),json.array(),json.array(),false,false,false)}
+fn id(event:json.Value):str {let value=get(event,"id");let number=num(value);return strings.equal(json.kind(value),"number") && number>0.0 && number<=4294967295.0 && number==(number as i64) as f64 ? "${number as i64}" : ""}
+fn consume(previous:Snapshot,event:json.Value):Snapshot {
+    let next=previous;let kind=text(get(event,"type"))
+    if strings.equal(kind,"connecting") || strings.equal(kind,"disconnected") {
+        next=empty();next.known=true;return next
+    }
+    if strings.equal(kind,"snap-capability") {next.supported=true;next.known=true}
+    if strings.equal(kind,"ready") {next.known=next.supported}
+    if strings.equal(kind,"desktop-begin") {next.known=true;next.supported=true;next.draft=json.array();next.collecting=true}
+    if strings.equal(kind,"desktop") && next.collecting && strings.equal(json.kind(get(event,"id")),"number") && num(get(event,"id"))>=0.0 && strings.equal(json.kind(get(event,"name")),"string") && strings.equal(json.kind(get(event,"active")),"bool") {next.draft=json.push(next.draft,event)}
+    if strings.equal(kind,"desktop-done") && next.collecting {next.desktops=next.draft;next.collecting=false}
+    let key=id(event)
+    if !strings.equal(key,"") {
+        if strings.equal(kind,"window") {
+            let window=get(next.windows,key)
+            if !strings.equal(json.kind(window),"object") {window=json.object()}
+            for field in json.keys(event) {if !strings.equal(field,"type") {window=json.set(window,field,json.get(event,field))}}
+            next.windows=json.set(next.windows,key,window)
+        }
+        if strings.equal(kind,"geometry") {
+            let window=get(next.windows,key);if !strings.equal(json.kind(window),"object") {window={id:get(event,"id")}}
+            next.windows=json.set(next.windows,key,json.set(window,"geometry",get(event,"geometry")))
+        }
+        if strings.equal(kind,"closed") {next.windows=json.remove(next.windows,key)}
+    }
+    return next
+}
+fn windows(snapshot:Snapshot):json.Value {let out=json.array();for key in json.keys(snapshot.windows) {out=json.push(out,json.get(snapshot.windows,key))};return out}

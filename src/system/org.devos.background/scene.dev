@@ -1,0 +1,134 @@
+# Native Cairo primitives. No JS engine or per-frame source interpreter.
+use "react_devlang/ui" as ui
+extern fn sin(x:f64):f64
+extern fn cos(x:f64):f64
+extern fn pow(x:f64,y:f64):f64
+extern fn fmod(x:f64,y:f64):f64
+extern fn sqrt(x:f64):f64
+extern fn floor(x:f64):f64
+extern fn ceil(x:f64):f64
+extern fn cairo_set_source_rgb(cr:*void,r:f64,g:f64,b:f64)
+extern fn cairo_set_source_rgba(cr:*void,r:f64,g:f64,b:f64,a:f64)
+extern fn cairo_paint(cr:*void)
+extern fn cairo_save(cr:*void)
+extern fn cairo_restore(cr:*void)
+extern fn cairo_translate(cr:*void,x:f64,y:f64)
+extern fn cairo_scale(cr:*void,x:f64,y:f64)
+extern fn cairo_rotate(cr:*void,angle:f64)
+extern fn cairo_new_path(cr:*void)
+extern fn cairo_move_to(cr:*void,x:f64,y:f64)
+extern fn cairo_line_to(cr:*void,x:f64,y:f64)
+extern fn cairo_curve_to(cr:*void,x:f64,y:f64,x1:f64,y1:f64,x2:f64,y2:f64)
+extern fn cairo_close_path(cr:*void)
+extern fn cairo_arc(cr:*void,x:f64,y:f64,r:f64,a:f64,b:f64)
+extern fn cairo_rectangle(cr:*void,x:f64,y:f64,w:f64,h:f64)
+extern fn cairo_fill(cr:*void)
+extern fn cairo_fill_preserve(cr:*void)
+extern fn cairo_stroke(cr:*void)
+extern fn cairo_clip(cr:*void)
+extern fn cairo_set_line_width(cr:*void,width:f64)
+extern fn cairo_set_line_cap(cr:*void,cap:i32)
+extern fn cairo_pattern_create_radial(x:f64,y:f64,r:f64,x1:f64,y1:f64,r1:f64):*void
+extern fn cairo_pattern_create_linear(x:f64,y:f64,x1:f64,y1:f64):*void
+extern fn cairo_pattern_add_color_stop_rgba(pattern:*void,offset:f64,r:f64,g:f64,b:f64,a:f64)
+extern fn cairo_pattern_destroy(pattern:*void)
+extern fn cairo_set_source(cr:*void,pattern:*void)
+extern fn cairo_set_source_surface(cr:*void,surface:*void,x:f64,y:f64)
+extern fn cairo_get_source(cr:*void):*void
+extern fn cairo_pattern_set_extend(pattern:*void,extend:i32)
+extern fn cairo_image_surface_create(format:i32,w:i32,h:i32):*void
+extern fn cairo_image_surface_get_data(surface:*void):*u8
+extern fn cairo_image_surface_get_stride(surface:*void):i32
+extern fn cairo_surface_mark_dirty(surface:*void)
+extern fn cairo_surface_flush(surface:*void)
+extern fn cairo_surface_destroy(surface:*void)
+extern fn cairo_create(surface:*void):*void
+extern fn cairo_destroy(cr:*void)
+extern fn cairo_surface_write_to_png(surface:*void,path:str):i32
+extern fn cairo_surface_set_device_scale(surface:*void,x:f64,y:f64)
+extern fn cairo_mask_surface(cr:*void,surface:*void,x:f64,y:f64)
+extern fn cairo_select_font_face(cr:*void,name:str,slant:i32,weight:i32)
+extern fn cairo_set_font_size(cr:*void,size:f64)
+extern fn cairo_show_text(cr:*void,text:*u8)
+extern fn rd_buffer_free(buffer:*void)
+struct Color {r:f64,g:f64,b:f64}
+struct Palette {dark:bool,base:Color,accent:Color,cool:Color,warm:Color}
+fn min(a:f64,b:f64):f64 {return a<b ? a : b}
+fn max(a:f64,b:f64):f64 {return a>b ? a : b}
+fn abs(a:f64):f64 {return a<0.0 ? 0.0-a : a}
+fn tau():f64 {return 6.283185307179586}
+fn pi():f64 {return 3.141592653589793}
+fn mix(a:Color,b:Color,k:f64):Color {return Color(a.r+(b.r-a.r)*k,a.g+(b.g-a.g)*k,a.b+(b.b-a.b)*k)}
+fn hex(ch:u8):f64 {if ch>=48 && ch<=57 {return (ch-48) as f64};if ch>=97 && ch<=102 {return (ch-87) as f64};if ch>=65 && ch<=70 {return (ch-55) as f64};return 0.0}
+fn color(value:ui.Text):Color {if value.bytes.len()!=7 {return Color(0.0,0.0,0.0)};return Color((hex(value.bytes[1])*16.0+hex(value.bytes[2]))/255.0,(hex(value.bytes[3])*16.0+hex(value.bytes[4]))/255.0,(hex(value.bytes[5])*16.0+hex(value.bytes[6]))/255.0)}
+fn shifted(a:Color,degrees:f64,limit:f64):Color {unsafe {
+    let hi=max(a.r,max(a.g,a.b));let lo=min(a.r,min(a.g,a.b));let l=(hi+lo)/2.0;let d=hi-lo
+    if d==0.0 {return a}
+    let s=min(d/(1.0-abs(2.0*l-1.0)),limit)
+    let sector=hi==a.r ? fmod((a.g-a.b)/d+6.0,6.0) : hi==a.g ? (a.b-a.r)/d+2.0 : (a.r-a.g)/d+4.0
+    let h=fmod(sector*60.0+degrees+360.0,360.0);let c=(1.0-abs(2.0*l-1.0))*s;let x=c*(1.0-abs(fmod(h/60.0,2.0)-1.0));let m=l-c/2.0
+    let out=h<60.0 ? Color(c,x,0.0) : h<120.0 ? Color(x,c,0.0) : h<180.0 ? Color(0.0,c,x) : h<240.0 ? Color(0.0,x,c) : h<300.0 ? Color(x,0.0,c) : Color(c,0.0,x)
+    return Color(out.r+m,out.g+m,out.b+m)
+}}
+fn palette(base:Color,accent:Color):Palette {return Palette(0.2126*base.r+0.7152*base.g+0.0722*base.b<0.5,base,accent,shifted(accent,-52.0,0.75),shifted(accent,48.0,0.75))}
+fn random(seed:*u32):f64 {unsafe {(*seed)=(*seed)*1664525+1013904223;return ((*seed) as f64)/4294967296.0}}
+fn rgb(cr:*void,c:Color) {unsafe {cairo_set_source_rgb(cr,c.r,c.g,c.b)}}
+fn rgba(cr:*void,c:Color,a:f64) {unsafe {cairo_set_source_rgba(cr,c.r,c.g,c.b,a)}}
+fn stop(pattern:*void,offset:f64,c:Color,a:f64) {unsafe {cairo_pattern_add_color_stop_rgba(pattern,offset,c.r,c.g,c.b,a)}}
+fn fillGradient(cr:*void,gradient:*void,paint:bool) {unsafe {cairo_set_source(cr,gradient);if paint {cairo_paint(cr)} else {cairo_fill(cr)};cairo_pattern_destroy(gradient)}}
+fn glow(cr:*void,x:f64,y:f64,r:f64,c:Color,a:f64) {unsafe {let g=cairo_pattern_create_radial(x,y,0.0,x,y,r);stop(g,0.0,c,a);stop(g,0.2,c,a*0.8);stop(g,0.4,c,a*0.5);stop(g,0.6,c,a*0.26);stop(g,0.8,c,a*0.08);stop(g,1.0,c,0.0);fillGradient(cr,g,true)}}
+fn grain():*void {unsafe {
+    let surface=cairo_image_surface_create(0,128,128);let data=cairo_image_surface_get_data(surface) as *u32;let stride=(cairo_image_surface_get_stride(surface)/4) as i64;let seed=2654435761 as u32
+    for y in 0..128 {for x in 0..128 {seed=seed*1664525+1013904223;let light=seed>>31;let alpha=3+((seed>>8)&3);let c=light!=0 ? alpha : 0;data[y*stride+x]=(alpha<<24)|(c<<16)|(c<<8)|c}}
+    cairo_surface_mark_dirty(surface);return surface
+}}
+fn finish(cr:*void,grain:*void) {unsafe {cairo_save(cr);cairo_set_source_surface(cr,grain,0.0,0.0);cairo_pattern_set_extend(cairo_get_source(cr),1);cairo_paint(cr);cairo_restore(cr)}}
+struct Cache {sprites:Vec<i64>,shade:i64,shadeWidth:i32,shadeHeight:i32,shadeAlpha:f64,glyphs:Vec<i64>,glyphSize:i32,low:i64,lowWidth:i32,lowHeight:i32,grain:i64}
+fn mask(kind:i32):i64 {unsafe {
+    let size=kind<2 ? 256 : 32;let half=(size as f64)/2.0;let surface=cairo_image_surface_create(2,size as i32,size as i32);let pen=cairo_create(surface);let gradient=cairo_pattern_create_radial(half,half,0.0,half,half,half);let black=Color(0.0,0.0,0.0)
+    stop(gradient,0.0,black,1.0)
+    if kind==0 {stop(gradient,0.2,black,0.8);stop(gradient,0.4,black,0.5);stop(gradient,0.6,black,0.26);stop(gradient,0.8,black,0.08)}
+    else if kind==1 {stop(gradient,0.25,black,0.75);stop(gradient,0.5,black,0.4);stop(gradient,0.75,black,0.12)}
+    else {stop(gradient,kind==2 ? 0.35 : 0.3,black,kind==2 ? 0.35 : 0.3636)}
+    stop(gradient,1.0,black,0.0);fillGradient(pen,gradient,true);cairo_destroy(pen);return surface as i64
+}}
+fn cache():Cache {unsafe {return Cache(Vec<i64>(mask(0),mask(1),mask(2),mask(3)),0,0,0,0.0,Vec<i64>(),0,0,0,0,grain() as i64)}}
+fn freeCache(value:*Cache) {unsafe {
+    for surface in (*value).sprites {cairo_surface_destroy(surface as *void)}
+    for surface in (*value).glyphs {cairo_surface_destroy(surface as *void)}
+    if (*value).shade!=0 {cairo_surface_destroy((*value).shade as *void)}
+    if (*value).low!=0 {cairo_surface_destroy((*value).low as *void)}
+    if (*value).grain!=0 {cairo_surface_destroy((*value).grain as *void)}
+    (*value).sprites.clear();(*value).glyphs.clear();(*value).shade=0;(*value).low=0;(*value).grain=0
+}}
+fn sprite(cr:*void,cache:*Cache,kind:i32,x:f64,y:f64,r:f64,c:Color,a:f64) {unsafe {
+    if r<=0.0 || a<=0.0 {return}
+    let scale=r*2.0/(kind<2 ? 256.0 : 32.0);cairo_save(cr);cairo_translate(cr,x-r,y-r);cairo_scale(cr,scale,scale);rgba(cr,c,a);cairo_mask_surface(cr,(*cache).sprites[kind as usize] as *void,0.0,0.0);cairo_restore(cr)
+}}
+fn shade(cr:*void,cache:*Cache,w:i32,h:i32,p:Palette) {unsafe {
+    let a=p.dark ? 0.42 : 0.22;let width=w as f64;let height=h as f64
+    if (*cache).shade==0 || (*cache).shadeWidth!=w || (*cache).shadeHeight!=h || (*cache).shadeAlpha!=a {
+        if (*cache).shade!=0 {cairo_surface_destroy((*cache).shade as *void)}
+        let surface=cairo_image_surface_create(2,w,h);let pen=cairo_create(surface);let g=cairo_pattern_create_radial(width/2.0,height/2.0,min(width,height)*0.45,width/2.0,height/2.0,sqrt(width*width+height*height)*0.62)
+        stop(g,0.0,Color(0.0,0.0,0.0),0.0);stop(g,1.0,Color(0.0,0.0,0.0),a);fillGradient(pen,g,true);cairo_destroy(pen);(*cache).shade=surface as i64;(*cache).shadeWidth=w;(*cache).shadeHeight=h;(*cache).shadeAlpha=a
+    }
+    rgb(cr,p.dark ? Color(0.0,0.0,0.0) : p.base);cairo_mask_surface(cr,(*cache).shade as *void,0.0,0.0)
+}}
+struct Dot {key:i64,x:f64,y:f64,r:f64}
+struct Batch {colors:Vec<Color>,keys:Vec<i64>,dots:Vec<Dot>}
+fn batch(colors:Vec<Color>):Batch {return Batch(colors,Vec<i64>(),Vec<Dot>())}
+fn dot(batch:*Batch,color:i64,a:f64,x:f64,y:f64,r:f64) {unsafe {
+    let key=color*32+(max(0.0,min(31.0,floor(a*31.0+0.5))) as i64);let found=false
+    for old in (*batch).keys {if old==key {found=true;break}}
+    if !found {(*batch).keys.push(key)}
+    (*batch).dots.push(Dot(key,x,y,r))
+}}
+fn dots(cr:*void,batch:Batch) {unsafe {
+    for key in batch.keys {rgba(cr,batch.colors[(key>>5) as usize],((key&31) as f64)/31.0);cairo_new_path(cr)
+        for point in batch.dots {if point.key==key {cairo_move_to(cr,point.x+point.r,point.y);cairo_arc(cr,point.x,point.y,point.r,0.0,tau())}}
+        cairo_fill(cr)
+    }
+}}
+fn show(cr:*void,value:ui.Text) {unsafe {let text=ui.nativeText(value);cairo_show_text(cr,text);rd_buffer_free(text as *void)}}
+
+

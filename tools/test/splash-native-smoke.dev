@@ -1,0 +1,74 @@
+use "std/fs"
+use "std/time"
+use "std/strings"
+use "std/child_process"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn environment(dir:str):Map<str,str> {
+    let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("NO_AT_BRIDGE","1");env.set("XDG_RUNTIME_DIR",dir)
+    env.set("DEVOS_SPLASH_STEPS",dir+"/steps");env.set("DEVOS_SPLASH_LOG",dir+"/splash.log");env.set("DEVOS_SPLASH_WINDOW_TIMEOUT","2.4");env.set("DEVOS_SPLASH_FRAME_TIME","0.8")
+    fs.mkdirSync(dir+"/steps",true);return env
+}
+fn main():i32 {
+    tool.scope("devos-splash-native-",fn(dir:str) {
+        let binary=tool.root()+"/dist/native/boot-splash";let env=environment(dir)
+        tool.require(fs.is_file(binary),"Build the native splash first")
+        let image=tool.root()+"/build/screenshots/splash-native.png";fs.mkdirSync(tool.root()+"/build/screenshots",true);env.set("DEVOS_SPLASH_DUMP",image)
+        tool.checked(Vec<str>("xvfb-run","-a",binary),env,"",10000)
+        tool.require(fs.is_file(image),"Splash did not draw its PNG frame")
+        tool.require(fs.existsSync(dir+"/steps/window"),"First frame did not announce the window milestone")
+        tool.require(strings.contains(tool.read(dir+"/splash.log"),"closed: watchdog"),"Watchdog failed to finish the animation")
+        print("PASS native splash first frame, 30 fps renderer, PNG capture and watchdog")
+    })
+    tool.scope("devos-splash-ready-",fn(dir:str) {
+        let env=environment(dir);env.set("DEVOS_SPLASH_WINDOW_TIMEOUT","10")
+        let child=smoke.launch(Vec<str>("xvfb-run","-a",tool.root()+"/dist/native/boot-splash"),env,dir+"/process.log")
+        let done=result.run(fn() {
+            tool.waitFor(fn():bool {return fs.existsSync(dir+"/steps/window")},5000,"Splash did not draw")
+            let pids=smoke.processIds(dir,tool.root()+"/dist/native/boot-splash")
+            tool.require(pids.len()>0,"Native splash process missing")
+            for pid in pids {tool.require(!strings.contains(tool.read("/proc/${pid}/maps"),"mozjs"),"Splash loaded a JavaScript runtime")}
+            tool.write(dir+"/steps/shell","");time.sleep_ms(300);tool.write(dir+"/steps/ready","")
+            tool.waitFor(fn():bool {return child.ready()},3000,"Ready milestone did not close the splash")
+            tool.require(child.wait().success,"Splash failed during fade")
+            tool.require(strings.contains(tool.read(dir+"/splash.log"),"status Almost ready") && strings.contains(tool.read(dir+"/splash.log"),"closed: ready"),"Status/fade lifecycle failed")
+        })
+        result.run(fn() {smoke.stop(child)})
+        result.unwrap(done);print("PASS native splash milestone status and ready fade")
+    })
+    tool.scope("devos-splash-escape-",fn(dir:str) {
+        let env=environment(dir);env.set("DEVOS_SPLASH_TEST_ESCAPE_MS","500")
+        tool.checked(Vec<str>("xvfb-run","-a",tool.root()+"/dist/native/boot-splash"),env,"",10000)
+        tool.require(strings.contains(tool.read(dir+"/splash.log"),"closed: Esc"),"Escape handler failed")
+        print("PASS native splash Escape key handling")
+    })
+    tool.scope("devos-splash-vanished-",fn(dir:str) {
+        let env=environment(dir);env.set("DEVOS_SPLASH_WINDOW_TIMEOUT","10")
+        let child=smoke.launch(Vec<str>("xvfb-run","-a",tool.root()+"/dist/native/boot-splash"),env,dir+"/process.log")
+        let done=result.run(fn() {
+            tool.waitFor(fn():bool {return fs.existsSync(dir+"/steps/window")},5000,"Splash did not draw")
+            tool.exec(Vec<str>("rm","--",dir+"/steps/window"));tool.exec(Vec<str>("rmdir","--",dir+"/steps"))
+            tool.waitFor(fn():bool {return child.ready()},3000,"Missing milestone directory left the splash visible")
+            tool.require(child.wait().success,"Splash failed after its directory vanished")
+            tool.require(strings.contains(tool.read(dir+"/splash.log"),"closed: splash directory vanished"),"Wrong close reason")
+        })
+        result.run(fn() {smoke.stop(child)});result.unwrap(done)
+        env.set("DEVOS_SPLASH_STEPS",dir+"/absent");env.set("GDK_BACKEND","invalid-no-display")
+        tool.checked(Vec<str>(tool.root()+"/dist/native/boot-splash"),env,"",10000)
+        print("PASS native splash directory removal and missing-directory no-display exit")
+    })
+    if tool.has("--wayland") {
+        smoke.withSession("native-splash-wayland",Map<str,str>(),fn(session:smoke.Session) {
+            let env=smoke.environment(session);let steps=session.base+"/splash-steps";fs.mkdirSync(steps,true)
+            env.set("DEVOS_SPLASH_STEPS",steps);env.set("DEVOS_SPLASH_LOG",session.base+"/splash.log");env.set("DEVOS_SPLASH_WINDOW_TIMEOUT","2.4")
+            env.set("DEVOS_SPLASH_DUMP",session.root+"/build/screenshots/splash-native-wayland.png");env.set("DEVOS_SPLASH_FRAME_TIME","0.8")
+            tool.checked(Vec<str>(session.root+"/dist/native/boot-splash"),env,"",10000)
+            tool.require(fs.existsSync(steps+"/window"),"Wayland splash did not acknowledge its frame")
+            tool.require(strings.contains(tool.read(session.base+"/splash.log"),"closed: watchdog"),"Wayland splash failed to close")
+            print("PASS native splash on the real headless Wayland compositor")
+        })
+    }
+    return 0
+}
+return tool.main(main)

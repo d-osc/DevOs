@@ -2,10 +2,10 @@ import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, Gio, GLib, createRoot, type SettingsValues} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {LauncherSettings} from '../extensions/org.devos.launcher/settings-view.js';
-import {launcherOptions} from '../extensions/org.devos.launcher/options.js';
-import {mountLauncher} from '../extensions/org.devos.launcher/view.js';
-import {launcherCustomization, workspaceAppKey} from '../extensions/org.devos.launcher/customization.js';
+import {LauncherSettings} from '../src/apps/org.devos.launcher/settings-view.js';
+import {launcherOptions} from '../src/apps/org.devos.launcher/options.js';
+import {mountLauncher} from '../src/apps/org.devos.launcher/view.js';
+import {launcherCustomization, workspaceAppKey} from '../src/apps/org.devos.launcher/customization.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
@@ -16,10 +16,10 @@ async function verify() {
     assert(launcherCustomization({workspaceApps: 'bad'}).workspaceApps.length === 3 && launcherCustomization({workspaceApps: '[]'}).workspaceApps.length === 0, 'Invalid pins use defaults and an intentionally empty Workspace stays empty');
     assert(launcherOptions({menuWidth: 9999, iconSize: NaN}).menuWidth === 900 && launcherOptions({iconSize: NaN}).iconSize === 28, 'Invalid sizes are bounded or defaulted');
     const temporary = GLib.dir_make_tmp('devos-launcher-ui-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1100);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     let applied = 0;

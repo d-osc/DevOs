@@ -14,7 +14,7 @@ try {
     GLib.unsetenv('LABWC_PID');
     GLib.setenv('DEV_OS_VERSION_REQUEST', 'previous-request', true);
     for (let attempt = 0; attempt < 2; attempt++) {
-        if (runSupervisor() !== 0) throw new Error('Supervisor did not return child exit code');
+        if (runSupervisor({services: false}) !== 0) throw new Error('Supervisor did not return child exit code');
         if (GLib.getenv('DEV_OS_VERSION_REQUEST') !== 'previous-request')
             throw new Error('Supervisor did not restore the host environment');
     }
@@ -31,14 +31,25 @@ exit 0
 `);
     Gio.File.new_for_path(script).set_attribute_uint32('unix::mode', 0o755, Gio.FileQueryInfoFlags.NONE, null);
     GLib.setenv('DEV_OS_SHELL', script, true);
-    if (runSupervisor({restartDelaySeconds: 0.05}) !== 0) throw new Error('Supervisor did not finish cleanly after restarting a crashed shell');
+    if (runSupervisor({services: false, restartDelaySeconds: 0.05}) !== 0) throw new Error('Supervisor did not finish cleanly after restarting a crashed shell');
     if (new TextDecoder().decode(GLib.file_get_contents(counter)[1]).trim() !== '3')
         throw new Error('Crashed shell was not restarted until it exited cleanly');
     // A shell that keeps crashing must end the session instead of looping forever.
     GLib.file_set_contents(script, `#!/bin/sh
 kill -9 $$
 `);
-    if (runSupervisor({restartDelaySeconds: 0.01, maxRestarts: 2}) === 0) throw new Error('Crash loop did not end the session');
+    if (runSupervisor({services: false, restartDelaySeconds: 0.01, maxRestarts: 2}) === 0) throw new Error('Crash loop did not end the session');
+    Gio.File.new_for_path(counter).delete(null);
+    GLib.file_set_contents(script, `#!/bin/sh\necho $$ > '${counter}'\nsleep 5\n`);
+    const ownPid = new TextDecoder().decode(GLib.file_get_contents('/proc/self/stat')[1]).split(' ')[0];
+    const interrupt = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
+        if (!GLib.file_test(counter, GLib.FileTest.EXISTS)) return GLib.SOURCE_CONTINUE;
+        Gio.Subprocess.new(['kill', '-TERM', ownPid], Gio.SubprocessFlags.NONE).wait_check(null);
+        return GLib.SOURCE_REMOVE;
+    });
+    if (runSupervisor({services: false}) !== 0) {try {GLib.source_remove(interrupt);} catch {} throw new Error('JS binding failed to forward TERM');}
+    const shellPid = new TextDecoder().decode(GLib.file_get_contents(counter)[1]).trim();
+    if (GLib.file_test(`/proc/${shellPid}`, GLib.FileTest.EXISTS)) throw new Error('Native shell outlived the JS supervisor binding');
     print('PASS: library import has no session side effects; supervisor runs twice and restores environment');
 } finally {
     keys.forEach((key, index) => previous[index] === null ? GLib.unsetenv(key) : GLib.setenv(key, previous[index]!, true));

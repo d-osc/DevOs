@@ -1,7 +1,7 @@
 import {
     removeTree, readJson, Listeners, Gio, GLib,
     writeJson
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 import {newer} from '@dev-os/updates/protocol';
 import {GitHubTransport, run} from '@dev-os/updates';
 import {repoInput, extensionAsset, manifestAsset, manifestForRelease, validateExtensionArchive, type ExtensionRelease} from './store-protocol.js';

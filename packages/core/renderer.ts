@@ -111,14 +111,20 @@ function apply(node: HostNode, next: HostProps): void {
                 const target = key === 'onChanged' && node.widget instanceof Gtk.TextView
                     ? node.widget.get_buffer() : node.widget;
                 if (next[key] && !node.signals.has(key)) node.signals.set(key, {target, id: connect.call(target, signals[key], (...args: unknown[]) => {
-                    if (node.applying || committing || !node.committed) return;
+                    const context = key === 'onDraw' ? args[1] as {$dispose(): void} : undefined;
+                    if (node.applying || committing || !node.committed) {context?.$dispose(); return;}
                     const saved = priority; priority = DiscreteEventPriority;
                     try {
                         const handler = node.props[key] as (...args: unknown[]) => unknown;
                         return renderer.flushSyncFromReconciler(() => handler(
                             ...(target === node.widget ? args : [node.widget, ...args.slice(1)])));
                     }
-                    finally { priority = saved; }
+                    finally {
+                        priority = saved;
+                        // Native Cairo surfaces can dwarf the JS heap, so waiting
+                        // for GC retains full Wayland frame buffers unnecessarily.
+                        context?.$dispose();
+                    }
                 })});
             } else if (key in properties) {
                 if (key === 'text' && node.widget instanceof Gtk.TextView) continue;
@@ -261,12 +267,33 @@ function syncChildren(parent: ParentNode): void {
                 widget.reorder_child(child.widget, index);
                 widget.set_tab_label_text(child.widget, String(child.props.tabLabel ?? `Page ${index + 1}`));
             });
-        } else if (widget instanceof Gtk.Paned || widget instanceof Gtk.Overlay ||
+        } else if (widget instanceof Gtk.Overlay) {
+            if (parent.children.filter(child => !child.props.overlay).length > 1)
+                throw new Error('Overlay accepts one main child; mark other children overlay={true}');
+            const main = parent.children.find(child => !child.props.overlay)?.widget;
+            const previous = widget.get_child();
+            if (previous && previous !== main) widget.remove(previous);
+            let index = 0;
+            for (const child of parent.children) {
+                const overlay = !!child.props.overlay;
+                // A property update must not unmap the wallpaper or a dragged
+                // card. Reparent only when its main/overlay role actually changes.
+                if (child.widget.get_parent() === widget &&
+                    (child.widget !== widget.get_child()) !== overlay) widget.remove(child.widget);
+                if (!child.widget.get_parent()) {
+                    if (overlay) widget.add_overlay(child.widget);
+                    else widget.add(child.widget);
+                }
+                if (overlay) {
+                    const overlays = widget.get_children().filter(item => item !== widget.get_child());
+                    if (overlays[index] !== child.widget) widget.reorder_overlay(child.widget, index);
+                    index++;
+                }
+            }
+        } else if (widget instanceof Gtk.Paned ||
             widget instanceof Gtk.HeaderBar || widget instanceof Gtk.ActionBar) {
             if (widget instanceof Gtk.Paned && parent.children.length > 2)
                 throw new Error('Paned accepts at most two children');
-            if (widget instanceof Gtk.Overlay && parent.children.filter(child => !child.props.overlay).length > 1)
-                throw new Error('Overlay accepts one main child; mark other children overlay={true}');
             if ((widget instanceof Gtk.HeaderBar || widget instanceof Gtk.ActionBar) &&
                 parent.children.filter(child => child.props.pack === 'center').length > 1)
                 throw new Error('HeaderBar and ActionBar accept one pack="center" child');
@@ -276,9 +303,6 @@ function syncChildren(parent: ParentNode): void {
                 if (widget instanceof Gtk.Paned) {
                     const pack = index === 0 ? widget.pack1 : widget.pack2;
                     pack.call(widget, child.widget, child.props.resize !== false, child.props.shrink !== false);
-                } else if (widget instanceof Gtk.Overlay) {
-                    if (child.props.overlay) widget.add_overlay(child.widget);
-                    else widget.add(child.widget);
                 } else if (widget instanceof Gtk.HeaderBar || widget instanceof Gtk.ActionBar) {
                     if (child.props.pack === 'center') {
                         if (widget instanceof Gtk.HeaderBar) widget.set_custom_title(child.widget);
@@ -318,6 +342,12 @@ function detachWidget(parent: ParentNode, child: HostNode): void {
 function attach(parent: ParentNode, child: HostNode, before: HostNode | null = null): void {
     if (!(parent.widget instanceof Gtk.Container)) throw new Error(`${parent.type} cannot contain widgets`);
     if (child === before) return;
+    if (child.parent === parent && parent.widget instanceof Gtk.Overlay) {
+        parent.children.splice(parent.children.indexOf(child), 1);
+        const index = before ? parent.children.indexOf(before) : parent.children.length;
+        parent.children.splice(index, 0, child);
+        syncChildren(parent); return;
+    }
     if (child.parent) {
         const old = child.parent;
         old.children.splice(old.children.indexOf(child), 1);
@@ -328,7 +358,16 @@ function attach(parent: ParentNode, child: HostNode, before: HostNode | null = n
     const index = before ? parent.children.indexOf(before) : parent.children.length;
     parent.children.splice(index, 0, child); child.parent = parent;
     if (parent.widget instanceof Gtk.Box) {
-        (parent.widget as Gtk.Box).pack_start(child.widget, false, true, 0); syncBox(parent);
+        const box = parent.widget;
+        if (child.props.pack === 'center') syncBox(parent);
+        else {
+            // Pack only the new child. Rescanning/reordering every sibling on
+            // each append makes the first mount of a large view quadratic.
+            const expand = child.props.expand ?? false, fill = child.props.fill ?? true, padding = child.props.padding ?? 0;
+            if (child.props.pack === 'end') box.pack_end(child.widget, expand, fill, padding);
+            else box.pack_start(child.widget, expand, fill, padding);
+            if (before) box.reorder_child(child.widget, index);
+        }
     } else if (parent.widget instanceof Gtk.ListBox || parent.widget instanceof Gtk.FlowBox) parent.widget.insert(child.widget, index);
     else if (parent.widget instanceof Gtk.Notebook) {
         parent.widget.insert_page(child.widget, null, index); syncChildren(parent);

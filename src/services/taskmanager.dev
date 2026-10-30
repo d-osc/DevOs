@@ -1,0 +1,48 @@
+#!/usr/bin/env d
+use "std/args"
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "../../lib/processes.dev" as proc
+use "../../lib/task-metrics.dev" as metrics
+use "../../lib/task-view.dev" as view
+
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : ""; let page = proc.confValue("PAGE_SIZE"); let ticks = proc.confValue("CLK_TCK"); let pid = proc.selfPidValue()
+    let previous = json.null_value(); let names = json.object(); let counters = json.object(); let state = json.null_value(); let last = 0
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        let outcome = result.attempt(fn():json.Value { return json.parse(line) })
+        if result.isErr(outcome) { print("E\tInvalid service request"); continue }
+        let request = result.unwrap(outcome); let message = ""
+        if !strings.equal(json.kind(request),"object") { print("E\tExpected an object request"); continue }
+        let action = metrics.text(metrics.get(request,"action"))
+        if !strings.equal(action,"get") && !strings.equal(action,"stop") { print("E\tUnknown service action"); continue }
+        if json.has(request,"paused") && !strings.equal(json.kind(json.get(request,"paused")),"bool") { print("E\tInvalid paused flag"); continue }
+        if strings.equal(action,"stop") && (!strings.equal(json.kind(metrics.get(request,"pid")),"number") || !strings.equal(json.kind(metrics.get(request,"start")),"string") || !strings.equal(json.kind(metrics.get(request,"force")),"bool")) { print("E\tInvalid stop request"); continue }
+        if strings.equal(metrics.text(metrics.get(request,"action")),"stop") {
+            let stopped = result.attempt(fn():json.Value { return proc.stopProcess(request,page,pid) })
+            if result.isErr(stopped) { message = "Process exited or could not be stopped. Refresh the list." }
+            else { message = metrics.text(metrics.get(result.unwrap(stopped),"error")) }
+        }
+        let paused = json.has(request,"paused") && json.bool(json.get(request,"paused"))
+        if json.is_null(state) || !paused || strings.equal(action,"stop") {
+            let sampled = result.attempt(fn():json.Value {
+                let baseline = previous
+                if json.is_null(baseline) { baseline = proc.rawSample(page,json.object()); time.sleep_ms(150) }
+                return proc.sample(baseline,names,page,ticks,pid)
+            })
+            if result.isErr(sampled) { print("E\tCould not sample processes. Retry or reopen Task Manager."); continue }
+            let sample = result.unwrap(sampled); previous = json.get(sample,"__previous"); names = json.get(sample,"__names")
+            sample = json.remove(json.remove(sample,"__previous"),"__names")
+            let now = time.now_ms() as i64
+            let enriched = metrics.enrich(sample,counters,(now-last) as f64/1000.0,root); last = now
+            state = json.get(enriched,"state"); counters = json.get(enriched,"previous")
+        }
+        print(view.frame(state,metrics.text(metrics.get(request,"query")),metrics.text(metrics.get(request,"sort")),message,paused))
+    }
+    return 0
+}
+return main()

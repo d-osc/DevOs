@@ -1,0 +1,10 @@
+use "react_devlang/ui" as ui
+extern fn bg_watch_new(path:*u8,changed:callback(*void):void,data:*void):*void
+extern fn bg_watch_free(watch:*void,keep:*void)
+fn useWatch(context:*ui.Context,file:ui.Text,refresh:fn():void) {
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if file.bytes.len()==0 {return ui.noop}
+        let event=callback_context(fn() {refresh()});let path=ui.nativeText(file);let watch=bg_watch_new(path,event.call,event.data);ui.rd_buffer_free(path as *void)
+        return fn() {unsafe {bg_watch_free(watch,event.data)}}
+    }},Vec<i64>())
+}

@@ -1,0 +1,24 @@
+# Shared loading-screen geometry and transition policy. No GTK/JS dependencies.
+extern fn cos(value:f64):f64
+extern fn sin(value:f64):f64
+extern fn pow(value:f64,power:f64):f64
+extern fn fmod(value:f64,divisor:f64):f64
+struct Layout {u:f64,cx:f64,cy:f64,radius:f64,stroke:f64,word:f64,line:f64}
+struct Arc {length:f64,head:f64}
+fn tau():f64 {return 6.283185307179586}
+fn min(a:f64,b:f64):f64 {return a<b ? a : b}
+fn max(a:f64,b:f64):f64 {return a>b ? a : b}
+fn layout(width:f64,height:f64):Layout {
+    let u=min(max(min(height/1080.0,width/1500.0),0.5),3.0);let top=(height-420.0*u)/2.0
+    return Layout(u,width/2.0,top+130.0*u,56.0*u,max(2.5,4.0*u),top+268.0*u,top+338.0*u)
+}
+fn arc(seconds:f64):Arc {
+    let phase=0.0;unsafe {phase=fmod(seconds,4.8)/4.8}
+    let wave=0.0;unsafe {wave=cos(tau()*3.0*phase)}
+    let length=(48.0+200.0*(0.5-0.5*wave))*tau()/360.0
+    return Arc(length,tau()*2.0*phase+length*0.9)
+}
+fn opacity(seconds:f64,fadeAt:f64):f64 {return fadeAt<0.0 ? 1.0 : max(0.0,1.0-(seconds-fadeAt)/0.3)}
+fn status(index:i32):str {
+    if index==0 {return "Starting services"};if index==1 {return "Starting desktop"};if index==2 {return "Loading shell"};if index==4 {return "Almost ready"};return "Starting Dev OS"
+}

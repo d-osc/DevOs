@@ -1,17 +1,17 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {SystemSettings, SystemSound} from '../extensions/org.devos.settings/system-view.js';
-import {systemPages, formatBytes, type SystemControls, type SystemState, type SystemPage} from '../extensions/org.devos.settings/system.js';
-import type {DeviceControls, DeviceState} from '../extensions/org.devos.panel/devices.js';
-import {DisplaySettings} from '../extensions/org.devos.settings/displays-view.js';
-import {AudioSettings} from '../extensions/org.devos.settings/audio-view.js';
-import {InputSettings, type InputControls} from '../extensions/org.devos.settings/input-view.js';
-import {PrintersSettings} from '../extensions/org.devos.settings/printers-view.js';
-import {TouchpadSettings} from '../extensions/org.devos.settings/touchpad-view.js';
-import {defaultTouchpad, type TouchpadControls, type TouchpadValues} from '../extensions/org.devos.settings/touchpad.js';
-import {audioItem, type AudioControls, type AudioState} from '../extensions/org.devos.settings/audio.js';
-import {changeArgs, restoreArgs, type DisplayControls, type DisplayOutput} from '../extensions/org.devos.settings/displays.js';
+import {SystemSettings, SystemSound} from '../src/apps/org.devos.settings/system-view.js';
+import {systemPages, formatBytes, type SystemControls, type SystemState, type SystemPage} from '../src/apps/org.devos.settings/system.js';
+import type {DeviceControls, DeviceState} from '../packages/compat/panel-legacy/devices.js';
+import {DisplaySettings} from '../src/apps/org.devos.settings/displays-view.js';
+import {AudioSettings} from '../src/apps/org.devos.settings/audio-view.js';
+import {InputSettings, type InputControls} from '../src/apps/org.devos.settings/input-view.js';
+import {PrintersSettings} from '../src/apps/org.devos.settings/printers-view.js';
+import {TouchpadSettings} from '../src/apps/org.devos.settings/touchpad-view.js';
+import {defaultTouchpad, type TouchpadControls, type TouchpadValues} from '../src/apps/org.devos.settings/touchpad.js';
+import {audioItem, type AudioControls, type AudioState} from '../src/apps/org.devos.settings/audio.js';
+import {changeArgs, restoreArgs, type DisplayControls, type DisplayOutput} from '../src/apps/org.devos.settings/displays.js';
 Gtk.init(null);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 170, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -22,7 +22,7 @@ async function verify() {
     const controls: SystemControls = {async load() {return state;}, async open(page, host) {if (fail) throw new Error('Configuration unavailable'); opened = `${page}/${host}`;}, async profile(id) {profile = id; state = {...state, power: {...state.power, active: id}}; return state;}, destroy() {released++;}};
     const monitors = [{name: 'DevOs monitor', width: 1920, height: 1080, scale: 1, refresh: 60, primary: true}];
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(900, 900); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()))); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()))); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     const show = async (page: SystemPage) => {root.render(<SystemSettings page={page} controls={controls} battery={{async request() {return {supported: false, battery: '', reason: '', care: false, full: false, fullUntil: 0, remaining: 0, threshold: null, limit: 80, quick: true};}, destroy() {}}} monitors={monitors} navigate={page => {routed = page;}} openFiles={() => {files++;}} />); window.show_all(); await wait();};
     try {

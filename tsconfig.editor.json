@@ -5,5 +5,5 @@
     "strict": true, "skipLibCheck": true, "noEmit": true,
     "types": ["react", "react-dom"]
   },
-  "include": ["extensions/org.devos.editor/browser/**/*.tsx", "extensions/org.devos.editor/protocol.ts"]
+  "include": ["src/apps/org.devos.editor/browser/**/*.tsx", "src/apps/org.devos.editor/protocol.ts"]
 }

@@ -1,1 +1,1 @@
-export * from '../../extensions/org.devos.background/view.js';
+export * from './background-legacy/view.js';

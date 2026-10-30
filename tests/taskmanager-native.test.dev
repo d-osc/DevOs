@@ -1,0 +1,97 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/child_process"
+use "std/result"
+use "../lib/processes.dev" as proc
+use "../lib/posix.dev" as posix
+use "../lib/task-metrics.dev" as metrics
+use "../lib/task-view.dev" as view
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+test.case("readable DevOs process identities",fn() {
+    let name = metrics.identity(strings.join(Vec<str>("gjs","-m","/devos/dist/app-host.js","files"),"\0"),"gjs","/devos")
+    t.equal(name,"Files · UI")
+    t.equal(metrics.identity("/devos/dist/native/taskmanager","taskmanager","/devos"),"Task Manager · Native UI")
+})
+test.case("counter rates preserve warmup, reset and permissions semantics",fn() {
+    test.expect(json.is_null(metrics.rate(json.value(20),json.null_value(),1.0)),"First sample must be unavailable")
+    test.expect(json.is_null(metrics.rate(json.value(10),json.value(20),1.0)),"Reset counter must be unavailable")
+    test.expect(metrics.num(metrics.rate(json.value(500),json.value(100),2.0)) == 200.0,"Rate mismatch")
+    test.expect(metrics.num(metrics.counter("VmSwap:\t12 kB\n","VmSwap")) == 12.0,"Swap parser mismatch")
+})
+test.case("TCP counters deduplicate owners and preserve Unicode process names",fn() {
+    let sockets = metrics.socketCounters("ESTAB users:((\"ไทย\",pid=42,fd=5),(\"ไทย\",pid=42,fd=6),(\"other\",pid=43,fd=7)) ino:99 bytes_sent:12 bytes_received:34\n")
+    test.expect(json.len(sockets) == 2,"Duplicate socket ownership")
+    test.expect(json.int(metrics.get(json.at(sockets,0),"sent")) == 12,"TCP sent mismatch")
+    test.expect(json.int(metrics.get(json.at(sockets,1),"pid")) == 43,"TCP owner mismatch")
+})
+test.case("GPU memory aliases and engine capacities",fn() {
+    let client = metrics.gpuClient("drm-driver: test\ndrm-client-id: 3\ndrm-pdev: gpu0\ndrm-engine-render: 9007199254740993 ns\ndrm-engine-capacity-render: 2\ndrm-memory-vram: 1 MiB\ndrm-resident-vram: 2 MiB\n")
+    t.equal(metrics.text(metrics.get(client,"id")),"gpu0:3")
+    test.expect(metrics.num(metrics.get(client,"memory")) == 2097152.0,"Memory aliases double counted")
+    test.expect(json.int(metrics.get(metrics.get(metrics.get(client,"engines"),"render"),"busy")) == 9007199254740993,"Lost GPU integer precision")
+})
+test.case("GPU samples deduplicate descriptors and keep the high watermark",fn() {
+    tool.scope("devos-native-gpu-",fn(dir:str) {
+        let prefix = "drm-driver: test\ndrm-client-id: 1\ndrm-engine-render: "
+        tool.write(dir+"/fdinfo/3",prefix+"1000000000 ns\ndrm-resident-vram: 1 MiB\n")
+        tool.write(dir+"/fdinfo/4",tool.read(dir+"/fdinfo/3"))
+        let first = metrics.gpu(dir,json.object(),1.0)
+        test.expect(json.is_null(metrics.get(first,"usage")),"First GPU sample must warm up")
+        test.expect(metrics.num(metrics.get(first,"memory")) == 1048576.0,"Shared descriptor memory double counted")
+        tool.write(dir+"/fdinfo/3",prefix+"900000000 ns\ndrm-resident-vram: 1 MiB\n"); tool.write(dir+"/fdinfo/4",tool.read(dir+"/fdinfo/3"))
+        let second = metrics.gpu(dir,metrics.get(first,"clients"),1.0)
+        test.expect(metrics.num(metrics.get(second,"usage")) == 0.0,"Regressing counters must keep the watermark")
+        tool.write(dir+"/fdinfo/3",prefix+"1500000000 ns\ndrm-resident-vram: 1 MiB\n"); tool.write(dir+"/fdinfo/4",tool.read(dir+"/fdinfo/3"))
+        let third = metrics.gpu(dir,metrics.get(second,"clients"),1.0)
+        test.expect(metrics.num(metrics.get(third,"usage")) == 50.0,"GPU rate mismatch")
+    })
+})
+test.case("service performs sorting and sanitizes presentation fields",fn() {
+    let a = json.parse("{\"pid\":1,\"name\":\"Zulu\",\"cpu\":1}"); let b = json.parse("{\"pid\":2,\"name\":\"Alpha\",\"cpu\":2}")
+    let rows = view.sorted(Vec<json.Value>(a,b),"name"); t.equal(metrics.text(metrics.get(rows[0],"name")),"Alpha")
+    rows = view.sorted(Vec<json.Value>(a,b),"cpu"); test.expect(json.int(metrics.get(rows[0],"pid")) == 2,"CPU sort mismatch")
+    t.equal(view.clean("ไทย\tline\n"+view.separator()),"ไทย line  ")
+})
+test.case("service accepts snapshots and recovers from invalid requests",fn() {
+    let input = "invalid\n[]\n{\"action\":\"get\",\"sort\":\"name\",\"query\":\"Task Manager\",\"paused\":false}\n{\"action\":\"get\",\"sort\":\"pid\",\"query\":\"no-matching-process-123xyz\",\"paused\":true}\n"
+    let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/services/taskmanager.dev","--",t.root()),Map<str,str>(),input,30000)
+    t.success(done); t.contains(t.out(done),"Invalid service request"); t.contains(t.out(done),"Expected an object request"); t.contains(t.out(done),"0 processes")
+})
+test.case("native GTK app consumes the DevLang service and responds to controls",fn() {
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/native-apps.sh"),Map<str,str>(),"",300000)
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_NATIVE_SMOKE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("xvfb-run","-a",t.root()+"/dist/native/taskmanager"),env,"",30000)
+    t.success(done); t.contains(t.out(done),"PASS native Task Manager service, search, sorting, pause and cleanup")
+})
+test.case("service checks PID reuse and stops only owned disposable children",fn() {
+    for force in Vec<bool>(false,true) {
+        let child = child_process.spawn("sleep",Vec<str>("30"),child_process.options())
+        let outcome = result.run(fn() {
+            let pid = child.pid() as i64
+            let info = proc.readProcess(pid,proc.confValue("PAGE_SIZE"),json.object())
+            let wrong = {action:"stop",pid:pid,start:"invalid",force:force,paused:true,sort:"pid",query:""}
+            let correct = {action:"stop",pid:pid,start:json.get(info,"start"),force:force,paused:true,sort:"pid",query:""}
+            let input = json.stringify(wrong)+"\n"+json.stringify(correct)+"\n"
+            let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/services/taskmanager.dev","--",t.root()),Map<str,str>(),input,30000)
+            t.success(done); t.contains(t.out(done),"PID was reused")
+            if posix.uid() == 0 { test.expect(!child.ready(),"Root processes must remain protected") }
+            else { test.expect(child.ready(),"Service did not stop its owned test child") }
+        })
+        if !child.ready() { child.kill() }; child.wait(); result.unwrap(outcome)
+    }
+})
+test.case("native app registers shell-compatible D-Bus control and rejects duplicate instances",fn() {
+    let done = tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a","sh",t.root()+"/tools/test/taskmanager-native-control.sh",t.root()),Map<str,str>(),"",30000)
+    t.success(done); t.contains(t.out(done),"PASS native Task Manager D-Bus command routing")
+})
+test.case("async channel preserves one-shot commands across recurring polls",fn() {
+    let binary = t.root()+"/build/react-devlang/tests/channel"
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/react-devlang.sh",t.root()+"/tests/react-devlang/channel.dev",binary),Map<str,str>(),"",90000)
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("xvfb-run","-a",binary),env,"",20000)
+    t.success(done); t.contains(t.out(done),"PASS native async channel coalesces polls")
+})
+return t.finish()

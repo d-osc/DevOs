@@ -1,0 +1,131 @@
+# Native rendering only. Settings, battery state and active-window processing
+# are handled by service.dev; GTK/GIO lifecycle lives in the small C host.
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn ds_new():*void
+extern fn ds_anchor(host:*void):*void
+extern fn ds_callbacks(host:*void,event:callback(i32,i32,*u8,i64,*void):i32,event_data:*void,draw:callback(i32,i32,*void,i32,i32,*void):void,draw_data:*void)
+extern fn ds_monitors(host:*void):*u8
+extern fn ds_length(text:*u8):i64
+extern fn ds_show(host:*void,index:i32,kind:i32,visible:i32)
+extern fn ds_run(host:*void)
+extern fn ds_free(host:*void)
+extern fn ds_stop(host:*void)
+extern fn g_free(pointer:*void)
+extern fn g_get_monotonic_time():i64
+extern fn rc_env(name:str):str
+extern fn g_file_test(path:str,flags:i32):i32
+extern fn rc_open(window:*void,program:str,script:str,root:str,receive:callback(*u8,i64,*void):void,data:*void):*void
+extern fn rc_close(pipe:*void,data:*void)
+extern fn cairo_set_operator(cr:*void,op:i32)
+extern fn cairo_set_source_rgba(cr:*void,r:f64,g:f64,b:f64,a:f64)
+extern fn cairo_paint(cr:*void)
+extern fn cairo_rectangle(cr:*void,x:f64,y:f64,width:f64,height:f64)
+extern fn cairo_set_fill_rule(cr:*void,rule:i32)
+extern fn cairo_fill(cr:*void)
+extern fn cairo_pattern_create_linear(x:f64,y:f64,x1:f64,y1:f64):*void
+extern fn cairo_pattern_add_color_stop_rgba(pattern:*void,offset:f64,r:f64,g:f64,b:f64,a:f64)
+extern fn cairo_set_source(cr:*void,pattern:*void)
+extern fn cairo_pattern_destroy(pattern:*void)
+struct Plan { index:i32, id:i64, target:bool, x:i64,y:i64,width:i64,height:i64,strength:i64,saver:bool,token:ui.Text,dismissed:ui.Text,shown:i64 }
+struct Model { host:*void,pipe:i64,generation:i64,events:ui.Text,eventCount:i64,plans:Vec<Plan>,failed:bool }
+fn owned(bytes:*u8,length:i64):ui.Text { unsafe { let out=Vec<u8>(); for i in 0..length { out.push(bytes[i]) }; return ui.Text(out) } }
+fn number(text:ui.Text):i64 {
+    let start=0; let negative=text.bytes.len()>0 && text.bytes[0]==45; if negative { start=1 }
+    let out=0; for i in start..(text.bytes.len() as i64) { let ch=text.bytes[i]; if ch<48 || ch>57 { break }; out=out*10+(ch-48) as i64 }; return negative ? 0-out : out
+}
+fn refresh(model:*Model) { unsafe {
+    let monitors=ds_monitors((*model).host)
+    let request=ui.concatText(Vec<ui.Text>(ui.text("{\"generation\":${(*model).generation},\"monitors\":"),owned(monitors,ds_length(monitors)),ui.text(",\"events\":["),(*model).events,ui.text("]}")))
+    if (*model).eventCount>0 {channel.command((*model).pipe,request)} else {channel.send((*model).pipe,request)}
+    (*model).events=ui.emptyText();(*model).eventCount=0
+    g_free(monitors as *void)
+} }
+fn update(model:*Model,frame:ui.Text) { unsafe {
+    let fields=channel.split(frame,9)
+    if fields.len()>0 && ui.equalText(fields[0],ui.text("E")) { (*model).failed=true; ds_stop((*model).host); return }
+    if fields.len()<2 || !ui.equalText(fields[0],ui.text("S")) || number(fields[1])!=(*model).generation { return }
+    let plans=Vec<Plan>(); let now=g_get_monotonic_time()
+    for i in 2..(fields.len() as i64) {
+        let values=channel.split(fields[i],44); if values.len()<10 { continue }
+        let plan=Plan(number(values[0]) as i32,number(values[9]),number(values[1])!=0,number(values[2]),number(values[3]),number(values[4]),number(values[5]),number(values[6]),number(values[7])!=0,values[8],ui.emptyText(),now)
+        for old in (*model).plans {
+            if old.id!=plan.id { continue }
+            plan.dismissed=old.dismissed
+            if old.saver && old.token.bytes.len()>0 && !ui.equalText(old.token,old.dismissed) { plan.shown=old.shown }
+        }
+        if plan.token.bytes.len()==0 { plan.dismissed=ui.emptyText() }
+        plans.push(plan)
+    }
+    for old in (*model).plans {
+        let found=false; for plan in plans { if old.index==plan.index { found=true } }
+        if !found { ds_show((*model).host,old.index,0,0); ds_show((*model).host,old.index,1,0) }
+    }
+    (*model).plans=plans
+    for plan in plans {
+        ds_show((*model).host,plan.index,0,plan.target || plan.strength>0 ? 1 : 0)
+        ds_show((*model).host,plan.index,1,plan.saver && !ui.equalText(plan.token,plan.dismissed) ? 1 : 0)
+    }
+} }
+fn fade(cr:*void,x0:f64,y0:f64,x1:f64,y1:f64,x:f64,y:f64,w:f64,h:f64,alpha:f64) { unsafe {
+    let pattern=cairo_pattern_create_linear(x0,y0,x1,y1); cairo_pattern_add_color_stop_rgba(pattern,0.0,0.0,0.0,0.0,alpha); cairo_pattern_add_color_stop_rgba(pattern,1.0,0.0,0.0,0.0,0.0)
+    cairo_set_source(cr,pattern); cairo_rectangle(cr,x,y,w,h); cairo_fill(cr); cairo_pattern_destroy(pattern)
+} }
+fn draw(model:*Model,index:i32,kind:i32,cr:*void,width:i32,height:i32) { unsafe {
+    cairo_set_operator(cr,1); cairo_set_source_rgba(cr,0.0,0.0,0.0,0.0); cairo_paint(cr); cairo_set_operator(cr,2)
+    for plan in (*model).plans {
+        if plan.index!=index { continue }
+        if kind==1 {
+            let frame=((g_get_monotonic_time()-plan.shown)/1500000)%5
+            let r=frame==0 || frame==1 ? 1.0 : 0.0; let g=frame==0 || frame==2 ? 1.0 : 0.0; let b=frame==0 || frame==3 ? 1.0 : 0.0
+            cairo_set_source_rgba(cr,r,g,b,1.0); cairo_paint(cr); return
+        }
+        let w=width as f64; let h=height as f64
+        if plan.target {
+            cairo_set_source_rgba(cr,0.0,0.0,0.0,0.6); cairo_rectangle(cr,0.0,0.0,w,h); cairo_rectangle(cr,plan.x as f64,plan.y as f64,plan.width as f64,plan.height as f64); cairo_set_fill_rule(cr,1); cairo_fill(cr); cairo_set_fill_rule(cr,0)
+        }
+        if plan.strength>0 {
+            let band=(((width<height ? width : height) as f64*0.08+0.5) as i64) as f64; let alpha=plan.strength as f64/100.0
+            fade(cr,0.0,0.0,0.0,band,0.0,0.0,w,band,alpha); fade(cr,0.0,h,0.0,h-band,0.0,h-band,w,band,alpha)
+            fade(cr,0.0,0.0,band,0.0,0.0,0.0,band,h,alpha); fade(cr,w,0.0,w-band,0.0,w-band,0.0,band,h,alpha)
+        }
+        return
+    }
+} }
+fn main():i32 { unsafe {
+    let host=ds_new(); if host==null { print("Display care needs Wayland and GTK layer-shell"); return 1 }
+    let root=rc_env("DEV_OS_ROOT"); let runner=rc_env("DEVLANG_RUN"); if ui.text(runner).bytes.len()==0 { runner="d" }
+    let model=Model(host,0,0,ui.emptyText(),0,Vec<Plan>(),false); let pointer=&model
+    let receive=callback_context(fn(bytes:*u8,length:i64) { update(pointer,owned(bytes,length)) })
+    let pipe=rc_open(ds_anchor(host),runner,"${root}/src/system/org.devos.displaycare/service.dev",root,receive.call,receive.data); model.pipe=pipe as i64
+    let events=callback_context(fn(kind:i32,index:i32,bytes:*u8,length:i64):i32 { unsafe {
+        if kind==2 {
+            for i in 0..((*pointer).plans.len() as i64) {
+                if (*pointer).plans[i].index==index && g_get_monotonic_time()-(*pointer).plans[i].shown>=800000 {
+                    (*pointer).plans[i].dismissed=(*pointer).plans[i].token; ds_show((*pointer).host,index,1,0)
+                    if ui.text(rc_env("DEVOS_SYSTEM_TRACE")).bytes.len()>0 { print("display-care input accepted") }
+                    return 1
+                }
+            }
+            return 0
+        }
+        if kind==1 { (*pointer).generation=(*pointer).generation+1 }
+        if kind==4 && (*pointer).eventCount==0 {return 0}
+        refresh(pointer)
+        return 0
+    } })
+    let drawing=callback_context(fn(index:i32,kind:i32,cr:*void,width:i32,height:i32) { draw(pointer,index,kind,cr,width,height) })
+    let tracker=rc_env("DEVOS_DISPLAYCARE_TRACKER")
+    if ui.text(tracker).bytes.len()==0 {tracker="${root}/build/native/dev-os-window-tracker";if g_file_test(tracker,8)==0 {tracker="${root}/native/dev-os-window-tracker"};if g_file_test(tracker,8)==0 {tracker="dev-os-window-tracker"}}
+    let tracking=callback_context(fn(bytes:*u8,length:i64) {unsafe {
+        let line=owned(bytes,length)
+        if line.bytes.len()==0 || line.bytes[0]!=123 || line.bytes.len()>58000 {(*pointer).failed=true;ds_stop((*pointer).host);return}
+        if (*pointer).events.bytes.len()+line.bytes.len()>58000 || (*pointer).eventCount>=512 {refresh(pointer)}
+        (*pointer).events=ui.concatText(Vec<ui.Text>((*pointer).events,(*pointer).eventCount>0 ? ui.text(",") : ui.emptyText(),line));(*pointer).eventCount=(*pointer).eventCount+1
+    }})
+    let trackPipe=rc_open(ds_anchor(host),tracker,"",root,tracking.call,tracking.data)
+    ds_callbacks(host,events.call,events.data,drawing.call,drawing.data); ds_run(host)
+    rc_close(trackPipe,tracking.data);rc_close(pipe,receive.data); ds_free(host)
+    return model.failed ? 1 : 0
+} }
+return main()

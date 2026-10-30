@@ -1,0 +1,39 @@
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+fn wpVolume(raw:str):json.Value {
+    let parts=strings.split(raw,"Volume:");if parts.len()<2 {return json.null_value()}
+    let words=hw.words(parts[1]);if words.len()==0 {return json.null_value()}
+    let volume=hw.toFloat(words[0],-1.0);return volume>=0.0 ? json.value(((volume*100.0+0.5) as i64)) : json.null_value()
+}
+fn pulseVolume(raw:str):json.Value {
+    let digits=""
+    for i in 0..strings.charLength(raw) {let ch=strings.charAt(raw,i);if strings.contains("0123456789",ch) {digits=digits+ch} else {if strings.equal(ch,"%") && !strings.equal(digits,"") {return json.value(hw.toInt(digits,0))};digits=""}}
+    return json.null_value()
+}
+fn audio(run:fn(Vec<str>):hw.Run,available:fn(str):bool):json.Value {
+    if available("wpctl") {
+        let output=run(Vec<str>("wpctl","get-volume","@DEFAULT_AUDIO_SINK@"));let volume=wpVolume(output.out)
+        if output.code==0 && !json.is_null(volume) {return {audio:"wpctl",volume:volume,muted:strings.contains(output.out,"[MUTED]")}}
+    }
+    if available("pactl") {
+        let output=run(Vec<str>("pactl","get-sink-volume","@DEFAULT_SINK@"));let mute=run(Vec<str>("pactl","get-sink-mute","@DEFAULT_SINK@"));let volume=pulseVolume(output.out)
+        if output.code==0 && mute.code==0 && !json.is_null(volume) {return {audio:"pactl",volume:volume,muted:strings.endsWith(strings.trim(mute.out),"yes")}}
+    }
+    return {audio:json.null_value(),volume:json.null_value(),muted:false}
+}
+fn snapshot(sys:str,proc:str,connected:bool,wsl:bool,run:fn(Vec<str>):hw.Run,available:fn(str):bool):json.Value {
+    let adapter=false;for name in hw.listDir(sys+"/class/net") {if hw.isDir(sys+"/class/net/"+name+"/wireless") {adapter=true}}
+    let route="";for line in strings.split(hw.readTrim(proc+"/net/route"),"\n") {let fields=hw.words(line);if fields.len()>1 && strings.equal(fields[1],"00000000") {route=fields[0];break}}
+    let wireless=strings.equal(route,"") ? adapter : hw.isDir(sys+"/class/net/"+route+"/wireless")
+    let brightness=json.null_value();let names=hw.listDir(sys+"/class/backlight");names.sort()
+    for name in names {let path=sys+"/class/backlight/"+name;let maximum=hw.toFloat(hw.readTrim(path+"/max_brightness"),0.0)
+        if maximum>0.0 {let value=hw.toFloat(hw.readTrim(path+"/brightness"),-1.0);if value>=0.0 {brightness=json.value(((value/maximum*100.0+0.5) as i64))};break}
+    }
+    let wifi=json.null_value();if adapter && available("nmcli") {let value=run(Vec<str>("nmcli","radio","wifi"));if value.code==0 {wifi=json.value(strings.equal(strings.trim(value.out),"enabled"))}}
+    let bluetooth=json.null_value();if available("bluetoothctl") {let value=run(Vec<str>("bluetoothctl","show"));if value.code==0 {if strings.contains(value.out,"Powered: yes") {bluetooth=json.value(true)} else if strings.contains(value.out,"Powered: no") {bluetooth=json.value(false)}}}
+    let result=audio(run,available)
+    let network=connected ? wsl ? "Connected through Windows" : wireless ? "Wi-Fi connected" : "Ethernet connected" : "No network connection"
+    result=json.set(result,"connected",connected);result=json.set(result,"wireless",wireless);result=json.set(result,"network",network)
+    result=json.set(result,"brightness",brightness);result=json.set(result,"wifi",wifi);return json.set(result,"bluetooth",bluetooth)
+}

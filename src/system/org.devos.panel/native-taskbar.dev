@@ -1,0 +1,126 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as wire
+use "./native-language.dev" as language
+extern fn rc_env(name:str):str
+extern fn g_file_test(path:str,flags:i32):i32
+extern fn panel_timer(interval:i32,call:callback(*void):void,data:*void):u32
+extern fn panel_untimer(timer:u32,keep:*void)
+extern fn panel_now():i64
+extern fn panel_image(root:*void,id:*u8,serialized:*u8,fallback:*u8)
+extern fn panel_tooltip(root:*void,id:*u8,text:*u8)
+extern fn panel_task_trace(root:*void,id:*u8,group:*u8)
+extern fn panel_tasks_trace(root:*void)
+extern fn rd_buffer_free(buffer:*void)
+fn decoded(value:ui.Text):ui.Text {return wire.decoded(value)}
+fn key(value:ui.Text):i64 {return wire.key(value)}
+fn flag(fields:Vec<ui.Text>,index:i64):bool {return wire.flag(fields,index)}
+fn singleWindow(frame:ui.Text,group:ui.Text):bool {for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()>=13 && ui.equalText(fields[0],ui.text("T")) && ui.equalText(decoded(fields[1]),group) {return fields[11].bytes.len()>0 && channel.split(fields[11],44).len()==1}};return false}
+fn render(frame:ui.Text,size:i32,spacing:i32,enabled:bool,selected:fn(ui.Text):void):ui.Node {
+    return renderEvents(frame,size,spacing,enabled,selected,fn(group:ui.Text,event:ui.Text) {})
+}
+fn renderEvents(frame:ui.Text,size:i32,spacing:i32,enabled:bool,selected:fn(ui.Text):void,pointer:fn(ui.Text,ui.Text):void):ui.Node {
+    let nodes=Vec<ui.Node>();let records=channel.split(frame,30);let used=Vec<i64>()
+    for record in records {let fields=channel.split(record,9);if fields.len()<12 || !ui.equalText(fields[0],ui.text("T")) {continue}
+        let group=decoded(fields[1]);let id=decoded(fields[2]);let identity=key(group)
+        while true {let collision=false;for previous in used {if previous==identity {collision=true;break}};if !collision {break};identity=(identity+1)%2147483647};used.push(identity)
+        let props=ui.keyed(identity);props.id=id;props.sensitive=enabled && (fields.len()<13 || !ui.equalText(fields[12],ui.text("none")))
+        props.className=ui.concatText(Vec<ui.Text>(ui.text("panel-app panel-task"),flag(fields,7) ? ui.text(" task-running") : ui.emptyText(),flag(fields,8) ? ui.text(" task-active") : ui.emptyText(),flag(fields,9) ? ui.text(" task-minimized") : ui.emptyText()))
+        let image=ui.props();image.iconSize=size;image.id=ui.concatText(Vec<ui.Text>(id,ui.text("-icon")))
+        let contents=Vec<ui.Node>(ui.element(11,image,decoded(fields[4]),Vec<ui.Node>()))
+        if flag(fields,7) {let dot=ui.props();dot.width=4;dot.height=4;dot.halign=3;dot.className=ui.text("task-status-dot");contents.push(ui.Box(dot,Vec<ui.Node>()))}
+        let box=ui.props();box.spacing=1;box.valign=3
+        nodes.push(ui.onPointer(ui.WidgetButton(props,ui.Box(box,contents),fn() {selected(group)}),fn(event:ui.Text) {pointer(group,event)}))
+    }
+    let props=ui.named("native-panel-tasks");props.vertical=false;props.spacing=spacing;props.valign=3;return ui.Box(props,nodes)
+}
+fn decorate(context:*ui.Context,frame:ui.Text) {unsafe {
+    for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()<12 || !ui.equalText(fields[0],ui.text("T")) {continue}
+        let id=decoded(fields[2]);let nativeId=ui.nativeText(id);let imageId=ui.nativeText(ui.concatText(Vec<ui.Text>(id,ui.text("-icon"))))
+        let icon=ui.nativeText(decoded(fields[5]));let fallback=ui.nativeText(decoded(fields[4]));let tooltip=ui.nativeText(decoded(fields[10]))
+        panel_image((*context).native,imageId,icon,fallback);panel_tooltip((*context).native,nativeId,tooltip)
+        let group=ui.nativeText(fields[1]);panel_task_trace((*context).native,nativeId,group);rd_buffer_free(group as *void)
+        rd_buffer_free(nativeId as *void);rd_buffer_free(imageId as *void);rd_buffer_free(icon as *void);rd_buffer_free(fallback as *void);rd_buffer_free(tooltip as *void)
+    }
+    for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()<11 || !ui.equalText(fields[0],ui.text("V")) {continue}
+        for task in channel.split(frame,30) {let summary=channel.split(task,9);if summary.len()>=13 && ui.equalText(summary[0],ui.text("T")) && ui.equalText(summary[1],fields[1]) {let id=ui.nativeText(ui.concatText(Vec<ui.Text>(ui.text("panel-window-icon-"),fields[2])));let icon=ui.nativeText(decoded(summary[5]));let fallback=ui.nativeText(decoded(summary[4]));panel_image((*context).native,id,icon,fallback);rd_buffer_free(id as *void);rd_buffer_free(icon as *void);rd_buffer_free(fallback as *void);break}}
+        for action in Vec<ui.Text>(ui.emptyText(),ui.text("minimize-"),ui.text("maximize-"),ui.text("close-")) {
+            let id=ui.nativeText(ui.concatText(Vec<ui.Text>(ui.text("panel-window-"),action,fields[2])));let title=ui.equalText(action,ui.emptyText()) ? decoded(fields[4]) : ui.equalText(action,ui.text("maximize-")) ? decoded(fields[9]) : ui.equalText(action,ui.text("close-")) ? ui.text("Close") : ui.text("Minimize");let text=ui.nativeText(title)
+            panel_tooltip((*context).native,id,text);rd_buffer_free(id as *void);rd_buffer_free(text as *void)
+        }
+    };panel_tasks_trace((*context).native)
+}}
+fn picker(frame:ui.Text,group:ui.Text,act:fn(ui.Text,ui.Text):void,dismiss:fn():void):ui.Node {
+    let anchor=ui.emptyText();let title=ui.emptyText();let icon=ui.emptyText();let launch=false;let single=false;let rows=Vec<ui.Node>()
+    for record in channel.split(frame,30) {let fields=channel.split(record,9)
+        if fields.len()>=13 && ui.equalText(fields[0],ui.text("T")) && ui.equalText(decoded(fields[1]),group) {anchor=decoded(fields[2]);title=decoded(fields[3]);icon=decoded(fields[4]);launch=ui.equalText(fields[6],ui.text("terminal")) || ui.equalText(fields[6],ui.text("files"));single=fields[11].bytes.len()>0 && channel.split(fields[11],44).len()==1}
+        if fields.len()<11 || !ui.equalText(fields[0],ui.text("V")) || !ui.equalText(decoded(fields[1]),group) {continue}
+        if single {let id=fields[2];let buttons=Vec<ui.Node>()
+            for action in Vec<ui.Text>(ui.text("minimize"),ui.text("maximize"),ui.text("close")) {let options=ui.props();options.id=ui.concatText(Vec<ui.Text>(ui.text("panel-window-"),action,ui.text("-"),id));if ui.equalText(action,ui.text("close")) {options.className=ui.text("task-window-close")}
+                let restore=ui.equalText(action,ui.text("minimize"));let label=restore ? (fields.len()>=13 ? decoded(fields[11]) : flag(fields,6) ? ui.text("Restore") : ui.text("Minimize")) : ui.equalText(action,ui.text("maximize")) ? decoded(fields[9]) : ui.text("Close")
+                let command=restore ? (fields.len()>=13 ? decoded(fields[12]) : flag(fields,6) ? ui.text("activate") : action) : action
+                buttons.push(ui.TextButton(options,label,fn() {act(id,command)}))
+            };let options=ui.props();options.spacing=4;rows.push(ui.Box(options,buttons));continue
+        }
+        let id=fields[2];let props=ui.keyed(key(id));props.vertical=false;props.spacing=4;props.className=flag(fields,6) ? ui.text("task-window-row task-window-minimized") : ui.text("task-window-row")
+        let label=ui.props();label.xalign=0.0;label.widthChars=26;label.ellipsize=true
+        let labels=Vec<ui.Node>(ui.withProps(ui.TextLabel(decoded(fields[3])),label));if flag(fields,6) {let muted=ui.props();muted.className=ui.text("popup-muted");labels.push(ui.withProps(ui.TextLabel(decoded(fields[8])),muted))}
+        let button=ui.props();button.id=ui.concatText(Vec<ui.Text>(ui.text("panel-window-"),id));button.expand=true;button.className=ui.text("task-window-title")
+        let image=ui.props();image.id=ui.concatText(Vec<ui.Text>(ui.text("panel-window-icon-"),id));image.iconSize=16;let contents=ui.props();contents.vertical=false;contents.spacing=8
+        let nodes=Vec<ui.Node>(ui.WidgetButton(button,ui.Box(contents,Vec<ui.Node>(ui.element(11,image,icon,Vec<ui.Node>()),ui.Box(ui.props(),labels))),fn() {act(id,ui.text("activate"))}))
+        for action in Vec<ui.Text>(ui.text("minimize"),ui.text("maximize"),ui.text("close")) {
+            let options=ui.props();options.id=ui.concatText(Vec<ui.Text>(ui.text("panel-window-"),action,ui.text("-"),id));options.sensitive=!ui.equalText(action,ui.text("minimize")) || flag(fields,7);options.className=ui.equalText(action,ui.text("close")) ? ui.text("task-window-action task-window-close") : ui.text("task-window-action")
+            let image=ui.props();image.iconSize=14;let icon=ui.equalText(action,ui.text("maximize")) ? decoded(fields[10]) : ui.concatText(Vec<ui.Text>(ui.text("window-"),action,ui.text("-symbolic")))
+            nodes.push(ui.WidgetButton(options,ui.element(11,image,icon,Vec<ui.Node>()),fn() {act(id,action)}))
+        };rows.push(ui.Box(props,nodes))
+    }
+    if anchor.bytes.len()==0 || (rows.len()==0 && !launch) {let hidden=ui.props();hidden.visible=false;return ui.Box(hidden,Vec<ui.Node>())}
+    let body=ui.props();body.width=320;body.margin=12;body.spacing=8;let heading=ui.props();heading.className=ui.text("popup-title");heading.xalign=0.0
+    let scroll=ui.props();scroll.height=rows.len()>6 ? 288 : (rows.len()*48) as i32
+    let children=Vec<ui.Node>(ui.withProps(ui.TextLabel(title),heading));if rows.len()>0 {children.push(single ? ui.Box(ui.props(),rows) : ui.Scroll(scroll,ui.Box(ui.props(),rows)))}
+    if launch {children.push(ui.Button(ui.named("panel-window-new"),"New window",fn() {act(ui.emptyText(),ui.text("launch"))}))}
+    let popup=ui.named("panel-task-picker");popup.className=ui.text("panel-popup");return ui.Popover(popup,anchor,ui.Box(body,children),dismiss)
+}
+struct Parts {tasks:ui.Node,language:ui.Node}
+fn Bar(context:*ui.Context,pinned:bool,size:i32,spacing:i32,fatal:fn():void):ui.Node {return parts(context,pinned,size,spacing,fatal,fn(value:ui.Text) {},false).tasks}
+fn parts(context:*ui.Context,pinned:bool,size:i32,spacing:i32,fatal:fn():void,command:fn(ui.Text):void,ready:bool):Parts {
+    let frame=ui.useText(context,ui.text("B"));let error=ui.useText(context,ui.emptyText());let pipe=ui.useRef(context,0);let tracker=ui.useRef(context,0);let queued=ui.useText(context,ui.emptyText());let count=ui.useRef(context,0);let open=ui.useText(context,ui.emptyText())
+    let pending=ui.useText(context,ui.emptyText());let opening=ui.useRef(context,0);let closing=ui.useRef(context,0);let hover=ui.useState(context,0)
+    let pointer=fn(group:ui.Text,event:ui.Text) {unsafe {
+        if ui.equalText(event,ui.text("enter")) {closing.set(0);opening.set(0);if !ui.equalText(open.get(),group) {for record in channel.split(frame.get(),30) {let fields=channel.split(record,9);if fields.len()>=13 && ui.equalText(fields[0],ui.text("T")) && ui.equalText(decoded(fields[1]),group) && flag(fields,7) {pending.set(group);opening.set(panel_now()+400);break}}}}
+        else if ui.equalText(event,ui.text("leave")) {opening.set(0);if hover.get()!=0 {closing.set(panel_now()+250)}}
+        else {opening.set(0);closing.set(0);hover.set(0);if ui.equalText(event,ui.text("context")) {open.set(group)}}
+    }}
+    let flush=fn() {let events=queued.get();if events.bytes.len()==0 {return};channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"events\":["),events,ui.text("]}"))));queued.set(ui.emptyText());count.set(0)}
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if !(*context).alive {return ui.noop}
+        let root=rc_env("DEV_OS_ROOT");let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connectWithLibrary(context,runner,"${root}/src/services/panel-taskbar.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(value:ui.Text) {
+            let records=channel.split(value,30);let header=channel.split(records[0],9)
+            if header.len()==2 && ui.equalText(header[0],ui.text("E")) {let message=decoded(header[1]);if channel.failed(pipe.get()) || ui.equalText(message,ui.text("Command queue is full. Wait for the service to respond.")) {fatal()} else {error.set(message)};return}
+            if !ui.equalText(records[0],ui.text("B")) {fatal();return};error.set(ui.emptyText());frame.set(value)
+            if open.get().bytes.len()>0 {let found=false;for record in records {let fields=channel.split(record,9);if fields.len()>=13 && ui.equalText(fields[0],ui.text("T")) && ui.equalText(decoded(fields[1]),open.get()) {found=true}};if !found {open.set(ui.emptyText())}}
+            for record in records {let fields=channel.split(record,9);if fields.len()==2 && ui.equalText(fields[0],ui.text("W")) {channel.command(tracker.get(),decoded(fields[1]))}}
+        },fn(value:i64) {pipe.set(value);channel.send(value,ui.text(pinned ? "{\"wire\":true,\"systemCatalog\":true,\"language\":true,\"showPinned\":true}" : "{\"wire\":true,\"systemCatalog\":true,\"language\":true,\"showPinned\":false}"))})
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {channel.send(pipe.get(),ui.text(pinned ? "{\"wire\":true,\"systemCatalog\":true,\"language\":true,\"showPinned\":true}" : "{\"wire\":true,\"systemCatalog\":true,\"language\":true,\"showPinned\":false}"));return ui.noop},Vec<i64>(pinned ? 1 : 0))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if !(*context).alive {return ui.noop}
+        let root=rc_env("DEV_OS_ROOT");let helper=rc_env("DEVOS_PANEL_TRACKER")
+        if ui.text(helper).bytes.len()==0 {helper="${root}/build/native/dev-os-window-tracker";if g_file_test(helper,8)==0 {helper="${root}/native/dev-os-window-tracker"};if g_file_test(helper,8)==0 {helper="dev-os-window-tracker"}}
+        return channel.connect(context,helper,"",root,fn(line:ui.Text) {
+            if line.bytes.len()==0 || line.bytes[0]!=123 || line.bytes.len()>58000 {fatal();return}
+            if queued.get().bytes.len()+line.bytes.len()>58000 || count.get()>=512 {flush()}
+            let previous=queued.get();queued.set(ui.concatText(Vec<ui.Text>(previous,previous.bytes.len()>0 ? ui.text(",") : ui.emptyText(),line)));count.set(count.get()+1)
+        },fn(value:i64) {tracker.set(value)})
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {if !(*context).alive {return ui.noop};let tick=callback_context(fn() {unsafe {flush();let now=panel_now();if opening.get()>0 && now>=opening.get() {opening.set(0);let valid=false;for record in channel.split(frame.get(),30) {let fields=channel.split(record,9);if fields.len()>=13 && ui.equalText(fields[0],ui.text("T")) && ui.equalText(decoded(fields[1]),pending.get()) && flag(fields,7) {valid=true;break}};if valid {hover.set(1);open.set(pending.get())}};if closing.get()>0 && now>=closing.get() {closing.set(0);hover.set(0);open.set(ui.emptyText())}}});let timer=panel_timer(50,tick.call,tick.data);return fn() {unsafe {panel_untimer(timer,tick.data)}}}},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {decorate(context,frame.value)};return ui.noop}},Vec<i64>(frame.revision,size as i64,open.revision))
+    let content=renderEvents(frame.value,size,spacing,true,fn(group:ui.Text) {opening.set(0);closing.set(0);hover.set(0);flush();for record in channel.split(frame.value,30) {let fields=channel.split(record,9);if fields.len()>=13 && ui.equalText(fields[0],ui.text("T")) && ui.equalText(decoded(fields[1]),group) && ui.equalText(fields[12],ui.text("picker")) {open.set(ui.equalText(open.get(),group) ? ui.emptyText() : group);return}};open.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"select\":"),channel.quote(group),ui.text("}"))))},pointer)
+    let message=ui.props();message.visible=error.value.bytes.len()>0;message.className=ui.text("error");message.widthChars=24;message.ellipsize=true
+    let root=ui.props();root.vertical=false;root.spacing=error.value.bytes.len()>0 ? 4 : 0
+    let popup=picker(frame.value,open.value,fn(id:ui.Text,action:ui.Text) {flush();if ui.equalText(action,ui.text("launch")) {channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"launch\":"),channel.quote(open.get()),ui.text("}"))));open.set(ui.emptyText());return};channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"windowAction\":{\"group\":"),channel.quote(open.get()),ui.text(",\"id\":"),id,ui.text(",\"action\":"),channel.quote(action),ui.text("}}"))));if ui.equalText(action,ui.text("activate")) || singleWindow(frame.get(),open.get()) {open.set(ui.emptyText())}},fn() {open.set(ui.emptyText())})
+    popup.active=hover.get()==0;popup=ui.onPointer(popup,fn(event:ui.Text) {unsafe {if ui.equalText(event,ui.text("enter")) {closing.set(0)} else if ui.equalText(event,ui.text("leave")) && hover.get()!=0 {closing.set(panel_now()+250)} else if ui.equalText(event,ui.text("primary")) || ui.equalText(event,ui.text("context")) {opening.set(0);closing.set(0);hover.set(0)}}})
+    let keyboard=language.View(context,frame.value,fn(index:i64) {flush();channel.command(pipe.get(),ui.text("{\"wire\":true,\"keyboard\":${index}}"))},fn() {command(ui.text("language"))},ready)
+    return Parts(ui.Box(root,Vec<ui.Node>(content,ui.withProps(ui.TextLabel(error.value),message),popup)),keyboard)
+}

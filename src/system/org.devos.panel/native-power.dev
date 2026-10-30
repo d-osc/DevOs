@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as wire
+extern fn rc_env(name:str):str
+extern fn panel_loading_show(root:*void,message:*u8):i32
+extern fn panel_loading_ready(root:*void):i32
+extern fn panel_loading_clear(root:*void)
+extern fn panel_timer(interval:i32,call:callback(*void):void,data:*void):u32
+extern fn panel_untimer(timer:u32,keep:*void)
+fn Controls(context:*ui.Context):ui.Node {
+    let caps=ui.useText(context,ui.text("P\t0\t0\t0"));let selected=ui.useText(context,ui.emptyText());let error=ui.useText(context,ui.emptyText());let busy=ui.useState(context,0);let pipe=ui.useRef(context,0);let drawing=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let root=rc_env("DEV_OS_ROOT");let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        let disconnect=channel.connectWithLibrary(context,runner,"${root}/src/services/panel-session-power.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(frame:ui.Text) {unsafe {
+            let fields=channel.split(frame,9)
+            if fields.len()==4 && ui.equalText(fields[0],ui.text("P")) {caps.set(frame)}
+            else if fields.len()==4 && ui.equalText(fields[0],ui.text("L")) {let message=ui.nativeText(wire.decoded(fields[3]));let shown=panel_loading_show((*context).native,message);wire.rd_buffer_free(message as *void);let token=channel.integer(fields[1]);if shown!=0 {drawing.set(token)}else {channel.command(pipe.get(),ui.text("{\"cancel\":${token}}"));busy.set(0);error.set(ui.text("Could not prepare the power loading screen."))}}
+            else if fields.len()==1 && ui.equalText(fields[0],ui.text("A")) {busy.set(0);selected.set(ui.emptyText());drawing.set(0)}
+            else if fields.len()==1 && ui.equalText(fields[0],ui.text("C")) {busy.set(0);drawing.set(0)}
+            else {panel_loading_clear((*context).native);drawing.set(0);busy.set(0);error.set(fields.len()>1 && ui.equalText(fields[0],ui.text("E")) ? wire.decoded(fields[1]) : ui.text("Power controls are unavailable."))}
+        }},fn(value:i64) {pipe.set(value);channel.interval(value,30000);channel.send(value,ui.text("{}"))})
+        let tick=callback_context(fn() {unsafe {let token=drawing.get();if token>0 && (*context).alive && panel_loading_ready((*context).native)!=0 {drawing.set(0);channel.command(pipe.get(),ui.text("{\"ready\":${token}}"))}}})
+        let timer=panel_timer(25,tick.call,tick.data)
+        return fn() {unsafe {panel_untimer(timer,tick.data);if drawing.get()>0 {panel_loading_clear((*context).native)};disconnect()}}
+    }},Vec<i64>())
+    let values=channel.split(caps.value,9);let buttons=Vec<ui.Node>();let actions=Vec<str>("sleep","restart","shutdown");let titles=Vec<str>("Sleep","Restart","Shutdown");let icons=Vec<str>("weather-clear-night-symbolic","system-reboot-symbolic","system-shutdown-symbolic")
+    for i in 0..3 {let action=ui.text(actions[i]);let button=ui.named("panel-power-"+actions[i]);button.sensitive=values.len()==4 && wire.flag(values,i+1) && busy.value==0;button.expand=true;let box=ui.props();box.spacing=6;let icon=ui.props();icon.iconSize=18;buttons.push(ui.WidgetButton(button,ui.Box(box,Vec<ui.Node>(ui.Icon(icon,icons[i]),ui.Label(titles[i]))),fn() {selected.set(action);error.set(ui.emptyText())}))}
+    let children=Vec<ui.Node>();let muted=ui.props();muted.className=ui.text("popup-muted");muted.xalign=0.0;children.push(ui.withProps(ui.Label("POWER"),muted));let row=ui.props();row.vertical=false;row.spacing=6;children.push(ui.Box(row,buttons))
+    if selected.value.bytes.len()>0 {let action=selected.value;let title=ui.equalText(action,ui.text("sleep")) ? "Sleep" : ui.equalText(action,ui.text("restart")) ? "Restart" : "Shutdown";let question=ui.props();question.wrap=true;question.xalign=0.0;children.push(ui.withProps(ui.Label(ui.equalText(action,ui.text("sleep")) ? "Lock the screen and show the clock?" : "${title} this device? Save your work before continuing."),question));let cancel=ui.named("panel-power-cancel");cancel.sensitive=busy.value==0;let confirm=ui.named("panel-power-confirm");confirm.sensitive=busy.value==0;children.push(ui.Box(row,Vec<ui.Node>(ui.Button(cancel,"Cancel",fn() {selected.set(ui.emptyText())}),ui.Button(confirm,busy.value!=0 ? "Please wait…" : title,fn() {busy.set(1);error.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":"),channel.quote(action),ui.text("}"))))}))))}
+    let failure=ui.named("panel-power-error");failure.visible=error.value.bytes.len()>0;failure.wrap=true;failure.widthChars=38;failure.xalign=0.0;failure.className=ui.text("error");children.push(ui.withProps(ui.TextLabel(error.value),failure));let root=ui.props();root.spacing=8;return ui.Box(root,children)
+}

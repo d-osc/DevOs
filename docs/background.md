@@ -6,7 +6,7 @@ Apply saves the settings and updates every monitor. Reset discards the draft.
 The base color follows the Dark or Light theme until you turn off
 “Use theme background color” or choose a color preset.
 
-The default DevOs design is drawn procedurally (`extensions/org.devos.background/design.ts`), so it needs no image
+The default DevOs design is drawn procedurally (`src/system/org.devos.background/design.ts`), so it needs no image
 files and fills any resolution or aspect ratio. It layers soft mesh-gradient glows built from the active theme's
 accent (shifted a little around the color wheel), two translucent dunes, a vignette and a faint grain tile that
 dithers away gradient banding. It follows

@@ -1,0 +1,18 @@
+#!/usr/bin/env d
+use "std/fs"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+use "../lib/ui.dev" as ui
+fn main(): i32 {
+    let extras = Map<str,str>(); extras.set("DEV_OS_TASK_MENU_NATIVE", "1")
+    smoke.withSession("panel-task-menu", extras, fn(session: smoke.Session) {
+        let env = smoke.environment(session)
+        tool.checked(Vec<str>("gjs", "-m", session.root + "/dist/panel-task-menu-test.js"), env, "", 30000)
+        fs.mkdirSync(session.root + "/build/panel-task-menu", true)
+        tool.copy(session.log, session.root + "/build/panel-task-menu/session.log")
+        ui.cleanLog(session)
+        print("PASS: task context menus and native window controls in an isolated compositor")
+    })
+    return 0
+}
+return tool.main(main)

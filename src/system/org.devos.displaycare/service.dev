@@ -1,0 +1,22 @@
+#!/usr/bin/env d
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "./model.dev" as model
+use "../../services/window-state.dev" as windows
+struct Reply {frame:str,snapshot:windows.Snapshot}
+let snapshot=windows.empty()
+while true {
+    let line=io.read_line(); if strings.equal(line,"") { break }
+    let reply=result.attempt(fn():Reply {
+        let request=json.parse(line);let events=model.get(request,"events")
+        let next=snapshot
+        if strings.equal(json.kind(events),"array") {
+            for i in 0..(json.len(events) as i64) {next=windows.consume(next,json.at(events,i))}
+            request=json.set(request,"windows",windows.windows(next))
+        }
+        return Reply(model.current(request),next)
+    })
+    if result.isOk(reply) {let response=result.unwrap(reply);snapshot=response.snapshot;print(response.frame)} else {print("E\tInvalid display-care snapshot")}
+}

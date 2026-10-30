@@ -1,5 +1,5 @@
 import {Gio, GLib} from '@dev-os/core';
-import {BluetoothAgent, type PairPrompt} from '../extensions/org.devos.settings/bluetooth-agent.js';
+import {BluetoothAgent, type PairPrompt} from '../src/apps/org.devos.settings/bluetooth-agent.js';
 const bus = Gio.DBus.session, device = '/org/bluez/hci0/dev_TEST';
 const xml = '<node><interface name="org.bluez.AgentManager1"><method name="RegisterAgent"><arg type="o" direction="in"/><arg type="s" direction="in"/></method><method name="UnregisterAgent"><arg type="o" direction="in"/></method></interface></node>';
 const deviceXml = '<node><interface name="org.bluez.Device1"><method name="Pair"/><method name="CancelPairing"/></interface></node>';

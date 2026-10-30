@@ -1,0 +1,44 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as wire
+extern fn rc_env(name:str):str
+struct Field {key:ui.Text,kind:ui.Text,title:ui.Text,value:ui.Text,options:Vec<ui.Text>,visible:bool,enabled:bool}
+struct Custom {id:ui.Text,title:ui.Text,command:ui.Text,enabled:bool}
+struct MenuItem {title:ui.Text,icon:ui.Text}
+struct Form {ack:i64,revision:i64,dirty:bool,busy:bool,error:ui.Text,status:ui.Text,scope:ui.Text,fields:Vec<Field>,custom:Vec<Custom>,invalidCustom:ui.Text,editor:ui.Text,title:ui.Text,command:ui.Text,appearance:ui.Text,appearanceRevision:i64,preview:Vec<MenuItem>,send:fn(ui.Text):i64,apply:fn():void}
+fn fragment(action:str):ui.Text {return ui.concatText(Vec<ui.Text>(ui.text("\"action\":"),channel.quote(ui.text(action))))}
+fn value(action:str,key:ui.Text,input:ui.Text):ui.Text {return ui.concatText(Vec<ui.Text>(fragment(action),ui.text(",\"key\":"),channel.quote(key),ui.text(",\"value\":"),channel.quote(input)))}
+fn keyed(action:str,key:ui.Text):ui.Text {return ui.concatText(Vec<ui.Text>(fragment(action),ui.text(",\"key\":"),channel.quote(key)))}
+fn selection(key:ui.Text,index:i64):ui.Text {return ui.concatText(Vec<ui.Text>(keyed("edit",key),ui.text(",\"index\":"),ui.scalarText(index)))}
+fn useForm(context:*ui.Context,file:ui.Text):Form {
+    let snapshot=ui.useText(context,ui.text("K\t0\t0\t\tLoading Panel settings…\t"));let appearance=ui.useText(context,ui.emptyText());let transportError=ui.useText(context,ui.emptyText())
+    let pipe=ui.useRef(context,0);let serial=ui.useRef(context,0);let busySerial=ui.useRef(context,0);let busy=ui.useState(context,0)
+    let send=fn(input:ui.Text):i64 {
+        let id=serial.get()+1;serial.set(id);channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"id\":"),ui.scalarText(id),ui.text(","),input,ui.text("}"))));return id
+    }
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let root=rc_env("DEV_OS_ROOT");let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connectWithLibrary(context,runner,"${root}/src/system/org.devos.panel/settings-service.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(input:ui.Text) {
+            let records=channel.split(input,30);let header=channel.split(records[0],9)
+            if header.len()==2 && ui.equalText(header[0],ui.text("E")) {transportError.set(header[1]);busy.set(0);busySerial.set(0);return}
+            if header.len()!=6 || !ui.equalText(header[0],ui.text("K")) {return}
+            snapshot.set(input);transportError.set(ui.emptyText());let ack=channel.integer(header[1])
+            if busySerial.get()>0 && ack>=busySerial.get() {busySerial.set(0);busy.set(0)}
+            for record in records {let fields=channel.split(record,9);if fields.len()==8 && ui.equalText(fields[0],ui.text("L")) {appearance.set(record)}}
+        },fn(value:i64) {
+            pipe.set(value)
+            send(ui.concatText(Vec<ui.Text>(fragment("configure"),ui.text(",\"preferences\":"),channel.quote(file),ui.text(",\"root\":"),channel.quote(ui.text(root)))))
+            channel.send(value,ui.text("{\"action\":\"get\",\"id\":0}"))
+        })
+    }},Vec<i64>())
+    let records=channel.split(snapshot.value,30);let header=channel.split(records[0],9);let fields=Vec<Field>();let custom=Vec<Custom>();let invalid=ui.emptyText();let editor=ui.emptyText();let title=ui.emptyText();let command=ui.emptyText();let preview=Vec<MenuItem>()
+    for record in records {
+        let values=channel.split(record,9)
+        if values.len()==8 && ui.equalText(values[0],ui.text("F")) {fields.push(Field(values[1],values[2],wire.decoded(values[3]),wire.decoded(values[4]),channel.split(wire.decoded(values[5]),31),channel.integer(values[6])==1,channel.integer(values[7])==1))}
+        if values.len()==5 && ui.equalText(values[0],ui.text("C")) {custom.push(Custom(values[1],wire.decoded(values[2]),wire.decoded(values[3]),channel.integer(values[4])==1))}
+        if values.len()==2 && ui.equalText(values[0],ui.text("I")) {invalid=wire.decoded(values[1])}
+        if values.len()==4 && ui.equalText(values[0],ui.text("E")) {editor=wire.decoded(values[1]);title=wire.decoded(values[2]);command=wire.decoded(values[3])}
+        if values.len()==3 && ui.equalText(values[0],ui.text("M")) {let icon=wire.decoded(values[2]);preview.push(MenuItem(wire.decoded(values[1]),icon.bytes.len()>0 ? icon : ui.text("system-run-symbolic")))}
+    }
+    return Form(channel.integer(header[1]),snapshot.revision,channel.integer(header[2])==1,busy.value==1,transportError.value.bytes.len()>0 ? transportError.value : wire.decoded(header[3]),wire.decoded(header[4]),wire.decoded(header[5]),fields,custom,invalid,editor,title,command,appearance.value,appearance.revision,preview,send,fn() {busy.set(1);busySerial.set(serial.get()+1);send(fragment("apply"))})
+}

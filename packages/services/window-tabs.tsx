@@ -11,7 +11,7 @@ export interface TabDragHost {
 }
 interface TabDragSource {host: TabDragHost; id: number;}
 const sources = new Map<Gtk.Widget, TabDragSource>();
-const activeDrags = new Map<Gtk.Window, Gdk.DragContext>();
+const activeDrags = new Map<Gtk.Window, {context: Gdk.DragContext; cancel(): void}>();
 const dragListeners = new Set<(active: boolean) => void>();
 export function onTabDrag(listener: (active: boolean) => void) { dragListeners.add(listener); return () => { dragListeners.delete(listener); }; }
 function dragSource(context: Gdk.DragContext) {
@@ -62,26 +62,39 @@ function DraggableTab({tab, active, selected, select, drag}: {
         if (!drag) return;
         sources.set(widget, {host: drag, id: tab.id});
         widget.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [target()], Gdk.DragAction.MOVE);
-        let dragging = false;
+        let dragging = false, cancelled = false;
+        let restoreEvents: (() => void) | undefined;
+        const disconnectCancel = () => {restoreEvents?.(); restoreEvents = undefined;};
         const signals = [
             widget.connect('drag-begin', (_widget, context) => {
+                cancelled = false; disconnectCancel();
+                // GTK3 delivers drag keys to an internal grab widget, bypassing
+                // the application window. Observe Escape before GTK dispatch.
+                Gdk.event_handler_set(event => {
+                    if (event.get_event_type() === Gdk.EventType.KEY_PRESS && event.get_keyval()[1] === Gdk.KEY_Escape) cancelled = true;
+                    Gtk.main_do_event(event);
+                });
+                restoreEvents = () => Gdk.event_handler_set(event => Gtk.main_do_event(event));
                 // Keep the preview away from the pointer so compositors can
                 // hit-test the actual destination underneath the drag icon.
                 Gtk.drag_set_icon_name(context, tab.iconName, -12, -12);
                 widget.get_style_context().add_class('tab-dragging');
                 dragging = true;
                 const window = widget.get_toplevel();
-                if (window instanceof Gtk.Window) activeDrags.set(window, context);
+                if (window instanceof Gtk.Window) activeDrags.set(window, {context, cancel: () => {cancelled = true;}});
                 dragListeners.forEach(listener => listener(true));
             }),
             widget.connect('drag-data-get', (_widget, _context, data) => data.set(data.get_target(), 8, new TextEncoder().encode(String(tab.id)))),
             widget.connect('drag-failed', (_widget, _context, result) => {
-                if (result !== Gtk.DragResult.NO_TARGET) return false;
-                afterDrag(() => drag.detachTab(tab.id)); return true;
+                if (result !== Gtk.DragResult.NO_TARGET && result !== Gtk.DragResult.ERROR) return false;
+                // GTK3/Wayland reports an unaccepted desktop drop as ERROR.
+                // The desktop is a separate process and cannot accept SAME_APP
+                // payloads. Check cancellation after native DnD has unwound.
+                afterDrag(() => {if (!cancelled) drag.detachTab(tab.id);}); return true;
             }),
-            widget.connect('drag-end', () => { const window = widget.get_toplevel(); if (window instanceof Gtk.Window) activeDrags.delete(window); dragging = false; widget.get_style_context().remove_class('tab-dragging'); dragListeners.forEach(listener => listener(false)); }),
+            widget.connect('drag-end', () => { disconnectCancel(); const window = widget.get_toplevel(); if (window instanceof Gtk.Window) activeDrags.delete(window); dragging = false; widget.get_style_context().remove_class('tab-dragging'); dragListeners.forEach(listener => listener(false)); }),
         ];
-        return () => { if (dragging) dragListeners.forEach(listener => listener(false)); sources.delete(widget); signals.forEach(signal => widget.disconnect(signal)); widget.drag_source_unset(); };
+        return () => { disconnectCancel(); if (dragging) dragListeners.forEach(listener => listener(false)); sources.delete(widget); signals.forEach(signal => widget.disconnect(signal)); widget.drag_source_unset(); };
     }, [drag, tab.id]);
     return <Button id={`window-tab-${tab.id}`} ref={widget => { button.current = widget; if (active) selected.current = widget; }}
         className="tab-select" tooltip={`${tab.tooltip ?? tab.label}\nDrag to detach or move to another window`} onClicked={() => select(tab.id)}>
@@ -130,7 +143,7 @@ export function mountTabbedHeader(window: Gtk.ApplicationWindow, options: Parame
     const cancelSignal = window.connect('key-press-event', (_window, event) => {
         const context = activeDrags.get(window);
         if (context && (event as unknown as Gdk.Event).get_keyval()[1] === Gdk.KEY_Escape) {
-            Gtk.drag_cancel(context); return true;
+            context.cancel(); Gtk.drag_cancel(context.context); return true;
         }
         return false;
     });

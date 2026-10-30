@@ -1,9 +1,10 @@
+import {SystemProxy as LocalSystemProxy} from '../src/apps/org.devos.settings/network-settings.backend.js';
 import {React, Gtk, Gio, GLib, createRoot} from '@dev-os/core';
-import {NetworkSettings, networkPages} from '../extensions/org.devos.settings/network-view.js';
-import {NativeNetworkSettings} from '../extensions/org.devos.settings/network-pages.js';
-import {ProxySettings} from '../extensions/org.devos.settings/proxy-view.js';
-import {SystemProxy, validateProxy, type ProxyValues, type NetworkSnapshot} from '../extensions/org.devos.settings/network-settings.js';
-import type {InputControls} from '../extensions/org.devos.settings/input-view.js';
+import {NetworkSettings, networkPages} from '../src/apps/org.devos.settings/network-view.js';
+import {NativeNetworkSettings} from '../src/apps/org.devos.settings/network-pages.js';
+import {ProxySettings} from '../src/apps/org.devos.settings/proxy-view.js';
+import {SystemProxy, validateProxy, type ProxyValues, type NetworkSnapshot} from '../src/apps/org.devos.settings/network-settings.js';
+import type {InputControls} from '../src/apps/org.devos.settings/input-view.js';
 GLib.setenv('GSETTINGS_BACKEND','memory',true); GLib.setenv('GIO_USE_PROXY_RESOLVER','gnome',true);
 // The host module is upstream; the DevOs image patch also accepts DevOS alone.
 GLib.setenv('XDG_CURRENT_DESKTOP','DevOS:GNOME',true); Gtk.init(null);
@@ -16,7 +17,7 @@ async function verify() {
     let routed = '', last: Record<string,unknown> = {}, failure = false;
     const state: NetworkSnapshot = {available:true, connectivity:4, airplane:false, radios:[{id:1,type:'wlan',device:'phy0',soft:'unblocked',hard:'unblocked'}], profiles:[{id:'test',path:'/profile',name:'Work VPN',type:'wireguard',activePath:'',active:false,hotspot:false,ownHotspot:false}],adapters:[{path:'/adapter',name:'test0',type:2,state:100,managed:true,mtu:1500,mac:'00:11:22:33:44:55',driver:'test',ap:true,ipv4:{addresses:['192.0.2.10/24'],dns:['192.0.2.1'],gateway:'192.0.2.1'},ipv6:{addresses:[],dns:[],gateway:''}}]};
     const controls: InputControls = {async request<T>(request: Record<string,unknown>) {last=request; if (failure) throw new Error('Test authorization denied'); return {...state, airplane:request.enabled ?? false} as T;},destroy() {}};
-    const show = async (page: 'vpn'|'hotspot'|'airplane'|'advanced') => {root.render(<NativeNetworkSettings key={page} page={page} controls={controls} back={() => {routed='network';}}/>); window.show_all(); await wait();};
+    const show = async (page: 'vpn'|'hotspot'|'airplane'|'advanced') => {root.render(<NativeNetworkSettings key={page} page={page} controls={controls} back={() => {routed='network';}}/>); window.show_all(); const deadline = GLib.get_monotonic_time() + 4000000; for (;;) {await wait(); const ready = page === 'vpn' ? !!find('vpn-toggle-test') : page === 'advanced' ? !!find('adapter-action-test0') : page === 'airplane' ? !!find('airplane-enabled') : state.adapters[0].ap ? !!find('hotspot-start') : !!find<Gtk.Label>('hotspot-unsupported')?.get_text().includes('(driver test)'); if (ready) break; if (GLib.get_monotonic_time() > deadline) throw new Error(`Network view not ready: ${page}`);}};
     try {
         root.render(<NetworkSettings page="network" navigate={id => {routed=id;}}/>); await wait();
         for (const page of networkPages) {const button=find<Gtk.Button>(`network-category-${page.id}`); assert(button.get_sensitive(), 'Every native category is enabled'); button.emit('clicked'); assert(routed === page.id,'Network category routes internally');}
@@ -33,8 +34,8 @@ async function verify() {
         find<Gtk.ComboBoxText>('proxy-mode').set_active_id('auto'); await wait(); find<Gtk.Entry>('proxy-pac').set_text('bad-url'); await wait(); find<Gtk.Button>('proxy-apply').emit('clicked'); await wait(); assert(saves === 0 && find<Gtk.Label>('proxy-error'),'Invalid PAC URL does not save');
         find<Gtk.Entry>('proxy-pac').set_text('https://example.org/proxy.pac'); find<Gtk.Entry>('proxy-bypass').set_text('localhost, '); await wait(); assert(find<Gtk.Entry>('proxy-bypass').get_text() === 'localhost, ','Bypass input preserves the comma while typing'); find<Gtk.Entry>('proxy-bypass').set_text('localhost, *.local'); await wait(); find<Gtk.Button>('proxy-apply').emit('clicked'); await wait(); assert(saves === 1 && proxy.bypass[1] === '*.local','Valid proxy applies user preferences');
         // A memory GSettings backend keeps this integration check off host preferences.
-        const system = new SystemProxy(); const initial=system.load();
-        try {system.save({...initial,mode:'manual',http:'127.0.0.1',httpPort:3128,https:'',socks:'',bypass:['localhost']}); assert(system.load().httpPort === 3128,'System proxy values round-trip through GSettings'); const resolved=Gio.ProxyResolver.get_default().lookup('http://example.org',null); assert(resolved[0] === 'http://127.0.0.1:3128','GIO actually uses the configured proxy');} finally {system.save(initial);}
+        const system = new LocalSystemProxy(); const initial=await system.load();
+        try {await system.save({...initial,mode:'manual',http:'127.0.0.1',httpPort:3128,https:'',socks:'',bypass:['localhost']}); assert((await system.load()).httpPort === 3128,'System proxy values round-trip through GSettings'); const resolved=Gio.ProxyResolver.get_default().lookup('http://example.org',null); assert(resolved[0] === 'http://127.0.0.1:3128','GIO actually uses the configured proxy');} finally {await system.save(initial);}
         print('PASS: Five native network pages, actions, confirmations, secrets, empty hardware, proxy validation and real GIO proxy resolution');
     } finally {root.unmount(); window.destroy();}
 }

@@ -1,0 +1,16 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("native renderer applies live preferences through its separate service",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/background/background-preferences"
+    tool.checked(Vec<str>("sh",root+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/background-preferences.devx",binary,root+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    tool.scope("background-live-prefs-",fn(base:str) {
+        let file=base+"/preferences.json";tool.jsonWrite(file,{version:1,enabled:true,values:{mode:"solid",style:"meteors",fit:"stretch",useDesktopColor:false,color:"#112233",widgetClock:true}})
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_BACKGROUND_PREFERENCES",file);env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","0");env.set("GDK_BACKEND","x11");env.set("NO_AT_BRIDGE","1");env.set("GTK_USE_PORTAL","0");env.set("G_DEBUG","fatal-criticals")
+        let done=tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",binary),env,"",20000);t.success(done);t.contains(t.out(done),"PASS live service preferences")
+    })
+})
+return t.finish()

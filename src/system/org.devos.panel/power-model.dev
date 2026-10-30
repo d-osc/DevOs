@@ -1,0 +1,47 @@
+# Power-supply reading and presentation belong to the data process.
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+struct Battery {percent:json.Value,status:str}
+fn percent(raw:str):json.Value {
+    let number=hw.toFloat(raw,-1.0)
+    return number>=0.0 && number<=100.0 ? json.value(((number+0.5) as i64)) : json.null_value()
+}
+fn supply(path:str):json.Value {
+    let direct=percent(hw.readTrim(path+"/capacity"));if !json.is_null(direct) {return direct}
+    let now=Vec<str>("energy_now","charge_now","energy_now","charge_now")
+    let full=Vec<str>("energy_full","charge_full","energy_full_design","charge_full_design")
+    for i in 0..4 {
+        let amount=hw.toFloat(hw.readTrim(path+"/"+now[i]),-1.0);let total=hw.toFloat(hw.readTrim(path+"/"+full[i]),-1.0)
+        if amount>=0.0 && total>0.0 {let value=amount/total*100.0;if value>=0.0 && value<=100.0 {return json.value(((value+0.5) as i64))}}
+    };return json.null_value()
+}
+fn status(value:str):str {for known in Vec<str>("Charging","Discharging","Full","Not charging") {if strings.equal(value,known) {return value}};return "Unknown"}
+fn presentation(reading:json.Value):json.Value {
+    let found=hw.jbool(reading,"batteryFound",false);let online=hw.jbool(reading,"acOnline",false)
+    if !found {let detail=online ? "AC adapter connected, but the kernel exposes no battery" : "The kernel exposes no battery (check devos-battery-report)";return {icon:"battery-unknown-symbolic",text:"No battery data",tooltip:"Battery · No data · "+detail,className:"panel-battery-unknown"}}
+    let value=json.get(reading,"battery");let unknown=json.is_null(value);let number=unknown ? 0 : json.int(value)
+    let state=hw.jstr(reading,"batteryStatus","Unknown");let charging=strings.equal(state,"Charging");let plugged=charging || strings.equal(state,"Full") || strings.equal(state,"Not charging")
+    let level=unknown ? "unknown" : number<=10 ? "caution" : number<=25 ? "low" : number>=90 ? "full" : "good"
+    let label=strings.equal(state,"Not charging") ? "Plugged in" : strings.equal(state,"Unknown") ? "Status unavailable" : state
+    let icon=unknown ? charging ? "battery-good-charging" : "battery-unknown" : "battery-"+level+(charging ? "-charging" : "")
+    let text=unknown ? label : "${number}%"+(plugged ? " · "+label : "")
+    let tooltip="Battery · "+(unknown ? "Percentage not reported by the firmware" : "${number}%")+" · "+label
+    let style=charging ? "panel-battery-charging" : unknown ? "panel-battery-unknown" : number<=20 && !plugged ? "panel-battery-low" : "panel-battery-normal"
+    return {icon:icon+"-symbolic",text:text,tooltip:tooltip,className:style}
+}
+fn read(root:str):json.Value {
+    let batteries=Vec<Battery>();let online=false;let adapter=false;let names=hw.listDir(root);names.sort()
+    for name in names {
+        let path=root+"/"+name;let kind=hw.readTrim(path+"/type")
+        if strings.equal(kind,"Battery") {
+            if strings.equal(hw.readTrim(path+"/scope"),"Device") || strings.equal(hw.readTrim(path+"/present"),"0") {continue}
+            batteries.push(Battery(supply(path),status(hw.readTrim(path+"/status"))))
+        } else if !strings.equal(kind,"") {adapter=true;if strings.equal(hw.readTrim(path+"/online"),"1") {online=true}}
+    }
+    let selected=Battery(json.null_value(),"Unknown")
+    if batteries.len()>0 {selected=batteries[0];for battery in batteries {if !json.is_null(battery.percent) {selected=battery;break}}}
+    if batteries.len()>0 && strings.equal(selected.status,"Unknown") && online {selected.status="Not charging"}
+    let reading=json.value({battery:selected.percent,batteryStatus:selected.status,batteryFound:batteries.len()>0,acOnline:online,acFound:adapter})
+    return json.set(reading,"batteryPresentation",presentation(reading))
+}

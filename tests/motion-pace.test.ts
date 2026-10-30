@@ -1,6 +1,6 @@
 import {GLib, Gio} from '@dev-os/core';
-import {motionInterval, monitorCovered, onBatteryFrom, readOnBattery} from '../extensions/org.devos.background/pace.js';
-import {motionStyles} from '../extensions/org.devos.background/motion.js';
+import {motionInterval, monitorCovered, onBatteryFrom, readOnBattery} from '../packages/compat/background-legacy/pace.js';
+import {motionStyles} from '../packages/compat/background-legacy/motion.js';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 // Animated wallpapers never run faster than 15 fps, slow ambient scenes at 10, and both halve on battery.

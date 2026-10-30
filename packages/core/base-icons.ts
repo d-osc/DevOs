@@ -9,6 +9,10 @@ interface Tracked {name: string; iconSize: Gtk.IconSize; key: string; handlers: 
 const tracked = new WeakMap<Gtk.Image, Tracked>();
 const live = new Set<WeakRef<Gtk.Image>>();
 let provider: BaseIconProvider | undefined;
+// Reuse rasterized symbolic icons across windows and style notifications.
+// Bound retained pixbufs even when applications request many colors/sizes.
+const pixbufs = new Map<string, GdkPixbuf.Pixbuf | null>();
+const maxPixbufs = 256;
 const isBase = (name: string) => name.endsWith('-symbolic');
 
 function pixelSize(image: Gtk.Image, iconSize: Gtk.IconSize): number {
@@ -24,7 +28,16 @@ function paint(image: Gtk.Image, item: Tracked, force = false): void {
     if (!force && key === item.key) return;
     item.key = key;
     let pixbuf: GdkPixbuf.Pixbuf | null = null;
-    try {pixbuf = provider?.(item.name, size, color) ?? null;} catch (error) {printerr(`Base icon ${item.name}: ${String(error)}`);}
+    try {
+        if (provider) {
+            if (pixbufs.has(key)) pixbuf = pixbufs.get(key)!;
+            else {
+                pixbuf = provider(item.name, size, color);
+                if (pixbufs.size >= maxPixbufs) pixbufs.delete(pixbufs.keys().next().value!);
+                pixbufs.set(key, pixbuf);
+            }
+        }
+    } catch (error) {printerr(`Base icon ${item.name}: ${String(error)}`);}
     if (pixbuf) image.set_from_pixbuf(pixbuf);
     else image.set_from_icon_name(item.name, item.iconSize);
 }
@@ -55,6 +68,7 @@ export function setImageIcon(image: Gtk.Image, name: string, iconSize: Gtk.IconS
 /** Install (or remove) the provider and repaint every base icon that is already on screen. */
 export function setBaseIconProvider(next: BaseIconProvider | undefined): void {
     provider = next;
+    pixbufs.clear();
     for (const ref of [...live]) {
         const image = ref.deref(), item = image && tracked.get(image);
         if (!image || !item) {live.delete(ref); continue;}

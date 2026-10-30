@@ -7,37 +7,39 @@ import {
 import Cairo from 'cairo';
 import {mountLauncher} from '@dev-os/compat/launcher-view';
 import {mountPanel} from '@dev-os/compat/panel-view';
-import {Devices} from '../extensions/org.devos.panel/devices.js';
-import {Panel} from '../extensions/org.devos.panel/index.js';
+import {Devices} from '../packages/compat/panel-legacy/devices.js';
+import {Panel} from '../packages/compat/panel-legacy/index.js';
 import {mountBackground} from '@dev-os/compat/background-view';
 import {mountSettings} from '@dev-os/compat/settings-view';
-import {WifiSettings} from '../extensions/org.devos.settings/wifi-view.js';
-import {isWsl, type WifiControls} from '../extensions/org.devos.settings/wifi.js';
+import {WifiSettings} from '../src/apps/org.devos.settings/wifi-view.js';
+import {isWsl, type WifiControls} from '../src/apps/org.devos.settings/wifi.js';
 import {SettingsPages} from '@dev-os/core';
 import {ExtensionStore, loadUserExtensions, ExtensionManager} from '@dev-os/extensions';
-import {StoreView} from '../extensions/org.devos.store/view.js';
+import {AppStoreView} from '../src/apps/org.devos.appstore/view.js';
 
 import {Updates} from '@dev-os/updates';
-import {UpdatesView} from '../extensions/org.devos.updates/view.js';
+import {UpdatesView} from '../src/apps/org.devos.updates/view.js';
 
 import {DEFAULTS, ROOT, validateConfig} from '@dev-os/config';
-import icons, {installedIconThemes} from '../extensions/org.devos.icons/extension.js';
-import {materialIcon} from '../extensions/org.devos.icons/material.js';
-import {FileBrowser} from '../extensions/org.devos.files/model.js';
-import {mountFiles} from '../extensions/org.devos.files/view.js';
-import {Files} from '../extensions/org.devos.files/index.js';
-import {TerminalWindow} from '../extensions/org.devos.terminal/extension.js';
+import icons, {installedIconThemes} from '../src/apps/org.devos.icons/extension.js';
+import {materialIcon} from '../src/apps/org.devos.icons/material.js';
+import {FileBrowser} from '../src/apps/org.devos.files/model.js';
+import {mountFiles} from '../src/apps/org.devos.files/view.js';
+import {Files} from '../src/apps/org.devos.files/index.js';
+import {TerminalWindow} from '../src/apps/org.devos.terminal/extension.js';
 import {Windows} from '@dev-os/services/windows';
-import {EditorDocument} from '../extensions/org.devos.editor/document.js';
-import {EditorWindow} from '../extensions/org.devos.editor/extension.js';
-import {EditorAssets} from '../extensions/org.devos.editor/assets.js';
-import {FileSearch, DEFAULT_SEARCH_EXCLUDES, matchFiles} from '../extensions/org.devos.files/search.js';
+import {EditorDocument} from '../src/apps/org.devos.editor/document.js';
+import {EditorWindow} from '../src/apps/org.devos.editor/extension.js';
+import {EditorAssets} from '../src/apps/org.devos.editor/assets.js';
+import {FileSearch, DEFAULT_SEARCH_EXCLUDES, matchFiles} from '../src/apps/org.devos.files/search.js';
 
 Gtk.init(null);
 let passed = 0;
+const testFilter = GLib.getenv('DEV_OS_DESKTOP_TEST_FILTER')?.toLowerCase();
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
-function test(name: string, callback: () => void): void { callback(); passed++; print(`PASS: React desktop ${name}`); }
+function test(name: string, callback: () => void): void { if (testFilter && !name.toLowerCase().includes(testFilter)) return; callback(); passed++; print(`PASS: React desktop ${name}`); }
 function asyncTest(name: string, callback: () => Promise<void>): void {
+    if (testFilter && !name.toLowerCase().includes(testFilter)) return;
     const loop = new GLib.MainLoop(null, false); let error: unknown, expired = false;
     const timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15000, () => { expired = true; error = new Error('Async test timed out'); loop.quit(); return GLib.SOURCE_REMOVE; });
     void callback().then(() => loop.quit(), reason => { error = reason; loop.quit(); });
@@ -89,7 +91,9 @@ const display = Gdk.Display.get_default()!;
 const apps = ['Alpha', 'Beta'].map(name => Gio.AppInfo.create_from_commandline('/usr/bin/true', name, Gio.AppInfoCreateFlags.NONE));
 let quit = 0, commanded = '';
 const window = makeWindow();
+const powerRequests: string[] = [];
 const launcher = mountLauncher(window, {
+    power: {capabilities: async () => ({sleep: true, restart: true, shutdown: true}), request: async action => {powerRequests.push(action);}},
     display, installedApps: () => apps,
     searchApps: (items, query) => items.filter(app => app.get_display_name().toLowerCase().includes(query.toLowerCase())),
     quit: () => { quit++; }, runCommand: command => { commanded = command; return true; },
@@ -122,6 +126,19 @@ test('logout confirmation is rendered and reset on hide', () => {
     assert(quit === 1, 'Second request quits');
 });
 asyncTest('system messages, native footer action and row activation', async () => {
+    launcher.show(); await idle();
+    for (const action of ['restart', 'sleep', 'shutdown']) {
+        const power = widgets(window).find(widget => widget.name === `launcher-power-${action}`) as Gtk.Button;
+        assert(power.sensitive, `${action} is available`); power.clicked();
+        assert(powerRequests.length === 0, 'Power requests require confirmation');
+        (widgets(window).find(widget => widget.name === 'launcher-power-cancel') as Gtk.Button).clicked();
+        assert(!widgets(window).some(widget => widget.name === 'launcher-power-confirm'), 'Cancel clears power confirmation');
+    }
+    (widgets(window).find(widget => widget.name === 'launcher-power-sleep') as Gtk.Button).clicked();
+    (widgets(window).find(widget => widget.name === 'launcher-power-confirm') as Gtk.Button).clicked();
+    await idle();
+    assert(powerRequests.join(',') === 'sleep' && !window.get_visible(), 'Confirmed action dispatches once and hides Applications');
+    launcher.show();
     launcher.showMessage('System message');
     assert(labels().includes('System message'), 'System message rendered through React');
     (widgets(window).find(widget => widget.name === 'launcher-terminal') as Gtk.Button).emit('clicked');
@@ -176,9 +193,9 @@ test('panel message remains across React clock ticks', () => {
 });
 asyncTest('compact panel allocates exactly 36 pixels with the application theme', async () => {
     const fixture = GLib.dir_make_tmp('dev-os-panel-size-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     const provider = new Gtk.CssProvider();
-    provider.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
+    provider.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
     Gtk.StyleContext.add_provider_for_screen(display.get_default_screen(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const monitor = display.get_monitor(0)!;
     const context: UIContext = {application, display, preferences, config: () => ({...DEFAULTS, panel_height: 36}),
@@ -331,25 +348,30 @@ test('background canvas and updated draw handler', () => {
     assert(drawn === 'new', 'Draw signal uses latest React props');
     root.unmount(); host.destroy();
 });
-test('settings validates core drafts and generates extension forms', () => {
+asyncTest('settings validates core drafts and generates extension forms', async () => {
     const temporary = GLib.dir_make_tmp('dev-os-ui-settings-XXXXXX');
-    const extensions = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
-    let core = validateConfig(DEFAULTS), applied = 0, openedSettings = '';
+    const extensions = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    let core = validateConfig(DEFAULTS), applied = 0, openedSettings = '', openedNative = '';
     const settingsWindow = makeWindow();
     const settings = mountSettings(settingsWindow, {extensions, getCore: () => core,
-        saveCore: value => { core = validateConfig(value); }, applied: () => { applied++; }, openSettingsFile: id => { openedSettings = id; }});
+        saveCore: value => { core = validateConfig(value); }, applied: () => { applied++; }, openSettingsFile: id => { openedSettings = id; },
+        openNativePage: id => {if (id !== 'org.devos.background') return false; openedNative = id; return true;}});
     const children = () => widgets(settingsWindow);
     const click = (label: string) => (children().find(widget => widget instanceof Gtk.Button && widget.get_label() === label) as Gtk.Button).emit('clicked');
     const field = (key: string) => children().find(widget => widget.name === `settings-field-${key}`) as Gtk.Entry;
     const navigate = (id: string) => (children().find(widget => widget.name === `settings-nav-${id}`) as Gtk.Button).emit('clicked');
     assert(!children().some(widget => widget.name === 'settings-open-json'), 'Desktop does not expose the removed JSON button');
+    navigate('org.devos.background');
+    assert(openedNative === 'org.devos.background' && !children().some(widget => widget.name === 'settings-field-mode'), 'Background sidebar opens native settings without mounting a legacy form');
+    openedNative = ''; settings.show('org.devos.background');
+    assert(openedNative === 'org.devos.background', 'Explicit Background page uses the native route');
     navigate('org.devos.editor');
     assert(!children().some(widget => widget.name === 'settings-open-json') && openedSettings === '', 'Extension pages do not expose or invoke the removed JSON button');
     settings.show('core');
     const entries = () => children().filter(widget => widget instanceof Gtk.Entry && !(widget instanceof Gtk.SearchEntry)) as Gtk.Entry[];
     field('panel_height').set_text('999'); click('Apply');
     assert(applied === 0 && core.panel_height === DEFAULTS.panel_height, 'Invalid core draft must not apply');
-    field('panel_height').set_text('64'); click('Apply');
+    field('panel_height').set_text('64'); click('Apply'); await idle();
     assert(applied === 1 && core.panel_height === 64, 'Valid core applies');
     field('panel_height').set_text('72'); click('Reset');
     assert(field('panel_height').get_text() === '64' && applied === 1, 'Reset restores saved values without applying');
@@ -371,10 +393,10 @@ test('settings validates core drafts and generates extension forms', () => {
     entries()[0].set_text('20'); click('Apply');
     assert(extensions.get('org.devos.panel').state.values.spacing === 20, 'System package JSON generates editable preferences');
     navigate('org.devos.icons');
-    entries()[0].set_text('HighContrast'); click('Apply');
+    field('themeName').set_text('HighContrast'); click('Apply');
     assert(extensions.get('org.devos.icons').state.values.themeName === 'HighContrast', 'Icon theme form persists its JSON settings');
-    navigate('org.devos.background');
-    assert(children().some(widget => widget.name === 'settings-field-imagePath') && children().some(widget => widget.name === 'settings-field-color'), 'Background exposes picture and color preferences instead of an empty page');
+    openedNative = ''; navigate('org.devos.background');
+    assert(openedNative === 'org.devos.background' && !children().some(widget => widget.name === 'settings-field-imagePath'), 'Background navigation delegates to native settings instead of generating a second editor');
     settings.destroy(); settingsWindow.destroy(); extensions.dispose();
     Gio.File.new_for_path(`${temporary}/preferences/org.devos.clock.json`).delete(null);
     Gio.File.new_for_path(`${temporary}/preferences/org.devos.panel.json`).delete(null);
@@ -388,7 +410,7 @@ asyncTest('Updates offers the installed version on reopening and requires confir
     GLib.mkdir_with_parents(target, 0o700);
     GLib.file_set_contents(`${target}/release.json`, JSON.stringify({format: 1, version: '0.3.0', platform: 'linux-x64'}));
     GLib.file_set_contents(`${root}/history.json`, JSON.stringify({current: {key, version: '0.3.0', repository: 'd-osc/DevOs', platform: 'linux-x64'}, previous: null}));
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const updater = new Updates({repository: () => 'd-osc/DevOs', root, running: '0.2.0'});
     const native = makeWindow(), container = new Gtk.Box(); native.add(container); const react = createRoot(container);
     let switched = '';
@@ -409,7 +431,7 @@ asyncTest('Updates offers the installed version on reopening and requires confir
 });
 asyncTest('Store connects repository releases through React controls and reports errors without installing', async () => {
     const temporary = GLib.dir_make_tmp('dev-os-store-ui-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const manifest = {id: 'org.example.badge', name: 'Workspace Badge', description: 'A developer workspace badge', version: '1.0.0', apiVersion: 1,
         settingsVersion: 1, enabledByDefault: true, settings: [{id: 'general', title: 'General', fields: [{key: 'label', title: 'Label', type: 'string', default: 'Dev'}]}]};
     const assets = ['dev-os-extension.tar.gz', 'extension.json'].map(name => ({name, state: 'uploaded', size: 1024,
@@ -423,19 +445,20 @@ asyncTest('Store connects repository releases through React controls and reports
     const byId = (id: string) => children().find(widget => widget.name === id)!;
     const wait = async (condition: () => boolean) => { for (let index = 0; index < 500; index++) { await idle(); if (condition()) return; } throw new Error('Store UI condition not reached'); };
     try {
-        root.render(<StoreView store={store} preferences={preferences} />); native.show(); await idle();
-        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Build your workspace'), 'Empty store renders its connection prompt');
-        (byId('store-source') as Gtk.Entry).set_text('https://github.com/example/badge');
-        (byId('store-connect') as Gtk.Button).emit('clicked');
-        await wait(() => !store.busy && Boolean(store.items[0]?.release));
+        root.render(<AppStoreView controls={{busy: false, async request() {return {available: false, connected: false, catalog: [], installed: []};}}} extensions={{store, preferences}} destination={{section: 'Extensions', revision: 1}}/>); native.show(); await idle();
+        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Make your desktop your own with extensions from the DevOs catalog.'), 'Extension catalog renders its introduction');
+        await store.connect('https://github.com/example/badge');
+        await wait(() => !store.busy && Boolean(store.items[0]?.release) && children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Workspace Badge'));
         assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Workspace Badge'), 'Connected release displays its real metadata');
         assert(children().some(widget => widget instanceof Gtk.Button && widget.get_label() === 'Install'), 'Available release gets an Install action');
         assert(!store.items[0].installed, 'Discovery does not install');
-        (byId('store-source') as Gtk.Entry).set_text('https://example.invalid/badge'); (byId('store-connect') as Gtk.Button).emit('clicked'); await idle();
+        await store.connect('https://example.invalid/badge'); await idle();
         assert(store.error.includes('owner/repo') && children().some(widget => widget instanceof Gtk.Label && widget.get_text() === store.error), 'Invalid repository error appears in React UI');
-        (byId('store-search') as Gtk.Entry).set_text('no-match');
-        assert(children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'No matching extensions'), 'Filtering supports empty results');
-        (byId('store-search') as Gtk.Entry).set_text('');
+        (byId('app-store-search') as Gtk.Entry).set_text('no-match');
+        await wait(() => children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'No extensions match your search.'));
+        assert(!children().some(widget => widget instanceof Gtk.Label && widget.get_text() === 'Workspace Badge'), 'Filtering supports empty results');
+        (byId('app-store-search') as Gtk.Entry).set_text('');
+        await wait(() => children().some(widget => widget instanceof Gtk.Button && widget.get_label() === 'Disconnect'));
         (children().find(widget => widget instanceof Gtk.Button && widget.get_label() === 'Disconnect') as Gtk.Button).emit('clicked');
         assert(store.items.length === 0, 'Disconnect action removes the source');
     } finally { root.unmount(); native.destroy(); store.dispose(); preferences.dispose(); removeFixture(Gio.File.new_for_path(temporary)); }
@@ -452,7 +475,7 @@ if (GLib.getenv('DEV_OS_STORE_TEST_PACKAGE')) asyncTest('packaged user TSX page 
     const size = Gio.File.new_for_path(packaged).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
     const assets = ['dev-os-extension.tar.gz', 'extension.json'].map(name => ({name, state: 'uploaded', size: name.endsWith('json') ? 2048 : size,
         digest: `sha256:${sha}`, browser_download_url: `https://github.com/example/sdk/releases/download/v${manifest.version}/${name}`}));
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const store = new ExtensionStore(preferences, {root: `${temporary}/store`, packages: `${temporary}/packages`, transport: {
         async get(url) { return {status: 200, body: url.endsWith('extension.json') ? manifest : {tag_name: `v${manifest.version}`, assets}}; },
         async download(_release, target) { Gio.File.new_for_path(packaged).copy(Gio.File.new_for_path(target), Gio.FileCopyFlags.NONE, null, null); },
@@ -472,7 +495,7 @@ if (GLib.getenv('DEV_OS_STORE_TEST_PACKAGE')) asyncTest('packaged user TSX page 
 });
 test('extension settings pages render and fall back after contribution cleanup', () => {
     const temporary = GLib.dir_make_tmp('dev-os-settings-pages-XXXXXX');
-    const extensions = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const extensions = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const pages = new SettingsPages();
     const remove = pages.register('org.devos.updates', () => <Label>Custom update controls</Label>);
     const settingsWindow = makeWindow();
@@ -490,7 +513,7 @@ test('extension settings pages render and fall back after contribution cleanup',
 });
 test('icon theme changes live, falls back and restores settings on cleanup', () => {
     const temporary = GLib.dir_make_tmp('dev-os-icons-test-XXXXXX');
-    const extensions = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const extensions = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const settings = Gtk.Settings.get_for_screen(display.get_default_screen());
     const theme = Gtk.IconTheme.get_for_screen(display.get_default_screen());
     const original = settings.gtk_icon_theme_name;
@@ -563,17 +586,22 @@ asyncTest('React file grid, list, hidden files, folder creation, rename and acti
     const model = new FileBrowser(async () => {}), filesWindow = makeWindow();
     const view = mountFiles(filesWindow, model, {gridView: true, showHidden: false});
     const children = () => widgets(filesWindow);
-    const click = (label: string) => (children().find(widget => widget instanceof Gtk.Button && widget.get_label() === label) as Gtk.Button).emit('clicked');
+    const tooltips: Record<string, string> = {'Copy path': 'Copy selected item path, or current folder path', Rename: 'Rename selected item'};
+    const click = (label: string) => (children().find(widget => widget instanceof Gtk.Button &&
+        (widget.get_label() === label || widget.get_tooltip_text() === (tooltips[label] ?? label) || widgets(widget).some(child => child instanceof Gtk.Label && child.get_text() === label))) as Gtk.Button).emit('clicked');
     const waitFor = async (condition: () => boolean) => { for (let count = 0; count < 500; count++) { await idle(); if (condition()) return; } throw new Error('UI condition not reached'); };
     try {
         await model.navigate(temporary); await idle();
         click('Copy path');
         assert(Gtk.Clipboard.get_for_display(display, Gdk.Atom.intern('CLIPBOARD', false)).wait_for_text() === temporary, 'Copy current folder path');
         let grid = children().find(widget => widget instanceof Gtk.FlowBox) as Gtk.FlowBox;
+        await waitFor(() => grid.get_children().length === 2);
         assert(grid.get_children().length === 2, 'Grid filters hidden files');
         (children().find(widget => widget instanceof Gtk.CheckButton) as Gtk.CheckButton).set_active(true);
+        await waitFor(() => grid.get_children().length === 3);
         assert(grid.get_children().length === 3, 'Hidden file toggle updates native grid');
         (children().find(widget => widget instanceof Gtk.CheckButton) as Gtk.CheckButton).set_active(false);
+        await waitFor(() => grid.get_children().length === 2);
         click('List view');
         let list = children().find(widget => widget instanceof Gtk.ListBox) as Gtk.ListBox;
         assert(list.get_children().length === 2, 'Native list view');
@@ -603,7 +631,7 @@ asyncTest('React file grid, list, hidden files, folder creation, rename and acti
 asyncTest('Files tabs preserve independent folders and history, close safely and constrain header width', async () => {
     const fixture = GLib.dir_make_tmp('dev-os-file-tabs-XXXXXX');
     GLib.mkdir_with_parents(`${fixture}/A/Child`, 0o700); GLib.mkdir_with_parents(`${fixture}/B`, 0o700);
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     preferences.update('org.devos.files', true, {homeDirectory: `${fixture}/A`});
     let editorPath = '';
     const context: UIContext = {application, display, preferences, config: () => DEFAULTS, openEditor: path => { editorPath = path; return true; },
@@ -662,7 +690,7 @@ asyncTest('Files detach and merge retain the live model, history and view state'
     const fixture = GLib.dir_make_tmp('dev-os-file-transfer-XXXXXX');
     GLib.mkdir_with_parents(`${fixture}/folder`, 0o700);
     GLib.file_set_contents(`${fixture}/folder/selected.txt`, 'selection');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     preferences.update('org.devos.files', true, {homeDirectory: fixture});
     const context: UIContext = {application, display, preferences, config: () => DEFAULTS,
         saveCore() {}, monitors: () => [display.get_monitor(0)!], runCommand: () => true, reload: () => true, quit() {}, invoke() {},
@@ -698,7 +726,7 @@ asyncTest('Files detach and merge retain the live model, history and view state'
 });
 asyncTest('Terminal detach and merge retain the PTY, shell state and exit ownership', async () => {
     const fixture = GLib.dir_make_tmp('dev-os-terminal-transfer-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     const context: UIContext = {application, display, preferences, config: () => DEFAULTS,
         saveCore() {}, monitors: () => [display.get_monitor(0)!], runCommand: () => true, reload: () => true, quit() {}, invoke() {},
         registerCommand: () => () => {}, onMessage: () => () => {}, onMonitors: () => () => {}, onReload: () => () => {}};
@@ -758,8 +786,7 @@ asyncTest('recursive Quick Open ranking, exclusions, bounds and cancelled search
         assert(matchFiles(files, 'files tsx').results[0].name === 'files-view.tsx', 'Multiple search terms');
         assert(matchFiles(files, 'does-not-exist').matches === 0, 'No results');
         search.setQuery('wrong'); search.setQuery('fvtsx');
-        const loop = new GLib.MainLoop(null, false);
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => { loop.quit(); return GLib.SOURCE_REMOVE; }); loop.run();
+        await new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {resolve(); return GLib.SOURCE_REMOVE;}));
         assert(!search.state.pending && search.state.query === 'fvtsx' && search.state.matches === 1, 'Debounce uses the latest query');
         await search.start(temporary, {...options, maxEntries: 2});
         assert(search.state.limited && !search.state.scanning, 'Bounded indexing reports partial results');
@@ -795,11 +822,12 @@ asyncTest('React Quick Open keyboard selection, file opening, reveal and escape'
         const resultList = children().find(widget => widget.name === 'files-quick-results') as Gtk.ListBox;
         assert(resultList.get_selected_row()?.get_index() === 1, `Down selects the second match (got ${resultList.get_selected_row()?.get_index()})`);
         view.searchKey(Gdk.KEY_Return);
+        await waitFor(() => opened.endsWith('/src/beta.ts'));
         assert(opened.endsWith('/src/beta.ts'), `Enter opens beta.ts (got ${opened})`);
         await waitFor(() => opened.endsWith('/src/beta.ts'));
         assert(!quickEntry() && model.state.directory === temporary, 'Enter opens the selected file through default-app service');
         view.quickOpen(); quickEntry().set_text('alp');
-        await waitFor(() => children().some(widget => widget instanceof Gtk.Label && widget.get_text() === '1 / 1 matches'));
+        await waitFor(() => (children().find(widget => widget.name === 'files-quick-results') as Gtk.ListBox | undefined)?.get_children().length === 1);
         view.searchKey(Gdk.KEY_Return, true);
         await waitFor(() => model.state.directory === `${temporary}/src` && model.state.selected === `${temporary}/src/alpha.ts`);
         assert(!quickEntry(), 'Shift Enter reveals and selects the nested file');
@@ -829,7 +857,7 @@ asyncTest('Editor UTF-8 file IO keeps unsaved edits and detects external modific
 asyncTest('Monaco Editor edits, saves, transfers tabs without restarting and protects dirty files', async () => {
     const fixture = GLib.dir_make_tmp('dev-os-editor-ui-XXXXXX');
     const path = `${fixture}/example.ts`; GLib.file_set_contents(path, 'const answer: number = 42;\n');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     const context: UIContext = {application, display, preferences, config: () => DEFAULTS, saveCore() {},
         monitors: () => [display.get_monitor(0)!], runCommand: () => true, reload: () => true, quit() {}, invoke() {},
         registerCommand: () => () => {}, onMessage: () => () => {}, onMonitors: () => () => {}, onReload: () => () => {}};

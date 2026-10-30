@@ -1,0 +1,25 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../lib/shell-command.dev" as shell
+use "../system/org.devos.background/wire.dev" as wire
+use "../system/org.devos.panel/taskbar-session.dev" as taskbar
+use "../system/org.devos.panel/taskbar-catalog.dev" as catalog
+let state=taskbar.empty()
+let systemCatalog=false;let apps:*void=null;let revision:i64=-1;let facts=json.array()
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let parsed=result.attempt(fn():json.Value {return json.parse(line)})
+    if result.isErr(parsed) {print(json.stringify({error:"Invalid taskbar request"}));continue}
+    let request=result.unwrap(parsed);let native=hw.jbool(request,"wire",false)
+    if json.has(request,"systemCatalog") {systemCatalog=hw.jbool(request,"systemCatalog",false)}
+    if systemCatalog {unsafe {if apps==null {apps=catalog.pa_open()};let current=catalog.pa_poll(apps);if current!=revision {facts=catalog.snapshot(apps);revision=current}};request=json.set(request,"catalog",facts)}
+    let reply=result.attempt(fn():taskbar.Reply {let response=taskbar.handle(state,request)
+        if response.native && strings.equal(hw.jstr(response.action,"kind",""),"shell") {let status=shell.remote(Vec<str>(hw.jstr(response.action,"command","")),hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),hw.env("HOME"));if status!=0 {result.raise("Could not launch the pinned application.")}}
+        return response
+    })
+    if result.isOk(reply) {let response=result.unwrap(reply);state=response.state;print(response.native ? response.frame : json.stringify(response.payload))} else {let message=hw.errorText(result.message(reply));print(native ? "E\t"+wire.encoded(message) : json.stringify({error:message}))}
+}
+unsafe {if apps!=null {catalog.pa_close(apps)}}

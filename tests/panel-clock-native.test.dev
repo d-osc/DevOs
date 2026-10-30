@@ -1,0 +1,38 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.panel/clock.dev" as clock
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("clock extension preserves first-minute replacement and Unicode",fn() {
+    t.equal(clock.display("เวลา %H:%M / %M",true),"เวลา %H:%M:%S / %M")
+    t.equal(clock.display("%H:%M:%S",true),"%H:%M:%S")
+    t.equal(clock.display("%H",true),"%H:%S")
+    t.equal(clock.display("%H:%M",false),"%H:%M")
+})
+test.case("clock selection preserves disabled and legacy defaults",fn() {
+    t.equal(clock.selected("%a %d %b  ·  %H:%M",{}),"%H:%M")
+    t.equal(clock.selected("%H:%M",json.null_value()),"%H:%M")
+    t.equal(clock.selected("%I:%M %p",{enabled:false,values:{format:"custom"}}),"%I:%M %p")
+    t.equal(clock.selected("%H:%M",{version:1,enabled:true,values:{format:"%I:%M %p",showSeconds:true}}),"%I:%M:%S %p")
+    t.equal(clock.selected("%H:%M",{version:2,enabled:true,values:{format:"future"}}),"%H:%M")
+})
+test.case("worker formats local GLib time and reloads Clock preferences",fn() {
+    tool.scope("panel-clock-",fn(dir:str) {
+        tool.write(dir+"/dev-os/config.json","{\"clock_format\":\"%H:%M\"}")
+        tool.write(dir+"/dev-os/extensions/org.devos.clock.json","{\"version\":1,\"enabled\":true,\"values\":{\"format\":\"%H:%M\",\"showSeconds\":true}}")
+        let env=Map<str,str>();env.set("XDG_CONFIG_HOME",dir);env.set("TZ","UTC");env.set("LC_ALL","C.UTF-8")
+        let command=Vec<str>(t.runner(),t.root()+"/src/services/panel-layout.dev","--ffi-lib",t.root()+"/dist/native/libpanel-clock.so")
+        let done=tool.run(command,env,"{\"clock\":true,\"unix\":1704112496}\n",15000);t.success(done)
+        t.contains(t.out(done),"C\t12:34:56\t01/01/2024\tMonday, 01 January 2024")
+        t.contains(t.out(done),"\tMonday\t01 January 2024\t12:34:56 · UTC")
+        env.set("TZ","Asia/Bangkok");let local=tool.run(command,env,"{\"clock\":true,\"unix\":1704112496}\n",15000);t.success(local);t.contains(t.out(local),"\tMonday\t01 January 2024\t19:34:56 · +07");env.set("TZ","UTC")
+        tool.write(dir+"/dev-os/extensions/org.devos.clock.json","{\"version\":1,\"enabled\":false,\"values\":{\"format\":\"ignored\"}}")
+        let disabled=tool.run(command,env,"{\"clock\":true,\"unix\":1704112496}\n",15000);t.success(disabled);t.contains(t.out(disabled),"C\t12:34\t01/01/2024")
+        tool.jsonWrite(dir+"/dev-os/extensions/org.devos.clock.json",{version:1,enabled:true,values:{format:"เวลา %H:%M\t100%%"}})
+        let unicode=tool.run(command,env,"{\"clock\":true,\"unix\":1704112496}\n",15000);t.success(unicode);t.contains(t.out(unicode),"C\tเวลา 12:34%09100%25\t")
+        tool.jsonWrite(dir+"/dev-os/extensions/org.devos.clock.json",{version:1,enabled:true,values:{format:"%Q"}})
+        let invalid=tool.run(command,env,"{\"clock\":true,\"unix\":1704112496}\n",15000);t.success(invalid);t.contains(t.out(invalid),"C\t12:34\t")
+    })
+})
+return t.finish()

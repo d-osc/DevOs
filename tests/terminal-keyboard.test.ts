@@ -1,0 +1,18 @@
+import {Gdk, type VteTypes as Vte} from '@dev-os/core';
+import {insertTerminalNewline, terminalClipboardShortcut} from '../src/apps/org.devos.terminal/keyboard.js';
+import {Vte as NativeVte} from '@dev-os/core/vte';
+import {NEWLINE_KEY} from '../src/apps/org.devos.terminal/shell-integration.js';
+const sent: string[] = [];
+const terminal = {feed_child: (text: string) => sent.push(text)} as unknown as Vte.Terminal;
+const key = (value: number, modifiers: number) => insertTerminalNewline({get_keyval: () => [true, value], get_state: () => [true, modifiers]} as unknown as Gdk.Event, terminal);
+if (!key(Gdk.KEY_Return, Gdk.ModifierType.SHIFT_MASK) || !key(Gdk.KEY_KP_Enter, Gdk.ModifierType.SHIFT_MASK)) throw new Error('Shift+Enter not handled');
+if (key(Gdk.KEY_Return, 0) || key(Gdk.KEY_Return, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK) || key(Gdk.KEY_a, Gdk.ModifierType.SHIFT_MASK)) throw new Error('Unrelated keys intercepted');
+if (sent.length !== 2 || sent.some(text => text !== NEWLINE_KEY)) throw new Error('Incorrect newline sequence');
+print('PASS: Shift+Enter and keypad Enter insert a newline; Enter and other shortcuts pass through');
+const actions: string[] = [];
+const clipboardTerminal = {copy_clipboard_format: () => actions.push('copy'), paste_clipboard: () => actions.push('paste')} as unknown as Vte.Terminal;
+const shortcut = (value: number, modifiers: number) => terminalClipboardShortcut({get_keyval: () => [true, value], get_state: () => [true, modifiers]} as unknown as Gdk.Event, clipboardTerminal, NativeVte.Format.TEXT);
+const ctrl = Gdk.ModifierType.CONTROL_MASK, ctrlShift = ctrl | Gdk.ModifierType.SHIFT_MASK;
+if (!shortcut(Gdk.KEY_C, ctrlShift) || !shortcut(Gdk.KEY_v, ctrlShift) || actions.join() !== 'copy,paste') throw new Error('Clipboard shortcuts incorrect');
+if (shortcut(Gdk.KEY_c, ctrl) || shortcut(Gdk.KEY_C, ctrl) || actions.join() !== 'copy,paste') throw new Error('Ctrl+C must reach the terminal unchanged');
+print('PASS: Ctrl+Shift+C copies, Ctrl+Shift+V pastes and Ctrl+C passes through to the PTY');

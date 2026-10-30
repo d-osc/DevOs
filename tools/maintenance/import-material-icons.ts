@@ -15,7 +15,7 @@ const {fileIcons, folderIcons} = await import(pathToFileURL(generated).href) as 
     fileIcons: {icons: Icon[]}; folderIcons: {name: string; icons: Icon[]}[];
 };
 const destination = resolve('data/icons/hicolor/scalable/apps');
-const metadata = resolve('extensions/org.devos.icons/material');
+const metadata = resolve('src/apps/org.devos.icons/material');
 mkdirSync(destination, {recursive: true}); mkdirSync(metadata, {recursive: true});
 const names: Record<string, string> = {}, extensions: Record<string, string> = {}, folders: Record<string, string> = {};
 const copied = new Set<string>();

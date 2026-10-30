@@ -18,7 +18,7 @@ else
     git -C "$source_dir" apply --check "$window_menu_patch"
     git -C "$source_dir" apply "$window_menu_patch"
 fi
-for compositor_fix in tab-drag-focus tab-drag-escape app-icons; do
+for compositor_fix in tab-drag-focus app-icons; do
     compositor_patch="$project_root/tools/setup/patches/labwc-$compositor_fix.patch"
     if ! git -C "$source_dir" apply --reverse --check "$compositor_patch" 2>/dev/null; then
         git -C "$source_dir" apply --check "$compositor_patch"
@@ -36,6 +36,8 @@ fi
 "$devlang_bin" "$project_root/tools/setup/patch-task-view-gesture.dev" -- "$source_dir"
 "$devlang_bin" "$project_root/tools/setup/patch-task-view-workspaces.dev" -- "$source_dir"
 "$devlang_bin" "$project_root/tools/setup/patch-touchpad.dev" -- "$source_dir"
+"$devlang_bin" "$project_root/tools/setup/patch-menu-shape.dev" -- "$source_dir"
+"$devlang_bin" "$project_root/tools/setup/patch-tab-drag.dev" -- "$source_dir"
 set --
 if [ -f "$build_dir/build.ninja" ]; then set -- --reconfigure; fi
 # Newer distro headers add enum members unknown to wlroots 0.17. Keep warnings

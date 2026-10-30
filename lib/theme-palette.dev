@@ -1,0 +1,79 @@
+# Theme data generation shared by the native desktop and npm bindings.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/math"
+use "./desktop.dev" as util
+struct Color { r:i64,g:i64,b:i64,a:f64 }
+fn digit(value:str):i64 {let n=strings.indexOf("0123456789abcdef",strings.toLowerCase(value));util.require(n>=0,"Invalid hex color");return n}
+fn byte(value:str,index:i64):i64 {return digit(strings.substring(value,index,index+1))*16+digit(strings.substring(value,index+1,index+2))}
+fn parse(value:str):Color {
+    util.require(strings.startsWith(value,"#"),"Expected hex theme color")
+    let raw=strings.substring(value,1,strings.charLength(value))
+    if strings.charLength(raw)==3 {let full="";for ch in strings.split(raw,"") {full=full+ch+ch};raw=full}
+    util.require(strings.charLength(raw)==6 || strings.charLength(raw)==8,"Invalid theme color")
+    return Color(byte(raw,0),byte(raw,2),byte(raw,4),strings.charLength(raw)==8 ? byte(raw,6) as f64/255.0 : 1.0)
+}
+fn hex(value:i64):str {return strings.substring("0123456789abcdef",value/16,value/16+1)+strings.substring("0123456789abcdef",value%16,value%16+1)}
+fn flatten(value:str,backdrop:str):str {
+    let c=parse(value);if c.a==1.0 {return strings.toLowerCase(value)};let back=parse(backdrop)
+    return "#"+hex(math.round(c.r as f64*c.a+back.r as f64*(1.0-c.a)) as i64)+hex(math.round(c.g as f64*c.a+back.g as f64*(1.0-c.a)) as i64)+hex(math.round(c.b as f64*c.a+back.b as f64*(1.0-c.a)) as i64)
+}
+fn rgba(value:str):str {
+    let c=parse(value);let alpha=math.round(c.a*1000.0) as i64;let text="${alpha}"
+    if alpha==1000 {text="1"} else if alpha==0 {text="0"} else {
+        while strings.charLength(text)<3 {text="0"+text}
+        while strings.endsWith(text,"0") {text=strings.substring(text,0,strings.charLength(text)-1)}
+        text="0."+text
+    }
+    return "rgba(${c.r}, ${c.g}, ${c.b}, ${text})"
+}
+fn read(root:str,name:str):json.Value {return json.parse(fs.readFileSync(root+"/src/apps/org.devos.theme/vscode/"+name+".json","utf8"))}
+fn color(source:json.Value,included:json.Value,key:str):str {
+    let value=util.get(util.get(source,"colors"),key)
+    if json.is_null(value) {value=util.get(util.get(included,"colors"),key)}
+    let text=util.text(value);util.require(!strings.equal(text,""),"Theme color missing: "+key);return text
+}
+fn generate(root:str):json.Value {
+    let mapping=json.parse(fs.readFileSync(root+"/data/themes/palette-map.json","utf8"))
+    let families=json.get(mapping,"families");let ansi=json.get(mapping,"ansiKeys");let out=json.object();let trace=json.object();let syntax=json.object()
+    for family in json.keys(families) {
+        let config=json.get(families,family);let variants=json.object();let sources=json.object();let rulesByMode=json.object()
+        for mode in Vec<str>("dark","light") {
+            let source=read(root,json.string(json.get(json.get(config,"files"),mode)));let included=json.object();let include=util.text(util.get(util.get(config,"include"),mode))
+            if !strings.equal(include,"") {included=read(root,include)}
+            let backdrop=color(source,included,"editor.background");let colors=json.object();let keys=json.object();let map=json.get(config,"map")
+            for token in json.keys(map) {
+                let specs=json.get(map,token);let spec=json.at(specs,strings.equal(mode,"dark") || json.len(specs)==1 ? 0 : 1)
+                let string=strings.equal(json.kind(spec),"string");let key=string ? json.string(spec) : json.string(json.get(spec,"key"));let role=string ? "solid" : json.string(json.get(spec,"as"));let raw=color(source,included,key)
+                colors=json.set(colors,token,strings.equal(role,"rgb") ? strings.toLowerCase(strings.substring(raw,0,7)) : flatten(raw,backdrop))
+                keys=json.set(keys,token,strings.equal(role,"solid") ? key : key+" ("+role+")")
+            }
+            let alpha=json.get(config,"alpha")
+            for token in json.keys(alpha) {let key=json.string(json.get(alpha,token));colors=json.set(colors,token,rgba(color(source,included,key)));keys=json.set(keys,token,key)}
+            if util.boolean(util.get(config,"ansiFromTheme")) {
+                let key=json.string(json.get(config,"terminalFgKey"));colors=json.set(colors,"terminalFg",strings.toLowerCase(color(source,included,key)));keys=json.set(keys,"terminalFg",key)
+                for i in 0..(json.len(ansi) as i64) {key="terminal.ansi"+json.string(json.at(ansi,i));colors=json.set(colors,"ansi${i}",strings.toLowerCase(color(source,included,key)));keys=json.set(keys,"ansi${i}",key)}
+            } else {
+                colors=json.set(colors,"terminalFg",json.get(json.get(config,"terminalFg"),mode));keys=json.set(keys,"terminalFg","workbench default terminal.foreground")
+                let values=json.get(json.get(config,"ansi"),mode)
+                for i in 0..(json.len(values) as i64) {colors=json.set(colors,"ansi${i}",json.at(values,i));keys=json.set(keys,"ansi${i}",json.string(json.get(config,"ansiSource"))+" ${i}")}
+            }
+            let rules=json.array();let tokenColors=json.get(source,"tokenColors")
+            for i in 0..(json.len(tokenColors) as i64) {
+                let rule=json.at(tokenColors,i);let settings=json.get(rule,"settings");let fg=util.text(util.get(settings,"foreground"));let font=util.text(util.get(settings,"fontStyle"))
+                if strings.equal(fg,"") && strings.equal(font,"") {continue}
+                let scopes=util.get(rule,"scope");if !strings.equal(json.kind(scopes),"array") {scopes=json.push(json.array(),scopes)}
+                for n in 0..(json.len(scopes) as i64) {
+                    let value=json.object();let scope=json.at(scopes,n);if !json.is_null(scope) {value=json.set(value,"scope",scope)}
+                    if !strings.equal(fg,"") {value=json.set(value,"foreground",strings.toLowerCase(fg))}
+                    if json.has(settings,"fontStyle") {value=json.set(value,"fontStyle",json.get(settings,"fontStyle"))}
+                    rules=json.push(rules,value)
+                }
+            }
+            variants=json.set(variants,mode,colors);sources=json.set(sources,mode,keys);rulesByMode=json.set(rulesByMode,mode,rules)
+        }
+        out=json.set(out,family,variants);trace=json.set(trace,family,sources);syntax=json.set(syntax,family,rulesByMode)
+    }
+    return {familyPalettes:out,paletteSources:trace,syntaxRules:syntax}
+}

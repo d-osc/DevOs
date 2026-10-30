@@ -1,0 +1,22 @@
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/context-menu.dev" as custom
+use "./menu-model.dev" as menu
+fn merge(base:json.Value,values:json.Value):json.Value {let out=base;if strings.equal(json.kind(values),"object") {for key in json.keys(values) {out=json.set(out,key,json.get(values,key))}};return out}
+fn defaults(root:str):json.Value {let manifest=json.parse(fs.readFileSync(root+"/src/system/org.devos.panel/extension.json","utf8"));let groups=hw.jget(manifest,"settings");let out=json.object();for i in 0..(json.len(groups) as i64) {let fields=hw.jget(json.at(groups,i),"fields");for j in 0..(json.len(fields) as i64) {let field=json.at(fields,j);out=json.set(out,hw.jstr(field,"key",""),hw.jget(field,"default"))}};return out}
+fn booleanKeys():Vec<str> {let out=Vec<str>("showPinned","showDate","contextEnabled");let items=menu.defaults();for i in 0..(json.len(items) as i64) {out.push(hw.jstr(json.at(items,i),"key",""))};return out}
+fn isBool(key:str):bool {for item in booleanKeys() {if strings.equal(item,key) {return true}};return false}
+fn bounds(key:str):Vec<i64> {if strings.equal(key,"height") {return Vec<i64>(32,96)};if strings.equal(key,"iconSize") {return Vec<i64>(14,28)};if strings.equal(key,"spacing") {return Vec<i64>(0,32)};if strings.equal(key,"itemSpacing") {return Vec<i64>(0,16)};return Vec<i64>()}
+fn checked(key:str,value:json.Value):json.Value {
+    if isBool(key) {if !strings.equal(json.kind(value),"bool") {result.raise("A boolean setting is required")};return value}
+    if strings.equal(key,"position") {let text=hw.jstr(json.value({value:value}),"value","");if !strings.equal(text,"top") && !strings.equal(text,"bottom") {result.raise("Select the top or bottom edge")};return value}
+    if strings.equal(key,"contextCustomItems") {custom.custom(value);return value}
+    let range=bounds(key);if range.len()==0 {result.raise("Unknown panel setting")};if !strings.equal(json.kind(value),"number") {result.raise("Enter a whole number")};let n=json.float(value);if strings.equal(key,"height") && n==0.0 {return value}
+    if n!=(n as i64) as f64 || n<(range[0] as f64) || n>(range[1] as f64) {result.raise("Enter a whole number from ${range[0]} to ${range[1]}")};return value
+}
+fn commit(latest:json.Value,saved:json.Value,draft:json.Value):json.Value {
+    let out=latest;for key in json.keys(draft) {let before=hw.jget(saved,key);let value=json.get(draft,key);if strings.equal(json.stringify(value),json.stringify(before)) {continue};let current=hw.jget(latest,key);if !strings.equal(json.stringify(current),json.stringify(before)) && !strings.equal(json.stringify(current),json.stringify(value)) {result.raise("Panel settings changed elsewhere. Reopen this page before applying.")};out=json.set(out,key,checked(key,value))};return out
+}

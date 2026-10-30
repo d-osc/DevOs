@@ -1,0 +1,35 @@
+use "std/json"
+use "std/fs"
+use "std/time"
+use "std/strings"
+use "../../lib/hw.dev" as hw
+use "../../src/system/org.devos.panel/taskbar-catalog.dev" as catalog
+fn check(value:bool,message:str) {if !value {panic(message)}}
+fn find(items:json.Value,id:str):json.Value {for i in 0..(json.len(items) as i64) {let item=json.at(items,i);if strings.equal(hw.jstr(item,"id",""),id) {return item}};return json.null_value()}
+fn main():i32 {
+    let handle:*void=null;unsafe {handle=catalog.pa_open()};let first=catalog.snapshot(handle)
+    check(strings.equal(hw.jstr(find(first,"example.desktop"),"title",""),"เอกสาร"),"GIO title lost Unicode")
+    check(strings.equal(hw.jstr(find(first,"example.desktop"),"wmclass",""),"ExampleClass"),"StartupWMClass missing")
+    check(strings.contains(hw.jstr(find(first,"example.desktop"),"icon",""),"folder-symbolic"),"GIcon serialization missing")
+    check(!json.is_null(find(first,"hidden-menu.desktop")),"NoDisplay metadata was filtered out")
+    for i in 0..20 {unsafe {catalog.pa_poll(handle)};time.sleep_ms(20)}
+    let previous:i64=0;unsafe {previous=catalog.pa_poll(handle)}
+    let file=hw.env("PANEL_CATALOG_FILE");check(fs.writeFileSync(file,"[Desktop Entry]\nType=Application\nName=Updated\nExec=/bin/true\nIcon=document-open-symbolic\nStartupWMClass=NewClass\n"),"Cannot update fixture")
+    let updated=false
+    for i in 0..150 {time.sleep_ms(20);let revision:i64=0;unsafe {revision=catalog.pa_poll(handle)};if revision!=previous {let item=find(catalog.snapshot(handle),"example.desktop");if strings.equal(hw.jstr(item,"title",""),"Updated") && strings.equal(hw.jstr(item,"wmclass",""),"NewClass") && strings.contains(hw.jstr(item,"icon",""),"document-open-symbolic") {updated=true;break}}}
+    check(updated,"Application monitor did not refresh modified metadata")
+    unsafe {previous=catalog.pa_poll(handle)}
+    check(fs.writeFileSync(file,"[Desktop Entry]\nType=Application\nName=Removed\nExec=/bin/true\nHidden=true\n"),"Cannot hide fixture")
+    let removed=false
+    for i in 0..150 {time.sleep_ms(20);let revision:i64=0;unsafe {revision=catalog.pa_poll(handle)};if revision!=previous && json.is_null(find(catalog.snapshot(handle),"example.desktop")) {removed=true;break}}
+    check(removed,"Application monitor retained removed entry")
+    let addedFile=hw.env("XDG_DATA_HOME")+"/applications/new-app.desktop";unsafe {previous=catalog.pa_poll(handle)}
+    check(fs.writeFileSync(addedFile,"[Desktop Entry]\nType=Application\nName=Newly installed\nExec=/bin/true\nIcon=system-run-symbolic\n"),"Cannot install fixture")
+    let installed=false;for i in 0..150 {time.sleep_ms(20);let revision:i64=0;unsafe {revision=catalog.pa_poll(handle)};if revision!=previous && !json.is_null(find(catalog.snapshot(handle),"new-app.desktop")) {installed=true;break}}
+    check(installed,"Application monitor did not find installed entry");unsafe {previous=catalog.pa_poll(handle)}
+    check(fs.unlinkSync(addedFile),"Cannot uninstall fixture")
+    let uninstalled=false;for i in 0..150 {time.sleep_ms(20);let revision:i64=0;unsafe {revision=catalog.pa_poll(handle)};if revision!=previous && json.is_null(find(catalog.snapshot(handle),"new-app.desktop")) {uninstalled=true;break}}
+    check(uninstalled,"Application monitor retained uninstalled entry");unsafe {catalog.pa_close(handle)}
+    print("PASS native catalog Unicode, WM class, icons, live update, removal and cleanup");return 0
+}
+return main()

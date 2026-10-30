@@ -1,0 +1,39 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/context-menu.dev" as custom
+use "../org.devos.background/command.dev" as command
+fn defaults():json.Value {return json.value(Vec<json.Value>(
+    {key:"menuPanelSettings",title:"Panel settings",icon:"view-more-symbolic",command:"settings.panel"},
+    {key:"menuApplications",title:"Applications",icon:"view-app-grid-symbolic",command:"launcher"},
+    {key:"menuTerminal",title:"Terminal",icon:"utilities-terminal-symbolic",command:"terminal"},
+    {key:"menuAppStore",title:"App Store",icon:"system-software-install-symbolic",command:"app-store"},
+    {key:"menuDiskManager",title:"Disk Manager",icon:"drive-harddisk-symbolic",command:"disk-manager"},
+    {key:"menuTaskManager",title:"Task Manager",icon:"utilities-system-monitor-symbolic",command:"task-manager"},
+    {key:"menuFiles",title:"Files",icon:"folder-symbolic",command:"files"},
+    {key:"menuClockSettings",title:"Clock settings",icon:"preferences-system-time-symbolic",command:"settings.clock"},
+    {key:"menuSettings",title:"Settings",icon:"preferences-system-symbolic",command:"settings"}))}
+fn view(values:json.Value):json.Value {
+    let rows=json.array();if !hw.jbool(values,"contextEnabled",true) {return rows}
+    let builtins=defaults();for i in 0..(json.len(builtins) as i64) {let item=json.at(builtins,i);if hw.jbool(values,hw.jstr(item,"key",""),true) {rows=json.push(rows,item)}}
+    let parsed=result.attempt(fn():json.Value {return custom.custom(hw.jget(values,"contextCustomItems"))})
+    if result.isOk(parsed) {let items=result.unwrap(parsed);for i in 0..(json.len(items) as i64) {let item=json.at(items,i);let target=hw.jstr(item,"target","");if hw.jbool(item,"enabled",false) && (strings.equal(target,"any") || strings.equal(target,"background")) {rows=json.push(rows,item)}}}
+    return rows
+}
+fn presentation(values:json.Value):json.Value {
+    let rows=view(values);let out=json.array();let standard=false;let separated=false
+    for i in 0..(json.len(rows) as i64) {let item=json.at(rows,i);let isCustom=json.has(item,"id")
+        if isCustom && standard && !separated {out=json.push(out,{separator:true});separated=true}
+        out=json.push(out,{key:hw.jstr(item,isCustom ? "id" : "key",""),title:hw.jstr(item,"title",""),icon:hw.jstr(item,"icon",""),custom:isCustom});if !isCustom {standard=true}
+    };return out
+}
+fn plan(values:json.Value,key:str,directory:str):json.Value {
+    let rows=view(values)
+    for i in 0..(json.len(rows) as i64) {let item=json.at(rows,i);let isCustom=json.has(item,"id");let id=hw.jstr(item,isCustom ? "id" : "key","")
+        if !strings.equal(id,key) {continue}
+        if isCustom {return {kind:"process",argv:json.value(command.arguments(hw.jstr(item,"command",""),directory,directory)),cwd:directory}}
+        return {kind:"shell",key:id,command:hw.jstr(item,"command",""),cwd:directory}
+    }
+    result.raise("This panel action is no longer available.");return json.object()
+}

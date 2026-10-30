@@ -1,0 +1,8 @@
+# Native crop geometry. Decoding is asynchronous in the GTK platform host.
+struct Layout {sx:f64,sy:f64,x:f64,y:f64}
+fn layout(width:f64,height:f64,imageWidth:f64,imageHeight:f64,fit:i64):Layout {
+    let x=width/imageWidth;let y=height/imageHeight
+    let scale=fit==1 ? (x<y ? x : y) : (x>y ? x : y)
+    let sx=fit==2 ? x : scale;let sy=fit==2 ? y : scale
+    return Layout(sx,sy,(width-imageWidth*sx)/2.0,(height-imageHeight*sy)/2.0)
+}

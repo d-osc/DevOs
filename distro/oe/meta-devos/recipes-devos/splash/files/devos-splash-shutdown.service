@@ -1,0 +1,20 @@
+[Unit]
+Description=Dev OS shutdown loading animation
+DefaultDependencies=no
+Before=shutdown.target umount.target final.target systemd-poweroff.service systemd-reboot.service systemd-halt.service systemd-kexec.service
+ConditionKernelCommandLine=!devos.splash=0
+
+[Service]
+Type=forking
+PIDFile=/run/devos-shutdown-splash.pid
+# Private milestones prevent the completed boot animation from ending this one.
+# The daemon forks immediately; it never waits for a minimum animation duration.
+ExecStart=-/usr/bin/devos-splash --daemon --pid /run/devos-shutdown-splash.pid --steps /run/devos-shutdown-splash.d --status /run/devos-shutdown-splash.status --control /run/devos-shutdown-splash.ctl --log /run/devos-shutdown-splash.log --message "Shutting down" --timeout 120
+TimeoutStartSec=3
+TimeoutStopSec=1
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=shutdown.target

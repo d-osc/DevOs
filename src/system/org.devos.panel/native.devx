@@ -1,0 +1,66 @@
+# Native panel UI. A separate monitor manager owns one UI process per output.
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-taskbar.dev" as tasks
+use "./native-clock.dev" as clockUI
+use "./native-command.dev" as commands
+use "./native-tray.dev" as tray
+use "./native-alerts.dev" as alerts
+use "./native-care.dev" as care
+use "./native-accounts.dev" as accounts
+use "./native-context-menu.dev" as contextMenu
+extern fn rc_env(name:str):str
+extern fn panel_prepare(root:*void,index:i32):i32
+extern fn panel_layout(root:*void,top:i32,height:i32)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn gtk_icon_theme_get_default():*void
+extern fn gtk_icon_theme_append_search_path(theme:*void,path:str)
+extern fn panel_clock_trace(root:*void)
+fn number(fields:Vec<ui.Text>,index:i64,fallback:i64):i64 {return index<(fields.len() as i64) ? channel.integer(fields[index]) : fallback}
+fn icon(name:str,size:i32):ui.Node {let props=ui.props();props.iconSize=size;props.className=ui.text("panel-app");return ui.Icon(props,name)}
+fn row(context:*ui.Context,monitor:i32,failed:*i32):ui.Node {
+    let frame=ui.useText(context,ui.text("L\t0\t36\t16\t12\t2\t1\t1"));let pipe=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if panel_prepare((*context).native,monitor)==0 {*failed=1;ui.close(context);return ui.noop}
+        let root=rc_env("DEV_OS_ROOT");let runtime=rc_env("XDG_RUNTIME_DIR");let family=rc_env("DEV_OS_THEME_FAMILY");if !ui.equalText(ui.text(family),ui.text("github")) {family="vscode"}
+        let mode=rc_env("DEV_OS_THEME");if !ui.equalText(ui.text(mode),ui.text("dark")) && !ui.equalText(ui.text(mode),ui.text("light")) {mode=rd_default_theme()}
+        rd_theme_follow((*context).native,"${runtime}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+        gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(),"${root}/data/icons")
+        let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connectWithLibrary(context,runner,"${root}/src/services/panel-layout.dev",root,"${root}/dist/native/libpanel-clock.so",fn(value:ui.Text) {
+            let records=channel.split(value,30);let layout=channel.split(records[0],9)
+            if layout.len()!=8 || !ui.equalText(layout[0],ui.text("L")) || records.len()<2 {unsafe {*failed=1};print("Native panel layout service failed");ui.close(context);return}
+            frame.set(value)
+        },fn(value:i64) {pipe.set(value);channel.interval(value,1000);channel.send(value,ui.text("{\"clock\":true,\"alerts\":true,\"care\":true}"))})
+    }},Vec<i64>())
+    alerts.subscribe(context,pipe)
+    care.apply(context,frame.value)
+    let records=channel.split(frame.value,30);let fields=channel.split(records[0],9);let top=number(fields,1,0);let height=number(fields,2,36);let size=number(fields,3,16) as i32
+    ui.useEffect(context,fn():fn():void {unsafe {if *failed==0 {panel_layout((*context).native,top as i32,height as i32)};return ui.noop}},Vec<i64>(top,height))
+    let actions=commands.connect(context,fn() {unsafe {*failed=1};ui.close(context)})
+    let menuError=contextMenu.attach(context)
+    let apps=Vec<ui.Node>();for name in Vec<str>("launcher","task-view") {let props=ui.named(name=="launcher" ? "panel-menu" : "panel-task-view");props.className=ui.text(name=="launcher" ? "panel-app menu-button" : "panel-app");props.sensitive=actions.ready;apps.push(ui.WidgetButton(props,icon(name=="launcher" ? "dev-os-symbolic" : "view-grid-symbolic",size),fn() {actions.send(ui.text(name))}))}
+    let parts=tasks.parts(context,number(fields,6,1)!=0,size,number(fields,5,2) as i32,fn() {unsafe {*failed=1};ui.close(context)},actions.send,actions.ready)
+    let devices=tray.View(context,actions.send,actions.ready,fn() {unsafe {*failed=1};ui.close(context)})
+    let left=ui.props();left.vertical=false;left.spacing=number(fields,5,2) as i32;left.valign=3
+    let spacer=ui.props();spacer.expand=true
+    let clock=clockUI.View(context,records.len()>1 ? records[1] : ui.emptyText(),number(fields,7,1)!=0,fn() {actions.send(ui.text("time"))},actions.ready)
+    let notifications=alerts.View(context,frame.value,fn() {channel.command(pipe.get(),ui.text("{\"clock\":true,\"clearAlerts\":true}"))})
+    let user=accounts.View(context,fn() {actions.send(ui.text("accounts"))},actions.ready)
+    ui.useEffect(context,fn():fn():void {unsafe {if *failed==0 {panel_clock_trace((*context).native)};return ui.noop}},Vec<i64>(frame.revision))
+    let right=ui.props();right.vertical=false;right.spacing=number(fields,5,2) as i32;right.valign=3
+    let failure=actions.error.bytes.len()>0 ? actions.error : menuError
+    let error=ui.props();error.visible=failure.bytes.len()>0;error.widthChars=24;error.ellipsize=true;error.className=ui.text("error")
+    return <Box id="panel-content" className="panel-content" orientation="horizontal" spacing={number(fields,4,12) as i32} expand margin={1}>
+        {ui.Box(left,apps)}{parts.tasks}{ui.Box(spacer,Vec<ui.Node>())}{ui.withProps(ui.TextLabel(failure),error)}{ui.Box(right,Vec<ui.Node>(parts.language,devices,clock,notifications,user))}
+    </Box>
+}
+fn run():i32 {unsafe {
+    let production=ui.equalText(ui.text(rc_env("DEVOS_PANEL_ROLE")),ui.text("desktop"))
+    if (!production && !ui.equalText(ui.text(rc_env("DEVOS_PANEL_PREVIEW")),ui.text("1"))) || ui.text(rc_env("DEV_OS_ROOT")).bytes.len()==0 {print("Set DEVOS_PANEL_ROLE=desktop and DEV_OS_ROOT, or enable the explicit native preview.");return 1}
+    let index=channel.integer(ui.text(rc_env("DEVOS_PANEL_MONITOR"))) as i32;let failed:i32=0;let status=&failed
+    let ok=ui.run("DevOs Panel",640,36,fn(context:*ui.Context):ui.Node {return row(context,index,status)})
+    return ok && failed==0 ? 0 : 1
+}}
+return run()

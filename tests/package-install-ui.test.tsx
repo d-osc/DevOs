@@ -1,11 +1,11 @@
 import {testTheme} from './theme-helper.js';
 import {Gtk, Gdk, GLib, React, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {PackageInstallView} from '../extensions/org.devos.appstore/package-view.js';
-import {AppStoreView} from '../extensions/org.devos.appstore/view.js';
-import type {PackageControls, InstalledPackage} from '../extensions/org.devos.appstore/package-backend.js';
-import type {PackageInfo} from '../extensions/org.devos.appstore/package-file.js';
-import type {StoreControls} from '../extensions/org.devos.appstore/backend.js';
+import {PackageInstallView} from '../src/apps/org.devos.appstore/package-view.js';
+import {AppStoreView} from '../src/apps/org.devos.appstore/view.js';
+import type {PackageControls, InstalledPackage} from '../src/apps/org.devos.appstore/package-backend.js';
+import type {PackageInfo} from '../src/apps/org.devos.appstore/package-file.js';
+import type {StoreControls} from '../src/apps/org.devos.appstore/backend.js';
 Gtk.init(null);
 const loop = new GLib.MainLoop(null, false);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {resolve(); return GLib.SOURCE_REMOVE;}));
@@ -33,7 +33,7 @@ async function test() {
         },
         async remove(id) {calls.push(`remove ${id}`); installed.splice(0);}, async rollback(id) {calls.push(`rollback ${id}`); return '0.9.0';}};
     const window = new Gtk.OffscreenWindow(); window.name = 'package-install'; window.set_size_request(760, 760); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T | undefined;
     const label = (id: string) => (find<Gtk.Label>(id)?.get_text() ?? '');

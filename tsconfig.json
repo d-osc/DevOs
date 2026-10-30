@@ -82,8 +82,10 @@
     }
   },
   "include": [
-    "extensions/**/*.ts",
-    "extensions/**/*.tsx",
+    "src/apps/**/*.ts",
+    "src/apps/**/*.tsx",
+    "src/extensions/**/*.ts",
+    "src/extensions/**/*.tsx",
     "packages/**/*.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
@@ -93,6 +95,6 @@
     "packages/**/*.tsx"
   ],
   "exclude": [
-    "extensions/org.devos.editor/browser"
+    "src/apps/org.devos.editor/browser"
   ]
 }

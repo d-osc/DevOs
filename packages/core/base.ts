@@ -4,6 +4,7 @@ export {default as Gio} from 'gi://Gio';
 export {default as GLib} from 'gi://GLib';
 export {default as GObject} from 'gi://GObject';
 export {default as GLibUnix} from 'gi://GLibUnix';
+export {Listeners} from './listeners.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 export function readText(path: string): string {

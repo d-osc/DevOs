@@ -3,8 +3,8 @@ import Cairo from 'cairo';
 import {testTheme} from './theme-helper.js';
 import {DEFAULTS, ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {BrowserWindow} from '../extensions/org.devos.browser/window.js';
-import {browserContextMenu, startContextMenu} from '../extensions/org.devos.browser/context-menu.js';
+import {BrowserWindow} from '../src/apps/org.devos.browser/window.js';
+import {browserContextMenu, startContextMenu} from '../src/apps/org.devos.browser/context-menu.js';
 import {WebKit2, webKitSoftwareRendering} from '@dev-os/core/webkit';
 
 Gtk.init(null);
@@ -16,7 +16,7 @@ for (const icon of ['dev-os-browser', 'dev-os-browser-symbolic']) {
 setActiveTheme(GLib.getenv('DEV_OS_TEST_THEME') === 'light' ? 'light' : 'dark');
 Gtk.Settings.get_default()!.gtk_application_prefer_dark_theme = GLib.getenv('DEV_OS_TEST_THEME') !== 'light';
 const style = new Gtk.CssProvider();
-style.load_from_data(new TextEncoder().encode(testTheme() + new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1])));
+style.load_from_data(new TextEncoder().encode(testTheme() + new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1])));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 const application = new Gtk.Application({application_id: 'org.devos.BrowserLiveTest', flags: Gio.ApplicationFlags.NON_UNIQUE});
 application.register(null);
@@ -30,7 +30,7 @@ async function until(check: () => boolean, label: string) {
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
 async function run() {
     const temporary = GLib.dir_make_tmp('devos-browser-test-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const display = Gdk.Display.get_default()!;
     const context: UIContext = {application, display, preferences, config: () => DEFAULTS, saveCore() {},
         monitors: () => [display.get_monitor(0)!], runCommand: () => true, reload: () => true, quit() {}, invoke() {},

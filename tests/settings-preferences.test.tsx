@@ -2,8 +2,8 @@ import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot} from '@dev-os/core';
 import {ROOT, DEFAULTS} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {SettingsView} from '../extensions/org.devos.settings/view.js';
-import {settingsOptions, settingsStartPage} from '../extensions/org.devos.settings/options.js';
+import {SettingsView} from '../src/apps/org.devos.settings/view.js';
+import {settingsOptions, settingsStartPage} from '../src/apps/org.devos.settings/options.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
@@ -13,10 +13,10 @@ async function verify() {
     assert(settingsStartPage({}, 'bluetooth') === 'system' && settingsStartPage({rememberPage: true}, 'bluetooth') === 'bluetooth', 'Settings defaults to System while respecting the remember preference');
     assert(settingsStartPage({rememberPage: true}, 'bluetooth', 'wifi') === 'wifi', 'Explicit navigation overrides remembered page');
     const temporary = GLib.dir_make_tmp('devos-settings-ui-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(1040, 820);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     const compactSidebar = () => widgets(container).some(widget => widget.get_style_context().has_class('settings-sidebar-compact'));

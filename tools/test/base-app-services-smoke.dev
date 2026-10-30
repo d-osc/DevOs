@@ -1,0 +1,36 @@
+#!/usr/bin/env d
+# UI regressions run against a private compositor and disposable user data.
+use "std/fs"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main(): i32 {
+    tool.scope("devos-app-data-home-", fn(home: str) {
+        let extras = Map<str,str>(); extras.set("HOME", home); extras.set("GTK_USE_PORTAL", "0"); extras.set("PATH", tool.root() + "/build/wsl/bin:" + tool.root() + "/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        smoke.withSession("base-app-services", extras, fn(session: smoke.Session) {
+            let env = smoke.environment(session)
+            let selected = tool.option("--tests", "desktop-ui-test,task-manager-test,disk-manager-test,media-live-test,terminal-completion-test,screenshot-test,screenshot-live-test,browser-live-test,browser-downloads-live-test,live-editor-test,network-settings-test,app-store-test,package-install-ui-test")
+            # A headless seat has no keyboard. Keep a virtual keyboard connected so
+            # GTK can grant real keyboard focus (completion deliberately requires it).
+            let keyboard = smoke.launch(Vec<str>("wtype", "-s", "300000"), env, session.log)
+            time.sleep_ms(200)
+            let outcome = result.run(fn() {
+            for name in strings.split(selected, ",") {
+                if strings.equal(name, "browser-downloads-live-test") {tool.checked(Vec<str>("python3", session.root + "/tests/browser-downloads-live.py"), env, "", 60000)}
+                else {
+                    let output = tool.checked(Vec<str>("gjs", "-m", session.root + "/dist/" + name + ".js"), env, "", 120000)
+                    if strings.equal(name, "window-buffer-test") {print(output)}
+                }
+                print("PASS: base app UI/service regression " + name)
+            }
+            })
+            if !keyboard.ready() {keyboard.kill()}; keyboard.wait()
+            result.unwrap(outcome)
+        })
+    })
+    return 0
+}
+return tool.main(main)

@@ -16,7 +16,7 @@ export interface UIContext {
     settingsPages?: SettingsPages;
     registerSettingsPage?(id: string, page: ComponentType): Cleanup;
     config(): Config;
-    saveCore(value: unknown): void;
+    saveCore(value: unknown): void | Promise<void>;
     monitors(): Gdk.Monitor[];
     runCommand(command: Command, directory?: string): boolean;
     reload(): boolean;

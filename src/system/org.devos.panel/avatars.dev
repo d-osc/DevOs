@@ -1,0 +1,18 @@
+# Public avatars download outside both UI and account metadata processing.
+use "std/fs"
+use "std/http"
+use "std/result"
+use "std/uuid"
+use "std/path"
+use "./accounts-model.dev" as model
+extern fn chmod(path:str,mode:u32):i32
+fn load(id:i64):bool {
+let outcome=result.run(fn() {
+    if id<=0 {return}
+    let headers=Map<str,str>();headers.set("User-Agent","DevOs-Accounts");let response=http.request("GET","https://avatars.githubusercontent.com/u/${id}?s=128&v=4",headers,"",12000)
+    if response.status!=200 || response.bytes.len()>2097152 {return}
+    let file=model.avatarPath(id);let folder=path.dirname(file)
+    fs.mkdirSync(folder,true);unsafe {chmod(folder,448)}
+    let temporary=file+"."+uuid.v4()+".tmp";fs.write_bytes(temporary,response.bytes);unsafe {chmod(temporary,384)};fs.renameSync(temporary,file)
+});return result.isOk(outcome)
+}

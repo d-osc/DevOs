@@ -1,0 +1,1 @@
+{"id":"org.devos.diskmanager","name":"Disk Manager","description":"Inspect Linux disks and partitions","version":"1.0.0","apiVersion":1,"kind":"ui","system":true,"native":"diskmanager","order":29,"settingsVersion":1,"enabledByDefault":true,"settings":[]}

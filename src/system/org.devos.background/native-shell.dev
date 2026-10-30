@@ -1,0 +1,62 @@
+# Transport only: native tracker lines and GDK viewport geometry go to the worker.
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-widget-board.dev" as board
+extern fn rc_env(name:str):str
+extern fn g_file_test(path:str,flags:i32):i32
+extern fn gdk_display_get_default():*void
+extern fn gdk_display_get_n_monitors(display:*void):i32
+extern fn gdk_display_get_monitor(display:*void,index:i32):*void
+struct Rectangle {x:i32,y:i32,width:i32,height:i32}
+extern fn gdk_monitor_get_geometry(monitor:*void,rectangle:*Rectangle)
+extern fn bg_timer(interval:i32,call:callback(*void):void,data:*void):u32
+extern fn bg_untimer(timer:u32,keep:*void)
+fn useShell(context:*ui.Context,controls:board.Control,index:i32) {
+    useTransport(context,controls.tracker,controls.trackerBatch,controls.viewport,index)
+}
+fn useTransport(context:*ui.Context,tracker:fn(ui.Text):void,trackerBatch:fn(ui.Text):void,viewport:fn(ui.Text):void,index:i32) {
+    let generation=ui.useState(context,0);let failed=ui.useState(context,0)
+    let oldX=ui.useRef(context,0);let oldY=ui.useRef(context,0);let oldWidth=ui.useRef(context,0);let oldHeight=ui.useRef(context,0);let oldCount=ui.useRef(context,-1)
+    let queued=ui.useText(context,ui.emptyText())
+    let queuedCount=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let root=rc_env("DEV_OS_ROOT");let helper=rc_env("DEVOS_BACKGROUND_TRACKER")
+        if ui.text(helper).bytes.len()==0 {
+            helper="${root}/build/native/dev-os-window-tracker"
+            if g_file_test(helper,8)==0 {helper="${root}/native/dev-os-window-tracker"}
+            if g_file_test(helper,8)==0 {helper="dev-os-window-tracker"}
+        }
+        tracker(ui.text("{\"type\":\"connecting\"}"))
+        return channel.connect(context,helper,"",root,fn(line:ui.Text) {
+            if line.bytes.len()>0 && line.bytes[0]==123 && line.bytes.len()<=58000 {
+                let current=queued.get()
+                if current.bytes.len()+line.bytes.len()>58000 || queuedCount.get()>=512 {trackerBatch(ui.concatText(Vec<ui.Text>(ui.text("["),current,ui.text("]"))));current=ui.emptyText();queuedCount.set(0)}
+                queued.set(ui.concatText(Vec<ui.Text>(current,current.bytes.len()>0 ? ui.text(",") : ui.emptyText(),line)))
+                queuedCount.set(queuedCount.get()+1)
+            } else {
+                let current=queued.get();if current.bytes.len()>0 {trackerBatch(ui.concatText(Vec<ui.Text>(ui.text("["),current,ui.text("]"))))};queued.set(ui.emptyText());queuedCount.set(0)
+                tracker(ui.concatText(Vec<ui.Text>(ui.text("{\"type\":\"disconnected\",\"error\":"),channel.quote(line),ui.text("}"))));failed.set(1)
+            }
+        },fn(pipe:i64) {})
+    }},Vec<i64>(generation.value))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if failed.value==0 {return ui.noop}
+        let retry=callback_context(fn() {failed.set(0);generation.set(generation.get()+1)})
+        let timer=bg_timer(2000,retry.call,retry.data);return fn() {unsafe {bg_untimer(timer,retry.data)}}
+    }},Vec<i64>(failed.value))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let flush=callback_context(fn() {let current=queued.get();if current.bytes.len()>0 {queued.set(ui.emptyText());queuedCount.set(0);trackerBatch(ui.concatText(Vec<ui.Text>(ui.text("["),current,ui.text("]"))))}})
+        let timer=bg_timer(50,flush.call,flush.data);return fn() {unsafe {bg_untimer(timer,flush.data)}}
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let changed=callback_context(fn() {unsafe {
+            let display=gdk_display_get_default();let count=gdk_display_get_n_monitors(display);if index<0 || index>=count {return}
+            let rect=Rectangle(0,0,0,0);gdk_monitor_get_geometry(gdk_display_get_monitor(display,index),&rect)
+            if oldX.get()==(rect.x as i64) && oldY.get()==(rect.y as i64) && oldWidth.get()==(rect.width as i64) && oldHeight.get()==(rect.height as i64) && oldCount.get()==(count as i64) {return}
+            oldX.set(rect.x as i64);oldY.set(rect.y as i64);oldWidth.set(rect.width as i64);oldHeight.set(rect.height as i64);oldCount.set(count as i64)
+            let value=ui.text("{\"action\":\"viewport\",\"monitor\":{\"x\":${rect.x},\"y\":${rect.y},\"width\":${rect.width},\"height\":${rect.height}},\"single\":${count==1}}")
+            viewport(value)
+        }})
+        let timer=bg_timer(250,changed.call,changed.data);return fn() {unsafe {bg_untimer(timer,changed.data)}}
+    }},Vec<i64>())
+}

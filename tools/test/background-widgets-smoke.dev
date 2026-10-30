@@ -1,0 +1,54 @@
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/time"
+use "std/result"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    let root=tool.root();let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",root+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let binary=root+"/build/react-devlang/background/background-widgets"
+    tool.checked(Vec<str>("sh",root+"/packages/react-devlang/tools/build.sh",root+"/tests/react-devlang/background-widgets.devx",binary,root+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    smoke.withSession("background-widgets",Map<str,str>(),fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("DEVOS_BACKGROUND_WIDGET_TEST",session.base);env.set("GDK_BACKEND","wayland");env.set("DEVOS_POINTER_DELAY_US","0");env.set("NO_AT_BRIDGE","1")
+        env.set("DEVOS_BACKGROUND_PREFERENCES",session.base+"/preferences.json")
+        env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","0")
+        env.set("G_DEBUG","fatal-criticals");let log=root+"/build/react-devlang/background/widgets.log"
+        tool.write(log,"");let child=smoke.launch(Vec<str>(binary),env,log)
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return fs.existsSync(session.base+"/drag-ready")},15000,"Native widgets did not mount")
+        let workers=strings.split(strings.trim(tool.read("/proc/${child.pid()}/task/${child.pid()}/children"))," ")
+        tool.require(workers.len()==1 && !strings.equal(workers[0],""),"Widget data service did not run in a separate process")
+        tool.require(strings.contains(tool.read("/proc/"+workers[0]+"/cmdline"),"widget-service.dev"),"Unexpected widget worker")
+        let pointer=smoke.input(smoke.compilePointer(session.base+"/pointer-build"),session.base,env)
+        let outcome=result.run(fn() {
+            let p=pointer;p=smoke.send(p,"move -10000 -10000");p=smoke.send(p,"move "+tool.read(session.base+"/drag-ready"));p=smoke.send(p,"down left")
+            for i in 0..100 {smoke.sendRaw(p,"move 2 1");time.sleep_ms(16)}
+            p=smoke.send(p,"up left")
+            tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return fs.existsSync(session.base+"/remove-ready") && fs.existsSync(session.base+"/committed.json")},10000,"Native drag did not reach or save its target")
+            let values=json.parse(tool.read(session.base+"/committed.json"));let points=json.parse(json.string(json.get(values,"widgetLocations")))
+            tool.require(json.has(points,"widgetClock"),"Native service lost moved position")
+            let persisted=json.get(json.parse(tool.read(session.base+"/preferences.json")),"values")
+            tool.require(strings.equal(json.string(json.get(persisted,"widgetLocations")),json.string(json.get(values,"widgetLocations"))),"Native move was not persisted")
+            if child.ready() {let done=child.wait();tool.require(false,"Native widget UI exited during drag: ${done.code}\n"+tool.read(log))}
+            smoke.screenshot(env,root+"/build/screenshots/background-native-widgets.png")
+            p=smoke.send(p,"move -10000 -10000");p=smoke.send(p,"move "+tool.read(session.base+"/remove-ready"));p=smoke.send(p,"down left");p=smoke.send(p,"up left")
+            tool.waitFor(fn():bool {if child.ready() {let done=child.wait();tool.require(false,"Native widget UI exited during removal: ${done.code}\n"+tool.read(log))};let saved=json.parse(tool.read(session.base+"/committed.json"));return !json.bool(json.get(saved,"widgetClock"))},10000,"Native remove did not update service state")
+            tool.require(!strings.contains(tool.read("/proc/${child.pid()}/maps"),"mozjs"),"Native widget UI loaded MozJS")
+            let saved=json.get(json.parse(tool.read(session.base+"/preferences.json")),"values");tool.require(!json.bool(json.get(saved,"widgetClock")),"Native removal was not persisted")
+            tool.waitFor(fn():bool {return fs.existsSync(session.base+"/desktop-ready")},10000,"Native widgets did not follow desktop switches")
+            p=smoke.send(p,"move -10000 -10000");p=smoke.send(p,"move 800 120");p=smoke.send(p,"down right");p=smoke.send(p,"up right")
+            tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return fs.existsSync(session.base+"/menu-ready")},10000,"Native context menu did not open")
+            smoke.screenshot(env,root+"/build/screenshots/background-native-menu.png")
+            p=smoke.send(p,"move 64 18");p=smoke.send(p,"down left");p=smoke.send(p,"up left")
+            tool.waitFor(fn():bool {return fs.existsSync(session.base+"/action.json")},10000,"Native context menu did not dispatch to service")
+            let action=json.parse(tool.read(session.base+"/action.json"));tool.require(strings.equal(json.string(json.get(action,"kind")),"shell") && strings.equal(json.string(json.get(action,"command")),"settings.background"),"Native menu selected an unexpected action")
+        })
+        smoke.closeInput(pointer);tool.checked(Vec<str>("kill","-TERM","${child.pid()}"),env,"",5000);tool.waitFor(fn():bool {return child.ready()},5000,"Native widgets did not stop");let done=child.wait();result.unwrap(outcome);tool.require(done.success,"Native widget shutdown failed")
+        tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+workers[0])},5000,"Widget data service survived UI shutdown")
+        print("PASS native widget drag without unmapping, persistence, desktop switches, native context menu dispatch and clean shutdown")
+    })
+    return 0
+}
+return tool.main(main)

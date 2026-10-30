@@ -1,8 +1,9 @@
-# Extension Store
+# Extensions in App Store
 
-Store อยู่ที่ **Settings → Extension Store**. ใส่ `owner/repo` หรือ `https://github.com/owner/repo`
-แล้วเลือก **Connect**. ระบบอ่าน stable release ล่าสุดกับไฟล์ `extension.json` ใน release
-เพื่อแสดงชื่อ รายละเอียด รุ่น และปุ่ม Install / Update.
+ส่วนขยายอยู่ที่ **App Store → Extensions** (ย้ายจาก Settings → Extension Store แล้ว). หน้าร้านอ่านรายการจาก repo **DevOsAppStore** ผ่าน bundled registry importer ไม่ต้องกรอก GitHub repository เอง
+รายการ published มี **Check availability** เพื่ออ่าน stable release และ extension.json ก่อนแสดง Install / Update ส่วน draft แสดง **Not released yet** โดยไม่เชื่อม repo อัตโนมัติ
+
+หลังเปลี่ยนข้อมูลให้รัน node tools/store/import-registry.mjs ../DevOsAppStore แล้ว npm run build และเปิด AppStore ใหม่ ตัว importer อ่าน listing, runtime manifest, README และไอคอนจาก extensions/ การ refresh ในหน้าร้านตรวจ repo ที่เคยเชื่อมไว้ ไม่ได้อ่าน Git working tree ใหม่ทุกครั้ง
 เมื่อเชื่อม repo แล้ว ไม่ต้องอัปโหลดไฟล์เข้าระบบ Store อีก: เผยแพร่ GitHub Release ของ repo นั้นได้เลย.
 ในรุ่นนี้ใช้ public GitHub repositories; ไม่ต้องล็อกอินหรือใส่ token ใน desktop.
 
@@ -109,3 +110,14 @@ loader ของ user UI, settings persistence, corrupt downloads, disable/unins
 ไม่ได้สร้างหรือ publish GitHub extension repo ตัวอย่างให้อัตโนมัติ.
 หลัง package ตัวอย่างแล้ว ตั้ง `DEV_OS_STORE_TEST_PACKAGE` เป็น absolute path ของ tar
 เพื่อทดสอบ packager artifact และ shared React hooks เพิ่มด้วย `store-test.js` และ `tools/test/smoke.dev`.
+
+
+## Unified App Store
+
+The Extensions page displays central catalog listings first. Manual repository input is removed. Previously connected extensions remain under Your extensions, preserving their existing management actions. A live release must match the selected catalog extension ID before installation. The local Workspace Notes example is visible but unpublished.
+
+The `org.devos.store` UI package and its separate Settings page are retired. App Store owns `ExtensionsView` and the existing `ExtensionStore` service. Applications, local packages and GitHub extensions share one window with separate tabs; extension installation still uses its original release verification, atomic selection, rollback and preferences lifecycle.
+
+`dev-os-shell app-store-extensions` opens the Extensions tab, reusing an existing App Store window. `extension-store` and `settings.store` are compatibility aliases. Settings → App Store → Manage extensions opens the same destination. The App Store search field filters connected extensions while this tab is selected. Closing the window is blocked during extension operations.
+
+No user data is moved or deleted: repository connections, release directories, installed package links and preferences keep the paths documented above. The standalone `org.devos.store` manifest is removed from the system catalog, so Settings no longer lists a second store.

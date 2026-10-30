@@ -1,0 +1,22 @@
+use "std/test"
+use "std/fs"
+use "std/strings"
+use "std/uuid"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# tools/theme/tokenize-css.dev rewrites literal colors into @dv_* tokens. The expected file was produced by the original
+# JavaScript tool (tokenize-css.mjs) on the same input: hex and rgba() literals, alpha(), @ACCENT@, selectors containing
+# colons, a rule without a trailing semicolon, and a comment with non-ASCII text (the regex engine reports byte offsets).
+fn unix(text: str): str { return strings.replaceAll(text, "\r\n", "\n") }
+test.case("literal colors become theme tokens exactly as before", fn() {
+    let root = t.root()
+    let work = root + "/build/tokenize-css-test/" + uuid.v4()
+    let file = work + "/input.css"
+    tool.write(file, tool.read(root + "/tests/fixtures/tokenize-css/input.css"))
+    let output = tool.exec(Vec<str>("d", root + "/tools/theme/tokenize-css.dev", "--", file))
+    test.expect(strings.contains(output, "shadow:3 fg:2"), "The usage summary lists the tokens that were used")
+    test.expect(strings.contains(output, "remaining literals: 1"), "The one literal outside a property value is reported")
+    test.expect(strings.equal(unix(tool.read(file)), unix(tool.read(root + "/tests/fixtures/tokenize-css/expected.css"))), "Output differs from the original tool")
+})
+return t.finish()

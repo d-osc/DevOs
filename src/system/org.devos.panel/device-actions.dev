@@ -1,0 +1,30 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+fn validate(request:json.Value) {
+    let action=hw.jstr(request,"action","");let known=false
+    for name in Vec<str>("volume","brightness","mute","wifi","bluetooth") {if strings.equal(name,action) {known=true}}
+    if !known {result.raise("Unsupported panel device action")}
+    if strings.equal(action,"volume") || strings.equal(action,"brightness") {
+        if !strings.equal(json.kind(hw.jget(request,"value")),"number") {result.raise("A numeric device value is required")}
+    }
+}
+fn plan(request:json.Value,state:json.Value):Vec<str> {
+    validate(request);let action=hw.jstr(request,"action","");let audio=hw.jstr(state,"audio","")
+    if strings.equal(action,"volume") || strings.equal(action,"mute") {
+        if !strings.equal(audio,"wpctl") && !strings.equal(audio,"pactl") {return Vec<str>()}
+        let pipewire=strings.equal(audio,"wpctl")
+        if strings.equal(action,"mute") {return Vec<str>(audio,pipewire ? "set-mute" : "set-sink-mute",pipewire ? "@DEFAULT_AUDIO_SINK@" : "@DEFAULT_SINK@","toggle")}
+        let value=hw.jnum(request,"value",0.0);let bounded=value<0.0 ? 0.0 : value>100.0 ? 100.0 : value;let percent=(bounded+0.5) as i64
+        return Vec<str>(audio,pipewire ? "set-volume" : "set-sink-volume",pipewire ? "@DEFAULT_AUDIO_SINK@" : "@DEFAULT_SINK@","${percent}%")
+    }
+    if strings.equal(action,"brightness") {
+        if json.is_null(hw.jget(state,"brightness")) {return Vec<str>()}
+        let value=hw.jnum(request,"value",1.0);let bounded=value<1.0 ? 1.0 : value>100.0 ? 100.0 : value
+        return Vec<str>("dev-os-backlight","--","set","${(bounded+0.5) as i64}")
+    }
+    if strings.equal(action,"wifi") {if json.is_null(hw.jget(state,"wifi")) {return Vec<str>()};return Vec<str>("nmcli","radio","wifi",hw.jbool(state,"wifi",false) ? "off" : "on")}
+    if json.is_null(hw.jget(state,"bluetooth")) {return Vec<str>()}
+    return Vec<str>("bluetoothctl","power",hw.jbool(state,"bluetooth",false) ? "off" : "on")
+}

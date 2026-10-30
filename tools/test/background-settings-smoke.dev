@@ -1,0 +1,25 @@
+use "std/strings"
+use "std/fs"
+use "std/child_process"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    let root=tool.root();tool.checked(Vec<str>("sh",root+"/tools/build/native-background-settings.sh"),Map<str,str>(),"",90000)
+    smoke.withSession("background-settings",Map<str,str>(),fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("DEVOS_BACKGROUND_PREFERENCES",session.base+"/preferences.json");env.set("DEVOS_BACKGROUND_SETTINGS_PREVIEW","1");env.set("DEVOS_BACKGROUND_SETTINGS_TRACE","1");env.set("DEVOS_BACKGROUND_TRACKER","");env.set("GDK_BACKEND","wayland");env.set("NO_AT_BRIDGE","1");env.set("G_DEBUG","fatal-criticals")
+        let log=root+"/build/react-devlang/background/settings.log";tool.write(log,"");let child=smoke.launch(Vec<str>(root+"/dist/native/background-settings-preview"),env,log)
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"BACKGROUND SETTINGS READY")},15000,"Native Background Settings did not become ready")
+        tool.require(!fs.existsSync(session.base+"/preferences.json"),"Opening native Settings wrote preferences")
+        let children=strings.split(strings.trim(tool.read("/proc/${child.pid()}/task/${child.pid()}/children"))," ");tool.require(children.len()==2,"Native Settings did not separate data and tracker processes")
+        let service=false;let tracker=false
+        for pid in children {let command=tool.read("/proc/"+pid+"/cmdline");if strings.contains(command,"settings-service.dev") && strings.contains(command,"libbackground-image.so") {service=true};if strings.contains(command,"dev-os-window-tracker") {tracker=true};tool.require(!strings.contains(tool.read("/proc/"+pid+"/maps"),"mozjs"),"Native Settings child loaded MozJS")}
+        tool.require(service && tracker,"Wrong native Settings child identities");tool.require(!strings.contains(tool.read("/proc/${child.pid()}/maps"),"mozjs"),"Native Settings UI loaded MozJS")
+        # Capture after the compositor's map transition, not its first faded frame.
+        time.sleep_ms(400);smoke.screenshot(env,root+"/build/screenshots/background-settings-native.png")
+        tool.checked(Vec<str>("kill","-TERM","${child.pid()}"),env,"",5000);tool.waitFor(fn():bool {return child.ready()},5000,"Native Settings did not stop");let done=child.wait();tool.require(done.success,tool.read(log))
+        for pid in children {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid)},5000,"Native Settings child survived shutdown")}
+        print("PASS native Settings on Wayland, separate data and tracker processes, no MozJS, no writes on open and complete shutdown")
+    });return 0
+}
+return tool.main(main)

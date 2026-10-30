@@ -1,0 +1,30 @@
+# Short-lived native transport client; no shell fallback or GJS loader.
+use "std/args"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/result"
+use "../../../lib/shell-command.dev" as shell
+use "../../../lib/desktop.dev" as util
+extern fn sp_builder():*void
+extern fn sp_arg(builder:*void,value:str)
+extern fn sp_detach(builder:*void):i32
+fn main():i32 {
+    util.require(args.len()==1,"Missing background action plan")
+    let plan=json.parse(args.get(0));let kind=util.text(util.get(plan,"kind"));let cwd=util.text(util.get(plan,"cwd"))
+    util.require(!strings.equal(cwd,"") && process.chdir(cwd),"Cannot open background action directory")
+    if strings.equal(kind,"shell") {
+        let command=util.text(util.get(plan,"command"))
+        util.require(shell.contains(Vec<str>("settings.background","launcher","terminal","files","settings","reload","lock","logout"),command),"Invalid background shell action")
+        let status=shell.remote(Vec<str>(command),process.getenv("XDG_RUNTIME_DIR"),process.getenv("WAYLAND_DISPLAY"),cwd)
+        util.require(status==0,"Desktop action failed or shell is unavailable");return 0
+    }
+    util.require(strings.equal(kind,"process"),"Invalid background action kind")
+    let argv=util.get(plan,"argv");util.require(strings.equal(json.kind(argv),"array") && json.len(argv)>0,"Missing custom action argv")
+    let builder:*void=null;unsafe {builder=sp_builder()}
+    for i in 0..(json.len(argv) as i64) {let value=json.at(argv,i);util.require(strings.equal(json.kind(value),"string"),"Invalid custom action argv");unsafe {sp_arg(builder,json.string(value))}}
+    unsafe {util.require(sp_detach(builder)!=0,"Could not start the custom desktop action")};return 0
+}
+let outcome=result.attempt(main)
+if result.isErr(outcome) {print(result.message(outcome));return 1}
+return result.unwrap(outcome)

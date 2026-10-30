@@ -1,8 +1,8 @@
 import {Gtk, Gio, Gdk, GLib, type UIContext} from '@dev-os/core';
 import {DEFAULTS, ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {EditorAssets} from '../extensions/org.devos.editor/assets.js';
-import {EditorWindow} from '../extensions/org.devos.editor/extension.js';
+import {EditorAssets} from '../src/apps/org.devos.editor/assets.js';
+import {EditorWindow} from '../src/apps/org.devos.editor/extension.js';
 Gtk.init(null);
 const application = new Gtk.Application({application_id: 'org.devos.LiveEditorTest', flags: Gio.ApplicationFlags.NON_UNIQUE});
 application.register(null);
@@ -15,7 +15,7 @@ async function run() {
     const fixture = GLib.dir_make_tmp('devos-live-editor-XXXXXX');
     const path = `${fixture}/example.ts`;
     GLib.file_set_contents(path, 'const answer: number = 42;\n');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${fixture}/packages`, preferences: `${fixture}/preferences`});
     const display = Gdk.Display.get_default()!;
     const context: UIContext = {application, display, preferences, config: () => DEFAULTS, saveCore() {},
         monitors: () => [display.get_monitor(0)!], runCommand: () => true, reload: () => true, quit() {}, invoke() {},

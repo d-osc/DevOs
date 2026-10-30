@@ -1,0 +1,58 @@
+# Taskbar identity, grouping, app metadata and presentation belong to the worker.
+use "std/json"
+use "std/strings"
+use "std/regex"
+use "../../../lib/hw.dev" as hw
+fn builtins():json.Value {return json.value(Vec<json.Value>(
+    {group:"terminal",title:"Terminal",icon:"dev-os-terminal-symbolic",id:"dev-os-terminal"},
+    {group:"files",title:"Files",icon:"dev-os-files-symbolic",id:"dev-os-files"},
+    {group:"settings",title:"Settings",icon:"dev-os-settings-symbolic",id:"dev-os-settings"},
+    {group:"dev-os-editor",title:"Editor",icon:"dev-os-editor-symbolic",id:"dev-os-editor"},
+    {group:"dev-os-browser",title:"Browser",icon:"dev-os-browser-symbolic",id:"dev-os-browser"},
+    {group:"dev-os-camera",title:"Camera",icon:"dev-os-camera-symbolic",id:"dev-os-camera"},
+    {group:"dev-os-microphone",title:"Microphone",icon:"dev-os-microphone-symbolic",id:"dev-os-microphone"},
+    {group:"dev-os-screenshot",title:"Screenshot",icon:"dev-os-screenshot-symbolic",id:"dev-os-screenshot"},
+    {group:"dev-os-task-manager",title:"Task Manager",icon:"dev-os-task-manager-symbolic",id:"dev-os-task-manager"},
+    {group:"dev-os-disk-manager",title:"Disk Manager",icon:"dev-os-disk-manager-symbolic",id:"dev-os-disk-manager"},
+    {group:"dev-os-app-store",title:"App Store",icon:"dev-os-app-store-symbolic",id:"dev-os-app-store"},
+    {group:"dev-os-package-install",title:"Install Package",icon:"dev-os-app-store-symbolic",id:"dev-os-package-install"},
+    {group:"dev-os-installer",title:"Install Dev OS",icon:"dev-os-installer-symbolic",id:"dev-os-installer"},
+    {group:"dev-os-browser-inspector",title:"Developer Tools",icon:"dev-os-editor-symbolic",id:"dev-os-browser-inspector"}))}
+fn builtin(key:str):json.Value {let list=builtins();for i in 0..(json.len(list) as i64) {let item=json.at(list,i);if strings.equal(hw.jstr(item,"group",""),key) {return item}};return json.null_value()}
+fn titled(title:str,prefix:str):bool {return strings.equal(title,prefix) || strings.startsWith(title,prefix+" ·")}
+fn group(window:json.Value):str {
+    let app=hw.jstr(window,"appId","");let title=hw.jstr(window,"title","")
+    let owned=regex.compile("^(?:gjs|org\\.devos\\.(?:Shell|App\\.[a-z]+)(?:\\..*)?)$","i");let own=owned.test(app);owned.close()
+    let list=builtins()
+    if own {let short=strings.startsWith(title,"Dev OS ") ? strings.substring(title,7,strings.charLength(title)) : title;for i in 0..(json.len(list) as i64) {let item=json.at(list,i);if titled(short,hw.jstr(item,"title","")) {return hw.jstr(item,"group","")}}}
+    let normalized=strings.toLowerCase(app);let id=strings.endsWith(normalized,".desktop") ? strings.substring(normalized,0,strings.charLength(normalized)-8) : normalized
+    for i in 0..(json.len(list) as i64) {let item=json.at(list,i);if strings.equal(id,hw.jstr(item,"id","")) {return hw.jstr(item,"group","")}}
+    if titled(title,"Terminal") || titled(title,"Dev OS Terminal") || strings.equal(normalized,"foot") || strings.equal(normalized,"org.gnome.terminal") || strings.equal(normalized,"org.wezfurlong.wezterm") {return "terminal"}
+    if titled(title,"Dev OS Files") || strings.equal(normalized,"thunar") || strings.equal(normalized,"org.gnome.nautilus") {return "files"}
+    if titled(title,"Dev OS Settings") {return "settings"};if titled(title,"Dev OS Editor") {return "dev-os-editor"}
+    return strings.equal(app,"") ? "window-${hw.jnum(window,"id",0.0) as i64}" : app
+}
+fn desktop(catalog:json.Value,key:str):json.Value {
+    let normalized=strings.toLowerCase(strings.trim(key));if strings.equal(normalized,"") {return json.null_value()}
+    let id=strings.endsWith(normalized,".desktop") ? normalized : normalized+".desktop"
+    for i in 0..(json.len(catalog) as i64) {let item=json.at(catalog,i);if strings.equal(strings.toLowerCase(hw.jstr(item,"id","")),id) {return item}}
+    for i in 0..(json.len(catalog) as i64) {let item=json.at(catalog,i);if strings.equal(strings.toLowerCase(hw.jstr(item,"wmclass","")),normalized) {return item}}
+    return json.null_value()
+}
+fn row(key:str,items:json.Value,catalog:json.Value,pinned:bool):json.Value {
+    let own=builtin(key);let app=desktop(catalog,key);let first=json.len(items)>0 ? json.at(items,0) : json.object()
+    let title=hw.jstr(own,"title","");if strings.equal(title,"") {title=hw.jstr(app,"title","")};if strings.equal(title,"") {title=hw.jstr(first,"title","")};if strings.equal(title,"") {title=key}
+    let active=false;let minimized=json.len(items)>0
+    for i in 0..(json.len(items) as i64) {let window=json.at(items,i);if hw.jbool(window,"active",false) {active=true};if !hw.jbool(window,"minimized",false) {minimized=false}}
+    let count=json.len(items);let tooltip=count>0 ? title+" · ${count} window"+(count>1 ? "s" : "")+(minimized ? " · Minimized" : active ? " · Active" : "") : title
+    let id=pinned ? "panel-"+key : "panel-task-${hw.jnum(first,"id",0.0) as i64}"
+    return {group:key,id:id,windows:items,title:title,icon:hw.jstr(own,"icon","application-x-executable-symbolic"),gicon:json.is_null(own) ? hw.jget(app,"icon") : json.null_value(),launch:pinned ? json.value(key) : json.null_value(),mode:count>1 ? "picker" : count==1 ? "toggle" : pinned ? "launch" : "none",pinned:pinned,running:count>0,active:active,minimized:minimized,tooltip:tooltip}
+}
+fn presentation(windows:json.Value,catalog:json.Value,showPinned:bool):json.Value {
+    let order=Vec<str>();let groups=json.object()
+    for i in 0..(json.len(windows) as i64) {let window=json.at(windows,i);let key=group(window);let items=hw.jget(groups,key);if json.is_null(items) {items=json.array();order.push(key)};groups=json.set(groups,key,json.push(items,window))}
+    let rows=json.array()
+    if showPinned {for key in Vec<str>("terminal","files") {let items=hw.jget(groups,key);rows=json.push(rows,row(key,json.is_null(items) ? json.array() : items,catalog,true))}}
+    for key in order {if showPinned && (strings.equal(key,"terminal") || strings.equal(key,"files")) {continue};rows=json.push(rows,row(key,json.get(groups,key),catalog,false))}
+    return rows
+}

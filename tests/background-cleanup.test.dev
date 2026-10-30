@@ -1,0 +1,28 @@
+use "std/test"
+use "std/fs"
+use "std/path"
+use "std/strings"
+use "std/json"
+use "./lib/react-devlang.dev" as t
+fn checkDirectory(directory:str) {
+    for name in fs.readdirSync(directory) {
+        let file=path.join(directory,name)
+        if fs.is_dir(file) {checkDirectory(file);continue}
+        test.expect(!strings.endsWith(name,".js") && !strings.endsWith(name,".ts") && !strings.endsWith(name,".tsx"),"Legacy source returned to system background: "+file)
+    }
+}
+test.case("background system directory contains no JS, TS or TSX",fn() {checkDirectory(t.root()+"/src/system/org.devos.background")})
+test.case("npm background entry points preserve compatibility without old system imports",fn() {
+    for name in Vec<str>("background.ts","background-view.tsx") {
+        let text=fs.readFileSync(t.root()+"/packages/compat/"+name,"utf8")
+        t.contains(text,"./background-legacy/");t.lacks(text,"src/system/org.devos.background/")
+    }
+})
+test.case("production background selects the native manager",fn() {
+    let manifest=json.parse(fs.readFileSync(t.root()+"/src/system/org.devos.background/extension.json","utf8"))
+    t.equal(json.string(json.get(manifest,"native")),"system-background")
+    test.expect(!json.has(manifest,"entry"),"Legacy production entry returned")
+    t.lacks(fs.readFileSync(t.root()+"/tools/build/build.ts","utf8"),"packages/compat/background-legacy/extension")
+    t.lacks(fs.readFileSync(t.root()+"/src/app-settings.tsx","utf8"),"background-legacy/settings-view")
+})
+return t.finish()

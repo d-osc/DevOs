@@ -43,6 +43,10 @@
       "types": "./dist/settings-view.d.ts",
       "import": "./dist/settings-view.js"
     },
+    "./display-care": {
+      "types": "./dist/display-care.d.ts",
+      "import": "./dist/display-care.js"
+    },
     "./settings": {
       "types": "./dist/settings.d.ts",
       "import": "./dist/settings.js"

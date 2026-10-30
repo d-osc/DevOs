@@ -1,0 +1,27 @@
+use "std/test"
+use "std/strings"
+use "std/fs"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn tracker():str {
+    let output="#!/bin/sh\nset -eu\nbase=$DEVOS_BACKGROUND_SHELL_TEST\necho $$ > \"$base/pid\"\n"
+    output=output+"printf '%s\\n' '{\"type\":\"snap-capability\",\"supported\":true}'\n"
+    output=output+"first() { printf '%s\\n' '{\"type\":\"desktop-begin\"}' '{\"type\":\"desktop\",\"id\":0,\"name\":\"One\",\"active\":true}' '{\"type\":\"desktop\",\"id\":1,\"name\":\"Two\",\"active\":false}' '{\"type\":\"desktop-done\"}'; }\n"
+    output=output+"first\nprintf '%s\\n' '{\"type\":\"ready\"}'\nif [ -f \"$base/started\" ]; then touch \"$base/reconnected\"; exec sleep 30; fi\ntouch \"$base/started\"\n"
+    output=output+"wait_for() { while [ ! -f \"$base/$1\" ]; do sleep 0.02; done; }\nwait_for cover\ni=1\nwhile [ \"$i\" -le 200 ]; do flag=false; if [ \"$i\" -eq 200 ]; then flag=true; fi\nprintf '{\"type\":\"window\",\"id\":%s,\"maximized\":%s,\"minimized\":false,\"desktop\":0,\"geometry\":{\"x\":0,\"y\":0,\"width\":800,\"height\":600}}\\n' \"$i\" \"$flag\"\ni=$((i+1))\ndone\n"
+    output=output+"wait_for uncover\nprintf '%s\\n' '{\"type\":\"window\",\"id\":200,\"minimized\":true}'\nwait_for second\nprintf '%s\\n' '{\"type\":\"desktop-begin\"}' '{\"type\":\"desktop\",\"id\":0,\"name\":\"One\",\"active\":false}' '{\"type\":\"desktop\",\"id\":1,\"name\":\"Two\",\"active\":true}' '{\"type\":\"desktop-done\"}'\nwait_for first\nfirst\nwait_for disconnect\n"
+    return output
+}
+test.case("native shell state pauses rendering, scopes widgets and reconnects its tracker",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/background/background-shell"
+    tool.checked(Vec<str>("sh",root+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/background-shell.devx",binary,root+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    tool.scope("background-shell-",fn(base:str) {
+        let helper=base+"/tracker";tool.write(helper,tracker());tool.chmod(helper,"755")
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_BACKGROUND_TRACKER",helper);env.set("DEVOS_BACKGROUND_SHELL_TEST",base);env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","0");env.set("DEVOS_BACKGROUND_POWER_ROOT",base+"/power");env.set("GDK_BACKEND","x11");env.set("NO_AT_BRIDGE","1");env.set("GTK_USE_PORTAL","0");env.set("G_DEBUG","fatal-criticals")
+        let done=tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",binary),env,"",30000);t.success(done);t.contains(t.out(done),"PASS native tracker transport")
+        let pid=strings.trim(tool.read(base+"/pid"));tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid)},5000,"Native tracker survived UI shutdown")
+    })
+})
+return t.finish()

@@ -1,0 +1,37 @@
+#!/usr/bin/env d
+# Disk Manager data worker: one JSON request per line, one presentation frame per response.
+use "std/args"
+use "std/io"
+use "std/json"
+use "std/process"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "std/child_process"
+use "./model.dev" as model
+use "../../../lib/task-view.dev" as view
+
+fn inventory(root:str):json.Value {
+    let helper = process.getenv("DEV_OS_DISKS_HELPER"); if strings.equal(helper,"") { helper = root+"/bin/dev-os-disks" }
+    let runner = process.getenv("DEVLANG_RUN"); if strings.equal(runner,"") { runner = "d" }
+    let output = child_process.execFileSync(runner,Vec<str>(helper),child_process.options())
+    let data = json.parse(encoding.decode(output.stdout,"utf8"))
+    return data
+}
+fn main():i32 {
+    let root = args.len() > 0 ? args.get(0) : ""
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        let outcome = result.attempt(fn():json.Value { return json.parse(line) })
+        if result.isErr(outcome) { print("E\tInvalid service request"); continue }
+        let request = result.unwrap(outcome)
+        if !strings.equal(json.kind(request),"object") || !json.has(request,"action") || !strings.equal(json.kind(json.get(request,"action")),"string") || !strings.equal(json.string(json.get(request,"action")),"get") { print("E\tUnknown service action"); continue }
+        let state = result.attempt(fn():json.Value { return inventory(root) })
+        if result.isErr(state) { print("E\tDisk inventory failed. Retry or reopen Disk Manager."); continue }
+        let data = result.unwrap(state)
+        if !json.has(data,"ok") || !json.bool(json.get(data,"ok")) { print("E	"+(json.has(data,"error") ? view.clean(json.string(json.get(data,"error"))) : "Disk inventory failed.")); continue }
+        print(model.frame(data,""))
+    }
+    return 0
+}
+return main()

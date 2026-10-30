@@ -1,0 +1,39 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "std/child_process"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/wire.dev" as wire
+fn remaining(seconds:i64):str {let bounded=seconds<0 ? 0 : seconds;let minutes=(bounded+59)/60;if minutes<1 {minutes=1};let hours=minutes/60;return hours>0 ? "${hours} h ${minutes%60} min" : "${minutes} min"}
+fn presentation(state:json.Value):json.Value {
+    let active=hw.jbool(state,"full",false);let visible=hw.jbool(state,"supported",false) && hw.jbool(state,"quick",false) && (hw.jbool(state,"care",false) || active)
+    return {visible:visible,active:active,detail:active ? "Charging to 100% · Battery Care returns in "+remaining(hw.jnum(state,"remaining",0.0) as i64) : "Battery Care limits charging to ${hw.jnum(state,"limit",80.0) as i64}%"}
+}
+fn frame(state:json.Value):str {let value=presentation(state);return "F\t"+(hw.jbool(value,"visible",false) ? "1" : "0")+"\t"+(hw.jbool(value,"active",false) ? "1" : "0")+"\t"+wire.encoded(hw.jstr(value,"detail",""))}
+fn validate(request:json.Value) {
+    if !strings.equal(json.kind(request),"object") {result.raise("Invalid panel battery request")}
+    if json.has(request,"action") && !strings.equal(json.kind(hw.jget(request,"action")),"string") {result.raise("Unsupported panel battery action")}
+    let action=hw.jstr(request,"action","get");if !strings.equal(action,"get") && !strings.equal(action,"full") {result.raise("Unsupported panel battery action")}
+    if strings.equal(action,"full") && !strings.equal(json.kind(hw.jget(request,"enabled")),"bool") {result.raise("A boolean full-charge value is required")}
+}
+fn helper():str {let override=hw.env("DEVOS_PANEL_BATTERY_HELPER");if !strings.equal(override,"") {return override};let root=hw.env("DEV_OS_ROOT");if !strings.equal(root,"") && hw.isFile(root+"/bin/dev-os-battery-care") {return root+"/bin/dev-os-battery-care"};let installed=hw.which("dev-os-battery-care");if strings.equal(installed,"") {result.raise("Battery care is not installed.")};return installed}
+fn request(args:Vec<str>):json.Value {
+    let argv=Vec<str>(helper());for arg in args {argv.push(arg)}
+    let done=child_process.execFileSync("sh",argv,child_process.Options("",120000,1048576,Vec<u8>()))
+    if done.timedOut {result.raise("Battery settings timed out.")}
+    let parsed=result.attempt(fn():json.Value {return json.parse(encoding.decode(done.stdout,"utf8"))});if result.isErr(parsed) {result.raise("Battery settings returned invalid data.")};let state=result.unwrap(parsed)
+    if !done.success || !hw.jbool(state,"ok",false) {let error=hw.jstr(state,"error",strings.trim(encoding.decode(done.stderr,"utf8")));result.raise(strings.equal(error,"") ? "Battery settings failed." : error)}
+    for key in Vec<str>("supported","quick","care","full") {if !strings.equal(json.kind(hw.jget(state,key)),"bool") {result.raise("Battery settings returned invalid data.")}}
+    for key in Vec<str>("remaining","limit") {if !strings.equal(json.kind(hw.jget(state,key)),"number") {result.raise("Battery settings returned invalid data.")}}
+    if hw.jnum(state,"remaining",-1.0)<0.0 || hw.jnum(state,"remaining",0.0)>315360000.0 || hw.jnum(state,"limit",0.0)<1.0 || hw.jnum(state,"limit",0.0)>100.0 {result.raise("Battery settings returned invalid data.")}
+    return state
+}
+fn handle(input:json.Value):json.Value {
+    validate(input);let action=hw.jstr(input,"action","get")
+    if !hw.jbool(input,"present",false) {if strings.equal(action,"full") {result.raise("This battery control is no longer available.")};return {supported:false,quick:false,care:false,full:false,remaining:0,limit:80}}
+    let state=request(Vec<str>("get"));if strings.equal(action,"get") {return state}
+    if !hw.jbool(presentation(state),"visible",false) {result.raise("This battery control is no longer available.")}
+    let enabled=hw.jbool(input,"enabled",false);if hw.jbool(state,"full",false)==enabled {return state}
+    return request(Vec<str>("full",enabled ? "on" : "off"))
+}

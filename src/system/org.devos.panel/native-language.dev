@@ -1,0 +1,17 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as tasks
+fn View(context:*ui.Context,frame:ui.Text,choose:fn(i64):void,settings:fn():void,ready:bool):ui.Node {
+    let open=ui.useState(context,0);let short=ui.text("—");let tooltip=ui.text("Keyboard language");let rows=Vec<ui.Node>()
+    for record in channel.split(frame,30) {let fields=channel.split(record,9)
+        if fields.len()==3 && ui.equalText(fields[0],ui.text("K")) {short=tasks.decoded(fields[1]);tooltip=tasks.decoded(fields[2])}
+        if fields.len()!=5 || !ui.equalText(fields[0],ui.text("J")) {continue};let index=channel.integer(fields[1]);let button=ui.keyed(index);button.id=ui.concatText(Vec<ui.Text>(ui.text("panel-language-"),fields[1]));button.className=tasks.flag(fields,4) ? ui.text("language-selected") : ui.emptyText()
+        let left=ui.props();left.widthChars=3;let name=ui.props();name.expand=true;name.xalign=0.0;let children=Vec<ui.Node>(ui.withProps(ui.TextLabel(tasks.decoded(fields[3])),left),ui.withProps(ui.TextLabel(tasks.decoded(fields[2])),name));if tasks.flag(fields,4) {let image=ui.props();image.iconSize=14;children.push(ui.Icon(image,"emblem-ok-symbolic"))};let box=ui.props();box.vertical=false;box.spacing=10
+        rows.push(ui.WidgetButton(button,ui.Box(box,children),fn() {choose(index);open.set(0)}))
+    }
+    let anchor=ui.named("panel-language");anchor.className=ui.text("tray-button panel-language");let label=ui.named("panel-language-label");label.widthChars=3
+    let nodes=Vec<ui.Node>(ui.WidgetButton(anchor,ui.withProps(ui.TextLabel(short),label),fn() {open.set(open.get()==0 ? 1 : 0)}))
+    if open.value!=0 {let heading=ui.props();heading.className=ui.text("popup-title");heading.xalign=0.0;let contents=Vec<ui.Node>(ui.withProps(ui.Label("Keyboard language"),heading));for row in rows {contents.push(row)};if rows.len()==0 {let info=ui.props();info.wrap=true;info.className=ui.text("popup-muted");contents.push(ui.withProps(ui.Label("Restart the DevOs session to load the language indicator."),info))};let button=ui.named("panel-language-settings");button.sensitive=ready;contents.push(ui.Button(button,"Language settings",fn() {open.set(0);settings()}));let body=ui.props();body.width=260;body.margin=16;body.spacing=10;let popup=ui.named("panel-language-popup");popup.className=ui.text("panel-popup");nodes.push(ui.Popover(popup,ui.text("panel-language"),ui.Box(body,contents),fn() {open.set(0)}))}
+    ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {let id=ui.nativeText(ui.text("panel-language"));let text=ui.nativeText(tooltip);tasks.panel_tooltip((*context).native,id,text);tasks.rd_buffer_free(id as *void);tasks.rd_buffer_free(text as *void)};return ui.noop}},Vec<i64>(tasks.key(tooltip)))
+    let root=ui.props();root.vertical=false;return ui.Box(root,nodes)
+}

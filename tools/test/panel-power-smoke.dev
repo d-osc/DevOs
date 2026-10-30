@@ -1,0 +1,33 @@
+use "std/strings"
+use "std/json"
+use "std/fs"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn children(pid:i64):Vec<str> {let raw=strings.trim(tool.read("/proc/${pid}/task/${pid}/children"));return strings.equal(raw,"") ? Vec<str>() : strings.split(raw," ")}
+fn main():i32 {
+    tool.scope("devos-panel-power-",fn(base:str) {
+        let root=tool.root();let sys=base+"/sys";let battery=sys+"/class/power_supply/BAT0"
+        tool.write(battery+"/type","Battery");tool.write(battery+"/capacity","72");tool.write(battery+"/status","Charging");tool.write(sys+"/class/power_supply/AC/type","Mains");tool.write(sys+"/class/power_supply/AC/online","1")
+        let extras=Map<str,str>();extras.set("DEVOS_PANEL_SYS",sys);extras.set("DEVOS_PANEL_LAYOUT_TRACE","1");extras.set("DEVOS_NATIVE_SYSTEMS","1");extras.set("WLR_HEADLESS_OUTPUTS","2")
+        smoke.withSession("panel-power",extras,fn(session:smoke.Session) {
+            let env=smoke.environment(session)
+            tool.waitFor(fn():bool {return tool.count(tool.read(session.log),"PANEL BATTERY 72% · Charging")>=2},20000,"Native panels did not render charging data on both monitors")
+            let managers=smoke.processIds(session.runtime,root+"/dist/native/system-panel");tool.require(managers.len()==1,"Expected one native panel manager");let manager=managers[0];let outputs=children(manager);tool.require(outputs.len()==2,"Expected one panel UI per monitor")
+            let uiPid=json.int(json.parse(outputs[0]));let devices=""
+            for pid in children(uiPid) {if strings.contains(tool.read("/proc/"+pid+"/cmdline"),"panel-devices.dev") {devices=pid};let maps=tool.read("/proc/"+pid+"/maps");tool.require(!strings.contains(maps,"libgtk-3") && !strings.contains(maps,"mozjs"),"Panel data process loaded a GUI runtime")}
+            tool.require(!strings.equal(devices,""),"Native device worker missing")
+            tool.checked(Vec<str>("kill","-STOP",devices),env,"",5000);smoke.remote(session,env,"launcher");smoke.remote(session,env,"overlays-hide");tool.checked(Vec<str>("kill","-CONT",devices),env,"",5000)
+            smoke.screenshot(env,root+"/build/screenshots/panel-power-charging.png")
+            tool.write(battery+"/capacity","9");tool.write(battery+"/status","Discharging");tool.write(sys+"/class/power_supply/AC/online","0")
+            tool.waitFor(fn():bool {return tool.count(tool.read(session.log),"PANEL BATTERY 9%")>=2},20000,"Native panels did not refresh discharging data")
+            smoke.screenshot(env,root+"/build/screenshots/panel-power-low.png")
+            tool.checked(Vec<str>("kill","-KILL",devices),env,"",5000)
+            tool.waitFor(fn():bool {let current=children(manager);if current.len()!=2 {return false};return current[0]!=outputs[0] && current[1]!=outputs[0]},15000,"Panel did not recover after device service failure")
+            let recovered=children(manager);tool.require(recovered[0]==outputs[1] || recovered[1]==outputs[1],"Unrelated monitor restarted")
+            tool.write(root+"/build/panel-power-native-session.log",tool.read(session.log))
+            print("PASS native panel power data on both monitors, isolated workers, responsive shell during freeze and independent recovery")
+        })
+    });return 0
+}
+return tool.main(main)

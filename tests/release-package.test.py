@@ -38,8 +38,12 @@ class Tree(unittest.TestCase):
         write(self.root, 'package.json', json.dumps({'version': '1.2.3'}))
         write(self.root, 'dist/build-info.json', json.dumps({'version': '1.2.3'}))
         write(self.root, 'docs/releases/v1.2.3.md', '# DevOs v1.2.3\n')
+        write(self.root, 'dist/native/taskmanager', '\x7fELFfixture')
+        write(self.root, 'dist/native/system-displaycare', '\x7fELFfixture')
+        write(self.root, 'dist/native/libsupervisor.so', '\x7fELFfixture')
+        write(self.root, 'dist/native/boot-splash', '\x7fELFfixture')
         for name in ('bin/dev-os-shell', 'lib/helper.py', 'dist/shell.js', 'config/a.json', 'data/themes/dark.css',
-                     'extensions/org.devos.x/extension.json', 'profiles/asus/ux3407na/profile.conf'):
+                     'src/system/org.devos.panel/extension.json', 'src/apps/org.devos.system/extension.json', 'src/extensions/org.devos.x/extension.json', 'src/services/taskmanager.dev', 'profiles/asus/ux3407na/profile.conf'):
             write(self.root, name, '#!/bin/sh\n' if name.startswith('bin/') else 'content')
         for name in package.RUNTIME_EXTRAS:
             write(self.root, name)
@@ -47,7 +51,7 @@ class Tree(unittest.TestCase):
         for name in ('assets/font/fa-pro.woff2', 'data/icons/fa/classic-solid.json', 'data/icons/fa/NOTICE.md'):
             write(self.root, name, 'font')
         for name in ('lib/__pycache__/helper.pyc', 'lib/helper.pyc', 'bin/run.ps1', 'dist/config-test.js',
-                     'dist/types/index.d.ts', 'config/.env', 'config/server.pem', 'extensions/id_rsa',
+                     'dist/types/index.d.ts', 'dist/native/.dev-cache/generated.c', 'dist/native/.devx/generated.dev', 'dist/native/backend.o', 'config/.env', 'config/server.pem', 'extensions/id_rsa',
                      'node_modules/react/index.js', 'build/leftover.o', 'tests/a.test.py'):
             write(self.root, name, 'secret')
         subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
@@ -94,7 +98,7 @@ class FileListTests(Tree):
     def test_runtime_includes_payload_extras_and_profiles(self):
         files = package.runtime_files(self.root)
         for name in ('bin/dev-os-shell', 'lib/helper.py', 'dist/shell.js', 'config/a.json', 'data/themes/dark.css',
-                     'extensions/org.devos.x/extension.json', 'profiles/asus/ux3407na/profile.conf', *package.RUNTIME_EXTRAS):
+                     'src/system/org.devos.panel/extension.json', 'src/apps/org.devos.system/extension.json', 'src/extensions/org.devos.x/extension.json', 'profiles/asus/ux3407na/profile.conf', *package.RUNTIME_EXTRAS):
             self.assertIn(name, files)
 
     def test_runtime_includes_font_awesome_but_not_secrets_and_build_noise(self):
@@ -126,7 +130,7 @@ class FileListTests(Tree):
         body = text[text.index('fn buildRuntimeArchive'):]
         listed = re.search(r'let extras = Vec<str>\((.*?)\)\n', body, re.S).group(1)
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', listed)), package.RUNTIME_EXTRAS)
-        find = re.search(r'find ((?:\w+ )+)-type f', body).group(1).split()
+        find = re.search(r'find ((?:[\w/-]+ )+)-type f', body).group(1).split()
         self.assertEqual(tuple(find), package.RUNTIME_DIRS)
 
     def test_repository_sources_include_the_font_awesome_files(self):
@@ -160,6 +164,9 @@ class BuildTests(Tree):
                 self.assertIn('devos-runtime/' + name, names)
             self.assertFalse([name for name in names if '.env' in name or name.endswith('.pem') or '/node_modules/' in name])
             self.assertEqual(archive.getmember('devos-runtime/bin/dev-os-shell').mode, 0o755)
+            self.assertEqual(archive.getmember('devos-runtime/dist/native/taskmanager').mode, 0o755)
+            self.assertEqual(archive.getmember('devos-runtime/dist/native/system-displaycare').mode, 0o755)
+            self.assertIn('devos-runtime/src/services/taskmanager.dev', names)
             self.assertEqual(archive.getmember('devos-runtime/lib/helper.py').mode, 0o644)
             self.assertEqual({member.uid for member in archive.getmembers()}, {0})
             manifest = json.loads(archive.extractfile('devos-runtime/release.json').read())

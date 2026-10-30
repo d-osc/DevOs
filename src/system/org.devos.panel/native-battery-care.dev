@@ -1,0 +1,25 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-taskbar.dev" as tasks
+fn render(frame:ui.Text,busy:bool,target:bool,error:ui.Text,changed:fn(bool):void):ui.Node {
+    let records=channel.split(frame,30);let fields=channel.split(records[0],9);let nodes=Vec<ui.Node>()
+    if fields.len()==4 && tasks.flag(fields,1) {
+        let image=ui.props();image.iconSize=16;let title=ui.props();title.xalign=0.0;let detail=ui.named("panel-full-charge-detail");detail.className=ui.text("popup-muted");detail.xalign=0.0;detail.wrap=true;let labels=ui.props();labels.spacing=2;labels.expand=true
+        let toggle=ui.named("panel-full-charge");toggle.sensitive=!busy
+        let contents=ui.props();contents.vertical=false;contents.spacing=10
+        nodes.push(ui.Box(contents,Vec<ui.Node>(ui.Icon(image,"battery-good-symbolic"),ui.Box(labels,Vec<ui.Node>(ui.withProps(ui.Label("Instant Full-Charge"),title),ui.withProps(ui.TextLabel(tasks.decoded(fields[3])),detail))),ui.Switch(toggle,busy ? target : tasks.flag(fields,2),changed))))
+    }
+    if error.bytes.len()>0 {let props=ui.named("panel-battery-care-error");props.className=ui.text("error");props.wrap=true;props.xalign=0.0;nodes.push(ui.withProps(ui.TextLabel(error),props))}
+    let props=ui.props();props.spacing=6;props.visible=nodes.len()>0;return ui.Box(props,nodes)
+}
+fn View(context:*ui.Context,present:bool,fatal:fn():void):ui.Node {
+    let frame=ui.useText(context,ui.text("F\t0\t0\t"));let error=ui.useText(context,ui.emptyText());let busy=ui.useState(context,0);let target=ui.useState(context,0);let pipe=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {if !(*context).alive {return ui.noop};let root=tasks.rc_env("DEV_OS_ROOT");let runner=tasks.rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connect(context,runner,"${root}/src/services/panel-battery-care.dev",root,fn(value:ui.Text) {let records=channel.split(value,30);let fields=channel.split(records[0],9)
+            if fields.len()==2 && ui.equalText(fields[0],ui.text("E")) {busy.set(0);error.set(tasks.decoded(fields[1]));if channel.failed(pipe.get()) {fatal()};return}
+            if fields.len()!=4 || !ui.equalText(fields[0],ui.text("F")) {fatal();return};frame.set(value);for record in records {if ui.equalText(record,ui.text("A")) {busy.set(0)}}
+        },fn(value:i64) {pipe.set(value);channel.interval(value,60000);channel.send(value,ui.text(present ? "{\"present\":true}" : "{\"present\":false}"))})
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {channel.send(pipe.get(),ui.text(present ? "{\"present\":true}" : "{\"present\":false}"));return ui.noop},Vec<i64>(present ? 1 : 0))
+    return render(frame.value,busy.value!=0,target.value!=0,error.value,fn(value:bool) {if busy.get()!=0 || !present {return};let records=channel.split(frame.get(),30);let fields=channel.split(records[0],9);if fields.len()!=4 || !tasks.flag(fields,1) || tasks.flag(fields,2)==value {return};target.set(value ? 1 : 0);busy.set(1);error.set(ui.emptyText());channel.command(pipe.get(),ui.text(value ? "{\"present\":true,\"action\":\"full\",\"enabled\":true}" : "{\"present\":true,\"action\":\"full\",\"enabled\":false}"))})
+}

@@ -1,6 +1,6 @@
 import {GLib} from '@dev-os/core';
 import Cairo from 'cairo';
-import {drawDesign, isDarkBase, designStyles} from '../extensions/org.devos.background/design.js';
+import {drawDesign, isDarkBase, designStyles} from '../packages/compat/background-legacy/design.js';
 import {wallpaperColors} from '@dev-os/core';
 
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }

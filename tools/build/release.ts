@@ -15,7 +15,7 @@ const temporary = mkdtempSync(join(tmpdir(), 'dev-os-release-'));
 try {
     const destination = join(temporary, 'dev-os');
     mkdirSync(destination);
-    for (const directory of ['bin', 'lib', 'dist', 'data', 'config', 'extensions']) cpSync(join(root, directory), join(destination, directory), {
+    for (const directory of ['bin', 'lib', 'dist', 'data', 'config', 'src/apps', 'src/system', 'src/extensions']) cpSync(join(root, directory), join(destination, directory), {
         recursive: true, dereference: false,
         filter: source => !source.endsWith('.pyc') && !source.includes('__pycache__') && !source.endsWith('-test.js') && !source.includes('/dist/types'),
     });

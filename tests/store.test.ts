@@ -34,7 +34,7 @@ function fixture(base: string, version: string) {
 }
 async function main() {
     const base = GLib.dir_make_tmp('dev-os-store-test-XXXXXX');
-    const paths = {bundled: `${ROOT}/extensions`, user: `${base}/extensions`, preferences: `${base}/preferences`};
+    const paths = {system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${base}/extensions`, preferences: `${base}/preferences`};
     const manager = new ExtensionManager(paths);
     let selected = fixture(base, '1.0.0'); let downloads = 0;
     const transport: StoreTransport = {

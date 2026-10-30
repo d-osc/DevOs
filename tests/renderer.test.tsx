@@ -2,7 +2,7 @@ import {
     Gtk, GLib, React, Scale, createRoot,
     Box, Label, Button, Entry, useState,
     useLayoutEffect, useEffect, createContext, useContext, Image,
-    ScrolledWindow
+    ScrolledWindow, Overlay, baseImage, setBaseIconProvider, setImageIcon
 } from '@dev-os/core';
 
 Gtk.init(null);
@@ -38,6 +38,48 @@ test('keyed reorder preserves widget identity', () => {
     assert(refs.get('b')!.current === original, 'Stable keyed widget');
     assert(cleanup === 1, 'Removed component cleans up effect');
 });
+test('incremental box insertion preserves order and packing', () => {
+    const refs = new Map(['a', 'b', 'c'].map(key => [key, React.createRef<Gtk.Label>()]));
+    const tree = (keys: string[]) => <Box>{keys.map(key => <Label key={key} ref={refs.get(key)!} expand fill={false} padding={7}>{key}</Label>)}</Box>;
+    root.render(tree(['a', 'c'])); root.render(tree(['a', 'b', 'c']));
+    const box = host.get_children()[0] as Gtk.Box;
+    assert(box.get_children().map(child => (child as Gtk.Label).get_text()).join('') === 'abc', 'Insertion respects before sibling');
+    const [expand, fill, padding, pack] = box.query_child_packing(refs.get('b')!.current!);
+    assert(expand && !fill && padding === 7 && pack === Gtk.PackType.START, 'New child keeps packing properties');
+});
+
+test('overlay updates and keyed ordering preserve mapped wallpaper and cards', () => {
+    const window = new Gtk.OffscreenWindow(), box = new Gtk.Box(); window.add(box);
+    const root = createRoot(box), main = React.createRef<Gtk.Label>(), card = React.createRef<Gtk.Label>();
+    const tree = (keys: string[], expand = false) => <Overlay><Label ref={main}>Wallpaper</Label>{keys.map(key => <Label key={key} ref={key === 'a' ? card : undefined} overlay expand={expand}>{key}</Label>)}</Overlay>;
+    root.render(tree(['a'])); window.show_all();
+    while (Gtk.events_pending()) Gtk.main_iteration();
+    let unmapped = 0;
+    main.current!.connect('unmap', () => unmapped++); card.current!.connect('unmap', () => unmapped++);
+    const original = card.current;
+    root.render(tree(['a', 'b'])); root.render(tree(['b', 'a'], true)); root.render(tree(['a'], true));
+    while (Gtk.events_pending()) Gtk.main_iteration();
+    assert(card.current === original && card.current!.get_mapped() && main.current!.get_mapped(), 'Keep native widgets and mapping');
+    assert(unmapped === 0, `Overlay mutations unmapped wallpaper/cards ${unmapped} times`);
+    root.unmount(); window.destroy();
+});
+
+test('symbolic icon cache shares misses and invalidates on provider change', () => {
+    let calls = 0;
+    const provider = () => { calls++; return null; };
+    setBaseIconProvider(provider);
+    const first = baseImage('devos-cache-test-symbolic', 24);
+    const second = baseImage('devos-cache-test-symbolic', 24);
+    try {
+        assert(calls === 1, 'Identical icons share one provider lookup');
+        setBaseIconProvider(provider);
+        assert(calls === 2, 'Provider refresh invalidates cached results and shares repaint');
+    } finally {
+        setImageIcon(first, 'folder'); setImageIcon(second, 'folder');
+        first.destroy(); second.destroy(); setBaseIconProvider(undefined);
+    }
+});
+
 test('controlled entry, updated callbacks and property removal', () => {
     let calls = 0;
     const entry = React.createRef<Gtk.Entry>();

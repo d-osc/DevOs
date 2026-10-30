@@ -1,7 +1,7 @@
 import {Gtk, Gdk, GLib} from '@dev-os/core';
 import {windowGroup, builtinWindowApp, type DesktopWindow} from '@dev-os/services/windows';
-import {mountPanel} from '../extensions/org.devos.panel/view.js';
-import {panelOptions} from '../extensions/org.devos.panel/options.js';
+import {mountPanel} from '../packages/compat/panel-legacy/view.js';
+import {panelOptions} from '../packages/compat/panel-legacy/options.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}

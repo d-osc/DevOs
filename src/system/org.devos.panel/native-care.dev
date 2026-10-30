@@ -1,0 +1,11 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn panel_care(root:*void,translucent:i32,autoHide:i32,left:i32,right:i32,top:i32,bottom:i32,delay:i32)
+fn apply(context:*ui.Context,frame:ui.Text) {
+    let renders=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        renders.set(renders.get()+1)
+        if (*context).alive {for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()==8 && ui.equalText(fields[0],ui.text("O")) {panel_care((*context).native,channel.integer(fields[1]) as i32,channel.integer(fields[2]) as i32,channel.integer(fields[3]) as i32,channel.integer(fields[4]) as i32,channel.integer(fields[5]) as i32,channel.integer(fields[6]) as i32,channel.integer(fields[7]) as i32)}}}
+        return ui.noop
+    }},Vec<i64>(renders.get()))
+}

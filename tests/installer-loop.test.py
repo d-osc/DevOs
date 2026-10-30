@@ -37,8 +37,8 @@ def make_source(path):
     for item in ('usr/bin/dev-os-install', 'usr/share/dev-os/bin/dev-os-install', 'usr/share/dev-os/data/applications/dev-os-installer.desktop', 'usr/share/dev-os/dist/org.devos.installer.js'):
         (path / item).parent.mkdir(parents=True, exist_ok=True)
         (path / item).write_text('installer\n')
-    (path / 'usr/share/dev-os/extensions/org.devos.installer').mkdir(parents=True)
-    (path / 'usr/share/dev-os/extensions/org.devos.installer/extension.json').write_text('{}\n')
+    (path / 'usr/share/dev-os/src/apps/org.devos.installer').mkdir(parents=True)
+    (path / 'usr/share/dev-os/src/apps/org.devos.installer/extension.json').write_text('{}\n')
     (path / 'etc/special name').write_text('keep me\n')
     (path / 'usr/share/devos/profiles/generic/profile.conf').write_text('name=generic\n')
     (path / 'var/lib/dbus/machine-id').write_text('0123456789abcdef0123456789abcdef\n')
@@ -107,7 +107,7 @@ class LoopInstallTests(unittest.TestCase):
         self.assertFalse((mount / 'var/lib/dbus/machine-id').exists())
         self.assertEqual((mount / 'usr/bin/tool').read_text(), 'payload\n')
         self.assertEqual(os.readlink(mount / 'usr/bin/link'), 'tool')
-        for item in ('usr/bin/dev-os-install', 'usr/share/dev-os/bin/dev-os-install', 'usr/share/dev-os/data/applications/dev-os-installer.desktop', 'usr/share/dev-os/dist/org.devos.installer.js', 'usr/share/dev-os/extensions/org.devos.installer'):
+        for item in ('usr/bin/dev-os-install', 'usr/share/dev-os/bin/dev-os-install', 'usr/share/dev-os/data/applications/dev-os-installer.desktop', 'usr/share/dev-os/dist/org.devos.installer.js', 'usr/share/dev-os/src/apps/org.devos.installer'):
             self.assertFalse((mount / item).exists(), f'{item} belongs to the Live USB only')
         self.assertEqual((mount / 'etc/special name').read_text(), 'keep me\n')
         self.assertTrue((mount / 'etc/devos/installed').is_file())

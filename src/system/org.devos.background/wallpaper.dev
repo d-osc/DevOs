@@ -1,0 +1,22 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/math"
+use "./model.dev" as m
+fn layout(width:f64,height:f64,imageWidth:f64,imageHeight:f64,fit:str):json.Value {
+    for value in Vec<f64>(width,height,imageWidth,imageHeight) {if !math.isFinite(value) || value<=0.0 {result.raise("Picture and canvas dimensions must be positive.")}}
+    let x=width/imageWidth;let y=height/imageHeight
+    let scale=strings.equal(fit,"contain") ? (x<y ? x : y) : (x>y ? x : y)
+    let sx=strings.equal(fit,"stretch") ? x : scale;let sy=strings.equal(fit,"stretch") ? y : scale
+    return {sx:sx,sy:sy,x:(width-imageWidth*sx)/2.0,y:(height-imageHeight*sy)/2.0}
+}
+fn picturePath(value:json.Value):str {
+    if !strings.equal(json.kind(value),"string") {result.raise("Choose an absolute local picture path.")}
+    let file=json.string(value)
+    if !strings.startsWith(file,"/") || strings.contains(file,"\0") {result.raise("Choose an absolute local picture path.")}
+    return file
+}
+fn pictureSize(width:i64,height:i64):json.Value {
+    if width<=0 || height<=0 {result.raise("The selected file is not a supported picture.")}
+    return {width:width>4096 ? 4096 : width,height:height>4096 ? 4096 : height}
+}

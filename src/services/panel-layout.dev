@@ -1,0 +1,37 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../lib/config.dev" as config
+use "../system/org.devos.panel/layout.dev" as layout
+use "../system/org.devos.panel/clock.dev" as clock
+use "../system/org.devos.background/wire.dev" as wire
+use "../system/org.devos.panel/alerts.dev" as alerts
+use "../../lib/display-care.dev" as care
+use "../system/org.devos.displaycare/model.dev" as careModel
+use "../system/org.devos.displaycare/panel.dev" as panelCare
+struct Reply {frame:str,history:json.Value,showAlerts:bool,showCare:bool}
+let history=json.array();let showAlerts=false;let showCare=false;let started=clock.now()
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let reply=result.attempt(fn():Reply {
+        let request=json.parse(line);let values=hw.jget(request,"values");let height=hw.jget(request,"desktopHeight")
+        if json.is_null(values) {let saved=hw.loadJson(hw.envOr("DEVOS_PANEL_PREFERENCES",hw.configHome()+"/dev-os/extensions/org.devos.panel.json"));values=hw.jget(saved,"values")}
+        if json.is_null(height) {height=hw.jget(config.load(config.configPath()),"panel_height")}
+        let frame=layout.wire(values,height);let next=history;let show=showAlerts;if json.has(request,"alerts") {show=hw.jbool(request,"alerts",false)}
+        if hw.jbool(request,"clearAlerts",false) {next=json.array()}
+        if json.has(request,"notify") {next=alerts.append(next,hw.jget(request,"notify"),clock.format(clock.now(),"%H:%M").text)}
+        if hw.jbool(request,"clock",false) {
+            let core=config.load(config.configPath());let extension=hw.loadJson(hw.configHome()+"/dev-os/extensions/org.devos.clock.json")
+            let stamp=clock.now();let requested=hw.jget(request,"unix")
+            if strings.equal(json.kind(requested),"number") {let value=json.float(requested);if value>=-62135596800.0 && value<=253402300799.0 {stamp=value as i64} else {result.raise("Invalid clock timestamp")}}
+            frame=frame+wire.separator()+clock.frame(hw.jstr(core,"clock_format","%H:%M"),extension,stamp)
+        }
+        if show {frame=frame+wire.separator()+alerts.frame(next)}
+        let careVisible=showCare;if json.has(request,"care") {careVisible=hw.jbool(request,"care",false)}
+        if careVisible {frame=frame+wire.separator()+panelCare.frame(careModel.settings(hw.loadJson(care.statePath())),(clock.now()-started)/180)}
+        return Reply(frame,next,show,careVisible)
+    })
+    if result.isOk(reply) {let value=result.unwrap(reply);history=value.history;showAlerts=value.showAlerts;showCare=value.showCare;print(value.frame)} else {print("E\tCould not load panel layout")}
+}

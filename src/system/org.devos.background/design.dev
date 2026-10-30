@@ -1,0 +1,93 @@
+# Native Cairo versions of the nine original static designs. Style IDs stay stable.
+use "./scene.dev" as s
+use "./motion.dev" as motion
+fn dunes(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let y=0.68;let lift=0.16;let c=p.cool;let alpha=p.dark ? 0.16 : 0.24;let hi=p.dark ? 0.06 : 0.35
+    for i in 0..2 {
+        s.cairo_new_path(cr);s.cairo_move_to(cr,0.0,h*y);s.cairo_curve_to(cr,w*0.28,h*(y-lift),w*0.56,h*(y+lift*0.9),w,h*(y-lift*0.35));s.cairo_line_to(cr,w,h);s.cairo_line_to(cr,0.0,h);s.cairo_close_path(cr)
+        let gradient=s.cairo_pattern_create_linear(0.0,h*(y-lift),0.0,h);s.stop(gradient,0.0,c,alpha);s.stop(gradient,1.0,c,0.0);s.cairo_set_source(cr,gradient);s.cairo_fill_preserve(cr);s.cairo_pattern_destroy(gradient)
+        s.rgba(cr,p.dark ? p.accent : s.Color(1.0,1.0,1.0),hi);s.cairo_set_line_width(cr,1.2);s.cairo_new_path(cr);s.cairo_move_to(cr,0.0,h*y);s.cairo_curve_to(cr,w*0.28,h*(y-lift),w*0.56,h*(y+lift*0.9),w,h*(y-lift*0.35));s.cairo_stroke(cr)
+        y=0.82;lift=0.12;c=p.accent;alpha=p.dark ? 0.12 : 0.20;hi=p.dark ? 0.05 : 0.30
+    }
+}}
+fn aurora(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let colors=Vec<s.Color>(p.accent,p.cool,p.warm)
+    for i in 0..3 {let index=i as f64;let c=colors[i];for n in 0..5 {let layer=n as f64;let offset=(index*0.17+layer*0.035)*h;let lift=h*(0.22+index*0.05)
+        s.cairo_new_path(cr);s.cairo_move_to(cr,-w*0.05,h*(0.92-index*0.1)-offset*0.2);s.cairo_curve_to(cr,w*0.30,h*(0.35+index*0.12)+offset,w*0.55,h*(1.05-index*0.1)-lift,w*1.05,h*(0.12+index*0.14)+offset*0.3)
+        s.rgba(cr,c,(p.dark ? 0.05 : 0.08)*(1.0-layer*0.15));s.cairo_set_line_width(cr,h*(0.30-layer*0.045));s.cairo_set_line_cap(cr,1);s.cairo_stroke(cr)
+    }}
+}}
+fn contours(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let cx=w*0.74;let cy=h*0.42;let radius=s.max(w,h)*0.75;s.cairo_set_line_width(cr,1.1)
+    for i in 1..27 {let ring=i as f64;let r=radius*ring/26.0;s.cairo_new_path(cr)
+        for n in 0..121 {let angle=(n as f64)/120.0*s.tau();let wobble=1.0+0.07*s.sin(angle*3.0+ring*0.22)+0.04*s.sin(angle*5.0-ring*0.31)+0.03*s.sin(angle*2.0+ring*0.1);let x=cx+s.cos(angle)*r*wobble*1.25;let y=cy+s.sin(angle)*r*wobble*0.85;if n!=0 {s.cairo_line_to(cr,x,y)} else {s.cairo_move_to(cr,x,y)}}
+        s.cairo_close_path(cr);s.rgba(cr,i%5!=0 ? p.cool : p.accent,(p.dark ? 0.09 : 0.16)*(i%5!=0 ? 0.6 : 1.2)*(1.0-ring/(26.0*1.4)));s.cairo_stroke(cr)
+    }
+}}
+fn waves(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let colors=Vec<s.Color>(p.accent,p.cool,p.warm);s.cairo_set_line_width(cr,1.2)
+    for i in 0..34 {let t=(i as f64)/33.0;let base=h*(0.38+t*0.5);let amplitude=h*(0.03+t*0.07);s.cairo_new_path(cr)
+        for n in 0..161 {let x=(n as f64)/160.0*w;let phase=x/w*s.tau();let y=base+s.sin(phase*1.1+t*2.6)*amplitude+s.sin(phase*2.3-t*4.0)*amplitude*0.35;if n!=0 {s.cairo_line_to(cr,x,y)} else {s.cairo_move_to(cr,x,y)}}
+        s.rgba(cr,colors[i%3],(p.dark ? 0.08 : 0.17)*(0.35+t));s.cairo_stroke(cr)
+    }
+}}
+fn bokeh(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let colors=Vec<s.Color>(p.accent,p.cool,p.warm);let seed=77 as u32;let unit=s.min(w,h)
+    for i in 0..22 {let x=s.random(&seed)*w;let y=s.random(&seed)*h;let r=unit*(0.04+s.random(&seed)*0.12);let c=colors[i%3];let a=(p.dark ? 0.05 : 0.10)+s.random(&seed)*(p.dark ? 0.05 : 0.08)
+        let g=s.cairo_pattern_create_radial(x,y,r*0.6,x,y,r);s.stop(g,0.0,c,a*0.7);s.stop(g,0.85,c,a);s.stop(g,1.0,c,0.0);s.cairo_arc(cr,x,y,r,0.0,s.tau());s.fillGradient(cr,g,false)
+    }
+}}
+fn orbits(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let cx=w*0.70;let cy=h*0.50;let unit=s.min(w*0.5,h*0.8);let core=s.cairo_pattern_create_radial(cx,cy,0.0,cx,cy,unit*0.35);s.stop(core,0.0,p.accent,p.dark ? 0.22 : 0.30);s.stop(core,1.0,p.accent,0.0);s.fillGradient(cr,core,true);s.cairo_set_line_width(cr,1.1)
+    for i in 0..9 {let ring=i as f64;let tilt= -0.5+ring*0.11;let k=0.38+ring*0.045;let r=unit*(0.28+ring*0.13)
+        s.cairo_save(cr);s.cairo_translate(cr,cx,cy);s.cairo_rotate(cr,tilt);s.cairo_scale(cr,1.0,k);s.cairo_new_path(cr);s.cairo_arc(cr,0.0,0.0,r,0.0,s.tau());s.cairo_restore(cr);s.rgba(cr,i%3!=0 ? p.cool : p.accent,(p.dark ? 0.09 : 0.17)*(1.0-ring*0.07));s.cairo_stroke(cr)
+        let angle=ring*1.9;let dx=s.cos(angle)*r;let dy=s.sin(angle)*r*k;let px=cx+dx*s.cos(tilt)-dy*s.sin(tilt);let py=cy+dx*s.sin(tilt)+dy*s.cos(tilt)
+        s.rgba(cr,p.accent,p.dark ? 0.30 : 0.38);s.cairo_arc(cr,px,py,3.0+((i%3) as f64),0.0,s.tau());s.cairo_fill(cr)
+    }
+}}
+fn horizon(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let y0=h*0.62;let sun=s.cairo_pattern_create_radial(w*0.5,y0,0.0,w*0.5,y0,w*0.5);s.stop(sun,0.0,p.accent,p.dark ? 0.28 : 0.34);s.stop(sun,0.5,p.cool,p.dark ? 0.08 : 0.14);s.stop(sun,1.0,p.cool,0.0)
+    s.cairo_save(cr);s.cairo_rectangle(cr,0.0,0.0,w,y0);s.cairo_clip(cr);s.fillGradient(cr,sun,true);s.cairo_restore(cr);s.cairo_set_line_width(cr,1.0)
+    let floor=s.cairo_pattern_create_linear(0.0,y0,0.0,h);s.stop(floor,0.0,p.accent,0.0);s.stop(floor,1.0,p.accent,p.dark ? 0.16 : 0.26);s.cairo_set_source(cr,floor)
+    for i in -16..17 {let line=i as f64;s.cairo_move_to(cr,w*0.5+line*w*0.012,y0);s.cairo_line_to(cr,w*0.5+line*w*0.12,h)}
+    for i in 1..13 {let row=i as f64;let y=y0+(h-y0)*(row/12.0)*(row/12.0);s.cairo_move_to(cr,0.0,y);s.cairo_line_to(cr,w,y)}
+    s.cairo_stroke(cr);s.cairo_pattern_destroy(floor);s.rgba(cr,p.accent,p.dark ? 0.14 : 0.25);s.cairo_move_to(cr,0.0,y0);s.cairo_line_to(cr,w,y0);s.cairo_stroke(cr)
+}}
+fn mosaic(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let colors=Vec<s.Color>(p.accent,p.cool,p.warm);let seed=404 as u32;let size=s.max(w,h)/24.0;let gap=size*0.12;let radius=size*0.18
+    let row=0.0;while row*size<h+size {let column=0.0;while column*size<w+size {
+        let x=column*size+gap/2.0;let y=row*size+gap/2.0;let edge=size-gap;let a=column*size/w-0.85;let b=row*size/h-0.1;let glow=s.max(0.0,1.0-s.sqrt(a*a+b*b)*1.1)
+        if s.random(&seed)>=0.35 {s.cairo_new_path(cr);s.cairo_arc(cr,x+edge-radius,y+radius,radius,-s.pi()/2.0,0.0);s.cairo_arc(cr,x+edge-radius,y+edge-radius,radius,0.0,s.pi()/2.0);s.cairo_arc(cr,x+radius,y+edge-radius,radius,s.pi()/2.0,s.pi());s.cairo_arc(cr,x+radius,y+radius,radius,s.pi(),s.pi()*1.5);s.cairo_close_path(cr)
+            let color=colors[(s.floor(s.random(&seed)*3.0)) as usize];s.rgba(cr,color,((p.dark ? 0.025 : 0.05)+s.random(&seed)*(p.dark ? 0.05 : 0.08))*(0.4+glow*1.8));s.cairo_fill(cr)
+        };column=column+1.0
+    };row=row+1.0}
+}}
+struct Point {x:f64,y:f64}
+fn triangle(cr:*void,w:f64,h:f64,p:s.Palette,seed:*u32,a:Point,b:Point,c:Point) {unsafe {
+    let x=(a.x+b.x+c.x)/3.0/w;let y=(a.y+b.y+c.y)/3.0/h;let dx=x-0.8;let dy=(y-0.25)*1.2;let glow=s.max(0.0,1.0-s.sqrt(dx*dx+dy*dy)*1.15)
+    let colors=Vec<s.Color>(p.accent,p.cool,p.warm);let color=colors[s.floor(s.random(seed)*3.0) as usize]
+    s.cairo_new_path(cr);s.cairo_move_to(cr,a.x,a.y);s.cairo_line_to(cr,b.x,b.y);s.cairo_line_to(cr,c.x,c.y);s.cairo_close_path(cr);s.rgba(cr,color,((p.dark ? 0.03 : 0.06)+s.random(seed)*(p.dark ? 0.05 : 0.09))*(0.5+glow*1.5));s.cairo_fill_preserve(cr);s.rgba(cr,color,p.dark ? 0.035 : 0.12);s.cairo_set_line_width(cr,0.8);s.cairo_stroke(cr)
+}}
+fn facets(cr:*void,w:f64,h:f64,p:s.Palette) {unsafe {
+    let seed=2026 as u32;let points=Vec<Point>()
+    for row in 0..9 {for col in 0..13 {let edge=row==0 || row==8 || col==0 || col==12;let x=((col as f64)+(edge ? 0.0 : s.random(&seed)-0.5)*0.8)/12.0*w*1.02-w*0.01;let y=((row as f64)+(edge ? 0.0 : s.random(&seed)-0.5)*0.8)/8.0*h*1.02-h*0.01;points.push(Point(x,y))}}
+    for row in 0..8 {for col in 0..12 {let at=row*13+col;let a=points[at];let b=points[at+1];let c=points[at+13];let d=points[at+14];if (row+col)%2!=0 {triangle(cr,w,h,p,&seed,a,b,c);triangle(cr,w,h,p,&seed,b,d,c)} else {triangle(cr,w,h,p,&seed,a,b,d);triangle(cr,w,h,p,&seed,a,d,c)}}}
+}}
+fn draw(cr:*void,style:i32,w:f64,h:f64,p:s.Palette,grain:*void) {unsafe {
+    s.rgb(cr,p.base);s.cairo_paint(cr)
+    let xs=Vec<f64>(0.78,p.dark ? 0.12 : 0.10,p.dark ? 0.55 : 0.58,p.dark ? 0.05 : 0.04);let ys=Vec<f64>(0.24,p.dark ? 0.82 : 0.86,p.dark ? 1.02 : 1.04,p.dark ? 0.05 : 0.04);let rs=p.dark ? Vec<f64>(0.62,0.58,0.50,0.42) : Vec<f64>(0.66,0.60,0.52,0.46);let colors=Vec<s.Color>(p.accent,p.cool,p.warm,p.dark ? p.cool : p.warm);let alphas=p.dark ? Vec<f64>(0.26,0.20,0.13,0.09) : Vec<f64>(0.30,0.26,0.20,0.16)
+    for i in 0..4 {s.glow(cr,w*xs[i],h*ys[i],s.max(w,h)*rs[i],colors[i],alphas[i])}
+    if style==0 {dunes(cr,w,h,p)} else if style==1 {aurora(cr,w,h,p)} else if style==2 {contours(cr,w,h,p)} else if style==3 {facets(cr,w,h,p)} else if style==4 {waves(cr,w,h,p)} else if style==5 {bokeh(cr,w,h,p)} else if style==6 {orbits(cr,w,h,p)} else if style==7 {horizon(cr,w,h,p)} else {mosaic(cr,w,h,p)}
+    let shade=s.cairo_pattern_create_radial(w/2.0,h/2.0,s.min(w,h)*0.45,w/2.0,h/2.0,s.sqrt(w*w+h*h)*0.62);s.stop(shade,0.0,p.base,0.0);s.stop(shade,1.0,p.dark ? s.Color(0.0,0.0,0.0) : p.base,p.dark ? 0.42 : 0.22);s.fillGradient(cr,shade,true);s.finish(cr,grain)
+}}
+fn render(cr:*void,style:i32,w:f64,h:f64,time:f64,p:s.Palette,cache:*s.Cache) {unsafe {
+    if style<9 {draw(cr,style,w,h,p,(*cache).grain as *void);return}
+    let scale=style<14 ? 3.0 : 2.0;let lowWidth=s.max(2.0,s.ceil(w/scale)) as i32;let lowHeight=s.max(2.0,s.ceil(h/scale)) as i32
+    if (*cache).low==0 || (*cache).lowWidth!=lowWidth || (*cache).lowHeight!=lowHeight {
+        if (*cache).low!=0 {s.cairo_surface_destroy((*cache).low as *void)}
+        (*cache).low=s.cairo_image_surface_create(0,lowWidth,lowHeight) as i64;(*cache).lowWidth=lowWidth;(*cache).lowHeight=lowHeight
+    }
+    let pen=s.cairo_create((*cache).low as *void);motion.draw(pen,style,lowWidth as f64,lowHeight as f64,time,p,cache);s.finish(pen,(*cache).grain as *void);s.cairo_destroy(pen)
+    s.cairo_save(cr);s.cairo_scale(cr,w/(lowWidth as f64),h/(lowHeight as f64));s.cairo_set_source_surface(cr,(*cache).low as *void,0.0,0.0);s.cairo_pattern_set_extend(s.cairo_get_source(cr),3);s.cairo_paint(cr);s.cairo_restore(cr)
+}}
+

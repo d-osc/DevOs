@@ -1,6 +1,6 @@
 import {
     readJson, Listeners, Gio, GLib, writeJson
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 import {ROOT} from '@dev-os/config';
 import {migrateState} from './migrations.js';
 import {validateExtensionId, validateManifest, validateState, validateValues} from './schema.js';
@@ -11,8 +11,9 @@ export class ExtensionManager implements SettingsHost {
     private locations = new Map<string, string>();
     private listeners = new Listeners();
     diagnostics: string[] = [];
-    constructor(private paths = {
-        bundled: `${ROOT}/extensions`,
+    constructor(private paths: {bundled: string; user: string; preferences: string; system?: string; components?: string} = {
+        system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`,
+        bundled: `${ROOT}/src/extensions`,
         user: `${GLib.get_user_data_dir()}/dev-os/extensions`,
         preferences: `${GLib.get_user_config_dir()}/dev-os/extensions`,
     }) { this.reload(); }
@@ -21,8 +22,13 @@ export class ExtensionManager implements SettingsHost {
         const next = new Map<string, ExtensionInfo>();
         const locations = new Map<string, string>();
         this.diagnostics = [];
-        for (const origin of ['bundled', 'user'] as const) {
-            const directory = Gio.File.new_for_path(this.paths[origin]);
+        const sources: {origin: 'bundled' | 'user'; path: string}[] = [
+            ...(this.paths.components ? [{origin: 'bundled' as const, path: this.paths.components}] : []),
+            ...(this.paths.system ? [{origin: 'bundled' as const, path: this.paths.system}] : []),
+            {origin: 'bundled', path: this.paths.bundled}, {origin: 'user', path: this.paths.user},
+        ];
+        for (const {origin, path} of sources) {
+            const directory = Gio.File.new_for_path(path);
             if (!directory.query_exists(null)) continue;
             let enumerator: Gio.FileEnumerator;
             try { enumerator = directory.enumerate_children('standard::name,standard::type', Gio.FileQueryInfoFlags.NONE, null); }
@@ -31,9 +37,9 @@ export class ExtensionManager implements SettingsHost {
                 for (let entry = enumerator.next_file(null); entry; entry = enumerator.next_file(null)) {
                     if (entry.get_file_type() !== Gio.FileType.DIRECTORY) continue;
                     // Every package contributes metadata through its JSON manifest.
-                    if (!GLib.file_test(`${this.paths[origin]}/${entry.get_name()}/extension.json`, GLib.FileTest.EXISTS)) continue;
+                    if (!GLib.file_test(`${path}/${entry.get_name()}/extension.json`, GLib.FileTest.EXISTS)) continue;
                     try {
-                        const manifest = validateManifest(readJson(`${this.paths[origin]}/${entry.get_name()}/extension.json`));
+                        const manifest = validateManifest(readJson(`${path}/${entry.get_name()}/extension.json`));
                         if (origin === 'user' && (manifest.system || next.get(manifest.id)?.manifest.system))
                             throw new Error('User packages cannot declare or replace system UI');
                         let state = {version: manifest.settingsVersion, enabled: manifest.enabledByDefault, values: validateValues(manifest, {})};
@@ -43,7 +49,7 @@ export class ExtensionManager implements SettingsHost {
                             catch (reason) { error = reason instanceof Error ? reason.message : String(reason); state.enabled = manifest.system === true; }
                         }
                         next.set(manifest.id, {manifest, origin, state, error});
-                        locations.set(manifest.id, `${this.paths[origin]}/${entry.get_name()}`);
+                        locations.set(manifest.id, `${path}/${entry.get_name()}`);
                         if (error) this.diagnostics.push(`${manifest.id}: ${error}`);
                     } catch (reason) { this.diagnostics.push(`${entry.get_name()}: ${reason instanceof Error ? reason.message : String(reason)}`); }
                 }
@@ -64,7 +70,8 @@ export class ExtensionManager implements SettingsHost {
     packagePath(id: string): string {
         const path = this.locations.get(validateExtensionId(id));
         if (!path) throw new Error(`Unknown extension ${id}`);
-        const target = Gio.File.new_for_path(path).query_info('standard::symlink-target', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null).get_symlink_target();
+        const info = Gio.File.new_for_path(path).query_info('standard::is-symlink,standard::symlink-target', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+        const target = info.get_is_symlink() ? info.get_symlink_target() : null;
         return target ? GLib.canonicalize_filename(target, Gio.File.new_for_path(path).get_parent()!.get_path()!) : path;
     }
     update(id: string, enabled: boolean, values: SettingsValues): void {
@@ -80,6 +87,7 @@ export class ExtensionManager implements SettingsHost {
         if (!GLib.file_test(path, GLib.FileTest.EXISTS)) writeJson(path, info.state);
         return path;
     }
+    async ensureSettingsFile(id: string): Promise<string> {return this.settingsFile(id);}
     reloadSettingsFile(path: string): void {
         const info = [...this.extensions.values()].find(info => this.file(info.manifest.id) === path);
         if (!info) return;
@@ -87,6 +95,26 @@ export class ExtensionManager implements SettingsHost {
         this.extensions.set(info.manifest.id, {...info, state, error: undefined}); this.changed();
     }
     subscribe(listener: () => void): () => void { return this.listeners.subscribe(listener); }
+    /** Each process observes preferences/core config written by the Settings process. */
+    watch(coreChanged: () => void = () => {}): () => void {
+        const paths = [this.paths.preferences, GLib.path_get_dirname(this.paths.preferences)];
+        const monitors: Gio.FileMonitor[] = [];
+        let source = 0, stopped = false;
+        const changed = () => {
+            if (source || stopped) return;
+            source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
+                source = 0;
+                if (!stopped) {this.reload(); coreChanged();}
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+        for (const path of paths) {
+            GLib.mkdir_with_parents(path, 0o700);
+            const monitor = Gio.File.new_for_path(path).monitor_directory(Gio.FileMonitorFlags.NONE, null);
+            monitor.connect('changed', changed); monitors.push(monitor);
+        }
+        return () => {if (stopped) return; stopped = true; if (source) {GLib.source_remove(source); source = 0;} for (const monitor of monitors) monitor.cancel();};
+    }
     private changed(): void {
         this.listeners.emit(reason => { this.diagnostics.push(`Subscriber: ${reason instanceof Error ? reason.message : String(reason)}`); });
     }

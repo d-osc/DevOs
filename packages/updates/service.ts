@@ -1,7 +1,7 @@
 import {
     readJson, Listeners, Gio, GLib,
     removeTree, writeJson
-} from '@dev-os/core';
+} from '@dev-os/core/base';
 import {Soup} from '@dev-os/core/soup';
 import {run, historyAt, type History, type Installed} from './installed.js';
 export {run, historyAt};
@@ -77,7 +77,7 @@ export class GitHubTransport implements UpdateTransport {
             '--connect-timeout', '15', '--max-time', '300', '--max-filesize', String(release.size), '--output', path, release.url], cancel, 310);
     }
 }
-export {removeTree} from '@dev-os/core';
+export {removeTree} from '@dev-os/core/base';
 class Offline extends Error {}
 interface Adoption {
     unpack: string; key: string; version: string; repository: string; platform: UpdatePlatform;

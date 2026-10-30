@@ -1,0 +1,36 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../lib/greeter-wire.dev" as wire
+use "../lib/greeter-service.dev" as service
+use "./lib/react-devlang.dev" as t
+use "../tools/lib/tool.dev" as tool
+test.case("native greeter only exposes presentation fields",fn() {
+    let value=json.value({ok:true,liveRoot:true,token:"TOKEN-MUST-NOT-LEAK",password:"SECRET-MUST-NOT-LEAK",flow:{device:"DEVICE-MUST-NOT-LEAK"},users:[{username:"devos",name:"Guest"},{username:"alice",name:"สวัสดี\nWorld",github:"alice",githubId:42,home:"PRIVATE-HOME"}]})
+    let text=wire.reply("get",value)
+    t.contains(text,"สวัสดี World");t.contains(text,"U\talice");t.contains(text,"S\tget\t0\t1")
+    for secret in Vec<str>("TOKEN-MUST-NOT-LEAK","SECRET-MUST-NOT-LEAK","DEVICE-MUST-NOT-LEAK","PRIVATE-HOME","U\tdevos") {t.lacks(text,secret)}
+})
+test.case("field controls cannot inject native records",fn() {
+    let controls=wire.separator()+"\t\r\n\0"
+    t.equal(wire.reply("ignored",json.value({ok:false,error:"error"+controls+"end"})),"E\terror     end")
+})
+test.case("backend error redaction is shared by both protocols",fn() {
+    let value=service.failure("bad secret-test repeated secret-test",json.value({password:"secret-test"}))
+    t.equal(json.string(json.get(value,"error")),"bad [redacted] repeated [redacted]")
+})
+test.case("JSON backend contract survives invalid requests and cancellation",fn() {
+    let run=tool.run(Vec<str>(t.runner(),t.root()+"/bin/dev-os-greeter-backend"),Map<str,str>(),"{\"action\":\"unknown\"}\n{\"action\":\"cancel\"}\n",30000)
+    t.success(run);let lines=strings.split(strings.trim(t.out(run)),"\n")
+    test.expect(lines.len()==2,"Missing backend responses")
+    test.expect(!json.bool(json.get(json.parse(lines[0]),"ok")),"Invalid action accepted")
+    test.expect(json.bool(json.get(json.parse(lines[1]),"ok")),"Cancel failed")
+})
+test.case("native service recovers after oversized requests without replay",fn() {
+    let huge="";for i in 0..16400 {huge=huge+"x"}
+    let run=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/login/service.dev"),Map<str,str>(),huge+"\n{\"action\":\"cancel\"}\n",30000)
+    t.success(run);let lines=strings.split(strings.trim(t.out(run)),"\n")
+    test.expect(lines.len()==2,"Oversize request desynchronized worker")
+    t.contains(lines[0],"E\tLogin request is too large.");t.contains(lines[1],"S\tcancel")
+})
+return t.finish()

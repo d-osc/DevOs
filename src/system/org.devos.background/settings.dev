@@ -1,0 +1,15 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "./model.dev" as m
+use "./widget-desktops.dev" as widgets
+use "./context-menu.dev" as menu
+use "./wallpaper.dev" as wallpaper
+fn plan(latest:json.Value,saved:json.Value,draft:json.Value):json.Value {
+    if !m.hex(m.text(m.get(draft,"color"))) {result.raise("Enter a six-digit hex color, such as #101b25.")}
+    if strings.equal(m.text(m.get(draft,"mode")),"picture") {
+        let file=m.text(m.get(draft,"imagePath"));if strings.equal(file,"") {result.raise("Choose a picture before applying.")};wallpaper.picturePath(json.value(file))
+    }
+    menu.custom(m.get(draft,"contextCustomItems"))
+    return widgets.apply(latest,saved,draft)
+}

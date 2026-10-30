@@ -1,0 +1,36 @@
+use "std/io"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "./desktop.dev" as util
+use "./unix.dev" as unix
+use "./greeter.dev" as greeter
+use "./greeter-wire.dev" as wire
+fn failure(message:str,request:json.Value):json.Value {
+    let secret=util.text(util.get(request,"password"))
+    return util.error(strings.equal(secret,"") ? message : strings.replaceAll(message,secret,"[redacted]"))
+}
+fn run(native:bool):i32 {
+    let state=greeter.empty()
+    while true {
+        let request=json.object();let value=json.null_value()
+        let read=result.attempt(fn():unix.Line {return unix.line(16384)})
+        if result.isErr(read) {value=util.error("Invalid login request encoding.")}
+        else {
+            let incoming=result.unwrap(read);if incoming.eof {break}
+            if incoming.oversized {value=util.error("Login request is too large.")}
+            else {
+                request=util.parse(incoming.text)
+                let outcome=result.attempt(fn():greeter.Reply {return greeter.handle(state,request)})
+                if result.isErr(outcome) {
+                    let action=util.text(util.get(request,"action"))
+                    if strings.equal(action,"poll") || strings.equal(action,"enroll-poll") {state.flow=json.null_value()}
+                    if strings.equal(action,"enroll-create") || strings.equal(action,"enroll-begin") {state.enrollment=json.null_value()}
+                    value=failure(result.message(outcome),request)
+                } else {let reply=result.unwrap(outcome);state=reply.state;value=json.set(reply.value,"ok",true)}
+            }
+        }
+        print(native ? wire.reply(util.text(util.get(request,"action")),value) : json.stringify(value))
+    }
+    return 0
+}

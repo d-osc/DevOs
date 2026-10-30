@@ -1,0 +1,9 @@
+use "std/json"
+use "../../../lib/hw.dev" as hw
+fn pixelShiftSteps():Vec<Vec<i64>> {return Vec<Vec<i64>>(Vec<i64>(1,1),Vec<i64>(2,1),Vec<i64>(2,2),Vec<i64>(1,2),Vec<i64>(0,2),Vec<i64>(0,1),Vec<i64>(0,0),Vec<i64>(1,0),Vec<i64>(2,0))}
+fn shiftMargins(step:i64):Vec<i64> {let steps=pixelShiftSteps();let index=((step%9)+9)%9;let point=steps[index];return Vec<i64>(point[0],2-point[0],point[1],2-point[1])}
+fn plan(settings:json.Value,step:i64):json.Value {let values=shiftMargins(step);return {settings:settings,margins:values,shiftSeconds:180,hideDelayMs:1500}}
+fn frame(settings:json.Value,step:i64):str {
+    let margins=shiftMargins(step)
+    return "O\t${hw.jbool(settings,"panelTransparency",true) ? 1 : 0}\t${hw.jbool(settings,"autoHidePanel",false) ? 1 : 0}\t${margins[0]}\t${margins[1]}\t${margins[2]}\t${margins[3]}\t1500"
+}

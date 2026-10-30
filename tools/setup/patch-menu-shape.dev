@@ -1,0 +1,63 @@
+# Rounded compositor menus for labwc 0.7 and 0.9 (including submenus).
+use "std/fs"
+use "std/path"
+use "std/args"
+use "std/module"
+use "std/strings"
+use "std/result"
+fn read(file: str): str {return strings.replaceAll(fs.readFileSync(file, "utf8"), "\r\n", "\n")}
+fn replaceOnce(text: str, before: str, after: str): str {
+    if strings.split(text, before).len() != 2 {result.raise("Menu shape patch anchor missing or ambiguous: " + before)}
+    return strings.replace(text, before, after)
+}
+fn main(): i32 {
+    if args.len() == 1 && strings.equal(args.get(0), "--validate") {return 0}
+    if args.len() != 1 {result.raise("Usage: d patch-menu-shape.dev -- LABWC_SOURCE")}
+    let source = args.get(0)
+    let here = path.dirname(module.entry())
+    fs.copyFileSync(here + "/devos-menu-shape.h", source + "/include/devos-menu-shape.h")
+    let file = source + "/src/menu/menu.c"
+    let menu = read(file)
+    if strings.contains(menu, "DEVOS_MENU_SHAPE_V1") {print("Dev OS rounded menu surfaces are current"); return 0}
+    let legacy = strings.contains(menu, "menu_update_width(struct menu *menu)")
+    let include = "\n/* DEVOS_MENU_SHAPE_V1 */\n" + (legacy ? "#define DEVOS_MENU_LEGACY\n" : "") + "#include \"devos-menu-shape.h\"\n"
+    menu = replaceOnce(menu, "#include \"theme.h\"", "#include \"theme.h\"" + include)
+    if legacy {
+        let headerFile = source + "/include/menu/menu.h"
+        let header = read(headerFile)
+        header = replaceOnce(header, "\tstruct menu_scene selected;", "\tstruct menu_scene selected;\n\tstruct wlr_scene_node *devos_selected_background;")
+        header = replaceOnce(header, "\tstruct wlr_scene_tree *scene_tree;", "\tstruct wlr_scene_tree *scene_tree;\n\tstruct wlr_scene_node *devos_background;")
+        fs.writeFileSync(headerFile, header)
+        let themeHeaderFile = source + "/include/theme.h"
+        let themeHeader = read(themeHeaderFile)
+        themeHeader = replaceOnce(themeHeader, "\tint menu_min_width;", "\tint menu_border_width;\n\tfloat menu_border_color[4];\n\tint menu_min_width;")
+        fs.writeFileSync(themeHeaderFile, themeHeader)
+        let themeFile = source + "/src/theme.c"
+        let theme = read(themeFile)
+        theme = replaceOnce(theme, "\ttheme->menu_min_width = 20;", "\ttheme->menu_border_width = 1;\n\tparse_hexstr(\"#48515d\", theme->menu_border_color);\n\ttheme->menu_min_width = 20;")
+        theme = replaceOnce(theme, "\tif (match_glob(key, \"menu.width.min\")) {", "\tif (match_glob(key, \"menu.border.width\")) {\n\t\ttheme->menu_border_width = atoi(value);\n\t\tif (theme->menu_border_width < 0) theme->menu_border_width = 0;\n\t\tif (theme->menu_border_width > 6) theme->menu_border_width = 6;\n\t}\n\tif (match_glob(key, \"menu.border.color\")) parse_hexstr(value, theme->menu_border_color);\n\tif (match_glob(key, \"menu.width.min\")) {")
+        fs.writeFileSync(themeFile, theme)
+        menu = replaceOnce(menu, "\tmenu->size.width = server->theme->menu_min_width;", "\tmenu->size.width = server->theme->menu_min_width;\n\tmenu->size.height = 2 * DEVOS_MENU_PADDING;")
+        menu = strings.replaceAll(menu, "0, menu->size.height);", "0, menu->size.height - DEVOS_MENU_PADDING);")
+        menu = replaceOnce(menu, "\t\tmenu->size.height = 0;", "\t\tmenu->size.height = 2 * DEVOS_MENU_PADDING;")
+        menu = replaceOnce(menu, "\t\t\t\tmenu->size.height);", "\t\t\t\tmenu->size.height - DEVOS_MENU_PADDING);")
+        menu = replaceOnce(menu, "\n}\n\nstatic void\npost_processing", "\n\tdevos_menu_finish_scene(menu);\n}\n\nstatic void\npost_processing")
+    } else {
+        menu = replaceOnce(menu, "wlr_scene_rect_create(tree, bg_width, theme->menu_item_height, bg_color);", "devos_menu_item_background(tree, bg_width, theme->menu_item_height, bg_color, theme);")
+        menu = replaceOnce(menu, "wlr_scene_rect_create(menuitem->normal_tree, bg_width, bg_height,\n\t\ttheme->menu_items_bg_color);", "devos_menu_item_background(menuitem->normal_tree, bg_width, bg_height,\n\t\ttheme->menu_items_bg_color, theme);")
+        menu = replaceOnce(menu, "wlr_scene_rect_create(menuitem->normal_tree,\n\t\tbg_width, theme->menu_header_height, bg_color);", "devos_menu_item_background(menuitem->normal_tree,\n\t\tbg_width, theme->menu_header_height, bg_color, theme);")
+        menu = replaceOnce(menu, "int item_y = theme->menu_border_width;", "int item_y = theme->menu_border_width + DEVOS_MENU_PADDING;")
+        menu = replaceOnce(menu, "menu->size.height = item_y + theme->menu_border_width;", "menu->size.height = item_y + theme->menu_border_width + DEVOS_MENU_PADDING;")
+        # Split on anchors: indexOf uses byte offsets while substring uses Unicode
+        # characters, so slicing by those offsets corrupts upstream UTF-8 comments.
+        let parts = strings.split(menu, "\tstruct lab_scene_rect_options opts = {")
+        if parts.len() != 2 {result.raise("Modern menu background start missing or ambiguous")}
+        let tail = strings.split(parts[1], "\twlr_scene_node_lower_to_bottom(&bg_rect->tree->node);")
+        if tail.len() != 2 {result.raise("Modern menu background end missing or ambiguous")}
+        menu = parts[0] + "\tdevos_menu_finish_scene(menu);" + tail[1]
+    }
+    fs.writeFileSync(file, menu)
+    print("Dev OS rounded compositor menus installed")
+    return 0
+}
+return main()

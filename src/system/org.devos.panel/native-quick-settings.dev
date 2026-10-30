@@ -1,0 +1,33 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-taskbar.dev" as tasks
+fn text(value:ui.Text,className:str):ui.Node {let props=ui.props();props.className=ui.text(className);props.xalign=0.0;props.wrap=true;return ui.withProps(ui.TextLabel(value),props)}
+fn icon(name:ui.Text,size:i32):ui.Node {let props=ui.props();props.iconSize=size;return ui.element(11,props,name,Vec<ui.Node>())}
+fn row(children:Vec<ui.Node>,spacing:i32):ui.Node {let props=ui.props();props.vertical=false;props.spacing=spacing;return ui.Box(props,children)}
+fn render(frame:ui.Text,busy:bool,commandReady:bool,error:ui.Text,care:ui.Node,action:fn(ui.Text,i64):void,command:fn(ui.Text):void,dismiss:fn():void):ui.Node {
+    let fields=Vec<ui.Text>();let battery=Vec<ui.Text>();for record in channel.split(frame,30) {let parts=channel.split(record,9);if parts.len()>=19 && ui.equalText(parts[0],ui.text("D")) {fields=parts};if parts.len()>=8 && ui.equalText(parts[0],ui.text("B")) {battery=parts}}
+    if fields.len()<19 {let props=ui.props();props.visible=false;return ui.Box(props,Vec<ui.Node>())}
+    let title=ui.props();title.expand=true;title.className=ui.text("popup-title");title.xalign=0.0;let settings=ui.named("panel-quick-settings-open");settings.className=ui.text("popup-icon");settings.sensitive=commandReady && !busy
+    let children=Vec<ui.Node>(row(Vec<ui.Node>(ui.withProps(ui.Label("Quick settings"),title),ui.WidgetButton(settings,icon(ui.text("dev-os-settings-symbolic"),18),fn() {command(ui.text("settings"))})),0))
+    let tiles=Vec<ui.Node>()
+    for index in 0..2 {let wifi=index==0;let props=ui.named(wifi ? "panel-wifi" : "panel-bluetooth");props.expand=true;props.sensitive=!busy && (wifi ? commandReady : tasks.flag(fields,14));props.className=ui.concatText(Vec<ui.Text>(ui.text("device-tile"),tasks.flag(fields,wifi ? 15 : 16) ? ui.text(" device-on") : ui.emptyText()))
+        let detail=ui.named(wifi ? "panel-wifi-detail" : "panel-bluetooth-detail");detail.className=ui.text("tile-detail");detail.xalign=0.5;let caption=ui.props();caption.xalign=0.5;let stack=ui.props();stack.spacing=8
+        tiles.push(ui.WidgetButton(props,ui.Box(stack,Vec<ui.Node>(icon(ui.text(wifi ? "network-wireless-symbolic" : "bluetooth-active-symbolic"),24),ui.withProps(ui.Label(wifi ? "Wi-Fi" : "Bluetooth"),caption),ui.withProps(ui.TextLabel(tasks.decoded(fields[wifi ? 11 : 12])),detail))),fn() {if wifi {command(ui.text("wifi"))} else {action(ui.text("bluetooth"),0)}}))
+    };children.push(row(tiles,10));children.push(row(Vec<ui.Node>(icon(tasks.decoded(fields[1]),16),text(tasks.decoded(fields[4]),"popup-muted")),8))
+    let mute=ui.named("panel-mute");mute.className=ui.text("popup-icon");mute.sensitive=!busy && tasks.flag(fields,9)
+    let volume=ui.named("panel-volume");volume.expand=true;volume.sensitive=!busy && tasks.flag(fields,9);let percent=ui.named("panel-volume-label");percent.widthChars=4;percent.xalign=0.5
+    children.push(row(Vec<ui.Node>(ui.WidgetButton(mute,icon(tasks.decoded(fields[7]),20),fn() {action(ui.text("mute"),0)}),ui.Scale(volume,0,100,channel.integer(fields[17]),fn(value:i64) {action(ui.text("volume"),value)}),ui.withProps(ui.TextLabel(tasks.decoded(fields[5])),percent)),12))
+    if fields.len()>19 && fields[19].bytes.len()>0 {children.push(text(tasks.decoded(fields[19]),"popup-muted"))}
+    let brightness=ui.named("panel-brightness");brightness.expand=true;brightness.sensitive=!busy && tasks.flag(fields,10)
+    let brightnessLabel=ui.named("panel-brightness-label");brightnessLabel.widthChars=4;brightnessLabel.xalign=0.5
+    children.push(row(Vec<ui.Node>(icon(ui.text("display-brightness-symbolic"),20),ui.Scale(brightness,0,100,channel.integer(fields[18]),fn(value:i64) {action(ui.text("brightness"),value)}),ui.withProps(ui.TextLabel(tasks.decoded(fields[6])),brightnessLabel)),12))
+    if fields.len()>20 && fields[20].bytes.len()>0 {children.push(text(tasks.decoded(fields[20]),"popup-muted"))}
+    if battery.len()>=8 && tasks.flag(battery,6) {children.push(text(tasks.decoded(battery[4]),"popup-muted"))}
+    if battery.len()>=8 && tasks.flag(battery,7) {children.push(care)}
+    if error.bytes.len()>0 {let message=ui.named("panel-device-error");message.className=ui.text("error");message.wrap=true;message.xalign=0.0;children.push(ui.withProps(ui.TextLabel(error),message))}
+    let props=ui.props();props.width=320;props.margin=20;props.spacing=18;props.className=ui.text("quick-settings")
+    let popup=ui.named("panel-quick-settings");popup.className=ui.text("panel-popup");return ui.Popover(popup,ui.text("panel-devices"),ui.Box(props,children),dismiss)
+}
+fn decorate(context:*ui.Context,frame:ui.Text) {unsafe {for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()<23 || !ui.equalText(fields[0],ui.text("D")) {continue}
+    for i in 0..4 {let id=ui.nativeText(ui.text(i==0 ? "panel-mute" : i==1 ? "panel-wifi" : i==2 ? "panel-bluetooth" : "panel-quick-settings-open"));let value=ui.nativeText(i==3 ? ui.text("Settings") : tasks.decoded(fields[i==0 ? 8 : i==1 ? 21 : 22]));tasks.panel_tooltip((*context).native,id,value);tasks.rd_buffer_free(id as *void);tasks.rd_buffer_free(value as *void)}
+}}}

@@ -1,0 +1,33 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as wire
+use "./native-power.dev" as power
+extern fn rc_env(name:str):str
+extern fn panel_avatar(root:*void,id:*u8,path:*u8,size:i32)
+extern fn panel_timer(interval:i32,call:callback(*void):void,data:*void):u32
+extern fn panel_untimer(timer:u32,keep:*void)
+fn image(id:ui.Text,size:i32):ui.Node {let props=ui.props();props.id=id;props.width=size;props.height=size;props.iconSize=size;props.className=ui.text("account-avatar");return ui.Icon(props,"avatar-default-symbolic")}
+fn decorate(context:*ui.Context,frame:ui.Text) {unsafe {
+    for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()==4 && ui.equalText(fields[0],ui.text("U")) {for pair in Vec<i64>(20,44) {let id=ui.nativeText(ui.text(pair==20 ? "panel-user-avatar" : "panel-user-current-avatar"));let path=ui.nativeText(wire.decoded(fields[3]));panel_avatar((*context).native,id,path,pair as i32);wire.rd_buffer_free(id as *void);wire.rd_buffer_free(path as *void)};let id=ui.nativeText(ui.text("panel-switch-user"));let text=ui.nativeText(ui.concatText(Vec<ui.Text>(wire.decoded(fields[1]),ui.text(" · Accounts"))));wire.panel_tooltip((*context).native,id,text);wire.rd_buffer_free(id as *void);wire.rd_buffer_free(text as *void)}
+        if fields.len()==5 && ui.equalText(fields[0],ui.text("V")) {let id=ui.nativeText(ui.concatText(Vec<ui.Text>(ui.text("panel-user-avatar-"),fields[1])));let path=ui.nativeText(wire.decoded(fields[4]));panel_avatar((*context).native,id,path,32);wire.rd_buffer_free(id as *void);wire.rd_buffer_free(path as *void)}}
+}}
+fn render(frame:ui.Text,opened:bool,toggle:fn():void,choose:fn(ui.Text):void,settings:fn():void,ready:bool,powerControls:ui.Node,error:ui.Text):ui.Node {
+    let current=ui.text("Your account");let subtitle=ui.text("Local account");let users=Vec<ui.Node>()
+    for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()==4 && ui.equalText(fields[0],ui.text("U")) {current=wire.decoded(fields[1]);subtitle=wire.decoded(fields[2])}
+        if fields.len()==5 && ui.equalText(fields[0],ui.text("V")) {let name=wire.decoded(fields[1]);let button=ui.props();button.id=ui.concatText(Vec<ui.Text>(ui.text("panel-user-"),fields[1]));let labels=ui.props();labels.expand=true;labels.spacing=3;let label=ui.props();label.xalign=0.0;let muted=label;muted.className=ui.text("popup-muted");let box=ui.props();box.vertical=false;box.spacing=10;let icon=ui.props();icon.iconSize=16;let children=Vec<ui.Node>(image(ui.concatText(Vec<ui.Text>(ui.text("panel-user-avatar-"),fields[1])),32),ui.Box(labels,Vec<ui.Node>(ui.withProps(ui.TextLabel(wire.decoded(fields[2])),label),ui.withProps(ui.TextLabel(wire.decoded(fields[3])),muted))),ui.Icon(icon,"go-next-symbolic"));users.push(ui.WidgetButton(button,ui.Box(box,children),fn() {choose(name)}))}}
+    let anchor=ui.named("panel-switch-user");anchor.className=ui.text("panel-app");let nodes=Vec<ui.Node>(ui.WidgetButton(anchor,image(ui.text("panel-user-avatar"),20),toggle))
+    if opened {let title=ui.props();title.className=ui.text("popup-title");title.xalign=0.0;let normal=ui.props();normal.xalign=0.0;let muted=normal;muted.className=ui.text("popup-muted");let labels=ui.props();labels.spacing=4;let account=ui.props();account.vertical=false;account.spacing=12
+        let children=Vec<ui.Node>(ui.withProps(ui.Label("Your account"),title),ui.Box(account,Vec<ui.Node>(image(ui.text("panel-user-current-avatar"),44),ui.Box(labels,Vec<ui.Node>(ui.withProps(ui.TextLabel(current),normal),ui.withProps(ui.TextLabel(subtitle),muted))))),ui.withProps(ui.Label("SWITCH OS USER"),muted));for user in users {children.push(user)}
+        children.push(ui.Button(ui.named("panel-user-switch"),"Switch user…",fn() {choose(ui.emptyText())}));let settingsButton=ui.named("panel-user-settings");settingsButton.sensitive=ready;children.push(ui.Button(settingsButton,"Account settings",settings));children.push(powerControls);let failure=muted;failure.visible=error.bytes.len()>0;failure.wrap=true;failure.widthChars=38;children.push(ui.withProps(ui.TextLabel(error),failure));let body=ui.props();body.width=300;body.margin=20;body.spacing=14;let popup=ui.named("panel-user-popup");popup.className=ui.text("panel-popup quick-settings");nodes.push(ui.Popover(popup,ui.text("panel-switch-user"),ui.Box(body,children),toggle))
+    };let root=ui.props();root.vertical=false;return ui.Box(root,nodes)
+}
+fn View(context:*ui.Context,settings:fn():void,settingsReady:bool):ui.Node {
+    let open=ui.useState(context,0);let warmed=ui.useState(context,0);let pipe=ui.useRef(context,0);let frame=ui.useText(context,ui.emptyText());let error=ui.useText(context,ui.emptyText());let ready=ui.useState(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {let tick=callback_context(fn() {warmed.set(1)});let timer=panel_timer(12000,tick.call,tick.data);return fn() {unsafe {panel_untimer(timer,tick.data)}}}},Vec<i64>())
+    let start=warmed.value!=0 || open.value!=0
+    ui.useEffect(context,fn():fn():void {unsafe {if !start {return ui.noop};let root=rc_env("DEV_OS_ROOT");let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"};return channel.connectWithLibrary(context,runner,"${root}/src/services/panel-accounts.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(value:ui.Text) {let rows=channel.split(value,30);let fields=channel.split(rows[0],9);if ui.equalText(fields[0],ui.text("A")) {open.set(0);error.set(ui.emptyText())}else if ui.equalText(fields[0],ui.text("E")) {error.set(fields.len()>1 ? wire.decoded(fields[1]) : ui.text("Accounts are unavailable."));return};frame.set(value)},fn(value:i64) {pipe.set(value);ready.set(1);channel.interval(value,1000);channel.send(value,ui.text("{}"))})}},Vec<i64>(start ? 1 : 0))
+    ui.useEffect(context,fn():fn():void {if open.value!=0 && ready.value!=0 {channel.command(pipe.get(),ui.text("{\"refresh\":true}"))};return ui.noop},Vec<i64>(open.value,ready.value))
+    let powerControls=ui.Box(ui.props(),Vec<ui.Node>());if open.value!=0 {powerControls=ui.component(9850,ui.props(),fn(child:*ui.Context):ui.Node {return power.Controls(child)})}
+    ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {decorate(context,frame.value)};return ui.noop}},Vec<i64>(frame.revision,open.value))
+    return render(frame.value,open.value!=0,fn() {if open.get()==0 {warmed.set(1)};open.set(open.get()==0 ? 1 : 0)},fn(name:ui.Text) {error.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"switch\":"),channel.quote(name),ui.text("}"))))},fn() {open.set(0);settings()},settingsReady,powerControls,error.value)
+}

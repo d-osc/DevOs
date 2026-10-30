@@ -1,7 +1,7 @@
 import {testTheme} from './theme-helper.js';
 import {Gdk, GLib, Gtk, type UIContext} from '@dev-os/core';
-import {Capture, devices} from '../extensions/org.devos.camera/capture.js';
-import {MediaWindow} from '../extensions/org.devos.camera/window.js';
+import {Capture, devices} from '../src/apps/org.devos.camera/capture.backend.js';
+import {MediaWindow} from '../src/apps/org.devos.camera/window.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): asserts value {if (!value) throw new Error(message);}
 const app = new Gtk.Window({default_width: 640, default_height: 420});
@@ -20,7 +20,7 @@ const microphone = new Capture('microphone', message => {
     else if (message.startsWith('Device error:')) {errors.push(message); loop.quit();}
 }, value => {if (value > 0) peaks++;}, () => {});
 try {
-    camera.start(undefined, false, true, widget => {app.add(widget); app.show_all();});
+    camera.start(undefined, false, true);
     timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {timer = 0; camera.photo(); return GLib.SOURCE_REMOVE;});
     loop.run();
     assert(errors.length === 0, errors.join('; ')); assert(phase === 'microphone', 'Camera pipeline did not finish');
@@ -36,7 +36,7 @@ try {
     const application = new Gtk.Application({application_id: 'org.devos.MediaTest'}); application.register(null);
     const context = {application, invoke() {}} as unknown as UIContext;
     const theme = new Gtk.CssProvider();
-    const [, css] = GLib.file_get_contents(`${GLib.getenv('DEV_OS_ROOT')}/extensions/org.devos.theme/style.css`);
+    const [, css] = GLib.file_get_contents(`${GLib.getenv('DEV_OS_ROOT')}/src/apps/org.devos.theme/style.css`);
     theme.load_from_data(new TextDecoder().decode(css).replace(/^/, testTheme()));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     for (const kind of ['camera', 'microphone'] as const) {

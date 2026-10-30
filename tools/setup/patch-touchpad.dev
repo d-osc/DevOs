@@ -20,7 +20,12 @@ fn main(): i32 {
     let allowed = "!" + locked + " && !seat->drag.active && seat->server->input_mode == LAB_INPUT_STATE_PASSTHROUGH"
     if strings.contains(header, "active_client_while_inhibited") { allowed = allowed + " && !seat->active_client_while_inhibited" }
     let here = path.dirname(module.entry())
-    fs.writeFileSync(path.join(source, "include/input/devos-touchpad.h"), strings.replaceAll(read(path.join(here, "devos-touchpad.h")), "DEVOS_TOUCHPAD_ALLOWED", allowed))
+    let helper = strings.replaceAll(read(path.join(here, "devos-touchpad.h")), "DEVOS_TOUCHPAD_ALLOWED", allowed)
+    if !modern {
+        helper = strings.replaceAll(helper, "WL_POINTER_BUTTON_STATE_PRESSED", "WLR_BUTTON_PRESSED")
+        helper = strings.replaceAll(helper, "WL_POINTER_BUTTON_STATE_RELEASED", "WLR_BUTTON_RELEASED")
+    }
+    fs.writeFileSync(path.join(source, "include/input/devos-touchpad.h"), helper)
     if !strings.contains(header, "devos_tap_pointer;") {
         header = replaceOnce(header, "struct devos_task_view_swipe devos_task_view;", "struct devos_task_view_swipe devos_task_view;\n\tstruct wlr_pointer *devos_tap_pointer;")
         fs.writeFileSync(headerPath, header)
@@ -31,7 +36,7 @@ fn main(): i32 {
         cursor = "#include \"input/devos-touchpad.h\"\n" + cursor
         # The helper requires the complete seat/pointer types from the normal includes.
         cursor = strings.replace(cursor, "#include \"input/devos-touchpad.h\"\n", "")
-        let anchor = "static void\nhandle_button("
+        let anchor = modern ? "static void\nhandle_button(" : "static void\ncursor_button("
         cursor = replaceOnce(cursor, anchor, "#include \"input/devos-touchpad.h\"\n\n" + anchor)
         cursor = replaceOnce(cursor, "\tstruct wlr_pointer_button_event *event = data;", "\tstruct wlr_pointer_button_event *event = data;\n\tif (devos_touchpad_button(seat, event)) { idle_manager_notify_activity(seat->seat); return; }")
         fs.writeFileSync(cursorPath, cursor)

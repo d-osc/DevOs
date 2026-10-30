@@ -1,0 +1,38 @@
+use "std/test"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "../lib/desktop.dev" as util
+use "../src/system/org.devos.panel/power-actions.dev" as power
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("power capabilities preserve challenge and desktop lock semantics",fn() {
+    t.equal(power.capabilities("yes","challenge",true),"P\t1\t1\t1");t.equal(power.capabilities("no","na",false),"P\t0\t0\t0")
+    let sleep=power.begin(power.empty(0),{action:"sleep"},"no",true);t.equal(sleep.action,"sleep");test.expect(!power.authorizeFirst(sleep,"no"),"Sleep must not open a loading overlay")
+    test.expect(!result.isOk(result.attempt(fn():power.Pending {return power.begin(power.empty(0),{action:"sleep"},"yes",false)})),"Sleep ignored missing desktop lock")
+})
+test.case("power authorization ordering and overlay handshake reject stale requests",fn() {
+    let state=power.begin(power.empty(4),{action:"restart"},"yes",false);test.expect(state.token==5 && !power.authorizeFirst(state,"yes"),"Authorized request did not wait for overlay draw");t.equal(power.loading(state),"L\t5\trestart\tRestarting…")
+    test.expect(power.ready(state,{ready:5}),"Authorized request skipped logind")
+    test.expect(!result.isOk(result.attempt(fn():bool {return power.ready(state,{ready:4})})),"Stale draw acknowledgement accepted")
+    test.expect(!result.isOk(result.attempt(fn():bool {return power.ready(power.empty(5),{ready:5})})),"Completed request replayed")
+    test.expect(!result.isOk(result.attempt(fn():power.Pending {return power.begin(state,{action:"shutdown"},"yes",false)})),"Second pending request accepted")
+    let challenge=power.begin(power.empty(5),{action:"shutdown"},"challenge",false);test.expect(power.authorizeFirst(challenge,"challenge"),"Authentication would be covered by an overlay");challenge.accepted=true;test.expect(!power.ready(challenge,{ready:6}),"Authorized challenge would execute twice")
+})
+test.case("power worker rejects malformed commands and stays read-only on polls",fn() {
+    let done=tool.run(Vec<str>("dbus-run-session","--",t.runner(),t.root()+"/src/services/panel-session-power.dev","--ffi-lib",t.root()+"/dist/native/libpanel-taskbar.so"),Map<str,str>(),"bad\n{\"action\":\"invalid\"}\n{\"ready\":1}\n{}\n",15000);t.success(done);test.expect(tool.count(t.out(done),"E\t")==3,"Malformed power requests were accepted");t.contains(t.out(done),"P\t")
+})
+test.case("power worker coordinates draw acknowledgement and real private D-Bus without replay",fn() {
+    tool.scope("panel-login1-",fn(dir:str) {
+        let root=t.root();let server=dir+"/login1";let log=dir+"/calls";let ready=dir+"/ready";tool.write(log,"")
+        tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror \"$1\" $(pkg-config --cflags --libs gio-2.0) -o \"$2\"","login1-build",root+"/tests/fixtures/panel-login1.c",server),Map<str,str>(),"",15000)
+        tool.write(dir+"/bin/dev-os-shell","#!/bin/sh\nprintf '%s\\n' \"desktop $*\" >> "+util.quote(log)+"\n");tool.write(dir+"/bin/swaylock","#!/bin/sh\nexit 0\n");tool.chmod(dir+"/bin/dev-os-shell","755");tool.chmod(dir+"/bin/swaylock","755")
+        let script=dir+"/run.sh";tool.write(script,"#!/bin/sh\nset -eu\nexport DBUS_SYSTEM_BUS_ADDRESS=\"$DBUS_SESSION_BUS_ADDRESS\"\n"+util.quote(server)+" &\nserver=$!\ntrap 'kill \"$server\" 2>/dev/null || true; wait \"$server\" 2>/dev/null || true' EXIT\ntries=0\nwhile [ ! -f "+util.quote(ready)+" ]; do tries=$((tries+1)); [ \"$tries\" -lt 100 ]; sleep 0.02; done\n"+util.quote(t.runner())+" "+util.quote(root+"/src/services/panel-session-power.dev")+" --ffi-lib "+util.quote(root+"/dist/native/libpanel-taskbar.so")+"\n")
+        let env=Map<str,str>();env.set("PANEL_POWER_LOG",log);env.set("PANEL_POWER_READY",ready);env.set("PATH",dir+"/bin:/usr/bin:/bin")
+        let input="{}\n{\"action\":\"restart\"}\n{}\n{\"ready\":3}\n{}\n{\"ready\":3}\n{\"action\":\"shutdown\"}\n{\"ready\":8}\n{\"action\":\"sleep\"}\n"
+        let done=tool.run(Vec<str>("dbus-run-session","--","sh",script),env,input,15000);t.success(done);t.contains(t.out(done),"L\t3\trestart");t.contains(t.out(done),"L\t8\tshutdown");test.expect(tool.count(t.out(done),"A\n")==3 && tool.count(t.out(done),"E\t")==1,"Power acknowledgements changed")
+        let calls=tool.read(log);test.expect(tool.count(calls,"\nReboot\n")==1 && tool.count(calls,"\nPowerOff\n")==1 && tool.count(calls,"desktop lock")==1,"Power request replayed or skipped");t.lacks(calls,"Suspend")
+        tool.checked(Vec<str>("rm","-f",ready),env,"",5000);env.set("PANEL_POWER_DENY","1");let denied=tool.run(Vec<str>("dbus-run-session","--","sh",script),env,"{\"action\":\"restart\"}\n{\"ready\":2}\n{}\n",15000);t.success(denied);t.contains(t.out(denied),"Denied by isolated fixture");t.contains(t.out(denied),"P\t1\t1\t1");t.lacks(t.out(denied),"A\n")
+    })
+})
+return t.finish()

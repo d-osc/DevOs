@@ -1,6 +1,6 @@
 // Opt-in: tests live audio changes and restores the original output in finally.
 import {GLib} from '@dev-os/core';
-import {LinuxAudio} from '../extensions/org.devos.settings/audio.js';
+import {LinuxAudio} from '../src/apps/org.devos.settings/audio.js';
 function assert(value: unknown, message: string): asserts value {if (!value) throw new Error(message);}
 async function verify() {
     const backend = new LinuxAudio(), state = await backend.load();

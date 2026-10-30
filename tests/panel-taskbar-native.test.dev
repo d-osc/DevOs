@@ -1,0 +1,150 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.panel/taskbar.dev" as taskbar
+use "../src/system/org.devos.panel/taskbar-session.dev" as session
+use "../src/system/org.devos.panel/taskbar-actions.dev" as actions
+use "../src/system/org.devos.panel/language.dev" as language
+use "std/result"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("taskbar identifies all builtins without trusting external page titles",fn() {
+    let apps=taskbar.builtins();for i in 0..(json.len(apps) as i64) {let app=json.at(apps,i);let title=json.string(json.get(app,"title"));let group=json.string(json.get(app,"group"));t.equal(taskbar.group({id:1,title:"Dev OS "+title+" · Document",appId:"gjs"}),group);t.equal(taskbar.group({id:1,title:"Anything",appId:json.string(json.get(app,"id"))+".DESKTOP"}),group)}
+    t.equal(taskbar.group({id:1,title:"Camera",appId:"org.example.Browser"}),"org.example.Browser")
+    t.equal(taskbar.group({id:2,title:"Camera",appId:"org.devos.Shell.s123"}),"dev-os-camera")
+    t.equal(taskbar.group({id:3,title:"Task Manager",appId:"org.devos.App.taskmanager.s123"}),"dev-os-task-manager")
+    t.equal(taskbar.group({id:4,title:"",appId:""}),"window-4")
+})
+test.case("window groups preserve arrival order and pinned buttons never duplicate tasks",fn() {
+    let windows=json.value([{id:3,title:"Document",appId:"org.example.Editor",active:false,minimized:false},{id:1,title:"Terminal",appId:"foot",active:true,minimized:false},{id:4,title:"Second",appId:"org.example.Editor",active:false,minimized:true}])
+    let rows=taskbar.presentation(windows,json.array(),true);test.expect(json.len(rows)==3,"Pinned task duplicated a window group")
+    t.equal(json.string(json.get(json.at(rows,0),"group")),"terminal");t.equal(json.string(json.get(json.at(rows,1),"group")),"files")
+    let group=json.at(rows,2);test.expect(json.len(json.get(group,"windows"))==2,"Windows split into duplicate buttons")
+    t.equal(json.string(json.get(group,"tooltip")),"Document · 2 windows")
+    let unpinned=taskbar.presentation(windows,json.array(),false);test.expect(json.len(unpinned)==2,"Disabled pins still rendered");t.equal(json.string(json.get(json.at(unpinned,0),"group")),"org.example.Editor")
+})
+test.case("desktop metadata prioritizes desktop ID over WM class and builtin assets",fn() {
+    let catalog=json.value([{id:"other.desktop",wmclass:"Example",title:"Class match",icon:"class-icon"},{id:"example.desktop",wmclass:"Other",title:"Exact match",icon:"exact-icon"}])
+    let rows=taskbar.presentation(json.value([{id:1,title:"Window",appId:"Example",active:true,minimized:false}]),catalog,false);let row=json.at(rows,0)
+    t.equal(json.string(json.get(row,"title")),"Exact match");t.equal(json.string(json.get(row,"gicon")),"exact-icon");test.expect(json.bool(json.get(row,"active")),"Active flag was lost")
+    let pinned=json.at(taskbar.presentation(json.array(),catalog,true),0);t.equal(json.string(json.get(pinned,"icon")),"dev-os-terminal-symbolic");test.expect(!json.bool(json.get(pinned,"running")),"Empty pin claims a running window")
+})
+test.case("all-minimized state and Unicode labels are prepared in the worker",fn() {
+    let row=json.at(taskbar.presentation(json.value([{id:1,title:"เอกสาร",appId:"test",active:false,minimized:true},{id:2,title:"Other",appId:"test",active:false,minimized:true}]),json.array(),false),0)
+    test.expect(json.bool(json.get(row,"minimized")),"All-minimized flag changed");t.equal(json.string(json.get(row,"tooltip")),"เอกสาร · 2 windows · Minimized")
+})
+test.case("taskbar worker preserves request IDs and recovers from bad requests",fn() {
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev"),Map<str,str>(),"bad\n{\"id\":42,\"windows\":[],\"showPinned\":true}\n",15000);t.success(done)
+    let frames=strings.split(strings.trim(t.out(done)),"\n");test.expect(json.has(json.parse(frames[0]),"error"),"Bad request accepted");let frame=json.parse(frames[1]);test.expect(json.int(json.get(frame,"id"))==42 && json.len(json.get(frame,"rows"))==2,"Worker projection changed")
+})
+test.case("native tracker batches preserve arrival order and geometry across partial updates",fn() {
+    let first=session.handle(session.empty(),{events:[{type:"geometry",id:10,geometry:{x:20,y:30}},{type:"window",id:10,title:"First",appId:"first",active:true,minimized:false},{type:"window",id:2,title:"Second",appId:"second",active:false,minimized:false}],showPinned:false})
+    let rows=json.get(first.payload,"rows");t.equal(json.string(json.get(json.at(rows,0),"group")),"first");t.equal(json.string(json.get(json.at(rows,1),"group")),"second")
+    let changed=session.handle(first.state,{events:[{type:"window",id:10,active:false,minimized:true}]})
+    let window=json.at(json.get(json.at(json.get(changed.payload,"rows"),0),"windows"),0)
+    test.expect(json.int(json.get(json.get(window,"geometry"),"x"))==20,"Partial update lost geometry")
+    test.expect(json.bool(json.get(json.at(json.get(changed.payload,"rows"),0),"minimized")),"Partial state was not applied")
+})
+test.case("closed windows and tracker disconnect clear tasks without losing catalog or pin policy",fn() {
+    let first=session.handle(session.empty(),{events:[{type:"window",id:1,title:"App",appId:"test"}],showPinned:false,catalog:[{id:"test.desktop",title:"Installed App",icon:"app-icon"}]})
+    let closed=session.handle(first.state,{events:[{type:"closed",id:1}]});test.expect(json.len(json.get(closed.payload,"rows"))==0,"Closed task survived")
+    let disconnected=session.handle(first.state,{events:[{type:"disconnected"}]});test.expect(json.len(json.get(disconnected.payload,"rows"))==0,"Disconnected tracker left stale tasks")
+    let restored=session.handle(disconnected.state,{events:[{type:"window",id:2,title:"Window",appId:"test"}]})
+    t.equal(json.string(json.get(json.at(json.get(restored.payload,"rows"),0),"title")),"Installed App")
+    test.expect(json.len(json.get(restored.payload,"rows"))==1,"Pin policy was lost during reconnect")
+})
+test.case("native framing escapes labels and never publishes geometry-only ghosts",fn() {
+    let geometry=session.handle(session.empty(),{events:[{type:"geometry",id:1,geometry:{x:20}}],showPinned:false,wire:true})
+    t.equal(geometry.frame,"B")
+    let visible=session.handle(geometry.state,{events:[{type:"window",id:1,title:"ไทย\t100%\n",appId:"test",active:true,minimized:false}],wire:true})
+    test.expect(visible.native,"Native wire request returned JSON mode");t.contains(visible.frame,"ไทย%09100%25%0A");t.contains(visible.frame,"panel-task-1")
+    t.contains(visible.frame,"V\ttest\t1\tไทย%09100%25%0A\tไทย%09100%25%0A\t1\t0\t1\t\tMaximize\twindow-maximize-symbolic")
+})
+test.case("persistent worker consumes native events and retains state on polling",fn() {
+    let input="{\"id\":1,\"events\":[{\"type\":\"window\",\"id\":10,\"title\":\"App\",\"appId\":\"test\"}],\"showPinned\":false}\n{\"id\":2}\n{\"wire\":true,\"events\":[{\"type\":\"closed\",\"id\":10}]}\n"
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev"),Map<str,str>(),input,15000);t.success(done)
+    let frames=strings.split(strings.trim(t.out(done)),"\n");test.expect(frames.len()==3,"Missing persistent responses")
+    test.expect(json.len(json.get(json.parse(frames[1]),"rows"))==1,"Polling lost tracker state");t.equal(frames[2],"B")
+})
+test.case("taskbar selection uses fresh active/minimized state for a single window",fn() {
+    for minimized in Vec<bool>(false,true) {for active in Vec<bool>(false,true) {
+        let rows=taskbar.presentation(json.value([{id:42,title:"App",appId:"test",active:active,minimized:minimized}]),json.array(),false)
+        let selected=actions.select(rows,"test");t.equal(json.string(json.get(selected,"kind")),"tracker");t.equal(json.string(json.get(selected,"command")),active && !minimized ? "minimize 42" : "activate 42")
+    }}
+})
+test.case("pinned apps launch explicitly and multi-window groups request a picker",fn() {
+    let pinned=actions.select(taskbar.presentation(json.array(),json.array(),true),"terminal")
+    t.equal(json.string(json.get(pinned,"kind")),"shell");t.equal(json.string(json.get(pinned,"command")),"terminal")
+    let rows=taskbar.presentation(json.value([{id:1,title:"One",appId:"test"},{id:2,title:"Two",appId:"test"}]),json.array(),false)
+    let picker=actions.select(rows,"test");t.equal(json.string(json.get(picker,"kind")),"picker");test.expect(json.len(json.get(picker,"windows"))==2 && !json.has(picker,"command"),"Multi-window click activated an arbitrary window")
+})
+test.case("stale selections are rejected and action frames never repeat on polling",fn() {
+    let initial=session.handle(session.empty(),{events:[{type:"window",id:1,title:"App",appId:"test",active:true,minimized:false}],showPinned:false})
+    let clicked=session.handle(initial.state,{wire:true,select:"test"});t.contains(clicked.frame,"W\tminimize 1")
+    let poll=session.handle(clicked.state,{wire:true});t.lacks(poll.frame,"W\t")
+    let closed=session.handle(clicked.state,{events:[{type:"closed",id:1}]})
+    test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(closed.state,{wire:true,select:"test"})})),"Closed task selection was accepted")
+})
+test.case("persistent native action protocol emits one tracker command and keeps running after stale selection",fn() {
+    let input="{\"events\":[{\"type\":\"window\",\"id\":1,\"title\":\"App\",\"appId\":\"test\",\"active\":true}],\"showPinned\":false,\"wire\":true}\n{\"wire\":true,\"select\":\"test\"}\n{\"wire\":true}\n{\"wire\":true,\"select\":\"missing\"}\n{\"wire\":true}\n"
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev"),Map<str,str>(),input,15000);t.success(done)
+    test.expect(tool.count(t.out(done),"W\tminimize 1")==1,"Tracker mutation was replayed");t.contains(t.out(done),"E\tThis task is no longer available.")
+})
+test.case("picker prepares window labels and controls without changing window order",fn() {
+    let rows=taskbar.presentation(json.value([{id:7,title:"",appId:"test",minimized:true,maximized:true},{id:3,title:"เอกสาร",appId:"test",active:true}]),json.array(),false)
+    let picker=actions.select(rows,"test");let windows=json.get(picker,"windows");let first=json.at(windows,0);let second=json.at(windows,1)
+    test.expect(json.int(json.get(first,"id"))==7 && json.int(json.get(second,"id"))==3,"Picker reordered windows")
+    t.equal(json.string(json.get(first,"title")),json.string(json.get(picker,"title")));t.equal(json.string(json.get(first,"status")),"Minimized")
+    test.expect(!json.bool(json.get(first,"minimizeEnabled")),"Minimized window offers minimize");t.equal(json.string(json.get(first,"minimizeLabel")),"Restore");t.equal(json.string(json.get(first,"minimizeAction")),"activate");t.equal(json.string(json.get(first,"maximizeLabel")),"Restore size");t.equal(json.string(json.get(second,"title")),"เอกสาร")
+})
+test.case("picker actions validate membership and use current maximize state",fn() {
+    let initial=session.handle(session.empty(),{windows:[{id:1,title:"One",appId:"test"},{id:2,title:"Two",appId:"test"},{id:3,title:"Other",appId:"other"}],showPinned:false})
+    for action in Vec<str>("activate","minimize","maximize","close") {let reply=session.handle(initial.state,{wire:true,windowAction:{group:"test",id:2,action:action}});t.contains(reply.frame,"W\t"+action+" 2");t.lacks(session.handle(reply.state,{wire:true}).frame,"W\t")}
+    let restored=session.handle(initial.state,{wire:true,events:[{type:"window",id:2,maximized:true}],windowAction:{group:"test",id:2,action:"maximize"}});t.contains(restored.frame,"W\tunmaximize 2")
+    for request in json.value([{group:"test",id:3,action:"close"},{group:"test",id:99,action:"activate"},{group:"test",id:2,action:"close 3"},{group:"test",id:1.5,action:"close"}]) {test.expect(result.isErr(result.attempt(fn():json.Value {return actions.windowAction(json.get(initial.payload,"rows"),request)})),"Invalid picker command accepted")}
+    let closed=session.handle(initial.state,{events:[{type:"closed",id:2}]});test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(closed.state,{windowAction:{group:"test",id:2,action:"close"}})})),"Closed picker item accepted")
+    test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(initial.state,{events:[{type:"window",id:2,minimized:true}],windowAction:{group:"test",id:2,action:"minimize"}})})),"Already minimized item accepted")
+    test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(initial.state,{select:"test",windowAction:{group:"test",id:2,action:"close"}})})),"Ambiguous action accepted")
+})
+test.case("persistent picker commands recover from stale IDs and never replay on polls",fn() {
+    let input="{\"wire\":true,\"showPinned\":false,\"windows\":[{\"id\":2,\"title\":\"Two\",\"appId\":\"test\",\"maximized\":true}]}\n{\"wire\":true,\"windowAction\":{\"group\":\"test\",\"id\":2,\"action\":\"maximize\"}}\n{\"wire\":true}\n{\"wire\":true,\"windowAction\":{\"group\":\"test\",\"id\":99,\"action\":\"close\"}}\n{\"wire\":true,\"windowAction\":{\"group\":\"test\",\"id\":2,\"action\":\"activate\"}}\n"
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev"),Map<str,str>(),input,15000);t.success(done)
+    test.expect(tool.count(t.out(done),"W\tunmaximize 2")==1 && tool.count(t.out(done),"W\tactivate 2")==1,"Picker command repeated or recovery failed");t.contains(t.out(done),"E\tThis task window is no longer available.")
+})
+test.case("new window launches only currently available pins and never toggles running windows",fn() {
+    for group in Vec<str>("terminal","files") {
+        let initial=session.handle(session.empty(),{showPinned:true,windows:[{id:1,title:"One",appId:group,active:true},{id:2,title:"Two",appId:group}]})
+        let launched=session.handle(initial.state,{wire:true,launch:group});t.contains(launched.frame,"S\t"+group);t.lacks(launched.frame,"W\t");t.lacks(session.handle(launched.state,{wire:true}).frame,"S\t")
+        test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(initial.state,{showPinned:false,launch:group})})),"Hidden pin retained a New window command")
+        test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(initial.state,{launch:group,select:group})})),"Conflicting launch and selection accepted")
+    }
+    let initial=session.handle(session.empty(),{showPinned:true,windows:[{id:3,title:"Other",appId:"other"}]})
+    for group in Vec<str>("other","missing","terminal; files") {test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(initial.state,{launch:group})})),"Unlaunchable task accepted")}
+})
+test.case("persistent New window requests produce one launch plan across polls",fn() {
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev"),Map<str,str>(),"{\"showPinned\":true}\n{\"launch\":\"terminal\"}\n{}\n{\"launch\":\"missing\"}\n{}\n",15000);t.success(done)
+    let frames=strings.split(strings.trim(t.out(done)),"\n");t.equal(json.string(json.get(json.get(json.parse(frames[1]),"action"),"command")),"terminal")
+    test.expect(!json.has(json.parse(frames[2]),"action") && json.has(json.parse(frames[3]),"error") && !json.has(json.parse(frames[4]),"action"),"Launch replayed or worker failed to recover")
+})
+test.case("native New window executes RPC once and never retries a failed launch",fn() {
+    tool.scope("panel-taskbar-launch-",fn(dir:str) {
+        let source=dir+"/rpc.c";let library=dir+"/rpc.so";let log=dir+"/calls"
+        tool.write(source,"#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\nvoid *sp_builder(void){return calloc(256,1);}\nvoid sp_arg(void *builder,const char *value){snprintf(builder,256,\"%s\",value);}\nint sr_remote(const char *name,const char *path,const char *interface_name,const char *method,void *builder,const char *cwd){(void)name;(void)path;(void)interface_name;(void)method;(void)cwd;FILE *file=fopen(getenv(\"PANEL_RPC_LOG\"),\"a\");if(!file)return 1;fprintf(file,\"%s\\n\",(char *)builder);fclose(file);int failed=strcmp(builder,\"files\")==0;free(builder);return failed;}\n")
+        tool.checked(Vec<str>("cc","-shared","-fPIC",source,"-o",library),Map<str,str>(),"",15000)
+        let env=Map<str,str>();env.set("PANEL_RPC_LOG",log)
+        let input="{\"wire\":true,\"showPinned\":true}\n{\"wire\":true,\"launch\":\"terminal\"}\n{\"wire\":true}\n{\"wire\":true,\"launch\":\"files\"}\n{\"wire\":true}\n"
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev","--ffi-lib",library),env,input,15000);t.success(done)
+        t.equal(strings.trim(tool.read(log)),"terminal\nfiles");test.expect(tool.count(t.out(done),"S\tterminal")==1,"Successful RPC replayed");t.contains(t.out(done),"E\tCould not launch the pinned application.")
+    })
+})
+test.case("keyboard labels preserve localized names and language abbreviations",fn() {
+    t.equal(language.label("Thai"),"TH");t.equal(language.label("English (US)"),"EN");t.equal(language.label("German"),"DE");t.equal(language.label("French"),"FR");t.equal(language.label("Spanish"),"ES");t.equal(language.label("Dvorak"),"DV");t.equal(language.label("日本語"),"日本")
+})
+test.case("keyboard batches publish atomically, deduplicate and clear on disconnect",fn() {
+    let pending=session.handle(session.empty(),{wire:true,language:true,events:[{type:"desktop-begin"},{type:"keyboard-layout",index:0,name:"English (US)",active:true}]});t.contains(pending.frame,"K\t—\tKeyboard language");t.lacks(pending.frame,"J\t")
+    let ready=session.handle(pending.state,{wire:true,events:[{type:"keyboard-layout",index:0,name:"English (US)",active:false},{type:"keyboard-layout",index:1,name:"Thai",active:true},{type:"desktop-done"}]});t.contains(ready.frame,"K\tTH\tThai · Change keyboard language");test.expect(json.len(json.get(ready.payload,"keyboardLayouts"))==2,"Duplicate layout indices survived")
+    let chosen=session.handle(ready.state,{wire:true,keyboard:0});t.contains(chosen.frame,"W\tlayout 0");t.lacks(session.handle(chosen.state,{wire:true}).frame,"W\t")
+    let lost=session.handle(chosen.state,{wire:true,events:[{type:"disconnected"}]});t.lacks(lost.frame,"J\t");test.expect(result.isErr(result.attempt(fn():session.Reply {return session.handle(lost.state,{keyboard:0})})),"Disconnected keyboard layout could be selected")
+    for value in Vec<json.Value>(json.value(-1),json.value(1.5),json.value("1"),json.value(999)) {test.expect(result.isErr(result.attempt(fn():json.Value {return language.choose(json.get(ready.payload,"keyboardLayouts"),value)})),"Invalid layout index accepted")}
+})
+return t.finish()

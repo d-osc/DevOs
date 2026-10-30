@@ -1,0 +1,375 @@
+{
+  "families": {
+    "vscode": {
+      "files": {
+        "dark": "2026-dark",
+        "light": "2026-light"
+      },
+      "include": {
+        "dark": "dark_modern",
+        "light": "light_modern"
+      },
+      "map": {
+        "s0": [
+          "editor.background"
+        ],
+        "s1": [
+          "sideBar.background"
+        ],
+        "s2": [
+          "editorWidget.background"
+        ],
+        "s3": [
+          "textBlockQuote.background"
+        ],
+        "s4": [
+          "list.inactiveSelectionBackground"
+        ],
+        "s5": [
+          "inputOption.activeBackground"
+        ],
+        "line0": [
+          "widget.border"
+        ],
+        "line1": [
+          "dropdown.border"
+        ],
+        "line3": [
+          "checkbox.border"
+        ],
+        "fg": [
+          "foreground"
+        ],
+        "fgStrong": [
+          "list.activeSelectionForeground"
+        ],
+        "fgMuted": [
+          "descriptionForeground"
+        ],
+        "fgDim": [
+          "disabledForeground"
+        ],
+        "accent": [
+          "button.background"
+        ],
+        "accentHover": [
+          "button.hoverBackground"
+        ],
+        "accentFg": [
+          "textLink.foreground"
+        ],
+        "onAccent": [
+          "button.foreground"
+        ],
+        "focus": [
+          {
+            "key": "focusBorder",
+            "as": "rgb"
+          }
+        ],
+        "badge": [
+          "badge.background"
+        ],
+        "error": [
+          "errorForeground"
+        ],
+        "warning": [
+          "list.warningForeground",
+          "problemsWarningIcon.foreground"
+        ],
+        "success": [
+          "gitDecoration.addedResourceForeground"
+        ],
+        "info": [
+          "notificationsInfoIcon.foreground"
+        ],
+        "errorBg": [
+          "inputValidation.errorBackground"
+        ],
+        "errorLine": [
+          "inputValidation.errorBorder"
+        ],
+        "warningBg": [
+          "inputValidation.warningBackground"
+        ],
+        "warningLine": [
+          "inputValidation.warningBorder"
+        ],
+        "infoBg": [
+          "inputValidation.infoBackground"
+        ],
+        "infoLine": [
+          "inputValidation.infoBorder"
+        ],
+        "purple": [
+          "charts.purple"
+        ],
+        "blue": [
+          "charts.blue"
+        ],
+        "yellow": [
+          "charts.yellow"
+        ],
+        "orange": [
+          "charts.orange"
+        ],
+        "green": [
+          "charts.green"
+        ],
+        "red": [
+          "charts.red"
+        ],
+        "editorBg": [
+          "editor.background"
+        ],
+        "editorFg": [
+          "editor.foreground"
+        ],
+        "terminalBg": [
+          "terminal.background",
+          "panel.background"
+        ],
+        "cursor": [
+          "terminalCursor.foreground"
+        ],
+        "lineHighlight": [
+          "editor.lineHighlightBackground"
+        ]
+      },
+      "alpha": {
+        "selection": "list.activeSelectionBackground",
+        "hover": "list.hoverBackground",
+        "menuSelection": "menu.selectionBackground",
+        "scrollbar": "scrollbarSlider.background",
+        "editorSelection": "editor.selectionBackground",
+        "terminalSelection": "terminal.selectionBackground"
+      },
+      "ansi": {
+        "dark": [
+          "#000000",
+          "#cd3131",
+          "#0dbc79",
+          "#e5e510",
+          "#2472c8",
+          "#bc3fbc",
+          "#11a8cd",
+          "#e5e5e5",
+          "#666666",
+          "#f14c4c",
+          "#23d18b",
+          "#f5f543",
+          "#3b8eea",
+          "#d670d6",
+          "#29b8db",
+          "#e5e5e5"
+        ],
+        "light": [
+          "#000000",
+          "#cd3131",
+          "#107c10",
+          "#949800",
+          "#0451a5",
+          "#bc05bc",
+          "#0598bc",
+          "#555555",
+          "#666666",
+          "#f14c4c",
+          "#14ce14",
+          "#b5ba00",
+          "#3b8eea",
+          "#d670d6",
+          "#29b8db",
+          "#a5a5a5"
+        ]
+      },
+      "terminalFg": {
+        "dark": "#cccccc",
+        "light": "#333333"
+      },
+      "ansiSource": "workbench default terminal.ansi"
+    },
+    "github": {
+      "files": {
+        "dark": "github/dark-default",
+        "light": "github/light-default"
+      },
+      "include": {},
+      "map": {
+        "s0": [
+          "sideBar.background"
+        ],
+        "s1": [
+          "editor.background"
+        ],
+        "s2": [
+          "dropdown.background"
+        ],
+        "s3": [
+          "checkbox.background",
+          "textBlockQuote.background"
+        ],
+        "s4": [
+          "welcomePage.buttonBackground",
+          "button.secondaryBackground"
+        ],
+        "s5": [
+          "button.secondaryBackground",
+          "textSeparator.foreground"
+        ],
+        "line0": [
+          "textSeparator.foreground"
+        ],
+        "line1": [
+          "input.border"
+        ],
+        "line3": [
+          "editorWhitespace.foreground",
+          "editorLineNumber.foreground"
+        ],
+        "fg": [
+          "button.secondaryForeground"
+        ],
+        "fgStrong": [
+          "foreground"
+        ],
+        "fgMuted": [
+          "descriptionForeground"
+        ],
+        "fgDim": [
+          "editorWhitespace.foreground",
+          "editorLineNumber.foreground"
+        ],
+        "accent": [
+          "badge.background"
+        ],
+        "accentHover": [
+          {
+            "key": "list.focusBackground",
+            "as": "rgb"
+          },
+          "symbolIcon.booleanForeground"
+        ],
+        "accentFg": [
+          "textLink.foreground"
+        ],
+        "onAccent": [
+          "badge.foreground"
+        ],
+        "focus": [
+          "focusBorder"
+        ],
+        "badge": [
+          "badge.background"
+        ],
+        "error": [
+          "errorForeground"
+        ],
+        "warning": [
+          "notificationsWarningIcon.foreground",
+          "debugConsole.warningForeground"
+        ],
+        "success": [
+          "gitDecoration.addedResourceForeground"
+        ],
+        "info": [
+          "notificationsInfoIcon.foreground"
+        ],
+        "errorBg": [
+          {
+            "key": "diffEditor.removedLineBackground",
+            "as": "flat"
+          }
+        ],
+        "errorLine": [
+          "statusBar.debuggingBackground"
+        ],
+        "warningBg": [
+          {
+            "key": "editorGutter.modifiedBackground",
+            "as": "flat"
+          }
+        ],
+        "warningLine": [
+          {
+            "key": "editorGutter.modifiedBackground",
+            "as": "rgb"
+          }
+        ],
+        "infoBg": [
+          {
+            "key": "list.focusBackground",
+            "as": "flat"
+          }
+        ],
+        "infoLine": [
+          "focusBorder"
+        ],
+        "purple": [
+          "symbolIcon.functionForeground"
+        ],
+        "blue": [
+          "symbolIcon.keyForeground"
+        ],
+        "yellow": [
+          "terminal.ansiBrightYellow",
+          "notificationsWarningIcon.foreground"
+        ],
+        "orange": [
+          "symbolIcon.classForeground"
+        ],
+        "green": [
+          "symbolIcon.numberForeground"
+        ],
+        "red": [
+          "symbolIcon.keywordForeground"
+        ],
+        "editorBg": [
+          "editor.background"
+        ],
+        "editorFg": [
+          "editor.foreground"
+        ],
+        "terminalBg": [
+          "editor.background"
+        ],
+        "cursor": [
+          "editorCursor.foreground"
+        ],
+        "lineHighlight": [
+          {
+            "key": "editor.lineHighlightBackground",
+            "as": "flat"
+          }
+        ]
+      },
+      "alpha": {
+        "selection": "list.activeSelectionBackground",
+        "hover": "list.hoverBackground",
+        "menuSelection": "list.focusBackground",
+        "scrollbar": "scrollbarSlider.background",
+        "editorSelection": "list.focusBackground",
+        "terminalSelection": "list.focusBackground"
+      },
+      "terminalFgKey": "terminal.foreground",
+      "ansiFromTheme": true
+    }
+  },
+  "ansiKeys": [
+    "Black",
+    "Red",
+    "Green",
+    "Yellow",
+    "Blue",
+    "Magenta",
+    "Cyan",
+    "White",
+    "BrightBlack",
+    "BrightRed",
+    "BrightGreen",
+    "BrightYellow",
+    "BrightBlue",
+    "BrightMagenta",
+    "BrightCyan",
+    "BrightWhite"
+  ]
+}

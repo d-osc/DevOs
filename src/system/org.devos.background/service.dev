@@ -1,0 +1,35 @@
+#!/usr/bin/env d
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "./model.dev" as model
+use "./widget-desktops.dev" as widgets
+use "./wallpaper.dev" as wallpaper
+use "./context-menu.dev" as menu
+use "./settings.dev" as settings
+use "../../../lib/desktop.dev" as util
+fn handle(line:str):json.Value {
+    let request=json.parse(line)
+    let action=model.text(model.get(request,"action"));let values=model.get(request,"values");let desktops=model.get(request,"desktops")
+    let desktop=widgets.active(desktops,json.has(request,"desktops"))
+    if strings.equal(action,"widgets") {return {id:model.get(request,"id"),desktop:desktop,widgets:widgets.values(values,desktop),locations:widgets.locations(model.get(widgets.values(values,desktop),"widgetLocations"))}}
+    if strings.equal(action,"widget-update") {return {id:model.get(request,"id"),values:widgets.update(values,desktop,model.get(request,"patch"))}}
+    if strings.equal(action,"menu") {return {id:model.get(request,"id"),items:menu.view(values)}}
+    if strings.equal(action,"settings-plan") {return {id:model.get(request,"id"),values:settings.plan(model.get(request,"latest"),model.get(request,"saved"),values)}}
+    if strings.equal(action,"picture-layout") {return {id:model.get(request,"id"),layout:wallpaper.layout(model.num(model.get(request,"width")),model.num(model.get(request,"height")),model.num(model.get(request,"imageWidth")),model.num(model.get(request,"imageHeight")),model.text(model.get(request,"fit")))}}
+    if !strings.equal(action,"") && !strings.equal(action,"snapshot") {result.raise("Unknown background action.")}
+    return {id:model.get(request,"id"),views:model.views(request,model.onBattery(hw.envOr("DEVOS_BACKGROUND_POWER_ROOT","/sys/class/power_supply")))}
+}
+fn respond(line:str):str {
+    let reply=result.attempt(fn():json.Value { return handle(line) })
+    if result.isOk(reply) {return json.stringify(result.unwrap(reply))}
+    let parsed=result.attempt(fn():json.Value {return json.parse(line)})
+    if result.isOk(parsed) {let action=model.text(model.get(result.unwrap(parsed),"action"));if !strings.equal(action,"") && !strings.equal(action,"snapshot") {return json.stringify(util.error(result.message(reply)))}}
+    return "{\"error\":\"Invalid background model snapshot\"}"
+}
+while true {
+    let line=io.read_line(); if strings.equal(line,"") { break }
+    print(respond(line))
+}

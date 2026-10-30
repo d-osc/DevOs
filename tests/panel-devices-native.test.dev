@@ -1,0 +1,52 @@
+use "std/test"
+use "std/json"
+use "std/fs"
+use "std/strings"
+use "../src/system/org.devos.panel/devices-model.dev" as devices
+use "../lib/hw.dev" as hw
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn yes(name:str):bool {return true}
+fn no(name:str):bool {return false}
+fn missing(args:Vec<str>):hw.Run {return hw.Run(127,"")}
+test.case("PipeWire volume and mute are prepared in the data process",fn() {
+    let state=devices.audio(fn(args:Vec<str>):hw.Run {return hw.Run(0,"Volume: 0.725 [MUTED]\n")},yes)
+    test.expect(json.int(json.get(state,"volume"))==73 && json.bool(json.get(state,"muted")),"PipeWire parsing changed")
+    t.equal(json.string(json.get(state,"audio")),"wpctl")
+})
+test.case("invalid PipeWire falls back to PulseAudio and keeps boosted volume",fn() {
+    let state=devices.audio(fn(args:Vec<str>):hw.Run {
+        if strings.equal(args[0],"wpctl") {return hw.Run(0,"No audio output")}
+        return hw.Run(0,strings.equal(args[1],"get-sink-volume") ? "Volume: front-left: 98304 / 150% / 10.5 dB" : "Mute: yes\n")
+    },yes)
+    t.equal(json.string(json.get(state,"audio")),"pactl");test.expect(json.int(json.get(state,"volume"))==150 && json.bool(json.get(state,"muted")),"PulseAudio state changed")
+})
+test.case("missing or failing audio backends never invent a volume",fn() {
+    let absent=devices.audio(missing,no);test.expect(json.is_null(json.get(absent,"audio")) && json.is_null(json.get(absent,"volume")),"Missing audio invented a reading")
+    let failed=devices.audio(missing,yes);test.expect(json.is_null(json.get(failed,"volume")) && !json.bool(json.get(failed,"muted")),"Failed audio invented mute/volume")
+    for raw in Vec<str>("","Volume: bad","Volume: -0.5","Volume:") {test.expect(json.is_null(devices.wpVolume(raw)),"Bad PipeWire reading accepted")}
+})
+test.case("default route selects wired versus wireless and backlights sort deterministically",fn() {
+    tool.scope("panel-devices-layout-",fn(dir:str) {
+        fs.mkdirSync(dir+"/sys/class/net/wlan0/wireless",true)
+        tool.write(dir+"/proc/net/route","Iface Destination Gateway\neth0 00000000 01000000\n")
+        tool.write(dir+"/sys/class/backlight/b/max_brightness","200");tool.write(dir+"/sys/class/backlight/b/brightness","200")
+        tool.write(dir+"/sys/class/backlight/a/max_brightness","100");tool.write(dir+"/sys/class/backlight/a/brightness","25")
+        let state=devices.snapshot(dir+"/sys",dir+"/proc",true,false,missing,no)
+        test.expect(!json.bool(json.get(state,"wireless")) && json.int(json.get(state,"brightness"))==25,"Route or backlight priority changed")
+        t.equal(json.string(json.get(state,"network")),"Ethernet connected")
+        tool.write(dir+"/proc/net/route","wlan0 00000000 01000000\n")
+        let wireless=devices.snapshot(dir+"/sys",dir+"/proc",true,false,fn(args:Vec<str>):hw.Run {return hw.Run(0,strings.equal(args[0],"nmcli") ? "enabled\n" : "Powered: no")},fn(name:str):bool {return strings.equal(name,"nmcli") || strings.equal(name,"bluetoothctl")})
+        test.expect(json.bool(json.get(wireless,"wireless")) && json.bool(json.get(wireless,"wifi")) && !json.bool(json.get(wireless,"bluetooth")),"Radio state changed")
+        t.equal(json.string(json.get(wireless,"network")),"Wi-Fi connected")
+    })
+})
+test.case("offline, WSL and unavailable hardware keep distinct presentation",fn() {
+    tool.scope("panel-devices-absent-",fn(dir:str) {
+        let offline=devices.snapshot(dir,dir,false,false,missing,no)
+        t.equal(json.string(json.get(offline,"network")),"No network connection")
+        for key in Vec<str>("wifi","bluetooth","brightness","volume") {test.expect(json.is_null(json.get(offline,key)),"Missing hardware fabricated: "+key)}
+        let windows=devices.snapshot(dir,dir,true,true,missing,no);t.equal(json.string(json.get(windows,"network")),"Connected through Windows")
+    })
+})
+return t.finish()

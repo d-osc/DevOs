@@ -2,21 +2,21 @@ import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot, removeTree} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {FilesSettings} from '../extensions/org.devos.files/settings-view.js';
-import {fileMenuOptions, fileMenuItems, createFileContextMenu, fileContextEntry, type FileMenuKey} from '../extensions/org.devos.files/context-menu.js';
-import {FileBrowser} from '../extensions/org.devos.files/model.js';
-import {mountFiles} from '../extensions/org.devos.files/view.js';
-import {parseCustomMenu, customCommandArguments, customMenuMatches, runCustomMenuItem} from '../extensions/org.devos.files/custom-menu.js';
+import {FilesSettings} from '../src/apps/org.devos.files/settings-view.js';
+import {fileMenuOptions, fileMenuItems, createFileContextMenu, fileContextEntry, type FileMenuKey} from '../src/apps/org.devos.files/context-menu.js';
+import {FileBrowser} from '../src/apps/org.devos.files/model.js';
+import {mountFiles} from '../src/apps/org.devos.files/view.js';
+import {parseCustomMenu, customCommandArguments, customMenuMatches, runCustomMenuItem} from '../src/apps/org.devos.files/custom-menu.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 async function verify() {
     const temporary = GLib.dir_make_tmp('devos-files-settings-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1150);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     try {
@@ -115,6 +115,21 @@ async function verify() {
         offscreen.set_size_request(650, 650); offscreen.resize(650, 650); await wait();
         assert(host.get_preferred_width()[0] <= 650, 'Files fits a snapped half-screen window');
         if (capture) offscreen.get_pixbuf()!.savev(`${capture}-empty.png`, 'png', [], []);
+        for (let index = 0; index < 240; index++) GLib.file_set_contents(`${directory}/Child/item-${index}.txt`, '');
+        await model.refresh();
+        const list = () => widgets(host).find(item => item.name === 'files-list') as Gtk.ListBox;
+        let heartbeat = 0;
+        const source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1, () => {heartbeat++; return GLib.SOURCE_CONTINUE;});
+        try {
+            for (let attempt = 0; attempt < 30 && list().get_children().length < 200; attempt++) await wait();
+            assert(list().get_children().length === 200 && heartbeat > 1, 'First page completes while the main loop continues dispatching');
+            const more = widgets(host).find(item => item instanceof Gtk.Button && item.get_label() === 'Show more') as Gtk.Button;
+            assert(more, 'Remaining files stay accessible'); more.clicked();
+            for (let attempt = 0; attempt < 30 && list().get_children().length < 240; attempt++) await wait();
+            assert(list().get_children().length === 240, 'Show more completes the next page');
+            await model.navigate(directory); await wait();
+            assert(list().get_children().length === 2, 'Navigation cancels old batches and resets the page');
+        } finally {GLib.source_remove(source);}
     } finally {Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default()!, css); view.destroy(); native.destroy(); offscreen.destroy(); model.dispose(); removeTree(temporary);}
     print('PASS: Files settings, custom CRUD, protected defaults, scope/command validation, literal path execution, native menu actions and list/grid click targets');
 }

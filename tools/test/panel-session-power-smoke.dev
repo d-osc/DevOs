@@ -1,0 +1,21 @@
+use "std/strings"
+use "std/fs"
+use "std/encoding"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    let root=tool.root();tool.checked(Vec<str>("sh",root+"/tools/build/native-panel.sh"),Map<str,str>(),"",90000)
+    let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")));let binary=root+"/build/react-devlang/panel/power-ui-test";let server=root+"/build/react-devlang/panel/login1-fixture"
+    tool.checked(Vec<str>("sh",root+"/packages/react-devlang/tools/build.sh",root+"/tests/react-devlang/panel-power.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror \"$1\" $(pkg-config --cflags --libs gio-2.0) -o \"$2\"","login1-build",root+"/tests/fixtures/panel-login1.c",server),Map<str,str>(),"",15000)
+    let extras=Map<str,str>();extras.set("DEVOS_PANEL_RENDERER","native-preview");extras.set("WLR_HEADLESS_OUTPUTS","2")
+    smoke.withSession("panel-session-power",extras,fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("GDK_BACKEND","wayland");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1");env.set("DBUS_SYSTEM_BUS_ADDRESS",env.get("DBUS_SESSION_BUS_ADDRESS"));env.set("PANEL_POWER_LOG",session.base+"/calls");env.set("PANEL_POWER_READY",session.base+"/ready")
+        tool.write(session.base+"/bin/dev-os-shell","#!/bin/sh\necho \"desktop $*\" >> \"$PANEL_POWER_LOG\"\n");tool.write(session.base+"/bin/swaylock","#!/bin/sh\nexit 0\n");tool.chmod(session.base+"/bin/dev-os-shell","755");tool.chmod(session.base+"/bin/swaylock","755");env.set("PATH",session.base+"/bin:"+env.get("PATH"))
+        let daemon=smoke.launch(Vec<str>(server),env,session.base+"/login1.log");let outcome=tool.run(Vec<str>("sh","-c","i=0; while [ ! -f \"$PANEL_POWER_READY\" ]; do i=$((i+1)); [ \"$i\" -lt 100 ] || exit 1; sleep 0.02; done"),env,"",5000);tool.require(outcome.success,"Private logind fixture did not start")
+        let done=tool.run(Vec<str>(binary),env,"",20000);tool.write(root+"/build/panel-power-native-ui.log",encoding.decode(done.stdout,"utf8")+encoding.decode(done.stderr,"utf8"));tool.checked(Vec<str>("kill","-TERM","${daemon.pid()}"),env,"",5000);daemon.wait();tool.require(done.success,tool.read(root+"/build/panel-power-native-ui.log"))
+        let calls=tool.read(session.base+"/calls");tool.require(tool.count(calls,"\nReboot\n")==1 && tool.count(calls,"\nPowerOff\n")==1 && tool.count(calls,"desktop lock")==1,"Native power UI repeated or skipped a mutation");print("PASS native power controls on Wayland, two-output loading screens and isolated logind actions")
+    });return 0
+}
+return tool.main(main)

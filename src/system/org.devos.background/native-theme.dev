@@ -1,0 +1,25 @@
+use "react_devlang/ui" as ui
+use "./scene.dev" as scene
+extern fn rc_env(name:str):str
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn rd_theme_is_dark():i32
+extern fn rd_css_revision(root:*void):i64
+extern fn rd_named_color(root:*void,name:str,channel:i32):f64
+fn useTheme(context:*ui.Context) {
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let root=rc_env("DEV_OS_ROOT");let runtime=rc_env("XDG_RUNTIME_DIR");let snapshot=rc_env("DEVOS_BACKGROUND_THEME_FILE")
+        let mode=rc_env("DEV_OS_THEME");let family=rc_env("DEV_OS_THEME_FAMILY")
+        if !ui.equalText(ui.text(mode),ui.text("dark")) && !ui.equalText(ui.text(mode),ui.text("light")) {mode=rd_default_theme()}
+        if !ui.equalText(ui.text(family),ui.text("github")) {family="vscode"}
+        if ui.text(snapshot).bytes.len()==0 && ui.text(runtime).bytes.len()>0 {snapshot="${runtime}/devos-native-theme.css"}
+        if ui.text(root).bytes.len()>0 {rd_theme_follow((*context).native,snapshot,"${root}/dist/native/theme.${family}.${mode}.css")}
+        return ui.noop
+    }},Vec<i64>())
+}
+fn color(context:*ui.Context,name:str,fallback:scene.Color):scene.Color {unsafe {
+    let r=rd_named_color((*context).native,name,0);if r<0.0 {return fallback}
+    return scene.Color(r,rd_named_color((*context).native,name,1),rd_named_color((*context).native,name,2))
+}}
+fn base(context:*ui.Context):scene.Color {unsafe {let dark=rd_theme_is_dark()!=0;return color(context,dark ? "dv_s0" : "dv_s1",dark ? scene.Color(32.0/255.0,32.0/255.0,32.0/255.0) : scene.Color(231.0/255.0,232.0/255.0,236.0/255.0))}}
+fn accent(context:*ui.Context):scene.Color {return color(context,"dv_accent_fg",scene.Color(0.0,170.0/255.0,1.0))}

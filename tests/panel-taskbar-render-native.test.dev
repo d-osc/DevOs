@@ -1,0 +1,136 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+use "../lib/desktop.dev" as util
+test.case("native taskbar renders prepared frames without GJS",fn() {
+    let root=t.root();tool.checked(Vec<str>("sh",root+"/tools/build/native-panel.sh"),Map<str,str>(),"",90000)
+    let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")));let binary=root+"/build/react-devlang/panel/taskbar-test"
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-taskbar.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    t.lacks(tool.exec(Vec<str>("ldd",binary)),"mozjs")
+    let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native taskbar GIcons")
+})
+test.case("native taskbar click transport executes each tracker command once",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/taskbar-actions-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-taskbar-actions.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-taskbar-actions-",fn(dir:str) {
+        let helper=dir+"/tracker";let log=dir+"/commands";tool.write(log,"")
+        tool.write(dir+"/data/applications/org.example.Task.desktop","[Desktop Entry]\nType=Application\nName=Catalog App\nExec=/bin/true\nIcon=folder-symbolic\nNoDisplay=true\n")
+        tool.write(helper,"#!/bin/sh\nprintf '%s\\n' '{\"type\":\"window\",\"id\":1,\"title\":\"Example\",\"appId\":\"org.example.Task\",\"active\":true,\"minimized\":false}'\nwhile IFS= read -r line; do\nprintf '%s\\n' \"$line\" >> "+util.quote(log)+"\ncase \"$line\" in\n'minimize 1') printf '%s\\n' '{\"type\":\"window\",\"id\":1,\"active\":false,\"minimized\":true}';;\n'activate 1') printf '%s\\n' '{\"type\":\"window\",\"id\":1,\"active\":true,\"minimized\":false}';;\nesac\ndone\n")
+        tool.chmod(helper,"755");let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_TRACKER",helper);env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        env.set("XDG_DATA_HOME",dir+"/data")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native taskbar clicks")
+        t.equal(strings.trim(tool.read(log)),"minimize 1\nactivate 1")
+    })
+})
+test.case("native picker sends individual window actions and follows live tracker state",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/taskbar-picker-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-taskbar-picker.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-taskbar-picker-",fn(dir:str) {
+        let helper=dir+"/tracker";let log=dir+"/commands";tool.write(log,"")
+        tool.write(helper,"#!/bin/sh\nprintf '%s\\n' '{\"type\":\"window\",\"id\":1,\"title\":\"One\",\"appId\":\"org.example.Task\"}' '{\"type\":\"window\",\"id\":2,\"title\":\"เอกสาร\",\"appId\":\"org.example.Task\"}'\nwhile IFS= read -r line; do\nprintf '%s\\n' \"$line\" >> "+util.quote(log)+"\ncase \"$line\" in\n'maximize 2') printf '%s\\n' '{\"type\":\"window\",\"id\":2,\"maximized\":true}';;\n'minimize 2') printf '%s\\n' '{\"type\":\"window\",\"id\":2,\"minimized\":true}';;\n'unmaximize 2') printf '%s\\n' '{\"type\":\"window\",\"id\":2,\"maximized\":false}';;\n'close 1') printf '%s\\n' '{\"type\":\"closed\",\"id\":1}';;\nesac\ndone\n")
+        tool.chmod(helper,"755");let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_TRACKER",helper);env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native picker actions")
+        t.equal(strings.trim(tool.read(log)),"maximize 2\nminimize 2\nunmaximize 2\nclose 1\nactivate 2")
+    })
+})
+test.case("native picker exposes New window only for launchable pins",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/taskbar-new-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-taskbar-new.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS pinned New window")
+})
+test.case("native hover and context events preserve pointer lifecycle without window actions",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/taskbar-pointer-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")));let object=root+"/build/react-devlang/panel/pointer-test.o"
+    tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror -fPIC -c \"$1\" $(pkg-config --cflags gtk+-3.0) -o \"$2\"","pointer-build",root+"/tests/react-devlang/panel-pointer.c",object),Map<str,str>(),"",15000)
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-taskbar-pointer.devx",binary,root+"/build/react-devlang/panel/host.o",object,layer),Map<str,str>(),"",90000)
+    tool.scope("panel-pointer-",fn(dir:str) {
+        let helper=dir+"/tracker";let log=dir+"/commands";tool.write(log,"")
+        tool.write(helper,"#!/bin/sh\nprintf '%s\\n' '{\"type\":\"window\",\"id\":1,\"title\":\"Example\",\"appId\":\"org.example.Task\",\"active\":true}'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> "+util.quote(log)+"\nprintf '%s\\n' '{\"type\":\"window\",\"id\":1,\"active\":false,\"minimized\":true}'; done\n")
+        tool.chmod(helper,"755");let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_TRACKER",helper);env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",18000);t.success(done);t.contains(t.out(done),"PASS pointer hover")
+        t.equal(strings.trim(tool.read(log)),"minimize 1")
+    })
+})
+test.case("native clock popup renders prepared data and executes Time settings RPC once",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/clock-popup-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-clock-popup.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-clock-popup-",fn(dir:str) {
+        tool.checked(Vec<str>("mkdir","-p",dir+"/dist/native"),Map<str,str>(),"",5000)
+        tool.checked(Vec<str>("ln","-s",root+"/src",dir+"/src"),Map<str,str>(),"",5000);tool.checked(Vec<str>("ln","-s",root+"/lib",dir+"/lib"),Map<str,str>(),"",5000)
+        tool.checked(Vec<str>("cc","-shared","-fPIC",root+"/tests/fixtures/panel-rpc.c","-o",dir+"/dist/native/libsupervisor.so"),Map<str,str>(),"",15000)
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",dir);env.set("PANEL_RPC_LOG",dir+"/calls");env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native clock popup");t.equal(strings.trim(tool.read(dir+"/calls")),"time")
+    })
+})
+test.case("native tray renders prepared network, audio and battery facts",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/tray-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-tray.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native tray icons")
+})
+test.case("native Quick settings executes device actions once and exposes live failures",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/quick-settings-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-quick-settings.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-quick-settings-",fn(dir:str) {
+        let log=dir+"/actions";let radio=dir+"/radio";let volume=dir+"/volume";let brightness=dir+"/sys/class/backlight/display/brightness";let removed=dir+"/removed";tool.write(log,"");tool.write(radio,"no");tool.write(volume,"0.6");tool.write(brightness,"50");tool.write(dir+"/sys/class/backlight/display/max_brightness","100")
+        tool.write(dir+"/bin/wpctl","#!/bin/sh\nif [ \"$1\" = get-volume ]; then if [ -f "+util.quote(removed)+" ]; then exit 1; fi; printf 'Volume: '; cat "+util.quote(volume)+"; echo; exit 0; fi\nprintf '%s\\n' \"wpctl $*\" >> "+util.quote(log)+"\nif [ \"$1\" = set-mute ]; then touch "+util.quote(removed)+"; echo 'permission denied by fixture' >&2; exit 7; fi\nsleep 0.15\necho 0.85 > "+util.quote(volume)+"\n")
+        tool.write(dir+"/bin/bluetoothctl","#!/bin/sh\nif [ \"$1\" = show ]; then if [ -f "+util.quote(removed)+" ]; then exit 1; fi; printf 'Powered: '; cat "+util.quote(radio)+"; echo; else printf '%s\\n' \"bluetoothctl $*\" >> "+util.quote(log)+"; echo yes > "+util.quote(radio)+"; fi\n")
+        tool.write(dir+"/bin/dev-os-backlight","#!/bin/sh\nprintf '%s\\n' \"backlight $*\" >> "+util.quote(log)+"\nprintf '%s' \"$3\" > "+util.quote(brightness)+"\n")
+        for name in Vec<str>("pactl","nmcli") {tool.write(dir+"/bin/"+name,"#!/bin/sh\nexit 1\n")}
+        for name in Vec<str>("wpctl","pactl","nmcli","bluetoothctl","dev-os-backlight") {tool.chmod(dir+"/bin/"+name,"755")}
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("PATH",dir+"/bin:/usr/bin:/bin");env.set("DEVOS_PANEL_SYS",dir+"/sys");env.set("DEVOS_PANEL_PROC",dir+"/proc");env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",20000);t.success(done);t.contains(t.out(done),"PASS native Quick settings")
+        t.equal(strings.trim(tool.read(log)),"bluetoothctl power on\nwpctl set-volume @DEFAULT_AUDIO_SINK@ 85%\nbacklight -- set 55\nwpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
+    })
+})
+test.case("native battery-care switch preserves authorization failure and removal",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/battery-care-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-battery-care.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-care-ui-",fn(dir:str) {
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_BATTERY_HELPER",root+"/tests/fixtures/panel-battery-care.sh");env.set("PANEL_CARE_CALLS",dir+"/calls");env.set("PANEL_CARE_DENY_AFTER_OFF","1");for key in Vec<str>("STATE","BAD","DENIED","UNSUPPORTED","HIDDEN","DISABLED") {env.set("PANEL_CARE_"+key,dir+"/"+key)};tool.write(dir+"/STATE","off")
+        env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",18000);t.success(done);t.contains(t.out(done),"PASS native full-charge switch")
+        let calls=tool.read(dir+"/calls");test.expect(tool.count(calls,"full on")==2 && tool.count(calls,"full off")==1,"Battery switch repeated a mutation")
+    })
+})
+test.case("native alerts receive shell messages through a data worker",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/alerts-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-alerts.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("dbus-run-session","--","xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native alerts bus")
+})
+test.case("native language selector validates live layouts before tracker command",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/language-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-language.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-language-",fn(dir:str) {
+        let helper=dir+"/tracker";let log=dir+"/commands";tool.write(log,"")
+        let before="{\"type\":\"desktop-begin\"}\n{\"type\":\"keyboard-layout\",\"index\":0,\"name\":\"English (US)\",\"active\":false}\n{\"type\":\"keyboard-layout\",\"index\":1,\"name\":\"Thai\",\"active\":true}\n{\"type\":\"desktop-done\"}"
+        let after=strings.replaceAll(strings.replaceAll(before,"false","TEMP"),"true","false");after=strings.replaceAll(after,"TEMP","true")
+        tool.write(helper,"#!/bin/sh\nprintf '%s\\n' "+util.quote(before)+"\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> "+util.quote(log)+"\nif [ \"$line\" = 'layout 0' ]; then printf '%s\\n' "+util.quote(after)+"; fi\ndone\n");tool.chmod(helper,"755")
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_TRACKER",helper);env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native language selection");t.equal(strings.trim(tool.read(log)),"layout 0")
+    })
+})
+test.case("native account menu renders prepared users and dispatches selections",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/accounts-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-accounts.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native account menu")
+})
+test.case("native context menu preserves prepared rows and action identities",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/context-menu-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-context-menu.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",15000);t.success(done);t.contains(t.out(done),"PASS native context rows")
+})
+test.case("native panel settings edits a draft and saves only on Apply",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/panel/settings-test";let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/panel-settings.devx",binary,root+"/build/react-devlang/panel/host.o",layer),Map<str,str>(),"",90000)
+    tool.scope("panel-settings-ui-",fn(dir:str) {
+        let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_PREFERENCES",dir+"/panel.json");env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals");env.set("NO_AT_BRIDGE","1")
+        let done=tool.run(Vec<str>("xvfb-run","--auto-servernum",binary),env,"",20000);t.success(done);t.contains(t.out(done),"PASS native panel settings");let saved=tool.read(dir+"/panel.json");t.contains(saved,"\"height\":44");t.contains(saved,"\"showDate\":false");t.contains(saved,"literal;$(false)")
+    })
+})
+return t.finish()

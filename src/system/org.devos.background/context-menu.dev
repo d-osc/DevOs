@@ -1,0 +1,55 @@
+# Menu definitions and user action validation. Execution remains a separate request.
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/regex"
+use "./model.dev" as m
+use "./command.dev" as cmd
+fn defaults():json.Value {return json.value(Vec<json.Value>(
+    {key:"menuWidgets",title:"Desktop widgets",icon:"list-add-symbolic",command:"settings.background"},
+    {key:"menuApplications",title:"Applications",icon:"view-app-grid-symbolic",command:"launcher"},
+    {key:"menuTerminal",title:"Terminal",icon:"utilities-terminal-symbolic",command:"terminal"},
+    {key:"menuFiles",title:"Files",icon:"folder-symbolic",command:"files"},
+    {key:"menuBackground",title:"Background settings",icon:"preferences-desktop-wallpaper-symbolic",command:"settings.background"},
+    {key:"menuSettings",title:"Settings",icon:"preferences-system-symbolic",command:"settings"},
+    {key:"menuReload",title:"Reload shell",icon:"view-refresh-symbolic",command:"reload"},
+    {key:"menuLock",title:"Lock",icon:"system-lock-screen-symbolic",command:"lock"},
+    {key:"menuLogout",title:"Log out",icon:"system-log-out-symbolic",command:"logout"}))}
+fn custom(value:json.Value):json.Value {
+    if json.is_null(value) || strings.equal(m.text(value),"") && strings.equal(json.kind(value),"string") {return json.array()}
+    if !strings.equal(json.kind(value),"string") || cmd.length(json.string(value))>150000 {result.raise("Custom actions must be a JSON list.")}
+    let entries=json.parse(json.string(value))
+    if !strings.equal(json.kind(entries),"array") || json.len(entries)>50 {result.raise("Use up to 50 custom actions.")}
+    let ids=Map<str,bool>();let out=json.array();let pattern=regex.compile("^custom-[a-zA-Z0-9-]{1,80}$","")
+    let checked=result.attempt(fn():json.Value {
+        for i in 0..(json.len(entries) as i64) {
+            let entry=json.at(entries,i);let id=m.text(m.get(entry,"id"));let title=m.text(m.get(entry,"title"));let target=m.text(m.get(entry,"target"));let command=m.text(m.get(entry,"command"))
+            if !pattern.test(id) || ids.contains(id) {result.raise("Custom actions need unique custom IDs. Default actions cannot be replaced.")}
+            if strings.equal(strings.trim(title),"") || cmd.length(title)>80 || strings.contains(title,"\0") {result.raise("Enter a menu name of 1–80 characters.")}
+            if !m.has(Vec<str>("any","file","folder","background"),target) || !strings.equal(json.kind(m.get(entry,"enabled")),"bool") || !strings.equal(json.kind(m.get(entry,"command")),"string") {result.raise("Custom action settings are invalid.")}
+            cmd.words(command)
+            ids.set(id,true);out=json.push(out,{id:id,title:strings.trim(title),command:command,enabled:m.flag(m.get(entry,"enabled")),target:target})
+        }
+        return out
+    })
+    pattern.close();return result.unwrap(checked)
+}
+fn view(values:json.Value):json.Value {
+    let result=json.array()
+    if strings.equal(json.kind(m.get(values,"contextEnabled")),"bool") && !m.flag(m.get(values,"contextEnabled")) {return result}
+    let standard=defaults()
+    for i in 0..(json.len(standard) as i64) {let item=json.at(standard,i);let enabled=m.get(values,m.text(m.get(item,"key")));if !strings.equal(json.kind(enabled),"bool") || m.flag(enabled) {result=json.push(result,item)}}
+    let parsed=result.attempt(fn():json.Value {return custom(m.get(values,"contextCustomItems"))})
+    if result.isOk(parsed) {let entries=result.unwrap(parsed);for i in 0..(json.len(entries) as i64) {let entry=json.at(entries,i);if m.flag(m.get(entry,"enabled")) && m.has(Vec<str>("any","background"),m.text(m.get(entry,"target"))) {result=json.push(result,entry)}}}
+    return result
+}
+fn action(values:json.Value,id:str,directory:str):json.Value {
+    let items=view(values)
+    for i in 0..(json.len(items) as i64) {
+        let item=json.at(items,i);let isCustom=json.has(item,"id");let key=m.text(m.get(item,isCustom ? "id" : "key"))
+        if !strings.equal(id,key) {continue}
+        if isCustom {return {kind:"process",argv:json.value(cmd.arguments(m.text(m.get(item,"command")),directory,directory)),cwd:directory}}
+        return {kind:"shell",command:m.text(m.get(item,"command")),cwd:directory}
+    }
+    result.raise("This background action is no longer available.");return json.object()
+}

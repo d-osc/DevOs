@@ -1,0 +1,23 @@
+# Pixel parity against the preserved JS SDK renderer while migrating system UI.
+use "std/test"
+use "std/strings"
+use "std/fs"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("wallpaper renderer builds as a native executable",fn() {
+    fs.mkdirSync(t.root()+"/build/background-native-parity",true)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",t.root()+"/tests/react-devlang/background-render.dev",t.root()+"/build/background-native-parity/paint","",math),Map<str,str>(),"",90000)
+    tool.checked(Vec<str>(t.root()+"/build/background-native-parity/paint"),Map<str,str>(),"",30000)
+    tool.checked(Vec<str>("gjs","-m",t.root()+"/dist/background-render-reference-test.js"),Map<str,str>(),"",30000)
+})
+fn parity(mode:i64,style:i64,phase:i64) {
+    test.case("native style ${style}, theme ${mode}, phase ${phase} keeps every pixel",fn() {
+        let library=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgdk_pixbuf-2.0.so.0")))
+        let base=t.root()+"/build/background-native-parity/"
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/tools/test/compare-png.dev","--ffi-lib",library,"--",base+"reference-${mode}-${style}-${phase}.png",base+"native-${mode}-${style}-${phase}.png"),Map<str,str>(),"",30000)
+        t.success(done)
+    })
+}
+for phase in 0..4 {for mode in 0..2 {for style in 0..24 {if phase==0 || style>=9 {parity(mode,style,phase)}}}}
+return t.finish()

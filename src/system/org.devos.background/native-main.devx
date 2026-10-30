@@ -1,0 +1,2 @@
+use "./native-view.devx" as background
+return background.run()

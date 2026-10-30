@@ -1,1 +1,1 @@
-export * from '../../extensions/org.devos.background/index.js';
+export * from './background-legacy/index.js';

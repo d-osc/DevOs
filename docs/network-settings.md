@@ -127,7 +127,7 @@ under the switch.
 | `/var/lib/devos/connectivity.conf` | State: `taskfirst=<profile>`, `smartconnect=0\|1`. Values are validated; unknown ones are treated as off. |
 | `devos-connectivity.service`, `90-devos-connectivity` | `apply` at boot and from the NetworkManager dispatcher when an interface or lease changes. |
 | `devos-smartconnect.service` | The SmartConnect daemon; started by the switch and at boot (it exits when disabled). |
-| `extensions/org.devos.settings/connectivity*.ts(x)` | The page (`network-category-connectivity`). |
+| `src/apps/org.devos.settings/connectivity*.ts(x)` | The page (`network-category-connectivity`). |
 
 Tests: `python3 tests/connectivity.test.py` (fake `tc` and `nmcli`, fixture scans and a fake clock: unsupported kernel, class
 installation per profile, rollback, off/apply, privileges and invalid values, SmartConnect hysteresis, sustained scans, busy

@@ -9,10 +9,9 @@ fn main(): i32 {
     ui.withPointer("screenshots-tab-drag", Map<str,str>(), fn(session: smoke.Session, env: Map<str,str>, pointer: smoke.Input) {
         let screens = session.root + "/build/screenshots-tab-drag"
         for command in Vec<str>("files", "terminal") {
-            let label = strings.equal(command, "files") ? "Dev OS Files" : "Dev OS Terminal"
+            let label = strings.equal(command, "files") ? "Dev OS Files" : "Terminal"
             smoke.remote(session, env, command); ui.windowCount(env, label, 1); time.sleep_ms(500)
-            let title = ui.title(env, label)
-            for action in Vec<str>("maximize", "focus") { tool.require(ui.window(env, action, title, ""), "Window action failed.") }
+            for action in Vec<str>("maximize", "focus") { tool.waitFor(fn(): bool { return ui.window(env, action, ui.title(env, label), "") }, 5000, "Window action failed: " + action) }
             time.sleep_ms(400)
             pointer = ui.click(pointer, 184, 16, "left"); time.sleep_ms(600)
             smoke.screenshot(env, screens + "/" + command + "-before.png")
@@ -26,6 +25,8 @@ fn main(): i32 {
             if strings.equal(command, "terminal") {
                 tool.require(ui.window(env, "minimize", ui.title(env, "Dev OS Files"), ""), "Cannot minimize Files.")
                 pointer = ui.click(pointer, 1228, 16, "left"); time.sleep_ms(400)
+                pointer = ui.drag(pointer, env, 440, 62, 1240, 400, true)
+                tool.require(tool.count(ui.windows(env), label) == 1, "Escape over the desktop must not detach a tab.")
                 pointer = ui.drag(pointer, env, 440, 62, 1240, 400, false)
                 ui.windowCount(env, label, 2)
                 smoke.screenshot(env, screens + "/terminal-desktop-detach.png")

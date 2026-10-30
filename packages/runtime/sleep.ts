@@ -1,4 +1,4 @@
-import {Gio, GLib} from '@dev-os/core';
+import {Gio, GLib} from '@dev-os/core/base';
 
 const bus = 'org.freedesktop.login1', path = '/org/freedesktop/login1', manager = 'org.freedesktop.login1.Manager';
 /** Longest wait for the lock screen; logind's InhibitDelayMaxSec is 5 s, after which it suspends anyway. */

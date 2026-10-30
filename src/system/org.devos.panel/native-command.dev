@@ -1,0 +1,14 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-taskbar.dev" as tasks
+struct Commands {send:fn(ui.Text):void,ready:bool,error:ui.Text,completed:fn():i64}
+fn connect(context:*ui.Context,fatal:fn():void):Commands {
+    let pipe=ui.useRef(context,0);let ready=ui.useState(context,0);let error=ui.useText(context,ui.emptyText());let completed=ui.useState(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {if !(*context).alive {return ui.noop};let root=tasks.rc_env("DEV_OS_ROOT");let runner=tasks.rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connectWithLibrary(context,runner,"${root}/src/services/panel-command.dev",root,"${root}/dist/native/libsupervisor.so",fn(value:ui.Text) {
+            if ui.equalText(value,ui.text("R")) {return};if ui.equalText(value,ui.text("A")) {completed.set(completed.get()+1);return};let fields=channel.split(value,9)
+            if fields.len()==2 && ui.equalText(fields[0],ui.text("E")) {error.set(tasks.decoded(fields[1]));if channel.failed(pipe.get()) {fatal()};return};fatal()
+        },fn(value:i64) {pipe.set(value);ready.set(1);channel.send(value,ui.text("{}"))})
+    }},Vec<i64>())
+    return Commands(fn(command:ui.Text) {if ready.get()==0 {return};error.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"command\":"),channel.quote(command),ui.text("}"))))},ready.value!=0,error.value,completed.get)
+}

@@ -3,13 +3,13 @@ import {Gtk, Gdk, Gio, GLib, React, createRoot, type WindowControls} from '@dev-
 import GdkPixbuf from 'gi://GdkPixbuf?version=2.0';
 import {ExtensionManager} from '@dev-os/extensions';
 import {ROOT} from '@dev-os/config';
-import {BackgroundSettings} from '../extensions/org.devos.background/settings-view.js';
-import {pictureLayout, loadPicture, wallpaperConfig} from '../extensions/org.devos.background/wallpaper.js';
-import {backgroundMenuItems, createBackgroundMenu, type BackgroundMenuKey} from '../extensions/org.devos.background/context-menu.js';
-import {parseCustomMenu} from '../extensions/org.devos.files/custom-menu.js';
-import {BackgroundView} from '../extensions/org.devos.background/view.js';
-import {widgetLocations} from '../extensions/org.devos.background/desktop-widgets.js';
-import {activeWidgetDesktop, desktopWidgetValues, updateDesktopWidgets} from '../extensions/org.devos.background/widget-desktops.js';
+import {BackgroundSettings} from '../packages/compat/background-legacy/settings-view.js';
+import {pictureLayout, loadPicture, wallpaperConfig} from '../packages/compat/background-legacy/wallpaper.js';
+import {backgroundMenuItems, createBackgroundMenu, type BackgroundMenuKey} from '../packages/compat/background-legacy/context-menu.js';
+import {parseCustomMenu} from '../src/apps/org.devos.files/custom-menu.js';
+import {BackgroundView} from '../packages/compat/background-legacy/view.js';
+import {widgetLocations} from '../packages/compat/background-legacy/desktop-widgets.js';
+import {activeWidgetDesktop, desktopWidgetValues, updateDesktopWidgets} from '../packages/compat/background-legacy/widget-desktops.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
@@ -29,11 +29,11 @@ async function verify() {
     const core = {name: 'DevOs', background: '#223344', accent: '#88e0c0'};
     assert(wallpaperConfig(core, {useDesktopColor: true, color: '#ffffff'}).background === '#223344', 'Preserve the existing Desktop background color by default');
     const temporary = GLib.dir_make_tmp('devos-background-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 900);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
     const theme = new Gtk.CssProvider();
-    theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     let applied = 0;
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
@@ -100,7 +100,7 @@ async function verify() {
         find<Gtk.Button>('desktop-toggle-widgetClock').emit('clicked');
         find<Gtk.Button>('background-reset').emit('clicked');
         assert(find<Gtk.Button>('desktop-toggle-widgetClock').get_label() === 'Remove', 'Reset restores the saved widget');
-        const reread = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+        const reread = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
         assert(reread.get('org.devos.background').state.values.widgetNoteText === values.widgetNoteText, 'Widgets survive preference reload'); reread.dispose();
         const screenshot = GLib.getenv('DEV_OS_TEST_SCREENSHOT');
         if (screenshot) {
@@ -122,6 +122,14 @@ async function verify() {
         if (screenshot) window.get_pixbuf()!.savev(screenshot.replace('.png', '-widgets.png'), 'png', [], []);
         root.render(<BackgroundView config={core} widgets={{...values, widgetClock: false, widgetDate: false, widgetNote: false}} />); await wait();
         assert(!find('desktop-widget-clock') && !find('desktop-widget-date') && !find('desktop-widget-note'), 'Removed widgets disappear without affecting wallpaper');
+        root.render(<BackgroundView config={{...core, style: 'flow'}} paused />); await wait(); await wait();
+        const canvas = widgets(window).find(widget => widget instanceof Gtk.DrawingArea)!;
+        const checksum = () => GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, window.get_pixbuf()!.get_pixels());
+        const frozen = checksum();
+        for (let i = 0; i < 6; i++) {canvas.queue_draw(); await wait();}
+        assert(checksum() === frozen, 'Overlay damage must reuse the paused wallpaper frame');
+        root.render(<BackgroundView config={{...core, background: '#665544', style: 'flow'}} paused />); await wait(); await wait();
+        assert(checksum() !== frozen, 'Appearance changes must invalidate a paused wallpaper frame');
         let notify = () => {};
         const controls: WindowControls = {state: [], desktops: [{id: 1, name: 'One', active: true}, {id: 2, name: 'Two', active: false}], subscribe: listener => {notify = listener; return () => {};}, activate() {}, toggle() {}};
         const first = activeWidgetDesktop(controls)!;

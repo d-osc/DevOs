@@ -1,0 +1,11 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../system/org.devos.panel/menu-model.dev" as menu
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let reply=result.attempt(fn():json.Value {let request=json.parse(line);return {id:hw.jget(request,"id"),rows:menu.presentation(hw.jget(request,"values"))}})
+    if result.isOk(reply) {print(json.stringify(result.unwrap(reply)))} else {print(json.stringify({error:"Could not prepare panel menu"}))}
+}

@@ -16,7 +16,7 @@
 
 รองรับ **React + TypeScript / TSX → native GTK widgets** ผ่าน lib ใน `packages/core/`
 UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, เมนู session และพื้นหลัง
-เริ่มแก้ได้ที่ `extensions/org.devos.panel/view.tsx`, `extensions/org.devos.launcher/view.tsx` และ `extensions/org.devos.files/view.tsx`
+เริ่มแก้ได้ที่ `src/system/org.devos.panel/view.tsx`, `src/apps/org.devos.launcher/view.tsx` และ `src/apps/org.devos.files/view.tsx`
 
 ## สิ่งที่มีแล้ว
 
@@ -32,7 +32,7 @@ UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, 
 - ตัวติดตั้งและ Wayland session entry สำหรับ display manager
 - Dependency doctor, config tests และ smoke test บน Wayland compositor จริง
 - Settings → Updates: ดาวน์โหลดรุ่น stable จาก GitHub Releases, ตรวจ SHA-256 และย้อนกลับรุ่นก่อนหน้าได้ ติดตั้งจากไฟล์ในเครื่อง (USB) และ patch ขนาดเล็กได้ตรวจลายเซ็น Ed25519 เมื่อ image มี public key; Live USB ไม่อัปเดตในที่เดิม (ดู docs/updates.md).
-- Settings → Extension Store: เชื่อม GitHub repo แล้วติดตั้ง/อัปเดต user extensions จาก Releases ([วิธีเผยแพร่](docs/extension-store.md))
+- App Store → Extensions: เชื่อม GitHub repo แล้วติดตั้ง/อัปเดต user extensions จาก Releases ([วิธีเผยแพร่](docs/extension-store.md))
 
 นี่เป็นฐานเริ่มต้น ยังไม่มี taskbar รายการหน้าต่าง, system tray, notification daemon,
 polkit agent และ desktop portals ในตัว
@@ -55,7 +55,7 @@ bundle ที่ได้รันด้วย GJS ได้โดยไม่�
 ```sh
 sudo apt update
 sudo apt install labwc gjs gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 \
-  dbus-daemon util-linux gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0 xdg-utils thunar \
+  dbus-daemon util-linux grim gir1.2-vte-2.91 gir1.2-webkit2-4.1 gir1.2-soup-3.0 xdg-utils thunar \
   build-essential pkg-config libwayland-dev libwayland-bin curl tar coreutils
 sudo sh tools/setup/bootstrap-lock.sh
 
@@ -155,7 +155,7 @@ alias `@dev-os/core` ชี้ไปที่ source ระหว่างตร
 ถ้าแก้เฉพาะไฟล์ type ให้ใช้ `npm run typecheck` หรือเปิด `npm run typecheck:watch` อีก terminal
 
 นี่เป็น renderer รุ่นเริ่มต้นสำหรับ GTK ไม่ใช่ตัวแปลงหน้าเว็บ HTML/CSS อัตโนมัติ
-ใช้ `<Box>`, `<Label>`, `<Button>` แทน `<div>` และใช้ GTK CSS ใน `extensions/org.devos.theme/style.css`
+ใช้ `<Box>`, `<Label>`, `<Button>` แทน `<div>` และใช้ GTK CSS ใน `src/apps/org.devos.theme/style.css`
 ยังไม่มี hot reload ที่รักษา state และไม่ได้รองรับ React DOM, SSR หรือ React Native APIs
 รายละเอียดสัญญา renderer ดู [React reconciler](https://github.com/facebook/react/tree/v19.2.0/packages/react-reconciler)
 
@@ -318,9 +318,9 @@ UI packages ใช้ TypeScript lifecycle + React ส่วน settings contrib
 Build และตัวโหลดอ่าน manifest อัตโนมัติ โดยไม่ต้องเพิ่ม import ใน base
 ตัวอย่าง Panel มี Item spacing ที่แก้และ Apply ผ่าน Settings ได้
 เลือกธีมไอคอนที่ Settings → Theme icons โดยระบุชื่อธีมที่ติดตั้งแล้วและกด Apply
-ค่าเริ่มต้นคือ Adwaita; ดู [คู่มือ Theme icons](extensions/org.devos.icons/README.md)
+ค่าเริ่มต้นคือ Adwaita; ดู [คู่มือ Theme icons](src/apps/org.devos.icons/README.md)
 ดูโครงสร้าง contract และตัวอย่างการเพิ่ม package ใน [docs/extensions.md](docs/extensions.md)
-ดู [คู่มือ Dev OS Files](extensions/org.devos.files/README.md) สำหรับ UI, คีย์ลัด และ async filesystem model
+ดู [คู่มือ Dev OS Files](src/apps/org.devos.files/README.md) สำหรับ UI, คีย์ลัด และ async filesystem model
 ค้นหาไฟล์ทั้งโฟลเดอร์โปรเจกต์ด้วย Ctrl + P (Quick Open): fuzzy filename/path,
 ↑/↓ เลือก, Enter เปิดไฟล์, Shift + Enter แสดงในโฟลเดอร์ และ Esc ปิดค้นหา
 ตั้งโฟลเดอร์ที่ข้ามได้ใน Settings → Files → Search: excluded folders
@@ -362,17 +362,24 @@ keyed list, drawing lifecycle, settings forms/Apply, icon themes และ file 
 ## จุดสำหรับต่อยอด
 
 ```text
-src/                        CLI entry point (main.ts)
+src/                        entry points and application source
+  apps/                     built-in system apps (org.devos.*)
+  system/                   Panel, Display Care and Background desktop infrastructure
+  components/               reusable application UI components
+  utils/                    shared formatting, parsing and validation helpers
+  extensions/               optional extensions (including Clock)
+  services/                 service hosts, controller registry and shared data processing
 packages/
+  react-devlang/            independent native DevLang/GTK React-style UI library
   core/                     React renderer, GTK widgets and native bindings
   extensions/               manifests, lifecycle, settings and extension store
   updates/                  update service and release protocol
   runtime/, services/       session runtime and desktop services
   compat/, config/          UI compatibility and configuration
   shell/, supervisor/       application host and session supervision
-extensions/                 system UI packages (org.devos.*)
 tools/
   build/                    bundles, release archives and npm packages
+  check/                    DevLang JSX syntax and native type checks
   setup/                    native dependencies, WSL staging and patches
   test/                     checks, smoke tests and performance tools
   maintenance/              installation, config migration and icon imports
@@ -406,7 +413,9 @@ Lock ต้องมี locker จริงที่รองรับ composito
 
 โค้ดใช้ TypeScript ES modules และ imports เช่น `import Gtk from 'gi://Gtk?version=3.0'`
 imports ภายใน source ใช้นามสกุล `.js` ตาม ESM และ TypeScript resolve ไปที่ `.ts` / `.tsx`
-ต้อง build ก่อน แล้วรัน `dist/main.js` / `dist/supervisor.js` ผ่าน entry points ใน `bin/`
+ต้อง build ก่อน แล้วใช้ entry points ใน `bin/` ซึ่งเริ่ม shell จาก `dist/main.js` และ supervisor DevLang จาก `src/system/supervisor.dev`
+
+การย้ายระบบทั้ง repo ไป DevLang พร้อมเก็บ npm `@dev-os/*` สำหรับ JS/TS apps/extensions ยังอยู่ระหว่างดำเนินการ ดู [สถานะและขอบเขต migration](docs/devlang-repository-migration.md) และตรวจรายการที่เหลือด้วย `npm run migration:audit`
 GJS ใช้ bundle ที่คอมไพล์แล้ว; Node.js และ browser รัน GI imports เหล่านี้ไม่ได้
 `Gio.Subprocess` ใช้เปิด process แบบ asynchronous เพื่อไม่ค้าง UI
 และใช้ `ApplicationCommandLine.done()` ของ GLib 2.80 เพื่อจบ remote commands โดยไม่รอ garbage collection
@@ -418,7 +427,7 @@ GJS ใช้ bundle ที่คอมไพล์แล้ว; Node.js แล�
 [gtk-layer-shell](https://wmww.github.io/gtk-layer-shell/)
 
 
-Terminal ของระบบอยู่ที่ `extensions/org.devos.terminal/extension.tsx` ใช้ VTE GTK3
+Terminal ของระบบอยู่ที่ `src/apps/org.devos.terminal/extension.tsx` ใช้ VTE GTK3
 Header ของ Terminal และ Files เป็นแท็บ React ที่แชร์ `packages/services/window-tabs.tsx`;
 ปุ่มควบคุมหน้าต่างและเมนูคลิกขวายังใช้ `mountWindowHeader()` ร่วมกับ Settings และ React demo.
 Terminal เปิดแท็บด้วย + หรือ Ctrl+Shift+T, ปิดด้วย Ctrl+Shift+W; shell exit ปิดเฉพาะแท็บนั้น.
@@ -447,7 +456,7 @@ Header ที่ compositor วาดใช้ไอคอนแอปขนา�
 Editor ของระบบใช้ Monaco + WebKitGTK และ header แบบแท็บร่วมกับ Terminal.
 เปิดจาก Applications → Editor หรือ `dev-os-editor file.ts`; ใช้ Ctrl+O / Ctrl+S และลากแท็บแยกหรือรวมหน้าต่างได้.
 ตั้งค่า font size, tab size และ minimap ผ่าน JSON preferences ที่ Settings → Editor.
-Monaco และ workers bundle ในแอปทั้งหมด; ดู [คู่มือ Editor](extensions/org.devos.editor/README.md).
+Monaco และ workers bundle ในแอปทั้งหมด; ดู [คู่มือ Editor](src/apps/org.devos.editor/README.md).
 
 
 Panel อยู่ด้านล่างบนทุก monitor: ซ้ายเป็น Menu → Terminal → Files;
@@ -458,7 +467,7 @@ Base service อยู่ที่ `packages/services/windows.ts`, transport ท
 ขวาเป็น Quick Settings (network/audio/battery) → เวลาและวันที่ → Alert.
 กดกลุ่มอุปกรณ์เพื่อเปิด Wi-Fi/Bluetooth, mute และแถบปรับเสียง; กดวันเวลาเพื่อดูวันที่เต็ม.
 Alert เก็บข้อความจาก desktop shell และล้างรายการได้ (ยังไม่ใช่ Freedesktop notification daemon).
-UI อยู่ที่ `extensions/org.devos.panel/view.tsx`; backend ที่ `devices.ts`; ธีมอยู่ใน `org.devos.theme/style.css`.
+UI อยู่ที่ `src/system/org.devos.panel/view.tsx`; backend ที่ `devices.ts`; ธีมอยู่ใน `org.devos.theme/style.css`.
 เสียงรองรับ `wpctl` (PipeWire) หรือ `pactl` (PulseAudio/WSLg); Wi-Fi ใช้ NetworkManager (`nmcli`)
 และ Bluetooth ใช้ BlueZ (`bluetoothctl`). อุปกรณ์หรือ backend ที่ไม่มีจะแสดง Unavailable.
 `dev.ps1 run` เตรียม `pactl` ใน `build/wsl/bin` ให้อัตโนมัติสำหรับ WSL;

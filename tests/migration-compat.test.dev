@@ -1,0 +1,31 @@
+use "std/test"
+use "std/json"
+use "std/result"
+use "std/fs"
+use "std/uuid"
+use "../lib/migration-audit.dev" as migration
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn contract():json.Value {return {format:1,packages:[{directory:"packages/demo",name:"@dev-os/demo",exports:{".":{import:"./dist/index.js",types:"./dist/index.d.ts"},"./base":"./dist/base.js"}}]}}
+fn compatible(root:str):bool {return result.isOk(result.attempt(fn():json.Value {return migration.checkCompatibility(root,contract())}))}
+test.case("all existing npm packages retain their exports",fn() {
+    let data=json.parse(fs.readFileSync(t.root()+"/data/compat/npm-api.json","utf8"))
+    let checked=migration.checkCompatibility(t.root(),data)
+    test.expect(json.len(checked)==9,"Lost a required @dev-os package")
+})
+test.case("compatibility gate rejects removed exports and renamed packages",fn() {
+    let root=t.root()+"/build/npm-compat-fixtures/"+uuid.v4();let path=root+"/packages/demo/package.json"
+    tool.jsonWrite(path,{name:"@dev-os/demo",exports:{".":{import:"./dist/index.js",types:"./dist/index.d.ts"},"./base":"./dist/base.js","./new":"./dist/new.js"}})
+    test.expect(compatible(root),"Adding an export must remain compatible")
+    tool.jsonWrite(path,{name:"@dev-os/demo",exports:{".":{import:"./dist/index.js",types:"./dist/index.d.ts"}}})
+    test.expect(!compatible(root),"Removed subpath export accepted")
+    tool.jsonWrite(path,{name:"@dev-os/renamed",exports:{".":{import:"./dist/index.js",types:"./dist/index.d.ts"},"./base":"./dist/base.js"}})
+    test.expect(!compatible(root),"Renamed package accepted")
+})
+test.case("compatibility gate preserves JS entry and TypeScript declarations",fn() {
+    let root=t.root()+"/build/npm-compat-fixtures/"+uuid.v4()
+    tool.jsonWrite(root+"/packages/demo/package.json",{name:"@dev-os/demo",exports:{".":{import:"./dist/index.js"},"./base":"./dist/base.js"}})
+    test.expect(!compatible(root),"Lost declarations accepted")
+})
+return t.finish()
+

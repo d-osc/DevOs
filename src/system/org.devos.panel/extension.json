@@ -1,0 +1,140 @@
+{
+  "id": "org.devos.panel",
+  "name": "Panel",
+  "description": "Native desktop panel on every monitor.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "ui",
+  "system": true,
+  "native": "system-panel",
+  "order": 40,
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": [
+    {
+      "id": "layout",
+      "title": "Panel layout",
+      "fields": [
+        {
+          "key": "spacing",
+          "title": "Section spacing",
+          "type": "number",
+          "default": 12,
+          "min": 0,
+          "max": 32,
+          "integer": true
+        },
+        {
+          "key": "position",
+          "title": "Panel position",
+          "type": "string",
+          "default": "bottom",
+          "description": "top or bottom"
+        },
+        {
+          "key": "height",
+          "title": "Panel height",
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 96,
+          "integer": true,
+          "description": "0 follows Desktop; otherwise 32â€“96 pixels"
+        },
+        {
+          "key": "iconSize",
+          "title": "App icon size",
+          "type": "number",
+          "default": 16,
+          "min": 14,
+          "max": 28,
+          "integer": true
+        },
+        {
+          "key": "itemSpacing",
+          "title": "Item spacing",
+          "type": "number",
+          "default": 2,
+          "min": 0,
+          "max": 16,
+          "integer": true
+        },
+        {
+          "key": "showPinned",
+          "title": "Show Terminal and Files shortcuts",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "showDate",
+          "title": "Show date below the clock",
+          "type": "boolean",
+          "default": true
+        }
+      ]
+    },
+    {
+      "id": "contextMenu",
+      "fields": [
+        {
+          "key": "contextEnabled",
+          "title": "Enable panel context menu",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "menuPanelSettings",
+          "title": "Show PanelSettings",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "menuApplications",
+          "title": "Show Applications",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "menuAppStore", "title": "Show App Store", "type": "boolean", "default": true
+          },
+          {
+            "key": "menuDiskManager", "title": "Show Disk Manager", "type": "boolean", "default": true
+          },
+          {
+            "key": "menuTaskManager", "title": "Show Task Manager", "type": "boolean", "default": true
+          },
+          {
+            "key": "menuTerminal",
+          "title": "Show Terminal",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "menuFiles",
+          "title": "Show Files",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "menuClockSettings",
+          "title": "Show ClockSettings",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "menuSettings",
+          "title": "Show Settings",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "contextCustomItems",
+          "title": "Custom panel actions",
+          "type": "string",
+          "default": "[]"
+        }
+      ],
+      "title": "Panel context menu"
+    }
+  ]
+}

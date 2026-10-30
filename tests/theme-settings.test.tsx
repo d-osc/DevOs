@@ -1,9 +1,9 @@
 import {React, Gtk, Gdk, GLib, Gio, createRoot, activeTheme, activeFamily, palettes, paletteFor, onThemeChange, type UIContext, type ThemeName} from '@dev-os/core';
 import {ROOT, DEFAULTS} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import theme from '../extensions/org.devos.theme/extension.js';
-import {ThemeSettingsPage} from '../extensions/org.devos.theme/settings-view.js';
-import {themeOptions, themeFor} from '../extensions/org.devos.theme/options.js';
+import theme from '../src/apps/org.devos.theme/extension.js';
+import {ThemeSettingsPage} from '../src/apps/org.devos.theme/settings-view.js';
+import {themeOptions, themeFor} from '../src/apps/org.devos.theme/options.js';
 import {testTheme} from './theme-helper.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -19,7 +19,7 @@ async function verify() {
     // An old settings file (version 1, Plum palette) must load without a validation error.
     GLib.mkdir_with_parents(`${temporary}/preferences`, 0o700);
     GLib.file_set_contents(`${temporary}/preferences/org.devos.theme.json`, JSON.stringify({version: 1, enabled: true, values: {palette: 'plum', useDesktopAccent: false, accent: '#abcdef'}}));
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     assert(!preferences.get('org.devos.theme').error && preferences.get('org.devos.theme').state.values.mode === 'dark', 'Old saved Theme settings migrate to Dark');
     preferences.update('org.devos.theme', true, {mode: 'dark', lightFrom: '07:00', darkFrom: '19:00'});
     const display = Gdk.Display.get_default()!;

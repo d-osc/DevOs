@@ -1,0 +1,38 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-taskbar.dev" as tasks
+use "./native-quick-settings.dev" as quick
+use "./native-battery-care.dev" as batteryCare
+extern fn panel_tray_trace(root:*void)
+extern fn panel_battery_trace(root:*void)
+fn render(frame:ui.Text,clicked:fn():void,enabled:bool):ui.Node {
+    let icons=Vec<ui.Node>()
+    for record in channel.split(frame,30) {let fields=channel.split(record,9)
+        if fields.len()>=19 && ui.equalText(fields[0],ui.text("D")) {for i in 1..3 {let image=ui.props();image.iconSize=16;image.id=ui.text(i==1 ? "panel-network-icon" : "panel-audio-icon");icons.push(ui.element(11,image,tasks.decoded(fields[i]),Vec<ui.Node>()))}}
+        if fields.len()>=8 && ui.equalText(fields[0],ui.text("B")) && tasks.flag(fields,1) {let props=ui.named("panel-battery");props.vertical=false;props.spacing=5;props.valign=3;props.className=ui.concatText(Vec<ui.Text>(ui.text("panel-battery "),tasks.decoded(fields[5])));let icon=ui.named("panel-battery-icon");icon.iconSize=17;let text=ui.named("panel-battery-label");text.className=ui.text("panel-battery-label");icons.push(ui.Box(props,Vec<ui.Node>(ui.element(11,icon,tasks.decoded(fields[2]),Vec<ui.Node>()),ui.withProps(ui.TextLabel(tasks.decoded(fields[3])),text))))}
+    }
+    let contents=ui.props();contents.vertical=false;contents.spacing=8;let button=ui.named("panel-devices");button.className=ui.text("tray-button");button.sensitive=enabled
+    return ui.WidgetButton(button,ui.Box(contents,icons),clicked)
+}
+fn decorate(context:*ui.Context,frame:ui.Text) {unsafe {for record in channel.split(frame,30) {let fields=channel.split(record,9);let id=ui.emptyText();let tooltip=ui.emptyText()
+    if fields.len()>=19 && ui.equalText(fields[0],ui.text("D")) {id=ui.text("panel-devices");tooltip=tasks.decoded(fields[3])}
+    if fields.len()>=8 && ui.equalText(fields[0],ui.text("B")) {id=ui.text("panel-battery");tooltip=tasks.decoded(fields[4])}
+    if id.bytes.len()>0 {let name=ui.nativeText(id);let text=ui.nativeText(tooltip);tasks.panel_tooltip((*context).native,name,text);tasks.rd_buffer_free(name as *void);tasks.rd_buffer_free(text as *void)}
+};panel_tray_trace((*context).native);panel_battery_trace((*context).native)}}
+fn View(context:*ui.Context,command:fn(ui.Text):void,commandReady:bool,fatal:fn():void):ui.Node {
+    let frame=ui.useText(context,ui.emptyText());let error=ui.useText(context,ui.emptyText());let busy=ui.useState(context,0);let open=ui.useState(context,0);let pipe=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {if !(*context).alive {return ui.noop};let root=tasks.rc_env("DEV_OS_ROOT");let runner=tasks.rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connectWithLibrary(context,runner,"${root}/src/services/panel-devices.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(value:ui.Text) {
+            let records=channel.split(value,30);let fields=channel.split(records[0],9)
+            if fields.len()==2 && ui.equalText(fields[0],ui.text("E")) {busy.set(0);error.set(tasks.decoded(fields[1]));if channel.failed(pipe.get()) {fatal()};return}
+            if fields.len()<19 || !ui.equalText(fields[0],ui.text("D")) {fatal();return};frame.set(value)
+            for record in records {if ui.equalText(record,ui.text("A")) {busy.set(0)}}
+        },fn(value:i64) {pipe.set(value);channel.send(value,ui.text("{\"wire\":true,\"systemNetwork\":true}"))})
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {decorate(context,frame.value);quick.decorate(context,frame.value)};return ui.noop}},Vec<i64>(frame.revision,open.value))
+    let present=false;for record in channel.split(frame.value,30) {let fields=channel.split(record,9);if fields.len()>=8 && ui.equalText(fields[0],ui.text("B")) {present=tasks.flag(fields,7)}}
+    let care=batteryCare.View(context,present,fatal)
+    let nodes=Vec<ui.Node>(render(frame.value,fn() {open.set(open.get()==0 ? 1 : 0)},frame.value.bytes.len()>0))
+    if open.value!=0 {nodes.push(quick.render(frame.value,busy.value!=0,commandReady,error.value,care,fn(action:ui.Text,value:i64) {if busy.get()!=0 {return};busy.set(1);error.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"systemNetwork\":true,\"action\":{\"action\":"),channel.quote(action),ui.text(",\"value\":"),ui.scalarText(value),ui.text("}}"))))},fn(value:ui.Text) {open.set(0);command(value)},fn() {open.set(0)}))}
+    let props=ui.props();props.vertical=false;return ui.Box(props,nodes)
+}

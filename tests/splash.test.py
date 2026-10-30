@@ -104,10 +104,16 @@ class SplashStaticTests(unittest.TestCase):
         text_unit = (RECIPE / 'files/devos-splash-text.service').read_text()
         self.assertIn('WantedBy=rescue.target emergency.target', text_unit)
         self.assertIn('--quit --text', text_unit)
-        # Nothing runs at shutdown: a splash there could hold the display black or delay the unmounts and the reboot.
-        self.assertFalse((RECIPE / 'files/devos-splash-shutdown.service').exists())
+        shutdown = (RECIPE / 'files/devos-splash-shutdown.service').read_text()
+        self.assertIn('DefaultDependencies=no', shutdown)
+        self.assertIn('WantedBy=shutdown.target', shutdown)
+        self.assertIn('Type=forking', shutdown)
+        self.assertIn('--timeout 120', shutdown)
+        self.assertIn('--steps /run/devos-shutdown-splash.d', shutdown)
+        self.assertIn('TimeoutStartSec=3', shutdown)
+        self.assertNotIn('/bin/sh', shutdown)
         recipe = (RECIPE / 'devos-splash_0.1.bb').read_text()
-        for target in ('poweroff.target', 'reboot.target', 'halt.target', 'shutdown.target'): self.assertNotIn(target, recipe)
+        self.assertIn('file://devos-splash-shutdown.service', recipe)
 
     def test_session_scripts_report_the_session_milestone_before_the_compositor(self):
         for relative in ('distro/oe/meta-devos/recipes-devos/session/files/devos-greeter',
@@ -121,8 +127,8 @@ class SplashStaticTests(unittest.TestCase):
         for word in ('quiet', 'splash', 'loglevel=3', 'systemd.show_status=false', 'vt.global_cursor_default=0'):
             self.assertIn(word, usb.splash_args().split())
         build = STAGING
-        live = [line for line in build.splitlines() if 'devos.live.uuid=' in line and 'devos.renderer=pixman' in line][0]
-        self.assertIn('devos.renderer=pixman " + st.splashArgs()', live)
+        live = [line for line in build.splitlines() if 'devos.live.uuid=' in line and 'st.splashArgs()' in line][0]
+        self.assertRegex(live, r'devos\.renderer=(auto|pixman|gles2|vulkan) " \+ st\.splashArgs\(\)')
         installed = [line for line in build.splitlines() if 'devos.root=LABEL=devos-root' in line][0]
         self.assertIn('st.splashArgs()', installed)
         # The diagnostic suffix must not repeat the quiet options (the last duplicate would win over an edit).

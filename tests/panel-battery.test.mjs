@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {batteryReading, batteryPresentation, readPower} from '../extensions/org.devos.panel/battery.ts';
+import {batteryReading, batteryPresentation, readPower} from '../src/system/org.devos.panel/battery.ts';
 
 const ROOT = '/sys/class/power_supply';
 /** In-memory /sys/class/power_supply: {supply: {attribute: value}}; missing attributes read as '' like unreadable sysfs files. */

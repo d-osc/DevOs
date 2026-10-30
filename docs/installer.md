@@ -64,4 +64,4 @@ rebuilt (`.\live-usb.ps1 build`).
 
 Tests: `python3 tests/installer.test.py` (disk selection and refusals, no disk writes),
 `wsl -u root python3 tests/installer-loop.test.py` (real run on a loop device), and the
-`installer-ui-test` GJS test for the wizard.
+`d tests/installer-native.test.dev` covers the native wizard (GTK under Xvfb), its DevLang worker and the streamed progress with a fixture helper.

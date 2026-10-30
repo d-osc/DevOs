@@ -1,0 +1,7 @@
+use "react_devlang/ui" as ui
+extern fn panel_tooltip(root:*void,id:*u8,text:*u8)
+extern fn rd_buffer_free(buffer:*void)
+fn hex(ch:u8):i64 {if ch>=48 && ch<=57 {return (ch-48) as i64};if ch>=65 && ch<=70 {return (ch-55) as i64};if ch>=97 && ch<=102 {return (ch-87) as i64};return -1}
+fn decoded(value:ui.Text):ui.Text {let out=Vec<u8>();let i=0;while i<(value.bytes.len() as i64) {let ch=value.bytes[i];if ch==37 && i+2<(value.bytes.len() as i64) {let a=hex(value.bytes[i+1]);let b=hex(value.bytes[i+2]);if a>=0 && b>=0 {out.push((a*16+b) as u8);i=i+3;continue}};out.push(ch);i=i+1};return ui.Text(out)}
+fn key(value:ui.Text):i64 {let hash=17;for ch in value.bytes {hash=(hash*131+ch as i64)%2147483647};return hash}
+fn flag(fields:Vec<ui.Text>,index:i64):bool {return ui.equalText(fields[index],ui.text("1"))}

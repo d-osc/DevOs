@@ -1,10 +1,10 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Box, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {SystemSettings} from '../extensions/org.devos.settings/system-view.js';
-import {FanProfileSettings} from '../extensions/org.devos.settings/fan-profile-view.js';
-import {unsupportedFanProfile, type FanMode, type FanProfileAction, type FanProfileControls, type FanProfileState} from '../extensions/org.devos.settings/fan-profile.js';
-import type {SystemControls, SystemState} from '../extensions/org.devos.settings/system.js';
+import {SystemSettings} from '../src/apps/org.devos.settings/system-view.js';
+import {FanProfileSettings} from '../src/apps/org.devos.settings/fan-profile-view.js';
+import {unsupportedFanProfile, type FanMode, type FanProfileAction, type FanProfileControls, type FanProfileState} from '../src/apps/org.devos.settings/fan-profile.js';
+import type {SystemControls, SystemState} from '../src/apps/org.devos.settings/system.js';
 Gtk.init(null);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 170, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -27,7 +27,7 @@ function fakeControls(initial: Partial<FanProfileState>, calls: string[]): FanPr
 }
 async function verify() {
     const window = new Gtk.OffscreenWindow(); window.name = 'fan'; window.set_size_request(900, 900); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     const text = (id: string) => find<Gtk.Label>(id)?.get_text() ?? '';

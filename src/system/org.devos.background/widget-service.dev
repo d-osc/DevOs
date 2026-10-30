@@ -1,0 +1,114 @@
+# Stateful widget data service. Read snapshots may replay; edits are one-shot.
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "std/os"
+use "std/process"
+use "../../../lib/desktop.dev" as util
+use "./model.dev" as m
+use "./widget-desktops.dev" as widgets
+use "./preferences.dev" as prefs
+use "./context-menu.dev" as menu
+use "./appearance.dev" as appearance
+use "./wire.dev" as wire
+use "../../services/window-state.dev" as shell
+use "../../../lib/hw.dev" as hw
+use "std/time" as clock
+extern fn time(value:*void):i64
+extern fn localtime(value:*i64):*void
+extern fn strftime(buffer:*u8,size:usize,format:str,time:*void):usize
+extern fn calloc(count:usize,size:usize):*void
+extern fn free(value:*void)
+extern fn setlocale(category:i32,locale:str):str
+fn encoded(value:str):str {
+    return wire.encoded(value)
+}
+fn local(format:str):str {unsafe {
+    let stamp=calloc(1,8) as *i64;if stamp==null {return ""};time(stamp as *void);let tm=localtime(stamp);free(stamp as *void);if tm==null {return ""};let buffer=calloc(256,1) as *u8
+    if buffer==null {return ""};let size=strftime(buffer,256,format,tm);let bytes=Vec<u8>();for i in 0..(size as i64) {bytes.push(buffer[i])};free(buffer as *void);return encoding.decode(bytes,"utf8")
+}}
+fn reply(values:json.Value,desktop:json.Value,revision:i64,commit:bool,action:json.Value,tracking:shell.Snapshot,monitor:json.Value,single:bool,battery:bool):str {
+    let current=widgets.values(values,desktop);let locations=widgets.locations(m.get(current,"widgetLocations"))
+    let output="S\t"+encoded(m.text(m.get(desktop,"key")))+"\t"+(strings.equal(m.text(m.get(current,"widgetPosition")),"left") ? "1" : "0")+"\t${revision}"
+    let config=appearance.view(values)
+    output=output+encoding.decode(Vec<u8>(30),"utf8")+"B\t${json.int(json.get(config,"mode"))}\t${json.int(json.get(config,"style"))}\t${json.int(json.get(config,"fit"))}\t"+encoded(json.string(json.get(config,"imagePath")))+"\t"+encoded(json.string(json.get(config,"color")))
+    let paused=!json.is_null(monitor) && m.covered(shell.windows(tracking),tracking.desktops,monitor,single)
+    let interval=m.interval(m.text(m.get(m.config(json.object(),values),"style")),battery)
+    output=output+encoding.decode(Vec<u8>(30),"utf8")+"R\t"+(paused ? "1" : "0")+"\t${interval}"
+    let keys=Vec<str>("widgetClock","widgetDate","widgetNote")
+    for i in 0..3 {
+        let key=keys[i];let point=m.get(locations,key);let x=json.is_null(point) ? -1 : (m.num(m.get(point,"x"))*1000000.0+0.5) as i64;let y=json.is_null(point) ? -1 : (m.num(m.get(point,"y"))*1000000.0+0.5) as i64
+        let text=i==0 ? local("%H:%M") : i==1 ? local("%A, %d %B %Y") : m.text(m.get(current,"widgetNoteText"))
+        if i==2 && strings.equal(text,"") {text="Add your reminder in Background → Desktop widgets."}
+        if i==2 && strings.charLength(text)>2000 {text=strings.substring(text,0,2000)}
+        output=output+encoding.decode(Vec<u8>(30),"utf8")+"W\t${i}\t"+(m.flag(m.get(current,key)) ? "1" : "0")+"\t${x}\t${y}\t"+encoded(text)
+    }
+    if commit {output=output+encoding.decode(Vec<u8>(30),"utf8")+"P\t"+encoded(json.stringify(values))}
+    let items=menu.view(values)
+    for i in 0..(json.len(items) as i64) {
+        let item=json.at(items,i);let isCustom=json.has(item,"id")
+        output=output+encoding.decode(Vec<u8>(30),"utf8")+"M\t"+encoded(m.text(m.get(item,isCustom ? "id" : "key")))+"\t"+encoded(m.text(m.get(item,"title")))+"\t"+encoded(m.text(m.get(item,"icon")))+"\t"+(isCustom ? "1" : "0")
+    }
+    if !json.is_null(action) {output=output+encoding.decode(Vec<u8>(30),"utf8")+"A\t"+encoded(json.stringify(action))}
+    return output
+}
+fn update(values:json.Value,desktop:json.Value,request:json.Value):json.Value {
+    let action=m.text(m.get(request,"action"));let key=m.text(m.get(request,"key"))
+    if !m.has(Vec<str>("widgetClock","widgetDate","widgetNote"),key) || json.is_null(desktop) {result.raise("Unknown widget or desktop")}
+    let patch=json.object()
+    if strings.equal(action,"move") {
+        let x=m.get(request,"x");let y=m.get(request,"y")
+        if !strings.equal(json.kind(x),"number") || !strings.equal(json.kind(y),"number") {result.raise("Invalid widget position")}
+        let points=widgets.locations(m.get(widgets.values(values,desktop),"widgetLocations"));points=json.set(points,key,{x:m.num(x),y:m.num(y)});points=widgets.locations(json.value(json.stringify(points)))
+        patch={widgetLocations:json.stringify(points)}
+    } else {patch=json.set(patch,key,false)}
+    return widgets.update(values,desktop,patch)
+}
+struct State {values:json.Value,desktop:json.Value,file:str,defaults:json.Value,revision:i64,commit:bool,action:json.Value,tracking:shell.Snapshot,monitor:json.Value,single:bool,battery:bool,powerAt:i64}
+fn handle(state:State,request:json.Value):State {
+    let action=m.text(m.get(request,"action"));let next=state;next.commit=false;next.action=json.null_value()
+    if strings.equal(action,"configure") {
+        next.defaults=m.get(request,"values");if !strings.equal(json.kind(next.defaults),"object") {result.raise("Invalid widget values")}
+        next.file=m.text(m.get(request,"preferences"));next.values=next.defaults
+        next.desktop=widgets.active(m.get(request,"desktops"),json.has(request,"desktops"))
+    } else if strings.equal(action,"desktop") {
+        next.desktop=widgets.active(m.get(request,"desktops"),json.has(request,"desktops"))
+    } else if strings.equal(action,"tracker") {
+        next.tracking=shell.consume(next.tracking,m.get(request,"event"));next.desktop=widgets.active(next.tracking.desktops,next.tracking.known)
+    } else if strings.equal(action,"tracker-batch") {
+        let events=m.get(request,"events");if !strings.equal(json.kind(events),"array") || json.len(events)>1024 {result.raise("Invalid tracker batch")}
+        for i in 0..(json.len(events) as i64) {next.tracking=shell.consume(next.tracking,json.at(events,i))}
+        next.desktop=widgets.active(next.tracking.desktops,next.tracking.known)
+    } else if strings.equal(action,"viewport") {
+        next.monitor=m.get(request,"monitor");next.single=m.flag(m.get(request,"single"))
+    } else if !strings.equal(action,"move") && !strings.equal(action,"remove") && !strings.equal(action,"get") && !strings.equal(action,"activate") {result.raise("Unknown widget action")}
+    let now=clock.now_ms() as i64
+    if next.powerAt==0 || now-next.powerAt>=30000 {next.battery=m.onBattery(hw.envOr("DEVOS_BACKGROUND_POWER_ROOT","/sys/class/power_supply"));next.powerAt=now}
+    if !strings.equal(next.file,"") {next.values=json.get(prefs.load(next.file,next.defaults),"values")}
+    if strings.equal(action,"activate") {
+        next.action=menu.action(next.values,m.text(m.get(request,"key")),os.homedir())
+        if strings.equal(process.getenv("DEVOS_BACKGROUND_EXECUTE_ACTIONS"),"1") {
+            let root=process.getenv("DEV_OS_ROOT");let runner=process.getenv("DEVLANG_RUN");if strings.equal(runner,"") {runner="d"}
+            let done=util.run(runner,Vec<str>(root+"/src/system/org.devos.background/action-execute.dev","--ffi-lib",root+"/dist/native/libsupervisor.so","--",json.stringify(next.action)),"",15000)
+            if !done.success {result.raise("Desktop action failed: "+util.output(done))}
+        }
+    }
+    if strings.equal(action,"move") || strings.equal(action,"remove") {
+        if strings.equal(next.file,"") {next.values=update(next.values,next.desktop,request)}
+        else {let desktop=next.desktop;next.values=prefs.edit(next.file,next.defaults,fn(latest:json.Value):json.Value {return update(latest,desktop,request)})}
+        next.commit=true
+    }
+    next.revision=next.revision+1;return next
+}
+let state=State(json.object(),widgets.active(json.array(),false),"",json.object(),0,false,json.null_value(),shell.empty(),json.null_value(),true,false,0)
+unsafe {setlocale(2,"")}
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let parsed=result.attempt(fn():json.Value {return json.parse(line)})
+    if result.isErr(parsed) {print("E\tInvalid widget request");continue}
+    let request=result.unwrap(parsed);let outcome=result.attempt(fn():State {return handle(state,request)})
+    if result.isErr(outcome) {print("E\t"+encoded(result.message(outcome)));continue}
+    state=result.unwrap(outcome);print(reply(state.values,state.desktop,state.revision,state.commit,state.action,state.tracking,state.monitor,state.single,state.battery))
+}

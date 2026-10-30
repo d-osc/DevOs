@@ -1,0 +1,23 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+let executable=t.root()+"/build/react-devlang/background/background-ui"
+test.case("native background renderer preview builds without GJS",fn() {
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")))
+    let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",t.root()+"/tests/react-devlang/background-ui.devx",executable,t.root()+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    t.lacks(tool.exec(Vec<str>("ldd",executable)),"mozjs")
+})
+fn scale(value:str,executable:str) {test.case("native GTK switches all 24 scenes and frees widgets at scale ${value}",fn() {
+    let env=Map<str,str>();env.set("GDK_SCALE",value);env.set("G_DEBUG","fatal-warnings");env.set("NO_AT_BRIDGE","1")
+    let done=tool.run(Vec<str>("xvfb-run","-a",executable),env,"",30000);t.success(done);t.contains(t.out(done),"PASS all 24 native GTK scenes and cleanup")
+})}
+scale("1",executable);scale("2",executable)
+test.case("desktop layer fails closed on an unsupported X11 display",fn() {
+    let env=Map<str,str>();env.set("DEVOS_BACKGROUND_DESKTOP_PREVIEW","1");env.set("GDK_BACKEND","x11");env.set("NO_AT_BRIDGE","1");env.set("G_DEBUG","fatal-warnings")
+    let done=tool.run(Vec<str>("xvfb-run","-a",t.root()+"/dist/native/background-preview"),env,"",10000)
+    test.expect(done.code==1 && !done.timedOut,"Unsupported display did not reject the desktop layer")
+})
+return t.finish()

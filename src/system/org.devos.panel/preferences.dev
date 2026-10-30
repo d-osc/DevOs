@@ -1,0 +1,22 @@
+# Atomic, locked writes preserve settings edited by another process.
+use "std/fs"
+use "std/path"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/time"
+use "../../../lib/desktop.dev" as util
+extern fn open(path:str,flags:i32,mode:u32):i32
+extern fn flock(fd:i32,operation:i32):i32
+extern fn close(fd:i32):i32
+fn load(file:str,defaults:json.Value):json.Value {
+    if !fs.existsSync(file) {return {version:1,enabled:true,values:defaults}}
+    let state=json.parse(fs.readFileSync(file,"utf8"));util.require(strings.equal(json.kind(state),"object") && strings.equal(json.kind(util.get(state,"values")),"object"),"Invalid panel preferences envelope")
+    util.require(strings.equal(json.kind(util.get(state,"version")),"number") && json.float(json.get(state,"version"))==1.0,"Unsupported panel preferences version");util.require(strings.equal(json.kind(util.get(state,"enabled")),"bool"),"Invalid panel enabled state");return state
+}
+fn edit(file:str,defaults:json.Value,change:fn(json.Value):json.Value):json.Value {unsafe {
+    util.require(fs.mkdirSync(path.dirname(file),true),"Cannot create panel preferences directory");let fd=open(file+".native.lock",66,384);util.require(fd>=0,"Cannot open panel preferences lock");let locked=false
+    for i in 0..80 {if flock(fd,6)==0 {locked=true;break};time.sleep_ms(25)};if !locked {close(fd);result.raise("Panel preferences are busy")}
+    let outcome=result.attempt(fn():json.Value {let state=load(file,defaults);let next=change(json.get(state,"values"));state=json.set(state,"values",next);util.require(util.atomic(file,state),"Cannot save panel preferences");return next})
+    flock(fd,8);close(fd);return result.unwrap(outcome)
+}}

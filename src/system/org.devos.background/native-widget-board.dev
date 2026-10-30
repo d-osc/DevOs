@@ -1,0 +1,68 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-widgets.dev" as card
+use "./native-menu.dev" as menu
+extern fn rc_env(name:str):str
+# Fallback while the native host loads the live system theme snapshot. Card rules
+# match org.devos.theme/style.css rather than relying on the system GTK theme.
+fn previewCss():str {return "#desktop-widgets .desktop-widget { background-color: alpha(#292929,0.90); color: #fafafa; border: 1px solid alpha(#eeeeee,0.12); border-radius: 20px; padding: 18px; } #desktop-widgets .desktop-widget-time { font-size: 42px; font-weight: 700; } #desktop-widgets .desktop-widget-remove { background: transparent; color: #aaaaaa; border: none; box-shadow: none; padding: 0 5px; min-height: 20px; min-width: 20px; border-radius: 8px; } #desktop-widgets .desktop-widget-remove:hover { background: alpha(#e85d65,0.2); color: #e85d65; } #desktop-widgets .settings-eyebrow { color: #aaaaaa; }"}
+fn hex(ch:u8):i64 {if ch>=48 && ch<=57 {return (ch-48) as i64};if ch>=65 && ch<=70 {return (ch-55) as i64};if ch>=97 && ch<=102 {return (ch-87) as i64};return -1}
+fn decoded(value:ui.Text):ui.Text {
+    let out=Vec<u8>();let i=0
+    while i<(value.bytes.len() as i64) {let ch=value.bytes[i];if ch==37 && i+2<(value.bytes.len() as i64) {let a=hex(value.bytes[i+1]);let b=hex(value.bytes[i+2]);if a>=0 && b>=0 {out.push((a*16+b) as u8);i=i+3;continue}};out.push(ch);i=i+1};return ui.Text(out)
+}
+fn number(value:ui.Text):i64 {if value.bytes.len()>0 && value.bytes[0]==45 {return -1};return channel.integer(value)}
+fn configuration(values:ui.Text,preferences:ui.Text):ui.Text {
+    return ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"configure\",\"values\":"),values,ui.text(",\"preferences\":"),channel.quote(preferences),ui.text("}")))
+}
+struct Control {selectDesktop:fn(ui.Text):void,error:ui.Text,appearance:ui.Text,appearanceRevision:i64,refresh:fn():void,tracker:fn(ui.Text):void,viewport:fn(ui.Text):void,paused:bool,interval:i64,trackerBatch:fn(ui.Text):void}
+fn useBoard(context:*ui.Context,parent:str,configuration:ui.Text,commit:fn(ui.Text):void):Control {
+    return useDesktop(context,parent,configuration,commit,fn(action:ui.Text) {})
+}
+fn useDesktop(context:*ui.Context,parent:str,configuration:ui.Text,commit:fn(ui.Text):void,action:fn(ui.Text):void):Control {
+    let snapshot=ui.useText(context,ui.text("S\t\t0\t0"));let scope=ui.useText(context,ui.emptyText());let pipe=ui.useRef(context,0);let error=ui.useText(context,ui.emptyText())
+    let menus=ui.useText(context,ui.emptyText())
+    let appearance=ui.useText(context,ui.emptyText())
+    let runtime=ui.useText(context,ui.text("R\t0\t100"))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let root=rc_env("DEV_OS_ROOT");let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        return channel.connect(context,runner,"${root}/src/system/org.devos.background/widget-service.dev",root,fn(value:ui.Text) {
+            let records=channel.split(value,30);let header=channel.split(records[0],9)
+            if header.len()==2 && ui.equalText(header[0],ui.text("E")) {
+                let message=decoded(header[1])
+                if channel.failed(pipe.get()) {ui.close(context);return}
+                error.set(message);return
+            }
+            if header.len()<4 || !ui.equalText(header[0],ui.text("S")) {return}
+            error.set(ui.emptyText());snapshot.set(value);scope.set(decoded(header[1]))
+            let items=Vec<ui.Text>()
+            for record in records {let fields=channel.split(record,9)
+                if fields.len()==2 && ui.equalText(fields[0],ui.text("P")) {commit(decoded(fields[1]))}
+                if fields.len()==2 && ui.equalText(fields[0],ui.text("A")) {action(decoded(fields[1]))}
+                if fields.len()==6 && ui.equalText(fields[0],ui.text("B")) {appearance.set(record)}
+                if fields.len()==3 && ui.equalText(fields[0],ui.text("R")) {runtime.set(record)}
+                if fields.len()==5 && ui.equalText(fields[0],ui.text("M")) {items.push(record);items.push(ui.Text(Vec<u8>(30)))}
+            };menus.set(ui.concatText(items))
+        },fn(value:i64) {pipe.set(value);channel.send(value,ui.text("{\"action\":\"get\"}"))})
+    }},Vec<i64>())
+    menu.useMenu(context,parent,menus.value,menus.revision,decoded,fn(key:ui.Text) {channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"activate\",\"key\":"),channel.quote(key),ui.text("}"))))})
+    let configurationKey=ui.useText(context,ui.emptyText())
+    # Initial configuration is immutable; selectDesktop updates workspace state.
+    ui.useEffect(context,fn():fn():void {if pipe.get()!=0 && !ui.equalText(configurationKey.get(),configuration) {configurationKey.set(configuration);channel.command(pipe.get(),configuration)};return ui.noop},Vec<i64>())
+    let records=channel.split(snapshot.value,30);let header=channel.split(records[0],9);let left=header.len()>2 && channel.integer(header[2])==1;let revision=header.len()>3 ? channel.integer(header[3]) : 0
+    let names=Vec<str>("desktop-widget-clock","desktop-widget-date","desktop-widget-note");let titles=Vec<str>("LOCAL TIME","DATE","NOTE");let keys=Vec<str>("widgetClock","widgetDate","widgetNote");let classes=Vec<str>("desktop-widget-time","section-heading","")
+    for index in 0..3 {
+        let enabled=false;let x= -1;let y= -1;let body=ui.emptyText()
+        for record in records {let fields=channel.split(record,9);if fields.len()==6 && ui.equalText(fields[0],ui.text("W")) && channel.integer(fields[1])==index {enabled=channel.integer(fields[2])==1;x=number(fields[3]);y=number(fields[4]);body=decoded(fields[5])}}
+        let key=keys[index]
+        card.widget(context,parent,card.Props(enabled,names[index],titles[index],body,classes[index],x,y,left,index,scope.revision,revision,
+            fn(x:f64,y:f64) {channel.command(pipe.get(),ui.text("{\"action\":\"move\",\"key\":\"${key}\",\"x\":${x},\"y\":${y}}"))},
+            fn() {channel.command(pipe.get(),ui.text("{\"action\":\"remove\",\"key\":\"${key}\"}"))}))
+    }
+    card.widget(context,parent,card.Props(error.value.bytes.len()>0,"background-service-error","Background service",error.value,"",25000,25000,true,0,0,error.revision,fn(x:f64,y:f64) {},fn() {error.set(ui.emptyText())}))
+    let timing=channel.split(runtime.value,9)
+    return Control(fn(desktops:ui.Text) {channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"desktop\",\"desktops\":"),desktops,ui.text("}"))))},error.value,appearance.value,appearance.revision,fn() {channel.command(pipe.get(),ui.text("{\"action\":\"get\"}"))},
+        fn(event:ui.Text) {channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"tracker\",\"event\":"),event,ui.text("}"))))},
+        fn(viewport:ui.Text) {channel.command(pipe.get(),viewport)},channel.integer(timing[1])==1,channel.integer(timing[2]),
+        fn(events:ui.Text) {channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"tracker-batch\",\"events\":"),events,ui.text("}"))))})
+}

@@ -1,0 +1,24 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn environment(dir:str):Map<str,str> {let env=Map<str,str>();env.set("XDG_DATA_HOME",dir+"/data");env.set("XDG_DATA_DIRS",dir+"/system");env.set("XDG_CONFIG_HOME",dir+"/config");env.set("XDG_CACHE_HOME",dir+"/cache");env.set("LANG","C.UTF-8");env.set("PANEL_CATALOG_FILE",dir+"/data/applications/example.desktop");return env}
+fn fixtures(dir:str) {
+    tool.write(dir+"/data/applications/example.desktop","[Desktop Entry]\nType=Application\nName=เอกสาร\nExec=/bin/true\nIcon=folder-symbolic\nStartupWMClass=ExampleClass\n")
+    tool.write(dir+"/data/applications/hidden-menu.desktop","[Desktop Entry]\nType=Application\nName=Background App\nExec=/bin/true\nNoDisplay=true\n")
+}
+test.case("native catalog follows desktop metadata changes without GTK",fn() {
+    let root=t.root();tool.checked(Vec<str>("sh",root+"/tools/build/native-panel.sh"),Map<str,str>(),"",90000)
+    let library=root+"/dist/native/libpanel-taskbar.so";let dependencies=tool.exec(Vec<str>("ldd",library));t.lacks(dependencies,"libgtk");t.lacks(dependencies,"mozjs")
+    tool.scope("panel-catalog-",fn(dir:str) {fixtures(dir);let done=tool.run(Vec<str>(t.runner(),root+"/tests/fixtures/panel-catalog.dev","--ffi-lib",library),environment(dir),"",15000);t.success(done);t.contains(t.out(done),"PASS native catalog")})
+})
+test.case("persistent taskbar uses system catalog by desktop ID and WM class",fn() {
+    tool.scope("panel-catalog-worker-",fn(dir:str) {
+        fixtures(dir);let input="{\"systemCatalog\":true,\"showPinned\":false,\"windows\":[{\"id\":1,\"title\":\"Window\",\"appId\":\"example\"},{\"id\":2,\"title\":\"Other\",\"appId\":\"ExampleClass\"}]}\n{}\n{\"systemCatalog\":false,\"catalog\":[]}\n"
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-taskbar.dev","--ffi-lib",t.root()+"/dist/native/libpanel-taskbar.so"),environment(dir),input,15000);t.success(done)
+        let frames=strings.split(strings.trim(t.out(done)),"\n");for i in 0..2 {let rows=json.get(json.parse(frames[i]),"rows");for j in 0..2 {let row=json.at(rows,j);t.equal(json.string(json.get(row,"title")),"เอกสาร");t.contains(json.string(json.get(row,"gicon")),"folder-symbolic")}}
+        t.equal(json.string(json.get(json.at(json.get(json.parse(frames[2]),"rows"),0),"title")),"Window")
+    })
+})
+return t.finish()

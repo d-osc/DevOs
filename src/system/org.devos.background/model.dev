@@ -1,0 +1,55 @@
+# Background data model. Rendering remains independent of these decisions.
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+fn get(value:json.Value,key:str):json.Value { return strings.equal(json.kind(value),"object") && json.has(value,key) ? json.get(value,key) : json.null_value() }
+fn text(value:json.Value):str { return strings.equal(json.kind(value),"string") ? json.string(value) : "" }
+fn num(value:json.Value):f64 { return strings.equal(json.kind(value),"number") ? json.float(value) : 0.0 }
+fn flag(value:json.Value):bool { return strings.equal(json.kind(value),"bool") && json.bool(value) }
+fn has(values:Vec<str>,value:str):bool { for item in values { if strings.equal(item,value) { return true } }; return false }
+fn styles():Vec<str> { return Vec<str>("dunes","aurora","contours","facets","waves","bokeh","orbits","horizon","mosaic","flow","ripples","fireflies","tide","planets","starfield","nebula","galaxy","meteors","eclipse","matrix","terminal","circuit","radar","network") }
+fn hex(value:str):bool {
+    if strings.charLength(value)!=7 || !strings.startsWith(value,"#") { return false }
+    for i in 1..7 { if !strings.contains("0123456789abcdefABCDEF",strings.charAt(value,i)) { return false } }; return true
+}
+fn config(base:json.Value,values:json.Value):json.Value {
+    let out=base; let mode=text(get(values,"mode")); if !has(Vec<str>("solid","picture"),mode) { mode="design" }
+    let style=text(get(values,"style")); if !has(styles(),style) { style="dunes" }
+    let fit=text(get(values,"fit")); if !has(Vec<str>("contain","stretch"),fit) { fit="cover" }
+    out=json.set(out,"mode",mode); out=json.set(out,"style",style); out=json.set(out,"fit",fit); out=json.set(out,"imagePath",text(get(values,"imagePath")))
+    let desktop=get(values,"useDesktopColor"); let color=text(get(values,"color"))
+    if strings.equal(json.kind(desktop),"bool") && !json.bool(desktop) && hex(color) { out=json.set(out,"background",color) }
+    return out
+}
+fn interval(style:str,battery:bool):i64 { return (has(Vec<str>("matrix","terminal","circuit","radar","network","meteors"),style) ? 67 : 100) * (battery ? 2 : 1) }
+fn covered(windows:json.Value,desktops:json.Value,monitor:json.Value,single:bool):bool {
+    let active=json.null_value()
+    for i in 0..(json.len(desktops) as i64) { let desktop=json.at(desktops,i); if flag(get(desktop,"active")) { active=get(desktop,"id"); break } }
+    for i in 0..(json.len(windows) as i64) {
+        let window=json.at(windows,i)
+        if flag(get(window,"minimized")) || !(flag(get(window,"maximized")) || flag(get(window,"fullscreen"))) { continue }
+        let desktop=get(window,"desktop")
+        if !json.is_null(active) && !json.is_null(desktop) && !flag(get(window,"sticky")) && num(desktop)!=num(active) { continue }
+        let geometry=get(window,"geometry"); if json.is_null(geometry) { if single { return true }; continue }
+        let x=num(get(geometry,"x"))+num(get(geometry,"width"))/2.0; let y=num(get(geometry,"y"))+num(get(geometry,"height"))/2.0
+        if x>=num(get(monitor,"x")) && x<num(get(monitor,"x"))+num(get(monitor,"width")) && y>=num(get(monitor,"y")) && y<num(get(monitor,"y"))+num(get(monitor,"height")) { return true }
+    }
+    return false
+}
+fn onBattery(root:str):bool {
+    let battery=false
+    for name in hw.listDir(root) {
+        let kind=hw.readTrim(root+"/"+name+"/type")
+        if strings.equal(kind,"Mains") && strings.equal(hw.readTrim(root+"/"+name+"/online"),"1") { return false }
+        if strings.equal(kind,"Battery") && strings.equal(hw.readTrim(root+"/"+name+"/status"),"Discharging") { battery=true }
+    }
+    return battery
+}
+fn views(request:json.Value,battery:bool):json.Value {
+    let appearance=config(get(request,"config"),get(request,"values")); let monitors=get(request,"monitors"); let windows=get(request,"windows"); let desktops=get(request,"desktops")
+    let out=json.array()
+    for i in 0..(json.len(monitors) as i64) {
+        out=json.push(out,{index:i,monitor:json.at(monitors,i),config:appearance,paused:covered(windows,desktops,json.at(monitors,i),json.len(monitors)==1),interval:interval(text(get(appearance,"style")),battery)})
+    }
+    return out
+}

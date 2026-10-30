@@ -1,0 +1,18 @@
+# Native renderer window on a private Wayland compositor, not the live desktop.
+use "std/time"
+use "std/strings"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    smoke.withSession("background-render",Map<str,str>(),fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEVOS_BACKGROUND_PREVIEW","1");env.set("GDK_BACKEND","wayland");env.set("NO_AT_BRIDGE","1")
+        let child=smoke.launch(Vec<str>(session.root+"/dist/native/background-preview"),env,session.base+"/preview.log")
+        time.sleep_ms(2000);tool.require(!child.ready(),tool.read(session.base+"/preview.log"))
+        let maps=tool.read("/proc/${child.pid()}/maps");tool.require(strings.contains(maps,"libgtk-3") && !strings.contains(maps,"mozjs"),"Native renderer loaded a JavaScript engine")
+        smoke.screenshot(env,session.root+"/build/screenshots/background-native-preview.png")
+        smoke.stop(child);print("PASS native animated background preview on Wayland without MozJS")
+    })
+    return 0
+}
+return tool.main(main)

@@ -1,0 +1,33 @@
+use "std/fs"
+use "std/strings"
+use "std/time"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    let root=tool.root()
+    let extras=Map<str,str>();extras.set("DEVOS_BACKGROUND_SETTINGS_TRACE","1")
+    smoke.withSession("background-settings-production",extras,fn(session:smoke.Session) {
+        let env=smoke.environment(session)
+        let entry=root+"/dist/native/background-settings"
+        let preferences=session.base+"/config/dev-os/extensions/org.devos.background.json"
+        smoke.remote(session,env,"settings.background")
+        tool.waitFor(fn():bool {return smoke.processIds(session.runtime,entry).len()==1},15000,"Shell did not open native Background Settings")
+        let ids=smoke.processIds(session.runtime,entry);let pid=ids[0]
+        tool.waitFor(fn():bool {return strings.contains(tool.read(session.log),"BACKGROUND SETTINGS READY")},20000,"Production Background Settings did not render")
+        tool.require(!strings.contains(tool.read("/proc/${pid}/maps"),"mozjs"),"Background Settings UI loaded MozJS")
+        tool.waitFor(fn():bool {return strings.trim(tool.read("/proc/${pid}/task/${pid}/children"))!=""},10000,"Background Settings data service did not start")
+        smoke.remote(session,env,"settings.background");time.sleep_ms(500)
+        let repeated=smoke.processIds(session.runtime,entry);tool.require(repeated.len()==1 && repeated[0]==pid,"Opening Background Settings twice created another process")
+        smoke.remote(session,env,"settings");time.sleep_ms(800)
+        smoke.remote(session,env,"settings.background");time.sleep_ms(500)
+        let again=smoke.processIds(session.runtime,entry);tool.require(again.len()==1 && again[0]==pid,"General Settings replaced the Background Settings singleton")
+        tool.require(!fs.existsSync(preferences),"Opening production Settings wrote preferences")
+        smoke.screenshot(env,root+"/build/screenshots/background-settings-production.png")
+        tool.checked(Vec<str>("kill","-TERM","${pid}"),env,"",5000)
+        tool.waitFor(fn():bool {return !fs.existsSync("/proc/${pid}")},5000,"Production Background Settings did not close")
+        smoke.remote(session,env,"settings.background")
+        tool.waitFor(fn():bool {let current=smoke.processIds(session.runtime,entry);return current.len()==1 && current[0]!=pid},15000,"Closed Background Settings did not reopen")
+        print("PASS shell launches native Background Settings, singleton survives general Settings, no write on open, close and reopen")
+    });return 0
+}
+return tool.main(main)

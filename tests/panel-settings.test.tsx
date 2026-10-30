@@ -2,12 +2,12 @@ import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import {PanelSettings} from '../extensions/org.devos.panel/settings-view.js';
-import {panelOptions} from '../extensions/org.devos.panel/options.js';
-import {mountPanel} from '../extensions/org.devos.panel/view.js';
-import {preparePanelAppearance} from '../extensions/org.devos.panel/appearance.js';
-import {panelMenuItems, createPanelMenu, type PanelMenuKey} from '../extensions/org.devos.panel/context-menu.js';
-import {parseCustomMenu} from '../extensions/org.devos.files/custom-menu.js';
+import {PanelSettings} from '../packages/compat/panel-legacy/settings-view.js';
+import {panelOptions} from '../packages/compat/panel-legacy/options.js';
+import {mountPanel} from '../packages/compat/panel-legacy/view.js';
+import {preparePanelAppearance} from '../packages/compat/panel-legacy/appearance.js';
+import {panelMenuItems, createPanelMenu, type PanelMenuKey} from '../packages/compat/panel-legacy/context-menu.js';
+import {parseCustomMenu} from '../src/apps/org.devos.files/custom-menu.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -17,10 +17,10 @@ async function verify() {
     assert(panelOptions({height: 0}, 52).height === 52, 'Default height follows Desktop');
     assert(panelOptions({height: 120, iconSize: 100, spacing: -20}).height === 96 && panelOptions({iconSize: 100}).iconSize === 28 && panelOptions({spacing: -20}).spacing === 0, 'Sizes are bounded');
     const temporary = GLib.dir_make_tmp('devos-panel-ui-XXXXXX');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1100);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     let applied = 0;

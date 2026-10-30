@@ -17,9 +17,10 @@ export GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland
 export XDG_DATA_DIRS=/usr/share/dev-os/data:/usr/local/share:/usr/share
 if [ "${1:-}" = --ui ]; then
     # Continue the boot animation as a window over the compositor until the login screen says it is ready.
-    if [ -d /run/devos-splash.d ] && [ -r /usr/libexec/devos-splash-window.js ]; then
+    splash_window=/usr/share/dev-os/dist/native/boot-splash
+    if [ -d /run/devos-splash.d ] && [ -x "$splash_window" ]; then
         devos-splash --step compositor || true
-        gjs -m /usr/libexec/devos-splash-window.js >/dev/null 2>&1 &
+        "$splash_window" >/dev/null 2>&1 &
     fi
     polkit-gnome-authentication-agent-1 &
     agent=$!

@@ -1,1 +1,0 @@
-{"id":"org.devos.installer","name":"Install Dev OS","description":"Install Dev OS from the Live USB onto this computer","version":"1.0.0","apiVersion":1,"kind":"ui","system":true,"entry":"org.devos.installer.js","order":31,"settingsVersion":1,"enabledByDefault":true,"settings":[]}

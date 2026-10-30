@@ -1,0 +1,37 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/fs"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn execute(plan:json.Value,env:Map<str,str>):str {
+    return tool.checked(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/action-execute.dev","--ffi-lib",t.root()+"/dist/native/libsupervisor.so","--",json.stringify(plan)),env,"",15000)
+}
+test.case("custom desktop actions detach with their literal argv and working directory",fn() {tool.scope("background-execute-",fn(base:str) {
+    let script=base+"/capture";let file=base+"/output"
+    tool.write(script,"#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" > \"$DEVOS_ACTION_CAPTURE\"\n");tool.chmod(script,"755")
+    let env=Map<str,str>();env.set("DEVOS_ACTION_CAPTURE",file)
+    execute({kind:"process",cwd:base,argv:Vec<str>(script,"ภาษาไทย %","$(touch unexpected)","two words")},env)
+    tool.waitFor(fn():bool {return fs.existsSync(file) && strings.contains(tool.read(file),"two words")},5000,"Detached action did not complete")
+    t.equal(tool.read(file),base+"\nภาษาไทย %\n$(touch unexpected)\ntwo words\n");test.expect(!fs.existsSync(base+"/unexpected"),"Command substitution was expanded")
+})})
+test.case("unavailable shell commands fail without starting a fallback GUI",fn() {tool.scope("background-no-shell-",fn(base:str) {
+    let env=Map<str,str>();env.set("DBUS_SESSION_BUS_ADDRESS","unix:path="+base+"/missing-bus");env.set("XDG_RUNTIME_DIR",base);env.set("WAYLAND_DISPLAY","missing")
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/action-execute.dev","--ffi-lib",t.root()+"/dist/native/libsupervisor.so","--",json.stringify({kind:"shell",command:"settings.background",cwd:base})),env,"",15000)
+    test.expect(!done.success,"Missing shell was accepted");t.contains(t.out(done),"shell is unavailable")
+})})
+test.case("unknown shell actions and missing custom executables report failure",fn() {tool.scope("background-bad-action-",fn(base:str) {
+    for plan in Vec<json.Value>(json.value({kind:"shell",command:"unknown",cwd:base}),json.value({kind:"process",argv:Vec<str>(base+"/no-program"),cwd:base})) {
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/action-execute.dev","--ffi-lib",t.root()+"/dist/native/libsupervisor.so","--",json.stringify(plan)),Map<str,str>(),"",15000)
+        test.expect(!done.success,"Invalid action succeeded")
+    }
+})})
+test.case("worker executes an opted-in custom selection once and never replays it on polling",fn() {tool.scope("background-worker-action-",fn(base:str) {
+    let script=base+"/capture";let file=base+"/count";tool.write(script,"#!/bin/sh\nprintf 'selected\\n' >> \"$DEVOS_ACTION_CAPTURE\"\n");tool.chmod(script,"755")
+    let custom=json.stringify(json.value(Vec<json.Value>({id:"custom-test",title:"Test",enabled:true,target:"background",command:"'"+script+"'"})))
+    let input=json.stringify({action:"configure",values:{contextCustomItems:custom}})+"\n{\"action\":\"activate\",\"key\":\"custom-test\"}\n{\"action\":\"get\"}\n"
+    let env=Map<str,str>();env.set("DEV_OS_ROOT",t.root());env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","1");env.set("DEVOS_ACTION_CAPTURE",file)
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/widget-service.dev"),env,input,20000);t.success(done);t.lacks(t.out(done),"E\t")
+    tool.waitFor(fn():bool {return fs.existsSync(file)},5000,"Worker action did not start");t.equal(tool.read(file),"selected\n")
+})})
+return t.finish()

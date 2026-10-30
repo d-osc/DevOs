@@ -1,0 +1,24 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../system/org.devos.panel/device-actions.dev" as actions
+use "../system/org.devos.panel/device-execution.dev" as execution
+use "../system/org.devos.panel/power-model.dev" as power
+use "../system/org.devos.panel/tray-model.dev" as tray
+use "../system/org.devos.background/wire.dev" as wire
+extern fn pa_network():i32
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let parsed=result.attempt(fn():json.Value {return json.parse(line)});if result.isErr(parsed) {print(json.stringify({error:"Could not read panel device state"}));continue};let request=result.unwrap(parsed);let native=hw.jbool(request,"wire",false)
+    let reply=result.attempt(fn():json.Value {
+        let connected=hw.jbool(request,"connected",false);if hw.jbool(request,"systemNetwork",false) {unsafe {connected=pa_network()!=0}}
+        let action=hw.jget(request,"action");if json.has(request,"action") {actions.validate(action)}
+        let wsl=!strings.equal(hw.env("WSL_DISTRO_NAME"),"") || !strings.equal(hw.env("WSL_INTEROP"),"");let state=execution.snapshot(connected,wsl)
+        if json.has(request,"action") {execution.execute(action,state);state=execution.snapshot(connected,wsl)}
+        if native {let frame=tray.frame(state,power.read(hw.envOr("DEVOS_PANEL_SYS","/sys")+"/class/power_supply"));if json.has(request,"action") {frame=frame+wire.separator()+"A"};return {frame:frame}}
+        return json.value({id:hw.jget(request,"id"),devices:state})
+    })
+    if result.isOk(reply) {let value=result.unwrap(reply);print(native ? hw.jstr(value,"frame","") : json.stringify(value))} else {let message=json.has(request,"action") ? hw.errorText(result.message(reply)) : "Could not read panel device state";print(native ? "E\t"+wire.encoded(message) : json.stringify({error:message}))}
+}

@@ -1,0 +1,15 @@
+#!/usr/bin/env d
+# Stand-in for bin/dev-os-language in tests/settings-native.test.dev: `get` prints a catalog, `save` echoes stdin as the saved settings.
+use "std/args"
+use "std/io"
+use "std/strings"
+fn main():i32 {
+    if args.len() > 0 && strings.equal(args.get(0),"save") {
+        let input = io.read_line()
+        print("{\"ok\":true,\"applied\":true,\"settings\":" + input + "}")
+        return 0
+    }
+    print("{\"ok\":true,\"settings\":{\"layouts\":[\"us\"],\"shortcut\":\"alt-shift\"},\"layouts\":[],\"shortcuts\":[],\"warning\":\"\"}")
+    return 0
+}
+return main()

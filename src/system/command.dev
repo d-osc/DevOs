@@ -1,0 +1,37 @@
+#!/usr/bin/env devrun
+use "std/args"
+use "std/json"
+use "std/fs"
+use "std/process"
+use "std/strings"
+use "std/result"
+use "../../lib/shell-command.dev" as command
+use "../../lib/hw.dev" as hw
+use "../../lib/doctor.dev" as doctor
+fn version(root:str):str {
+    for relative in Vec<str>("dist/build-info.json","release.json","package.json") {
+        if fs.is_file(root+"/"+relative) {return json.string(json.get(json.parse(fs.readFileSync(root+"/"+relative,"utf8")),"version"))}
+    }
+    result.raise("Build version metadata is missing");return ""
+}
+fn main():i32 {
+    let values=Vec<str>();for i in 0..(args.len() as i64) {values.push(args.get(i))}
+    if command.contains(values,"--version") {print(version(hw.env("DEV_OS_ROOT")));return 0}
+    if command.contains(values,"--help") || command.contains(values,"-h") {print("Usage: dev-os-shell ["+strings.join(command.commands()," | ")+"] [--json]");return 0}
+    if !command.valid(values) {hw.stderr("Invalid command. Use dev-os-shell --help.");return 2}
+    if values.len()==0 {values.push("shell")}
+    if strings.equal(values[0],"doctor") {
+        let checks=doctor.checks(hw.env("DEV_OS_ROOT"))
+        if command.contains(values,"--json") {print(json.pretty(checks))} else {for key in json.keys(checks) {print((json.bool(json.get(checks,key)) ? "OK: " : "MISSING: ")+key)}}
+        return doctor.healthy(checks) ? 0 : 1
+    }
+    let status=command.remote(values,hw.env("XDG_RUNTIME_DIR"),hw.envOr("WAYLAND_DISPLAY","default"),process.cwd())
+    if status==-1 {
+        if command.contains(Vec<str>("task-view-hide","overlays-hide","window-next","window-previous","window-restore"),values[0]) {return 0}
+        print("DEVOS_NATIVE_CONTROL_NO_OWNER");return 75
+    }
+    return status<0 ? 1 : status
+}
+let done=result.attempt(main)
+if result.isErr(done) {hw.stderr(hw.errorText(result.message(done)));return 1}
+return result.unwrap(done)

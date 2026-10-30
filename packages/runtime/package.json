@@ -3,6 +3,10 @@
   "version": "0.3.7-ux3407na-dev",
   "type": "module",
   "exports": {
+    "./processes": {
+      "types": "./dist/processes.d.ts",
+      "import": "./dist/processes.js"
+    },
     "./lid": {
       "types": "./dist/lid.d.ts",
       "import": "./dist/lid.js"
@@ -30,6 +34,14 @@
     "./sleep": {
       "types": "./dist/sleep.d.ts",
       "import": "./dist/sleep.js"
+    },
+    "./app-service": {
+      "types": "./dist/app-service.d.ts",
+      "import": "./dist/app-service.js"
+    },
+    "./app-channel": {
+      "types": "./dist/app-channel.d.ts",
+      "import": "./dist/app-channel.js"
     }
   },
   "files": [

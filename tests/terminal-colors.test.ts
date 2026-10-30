@@ -1,6 +1,6 @@
 import {Gtk, Gdk, GLib} from '@dev-os/core';
 import {Vte} from '@dev-os/core/vte';
-import {applyTerminalOptions, terminalScheme} from '../extensions/org.devos.terminal/options.js';
+import {applyTerminalOptions, terminalScheme} from '../src/apps/org.devos.terminal/options.js';
 
 Gtk.init(null);
 const output = GLib.getenv('DEV_OS_COLOR_SCREENSHOTS');

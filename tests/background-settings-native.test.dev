@@ -1,0 +1,30 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/fs"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("native Background Settings owns no data decisions and commits through its worker",fn() {
+    let root=t.root();let binary=root+"/build/react-devlang/background/background-settings-test"
+    tool.checked(Vec<str>("sh",root+"/tools/build/native-background-settings.sh"),Map<str,str>(),"",90000)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",root+"/tests/react-devlang/background-settings.devx",binary,root+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    tool.scope("background-settings-ui-",fn(base:str) {
+        let file=base+"/preferences.json";let env=Map<str,str>();env.set("DEV_OS_ROOT",root);env.set("DEVOS_BACKGROUND_PREFERENCES",file);env.set("NO_AT_BRIDGE","1");env.set("GTK_USE_PORTAL","0");env.set("GSETTINGS_BACKEND","memory");env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-criticals")
+        let done=tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",binary),env,"",45000);t.success(done);t.contains(t.out(done),"PASS native Settings controls")
+        let values=json.get(json.parse(tool.read(file)),"values");t.equal(json.string(json.get(values,"mode")),"picture");t.equal(json.string(json.get(values,"imagePath")),file+".ไทย%.png")
+        test.expect(json.bool(json.get(values,"widgetNote")),"Native note toggle was lost");t.equal(json.string(json.get(values,"widgetNoteText")),"Native note\nภาษาไทย %")
+        let points=json.parse(json.string(json.get(values,"widgetLocations")));test.expect(json.float(json.get(json.get(points,"widgetClock"),"x"))==0.7,"Concurrent drag was lost")
+        let custom=json.parse(json.string(json.get(values,"contextCustomItems")));test.expect(json.len(custom)==1,"Custom action was not saved")
+    })
+})
+test.case("polling and tracker updates retain validation errors until the draft is corrected",fn() {tool.scope("background-settings-errors-",fn(base:str) {
+    let root=t.root();let file=base+"/preferences.json"
+    let input=json.stringify({action:"configure",root:root,preferences:file})+"\n"
+    input=input+json.stringify({action:"edit",key:"color",value:"bad"})+"\n"+json.stringify({action:"apply"})+"\n"+json.stringify({action:"get"})+"\n"+json.stringify({action:"tracker",event:{type:"connecting"}})+"\n"+json.stringify({action:"edit",key:"color",value:"#334455"})+"\n"
+    let done=tool.run(Vec<str>(t.runner(),root+"/src/system/org.devos.background/settings-service.dev","--ffi-lib",root+"/dist/native/libbackground-image.so"),Map<str,str>(),input,15000);t.success(done)
+    let lines=strings.split(strings.trim(t.out(done)),"\n");test.expect(lines.len()==6,"Settings worker lost a response")
+    for i in 2..5 {let header=strings.split(lines[i],"\t");t.contains(header[3],"Enter a six-digit hex color")}
+    let repaired=strings.split(lines[5],"\t");t.equal(repaired[3],"");test.expect(!fs.existsSync(file),"Validation test wrote preferences")
+})})
+return t.finish()

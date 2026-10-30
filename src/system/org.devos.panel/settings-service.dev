@@ -1,0 +1,12 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "./settings-session.dev" as session
+let state=session.empty();let error=""
+while true {let line=io.read_line();if strings.equal(line,"") {break};let ack:i64=0
+    let request=result.attempt(fn():json.Value {return json.parse(line)})
+    if result.isErr(request) {error="Invalid panel settings request"}else {let input=result.unwrap(request);ack=hw.jnum(input,"id",0.0) as i64;let outcome=result.attempt(fn():session.State {return session.handle(state,input)});if result.isOk(outcome) {state=result.unwrap(outcome);if !strings.equal(hw.jstr(input,"action",""),"get") {error=""}}else {error=hw.errorText(result.message(outcome))}}
+    print(session.response(state,ack,error))
+}

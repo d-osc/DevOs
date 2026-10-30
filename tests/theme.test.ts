@@ -77,7 +77,7 @@ test('saved settings, including pre-Dark/Light values, always map to Auto, Dark 
     equal(migrateState('org.devos.files', {version: 1, enabled: true, values: {a: 1}}), {version: 1, enabled: true, values: {a: 1}}, 'other extensions untouched');
 });
 test('palettes are copied from the VS Code 2026 and GitHub theme files', () => {
-    const read = (name: string) => readJson(`${ROOT}/extensions/org.devos.theme/vscode/${name}.json`) as {colors: Record<string, string>; name: string};
+    const read = (name: string) => readJson(`${ROOT}/src/apps/org.devos.theme/vscode/${name}.json`) as {colors: Record<string, string>; name: string};
     const files = {vscode: {dark: '2026-dark', light: '2026-light'}, github: {dark: 'github/dark-default', light: 'github/light-default'}} as const;
     const includes = {dark: 'dark_modern', light: 'light_modern'} as const;
     assert(read('2026-dark').name === '2026 Dark' && read('2026-light').name === '2026 Light', 'VS Code sources are the 2026 themes');

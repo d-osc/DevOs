@@ -1,0 +1,36 @@
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+use "./power-model.dev" as power
+use "../org.devos.background/wire.dev" as wire
+fn presentation(device:json.Value,reading:json.Value):json.Value {
+    let volume=hw.jget(device,"volume");let audioAvailable=strings.equal(json.kind(volume),"number");let muted=hw.jbool(device,"muted",false);let value=hw.jnum(device,"volume",0.0)
+    let brightness=hw.jget(device,"brightness");let brightnessAvailable=strings.equal(json.kind(brightness),"number")
+    let connected=hw.jbool(device,"connected",false);let wireless=hw.jbool(device,"wireless",false)
+    let network=hw.jstr(device,"network","No network connection");let audioText=!audioAvailable ? "Audio unavailable" : muted ? "Muted" : "Volume ${value as i64}%"
+    let battery=hw.jget(reading,"batteryPresentation");if json.is_null(battery) {battery=power.presentation(reading)}
+    battery=json.set(battery,"visible",hw.jbool(reading,"batteryFound",false) || hw.jbool(reading,"acFound",false) || hw.jbool(reading,"acOnline",false))
+    battery=json.set(battery,"found",hw.jbool(reading,"batteryFound",false))
+    let wifi=hw.jget(device,"wifi");let bluetooth=hw.jget(device,"bluetooth")
+    return {networkIcon:connected ? wireless ? "network-wireless-signal-excellent-symbolic" : "network-wired-symbolic" : "network-offline-symbolic",
+        audioIcon:!audioAvailable || muted || value==0.0 ? "audio-volume-muted-symbolic" : value<40.0 ? "audio-volume-low-symbolic" : "audio-volume-high-symbolic",
+        tooltip:network+" · "+audioText,network:network,volumeText:audioAvailable ? "${value as i64}%" : "—",brightnessText:brightnessAvailable ? "${hw.jnum(device,"brightness",0.0) as i64}%" : "—",
+        muteIcon:muted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic",muteTooltip:muted ? "Unmute" : "Mute",audioAvailable:audioAvailable,brightnessAvailable:brightnessAvailable,
+        wifiText:json.is_null(wifi) ? "Networks" : hw.jbool(device,"wifi",false) ? "On" : "Off",bluetoothText:json.is_null(bluetooth) ? "Unavailable" : hw.jbool(device,"bluetooth",false) ? "On" : "Off",
+        wifiAvailable:!json.is_null(wifi),bluetoothAvailable:!json.is_null(bluetooth),wifiOn:hw.jbool(device,"wifi",false),bluetoothOn:hw.jbool(device,"bluetooth",false),
+        audioMissing:audioAvailable ? "" : "Audio output unavailable. Requires PipeWire or PulseAudio.",brightnessMissing:brightnessAvailable ? "" : "Brightness unavailable: no kernel backlight device.",wifiTooltip:"Wi-Fi networks and settings",bluetoothTooltip:json.is_null(bluetooth) ? "No Bluetooth controller available" : "Toggle Bluetooth",
+        volume:value<0.0 ? 0.0 : value>100.0 ? 100.0 : value,brightness:hw.jnum(device,"brightness",0.0),battery:battery}
+}
+fn frame(device:json.Value,reading:json.Value):str {
+    let value=presentation(device,reading);let fields=Vec<str>("D")
+    for key in Vec<str>("networkIcon","audioIcon","tooltip","network","volumeText","brightnessText","muteIcon","muteTooltip") {fields.push(wire.encoded(hw.jstr(value,key,"")))}
+    for key in Vec<str>("audioAvailable","brightnessAvailable") {fields.push(hw.jbool(value,key,false) ? "1" : "0")}
+    for key in Vec<str>("wifiText","bluetoothText") {fields.push(wire.encoded(hw.jstr(value,key,"")))}
+    for key in Vec<str>("wifiAvailable","bluetoothAvailable","wifiOn","bluetoothOn") {fields.push(hw.jbool(value,key,false) ? "1" : "0")}
+    for key in Vec<str>("volume","brightness") {fields.push("${hw.jnum(value,key,0.0) as i64}")}
+    for key in Vec<str>("audioMissing","brightnessMissing","wifiTooltip","bluetoothTooltip") {fields.push(wire.encoded(hw.jstr(value,key,"")))}
+    let battery=hw.jget(value,"battery");let detail=Vec<str>("B",hw.jbool(battery,"visible",false) ? "1" : "0")
+    for key in Vec<str>("icon","text","tooltip","className") {detail.push(wire.encoded(hw.jstr(battery,key,"")))}
+    detail.push(hw.jbool(battery,"visible",false) ? "1" : "0");detail.push(hw.jbool(battery,"found",false) ? "1" : "0")
+    return strings.join(fields,"\t")+wire.separator()+strings.join(detail,"\t")
+}

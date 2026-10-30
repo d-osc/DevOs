@@ -1,0 +1,22 @@
+# Read-only inventory and rendering smoke; no login, enrollment or power actions.
+use "std/time"
+use "std/child_process"
+use "std/strings"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    smoke.withSession("login-native",Map<str,str>(),fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",session.root);env.set("DEVOS_LOGIN_PREVIEW","1");env.set("GDK_BACKEND","wayland");env.set("NO_AT_BRIDGE","1")
+        let native=smoke.launch(Vec<str>(session.root+"/dist/native/login-preview"),env,session.base+"/login.log")
+        time.sleep_ms(2000)
+        tool.require(!native.ready(),tool.read(session.base+"/login.log"))
+        let maps=tool.read("/proc/${native.pid()}/maps");tool.require(strings.contains(maps,"libgtk-3") && !strings.contains(maps,"mozjs"),"Native login loaded a JavaScript engine")
+        smoke.screenshot(env,session.root+"/build/screenshots/login-native-preview.png")
+        tool.checked(Vec<str>("kill","-TERM","${native.pid()}"),env,"",10000)
+        tool.waitFor(fn():bool {return native.ready()},5000,"Closing preview did not stop its GTK loop")
+        let done=native.wait();tool.require(done.code==1,"Closing login accepted a session")
+        print("PASS native Wayland login renders with real inventory and rejects session on SIGTERM")
+    })
+    return 0
+}
+return tool.main(main)

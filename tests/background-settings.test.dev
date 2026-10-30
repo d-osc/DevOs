@@ -1,0 +1,68 @@
+use "std/test"
+use "std/fs"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "../src/system/org.devos.background/settings-session.dev" as session
+use "../src/system/org.devos.background/preferences.dev" as prefs
+use "../src/system/org.devos.background/widget-desktops.dev" as widgets
+use "../src/system/org.devos.background/context-menu.dev" as menu
+use "./lib/react-devlang.dev" as t
+use "../tools/lib/tool.dev" as tool
+fn valid(file:str) {}
+fn configure(file:str):session.State {return session.handle(session.empty(),{action:"configure",root:t.root(),preferences:file},valid)}
+test.case("settings draft and Reset never write preferences",fn() {tool.scope("background-draft-",fn(base:str) {
+    let file=base+"/prefs.json";let state=configure(file);test.expect(!session.dirty(state) && !fs.existsSync(file),"Configure wrote preferences")
+    state=session.handle(state,{action:"edit",key:"mode",index:1},valid);state=session.handle(state,{action:"preset",value:"#334455"},valid)
+    test.expect(session.dirty(state) && !fs.existsSync(file),"Editing saved before Apply");t.equal(json.string(json.get(state.draft,"mode")),"solid")
+    state=session.handle(state,{action:"reset"},valid);test.expect(!session.dirty(state) && !fs.existsSync(file),"Reset saved or retained changes")
+})})
+test.case("Apply merges a concurrent drag and preserves the existing envelope",fn() {tool.scope("background-settings-merge-",fn(base:str) {
+    let file=base+"/prefs.json";tool.jsonWrite(file,{version:1,enabled:false,extra:"preserve",values:{widgetClock:true}})
+    let state=configure(file);state=session.handle(state,{action:"preset",value:"#334455"},valid)
+    prefs.edit(file,state.defaults,fn(latest:json.Value):json.Value {return json.set(latest,"widgetLocations","{\"widgetClock\":{\"x\":0.8,\"y\":0.3}}")})
+    state=session.handle(state,{action:"apply"},valid);test.expect(!session.dirty(state),"Apply did not update baseline")
+    let stored=json.parse(tool.read(file));test.expect(!json.bool(json.get(stored,"enabled")),"Apply changed envelope enablement");t.equal(json.string(json.get(stored,"extra")),"preserve")
+    let values=json.get(stored,"values");t.equal(json.string(json.get(values,"color")),"#334455");t.equal(json.string(json.get(values,"widgetLocations")),"{\"widgetClock\":{\"x\":0.8,\"y\":0.3}}")
+})})
+test.case("widget drafts stay scoped to each desktop and arrange resets only their positions",fn() {tool.scope("background-settings-desktops-",fn(base:str) {
+    let first=json.value(Vec<json.Value>({id:0,name:"One",active:true},{id:1,name:"Two",active:false}));let second=json.value(Vec<json.Value>({id:0,name:"One",active:false},{id:1,name:"Two",active:true}))
+    let state=configure(base+"/prefs.json");state=session.handle(state,{action:"desktop",desktops:first},valid);state=session.handle(state,{action:"toggle",key:"widgetNote"},valid);state=session.handle(state,{action:"edit",key:"widgetNoteText",value:"One only ไทย"},valid)
+    state=session.handle(state,{action:"desktop",desktops:second},valid);test.expect(!json.bool(json.get(widgets.values(state.draft,state.desktop),"widgetNote")),"Draft leaked between desktops")
+    state=session.handle(state,{action:"toggle",key:"widgetClock"},valid);state=session.handle(state,{action:"edit",key:"widgetPosition",index:0},valid)
+    let one=widgets.values(state.draft,widgets.active(first,true));let two=widgets.values(state.draft,state.desktop)
+    t.equal(json.string(json.get(one,"widgetNoteText")),"One only ไทย");test.expect(json.bool(json.get(two,"widgetClock")),"Second desktop edit was lost");t.equal(json.string(json.get(two,"widgetLocations")),"{}")
+})})
+test.case("custom action editor validates, updates, toggles and removes only custom items",fn() {tool.scope("background-settings-custom-",fn(base:str) {
+    let state=configure(base+"/prefs.json");state=session.handle(state,{action:"custom-form",key:"title",value:"My action"},valid);state=session.handle(state,{action:"custom-form",key:"command",value:"tool 'two words' {path}"},valid);state=session.handle(state,{action:"custom-save"},valid)
+    let items=session.customList(state);test.expect(json.len(items)==1,"Custom item was not added");let id=json.string(json.get(json.at(items,0),"id"));t.equal(json.string(json.get(json.at(items,0),"target")),"background")
+    state=session.handle(state,{action:"custom-toggle",key:id},valid);test.expect(!json.bool(json.get(json.at(session.customList(state),0),"enabled")),"Custom toggle was lost")
+    state=session.handle(state,{action:"custom-edit",key:id},valid);state=session.handle(state,{action:"custom-form",key:"title",value:"Updated"},valid);state=session.handle(state,{action:"custom-save"},valid)
+    t.equal(json.string(json.get(json.at(session.customList(state),0),"title")),"Updated");test.expect(!json.bool(json.get(json.at(session.customList(state),0),"enabled")),"Editing re-enabled an action")
+    let blocked=result.attempt(fn():session.State {return session.handle(state,{action:"custom-delete",key:"menuTerminal"},valid)});test.expect(result.isErr(blocked),"A built-in action was removed")
+    state=session.handle(state,{action:"custom-delete",key:id},valid);test.expect(json.len(session.customList(state))==0,"Custom remove was lost")
+})})
+test.case("failed validation never commits partial settings",fn() {tool.scope("background-settings-invalid-",fn(base:str) {
+    let file=base+"/prefs.json";let state=configure(file);state=session.handle(state,{action:"edit",key:"color",value:"bad"},valid)
+    let invalid=result.attempt(fn():session.State {return session.handle(state,{action:"apply"},valid)});test.expect(result.isErr(invalid) && !fs.existsSync(file),"Bad color was saved")
+    state=session.handle(state,{action:"reset"},valid);state=session.handle(state,{action:"custom-form",key:"title",value:"Broken"},valid);state=session.handle(state,{action:"custom-form",key:"command",value:"tool 'unclosed"},valid)
+    let custom=result.attempt(fn():session.State {return session.handle(state,{action:"custom-save"},valid)});test.expect(result.isErr(custom) && json.len(session.customList(state))==0,"Invalid custom command entered the draft")
+    let selected=result.attempt(fn():session.State {return session.handle(state,{action:"edit",key:"style",index:999},valid)});test.expect(result.isErr(selected),"Invalid selector index accepted")
+})})
+test.case("picture decoding precedes the final merge and failures preserve the file",fn() {tool.scope("background-settings-image-",fn(base:str) {
+    let file=base+"/prefs.json";let state=configure(file);state=session.handle(state,{action:"picture",value:"/tmp/picture.png"},valid)
+    let rejected=result.attempt(fn():session.State {return session.handle(state,{action:"apply"},fn(path:str) {result.raise("Decode failed")})})
+    test.expect(result.isErr(rejected) && !fs.existsSync(file),"Failed decode saved settings")
+    let defaults=state.defaults
+    state=session.handle(state,{action:"apply"},fn(path:str) {prefs.edit(file,defaults,fn(latest:json.Value):json.Value {return json.set(latest,"widgetLocations","{\"widgetClock\":{\"x\":0.7,\"y\":0.2}}")})})
+    t.equal(json.string(json.get(state.saved,"widgetLocations")),"{\"widgetClock\":{\"x\":0.7,\"y\":0.2}}")
+})})
+test.case("removed custom action IDs are never reused by a reopened editor",fn() {tool.scope("background-settings-ids-",fn(base:str) {
+    let file=base+"/prefs.json";let state=configure(file)
+    state=session.handle(state,{action:"custom-form",key:"title",value:"First"},valid);state=session.handle(state,{action:"custom-form",key:"command",value:"first-tool"},valid);state=session.handle(state,{action:"custom-save"},valid)
+    let before=json.string(json.get(json.at(session.customList(state),0),"id"));state=session.handle(state,{action:"apply"},valid)
+    state=session.handle(state,{action:"custom-delete",key:before},valid);state=session.handle(state,{action:"apply"},valid);state=configure(file)
+    state=session.handle(state,{action:"custom-form",key:"title",value:"Different"},valid);state=session.handle(state,{action:"custom-form",key:"command",value:"another-tool"},valid);state=session.handle(state,{action:"custom-save"},valid)
+    test.expect(!strings.equal(before,json.string(json.get(json.at(session.customList(state),0),"id"))),"A stale menu ID could invoke a different action")
+})})
+return t.finish()

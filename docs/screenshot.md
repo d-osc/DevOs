@@ -36,5 +36,6 @@ Screenshot window.
 - Capture needs `grim` and a compositor that allows screen capture (labwc does). Without it the window shows the reason.
 - The clipboard image is served by the Dev OS shell process, so pasting works as long as the shell is running.
 - On a HiDPI display the capture is taken at the output's native resolution; the snip keeps the full detail.
-- Tests: `tests/screenshot.test.ts` (geometry, crops, freeform mask, saving, annotation rendering, hotkey and launcher wiring).
-  The overlay, toast and editor windows need a real Wayland session and have not been exercised in an automated test.
+- Tests: `tests/screenshot.test.ts` covers geometry, crops, saving, annotations, native GDK mouse/key events and command routing.
+  Run `gjs -m dist/screenshot-live-test.js` inside an isolated labwc session with `grim` and `wtype` to verify actual desktop capture,
+  the layer-shell overlay and Enter confirmation. The live test injects a key, so use a separate test session.

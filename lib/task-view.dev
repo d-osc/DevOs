@@ -1,0 +1,67 @@
+# All sorting, filtering and display formatting happens in the service process.
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "./task-metrics.dev" as m
+
+fn separator():str { return encoding.decode(Vec<u8>(30),"utf8") }
+fn clean(text:str):str {
+    let out = ""; for ch in strings.split(text,"") { if strings.len(ch) == 1 && strings.contains("\0\t\r\n"+separator(),ch) { out = out + " " } else { out = out + ch } }; return out
+}
+fn fixed(value:f64):str {
+    let rounded = (value*10.0+0.5) as i64
+    return "${rounded/10}.${rounded%10}"
+}
+fn bytes(value:json.Value):str {
+    if json.is_null(value) { return "—" }; let amount = m.num(value)
+    return amount >= 1073741824.0 ? fixed(amount/1073741824.0)+" GB" : fixed(amount/1048576.0)+" MB"
+}
+fn rate(value:json.Value):str {
+    if json.is_null(value) { return "—" }; let amount = m.num(value)
+    return amount >= 1048576.0 ? fixed(amount/1048576.0)+" MB/s" : amount >= 1024.0 ? fixed(amount/1024.0)+" KB/s" : "${(amount+0.5) as i64} B/s"
+}
+fn percent(value:json.Value):str { return json.is_null(value) ? "—" : fixed(m.num(value))+"%" }
+fn status(value:str):str { return m.eq(value,"R") ? "Running" : m.eq(value,"Z") ? "Zombie" : m.eq(value,"T") ? "Stopped" : "Sleeping" }
+fn metric(item:json.Value,sort:str):f64 {
+    if m.eq(sort,"disk") { return m.num(m.get(item,"diskRead"))+m.num(m.get(item,"diskWrite")) }
+    if m.eq(sort,"network") { return m.num(m.get(item,"networkReceive"))+m.num(m.get(item,"networkSend")) }
+    return m.num(m.get(item,sort))
+}
+fn before(a:json.Value,b:json.Value,sort:str):bool {
+    if m.eq(sort,"name") {
+        let left = strings.toLowerCase(m.text(m.get(a,"name"))); let right = strings.toLowerCase(m.text(m.get(b,"name")))
+        let names = Vec<str>(left,right); names.sort(); return m.eq(names[0],left)
+    }
+    if m.eq(sort,"pid") { return metric(a,sort) < metric(b,sort) }
+    let x = metric(a,sort); let y = metric(b,sort)
+    return x == y ? m.num(m.get(a,"pid")) < m.num(m.get(b,"pid")) : x > y
+}
+fn sorted(items:Vec<json.Value>,sort:str):Vec<json.Value> {
+    if items.len() < 2 { return items }; let middle = items.len() as i64 / 2; let left = Vec<json.Value>(); let right = Vec<json.Value>()
+    for i in 0..(items.len() as i64) { if i < middle { left.push(items[i]) } else { right.push(items[i]) } }
+    left = sorted(left,sort); right = sorted(right,sort); let out = Vec<json.Value>(); let a = 0; let b = 0
+    while a < left.len() as i64 || b < right.len() as i64 {
+        if b >= right.len() as i64 || a < left.len() as i64 && before(left[a],right[b],sort) { out.push(left[a]); a = a+1 } else { out.push(right[b]); b = b+1 }
+    }
+    return out
+}
+fn frame(state:json.Value,query:str,sort:str,message:str,paused:bool):str {
+    let filtered = Vec<json.Value>(); let rows = m.get(state,"processes"); let search = strings.toLowerCase(query)
+    for i in 0..(json.len(rows) as i64) {
+        let item = json.at(rows,i)
+        let haystack = strings.toLowerCase(m.text(m.get(item,"name"))+" "+m.text(m.get(item,"command"))+" "+m.text(m.get(item,"user"))+" ${json.int(m.get(item,"pid"))}")
+        if m.eq(search,"") || strings.contains(haystack,search) { filtered.push(item) }
+    }
+    let ordered = sorted(filtered,sort)
+    let out = "S\t"+percent(m.get(state,"cpu"))+"\t"+bytes(m.get(state,"memoryUsed"))+" / "+bytes(m.get(state,"memoryTotal"))+"\t"+bytes(m.get(state,"swapUsed"))+" / "+bytes(m.get(state,"swapTotal"))+"\t${ordered.len()} processes · CPU: 100% = one core · Network: sampled TCP · — = unavailable\t"+clean(message)+"\t"+clean(query)+"\t"+clean(sort)+"\t"+(paused ? "1" : "0")
+    let memoryTotal=m.num(m.get(state,"memoryTotal"))
+    out=out+"\t"+(memoryTotal>0.0 ? "${(m.num(m.get(state,"memoryUsed"))/memoryTotal*100.0+0.5) as i64}%" : "—")+"\t${json.int(m.get(state,"cores"))} logical CPUs\t"+bytes(m.get(state,"swapUsed"))+"\t"+bytes(m.get(state,"swapTotal"))+" available capacity"
+    let count = ordered.len() as i64; if count > 200 { count = 200 }
+    for i in 0..count {
+        let item = ordered[i]; let pid = json.int(m.get(item,"pid")); let start = m.text(m.get(item,"start")); let can = json.bool(m.get(item,"canStop")) ? "1" : "0"
+        let values = Vec<str>("R","${pid}",start,can,clean(m.text(m.get(item,"name")))+" · "+clean(m.text(m.get(item,"user")))+" · "+status(m.text(m.get(item,"state"))),percent(m.get(item,"cpu")),bytes(m.get(item,"memory")),percent(m.get(item,"gpu"))+" / "+bytes(m.get(item,"gpuMemory")),bytes(m.get(item,"swap")),"R "+rate(m.get(item,"diskRead"))+" / W "+rate(m.get(item,"diskWrite")),"↓ "+rate(m.get(item,"networkReceive"))+" / ↑ "+rate(m.get(item,"networkSend")))
+        for value in Vec<str>(clean(m.text(m.get(item,"name"))),clean(m.text(m.get(item,"user")))+" · "+status(m.text(m.get(item,"state"))),percent(m.get(item,"gpu")),bytes(m.get(item,"gpuMemory")),"R "+rate(m.get(item,"diskRead")),"W "+rate(m.get(item,"diskWrite")),"↓ "+rate(m.get(item,"networkReceive")),"↑ "+rate(m.get(item,"networkSend"))) { values.push(value) }
+        out = out + separator() + strings.join(values,"\t")
+    }
+    return out
+}

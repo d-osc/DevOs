@@ -31,6 +31,10 @@ guards this.
 
 ## Desktop applications
 
+Base applications run in separate processes from the desktop shell and OS
+services. See [Desktop process boundaries](process-isolation.md) for lifecycle,
+IPC, preference synchronization and crash-isolation tests.
+
 The `devos-image` desktop ships only Dev OS's own apps (Terminal, Editor, Files,
 Settings, Camera, Screenshot (Super+Shift+S, see `docs/screenshot.md`), Task Manager and so on). The Editor is a Monaco editor hosted in
 WebKitGTK (`dist/editor`), not VS Code. The native Dev OS Browser uses WebKitGTK with tabs, web search and navigation. Open it from the Launcher or run `dev-os-shell browser`. The small console recovery image does not

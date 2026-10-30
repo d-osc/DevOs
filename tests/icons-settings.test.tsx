@@ -2,10 +2,10 @@ import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Gio, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
-import icons from '../extensions/org.devos.icons/extension.js';
-import {IconsSettings} from '../extensions/org.devos.icons/settings-view.js';
-import {installedIconThemes} from '../extensions/org.devos.icons/themes.js';
-import {materialIcon} from '../extensions/org.devos.icons/material.js';
+import icons from '../src/apps/org.devos.icons/extension.js';
+import {IconsSettings} from '../src/apps/org.devos.icons/settings-view.js';
+import {installedIconThemes} from '../src/apps/org.devos.icons/themes.js';
+import {materialIcon} from '../src/apps/org.devos.icons/material.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
@@ -15,7 +15,7 @@ async function verify() {
     const themeDirectory = `${temporary}/icons/DevOSPreviewTest`;
     GLib.mkdir_with_parents(themeDirectory, 0o700);
     GLib.file_set_contents(`${themeDirectory}/index.theme`, '[Icon Theme]\nName=Dev OS Preview Test\nInherits=Adwaita\nDirectories=\n');
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const display = Gdk.Display.get_default()!, iconTheme = Gtk.IconTheme.get_for_screen(display.get_default_screen());
     const paths = iconTheme.get_search_path() ?? [];
     iconTheme.set_search_path([...paths, `${temporary}/icons`]);
@@ -24,7 +24,7 @@ async function verify() {
     const cleanup = icons.activate({display, preferences, onReload: () => () => {}, registerSettingsPage: () => {registered = true; return () => {};}});
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(760, 1500);
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(display.get_default_screen(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(container).find(widget => widget.name === id) as T;
     try {

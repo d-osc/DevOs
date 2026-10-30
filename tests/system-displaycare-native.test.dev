@@ -1,0 +1,80 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.displaycare/model.dev" as model
+use "../lib/display-care.dev" as care
+use "../lib/hw.dev" as hw
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn request():json.Value {
+    return json.parse("{\"generation\":4,\"monitors\":[{\"id\":1,\"x\":0,\"y\":0,\"width\":1280,\"height\":720}],\"windows\":[{\"active\":true,\"minimized\":false,\"fullscreen\":false,\"geometry\":{\"x\":100,\"y\":100,\"width\":300,\"height\":200,\"area\":{\"x\":0,\"y\":34}}}]}")
+}
+fn sourceOnly(path:str) {for name in hw.listDir(path) {let file=path+"/"+name;if hw.isDir(file) {sourceOnly(file);continue};let lower=strings.toLowerCase(name);for suffix in Vec<str>(".js",".ts",".tsx",".jsx") {test.expect(!strings.endsWith(lower,suffix),"Legacy source remains in Display Care: "+file)}}}
+test.case("display-care runtime contains no JS/TS fallback",fn() {
+    let root=t.root()+"/src/system/org.devos.displaycare";test.expect(hw.isDir(root),"Display Care source folder missing");sourceOnly(root)
+    let manifest=hw.loadJson(root+"/extension.json");t.equal(hw.jstr(manifest,"native",""),"system-displaycare");test.expect(!json.has(manifest,"entry"),"Display Care still has a JS entry")
+})
+test.case("damaged settings preserve per-field defaults",fn() {
+    let values=model.settings(json.parse("{\"targetMode\":\"true\",\"pixelRefresh\":false,\"edgeBrightness\":99,\"temperature\":1.5,\"splendid\":\"eyecare\"}"))
+    test.expect(!json.bool(json.get(values,"targetMode")),"String boolean must not enable target mode")
+    test.expect(!json.bool(json.get(values,"pixelRefresh")),"Valid Boolean lost")
+    test.expect(json.int(json.get(values,"edgeBrightness"))==0,"Invalid strength must default")
+    test.expect(json.int(json.get(values,"temperature"))==0,"Fractional integer must default")
+    t.equal(json.string(json.get(values,"splendid")),"eyecare")
+})
+test.case("target hole matches monitor work-area coordinates",fn() {
+    let values=json.set(care.defaults(),"targetMode",true)
+    t.contains(model.frame(request(),values,care.Battery(false,false),""),"0,1,100,66,300,200,0,0,,1")
+})
+test.case("fullscreen and minimized windows never enable target mode",fn() {
+    let data=request(); let windows=json.get(data,"windows"); let window=json.at(windows,0)
+    window=json.set(window,"fullscreen",true); windows[0]=window; data=json.set(data,"windows",windows)
+    let values=json.set(care.defaults(),"targetMode",true)
+    t.contains(model.frame(data,values,care.Battery(false,false),""),"0,0,0,0,0,0,0,0,,1")
+    window=json.set(window,"fullscreen",false); window=json.set(window,"minimized",true); windows[0]=window; data=json.set(data,"windows",windows)
+    t.contains(model.frame(data,values,care.Battery(false,false),""),"0,0,0,0,0,0,0,0,,1")
+})
+test.case("edge levels follow the original strengths and battery gating",fn() {
+    let levels=Vec<i64>(0,12,22,34,50)
+    for i in 0..5 {
+        let values=json.set(care.defaults(),"edgeBrightness",json.value(i))
+        t.contains(model.frame(request(),values,care.Battery(true,true),""),",${levels[i]},0,,1")
+        t.contains(model.frame(request(),values,care.Battery(true,false),""),",0,0,,1")
+        t.contains(model.frame(request(),values,care.Battery(false,false),""),",0,0,,1")
+    }
+})
+test.case("refresh tokens are opaque, stable and safe to frame",fn() {
+    let a=model.frame(request(),care.defaults(),care.Battery(false,false),"idle\tไทย\n")
+    t.equal(a,model.frame(request(),care.defaults(),care.Battery(false,false),"idle\tไทย\n"))
+    t.lacks(a,"ไทย"); t.contains(a,",0,1,")
+    test.expect(!strings.equal(a,model.frame(request(),care.defaults(),care.Battery(false,false),"new")),"New idle token was lost")
+})
+test.case("multi-monitor target matching preserves negative origins",fn() {
+    let data=request(); let monitors=json.get(data,"monitors"); monitors=json.push(monitors,json.parse("{\"id\":2,\"x\":-1280,\"y\":0,\"width\":1280,\"height\":720}")); data=json.set(data,"monitors",monitors)
+    let windows=json.get(data,"windows"); let window=json.at(windows,0); let geometry=json.get(window,"geometry"); geometry=json.set(geometry,"x",-1200); geometry=json.set(geometry,"area",{x:-1280,y:34}); window=json.set(window,"geometry",geometry); windows[0]=window; data=json.set(data,"windows",windows)
+    let output=model.frame(data,json.set(care.defaults(),"targetMode",true),care.Battery(false,false),"")
+    t.contains(output,"0,0,0,0,0,0,0,0,,1"); t.contains(output,"1,1,80,66,300,200,0,0,,2")
+})
+test.case("worker returns frames without loading a GUI",fn() {
+    tool.scope("devos-care-worker-",fn(dir:str) {
+        tool.write(dir+"/devos/display-care.json","{\"targetMode\":true}")
+        let env=Map<str,str>(); env.set("XDG_CONFIG_HOME",dir); env.set("XDG_RUNTIME_DIR",dir); env.set("DEVOS_DISPLAY_SYS",dir+"/sys")
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.displaycare/service.dev"),env,json.stringify(request())+"\n",30000)
+        t.success(done); t.contains(t.out(done),"S\t4\t0,1,100,66,300,200")
+    })
+})
+test.case("native tracker batches preserve geometry across polls and clear closed windows",fn() {
+    tool.scope("devos-care-tracker-",fn(dir:str) {
+        tool.write(dir+"/devos/display-care.json","{\"targetMode\":true}")
+        let env=Map<str,str>();env.set("XDG_CONFIG_HOME",dir);env.set("XDG_RUNTIME_DIR",dir);env.set("DEVOS_DISPLAY_SYS",dir+"/sys")
+        let data=request();let window=json.at(json.get(data,"windows"),0)
+        let geometry={type:"geometry",id:1,geometry:json.get(window,"geometry")}
+        let first=json.set(data,"events",json.value(Vec<json.Value>(json.value(geometry),json.value({type:"window",id:1,active:true,minimized:false,fullscreen:false}))))
+        let poll=json.set(data,"events",json.array())
+        let closed=json.set(data,"events",json.value(Vec<json.Value>(json.value({type:"closed",id:1}))))
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.displaycare/service.dev"),env,json.stringify(first)+"\n"+json.stringify(poll)+"\n"+json.stringify(closed)+"\n",30000)
+        t.success(done);let frames=strings.split(strings.trim(t.out(done)),"\n");test.expect(frames.len()==3,"Missing tracker responses")
+        t.contains(frames[0],"0,1,100,66,300,200");t.equal(frames[1],frames[0]);t.contains(frames[2],"0,0,0,0,0,0")
+    })
+})
+return t.finish()

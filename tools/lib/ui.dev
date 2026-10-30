@@ -50,7 +50,10 @@ fn window(env: Map<str,str>, action: str, title: str, state: str): bool {
     return tool.run(argv, env, "", 10000).success
 }
 fn title(env: Map<str,str>, label: str): str {
-    for line in strings.split(windows(env), "\n") { if strings.contains(line, label) { return tool.after(line, ": ") } }
+    for line in strings.split(windows(env), "\n") { if strings.contains(line, label) {
+        let separator = strings.indexOf(line, ": ")
+        if separator >= 0 { return strings.substring(line, separator + 2, strings.charLength(line)) }
+    } }
     result.raise("Window title missing: " + label)
     return ""
 }

@@ -1,35 +1,3 @@
 #!/usr/bin/env d
-use "std/io"
-use "std/json"
-use "std/result"
-use "std/strings"
-use "../lib/desktop.dev" as util
-use "../lib/unix.dev" as unix
-use "../lib/greeter.dev" as greeter
-fn main(): i32 {
-    let state = greeter.empty()
-    while true {
-        let read = result.attempt(fn(): unix.Line { return unix.line(16384) })
-        if result.isErr(read) { print(json.stringify(util.error("Invalid login request encoding."))); continue }
-        let incoming = result.unwrap(read)
-        if incoming.eof { break }
-        if incoming.oversized { print(json.stringify(util.error("Login request is too large."))); continue }
-        let request = util.parse(incoming.text)
-        let outcome = result.attempt(fn(): greeter.Reply { return greeter.handle(state, request) })
-        if result.isErr(outcome) {
-            let action = util.text(util.get(request, "action"))
-            if strings.equal(action, "poll") || strings.equal(action, "enroll-poll") { state.flow = json.null_value() }
-            if strings.equal(action, "enroll-create") || strings.equal(action, "enroll-begin") { state.enrollment = json.null_value() }
-            let message = result.message(outcome)
-            let secret = util.text(util.get(request, "password"))
-            if !strings.equal(secret, "") { message = strings.replaceAll(message, secret, "[redacted]") }
-            print(json.stringify(util.error(message)))
-        } else {
-            let reply = result.unwrap(outcome)
-            state = reply.state
-            print(json.stringify(json.set(reply.value, "ok", true)))
-        }
-    }
-    return 0
-}
-return main()
+use "../lib/greeter-service.dev" as service
+return service.run(false)

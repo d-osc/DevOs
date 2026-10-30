@@ -179,8 +179,8 @@ fn main(): i32 {
                     } else if strings.equal(kind, "gamma") && op == 0 {
                         if got.fd >= 0 {
                             let table2 = Vec<i64>()
-                            let raw = malloc(size * 6)
-                            let n = pread(got.fd, raw, size * 6, 0)
+                            let raw = malloc((size * 6) as usize)
+                            let n = pread(got.fd, raw, (size * 6) as usize, 0)
                             let words16 = raw as *u16
                             for i in 0..(size * 3) { table2.push(words16[i] as i64) }
                             free(raw as *void)

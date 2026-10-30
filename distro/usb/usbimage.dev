@@ -676,7 +676,7 @@ fn build(output: str) {
     let efi = temp + "/BOOTAA64.EFI"
     let esp = temp + "/esp.fat"
     let release = jstr(record, "release")
-    let cmdline = "console=tty0 rdinit=/init " + profileKernelArgs(st.boardProfile()) + " devos.live.uuid=" + jstr(record, "filesystemUuid") + " devos.renderer=pixman " + st.splashArgs()
+    let cmdline = "console=tty0 rdinit=/init " + profileKernelArgs(st.boardProfile()) + " devos.live.uuid=" + jstr(record, "filesystemUuid") + " devos.renderer=auto " + st.splashArgs()
     let diagnostics = hw.jbool(record, "bootDiagnostics", false)
     if diagnostics {
         let id = jstr(record, "espVolumeId")
@@ -687,7 +687,7 @@ fn build(output: str) {
     # The same kernel, initramfs and DTB with a cmdline that boots an installed system from its own root (LABEL=devos-root, no Live overlay).
     # `dev-os-install` copies this to the internal disk's ESP.
     let installed = temp + "/INSTALLED.EFI"
-    ukify(stub, output, release, "console=tty0 rdinit=/init " + profileKernelArgs(st.boardProfile()) + " devos.root=LABEL=devos-root devos.renderer=pixman " + st.splashArgs(), installed)
+    ukify(stub, output, release, "console=tty0 rdinit=/init " + profileKernelArgs(st.boardProfile()) + " devos.root=LABEL=devos-root devos.renderer=auto " + st.splashArgs(), installed)
     let espSize = ((io.size(efi) + io.size(installed) + 64 * mib() + mib() - 1) / mib()) * mib()
     if espSize < 256 * mib() { espSize = 256 * mib() }
     let fat = diagnostics ? Vec<str>("-i", jstr(record, "espVolumeId")) : Vec<str>()

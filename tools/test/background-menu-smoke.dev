@@ -24,6 +24,7 @@ fn main(): i32 {
         let env: Map<str,str> = smoke.env(base, root)
         env.set("WLR_BACKENDS", "headless"); env.set("WLR_RENDERER", "pixman"); env.set("GDK_BACKEND", "wayland")
         env.set("LABWC_UPDATE_ACTIVATION_ENV", "0"); env.set("DEV_OS_PANEL_EDGE", edge)
+        env.set("DEVOS_POINTER_DELAY_US","0")
         env.set("DEV_OS_" + strings.toUpperCase(surface) + "_MENU_TEST", base)
         env.set("DISPLAY", "__DEVOS_UNSET__"); env.set("WAYLAND_DISPLAY", "__DEVOS_UNSET__")
         let compositor = root + "/build/wsl/bin/labwc"
@@ -38,7 +39,7 @@ fn main(): i32 {
                 let p = pointer
                 if strings.equal(surface, "background") {
                     p = smoke.send(p, "move -10000 -10000"); p = smoke.send(p, "move " + util.read(base + "/drag-ready")); p = smoke.send(p, "down left")
-                    for i in 0..10 { p = smoke.send(p, "move 20 10"); time.sleep_ms(25) }
+                    for i in 0..100 { smoke.sendRaw(p, "move 2 1"); time.sleep_ms(16) }
                     p = smoke.send(p, "up left"); tool.write(base + "/dragged", "dragged")
                     smoke.marker(session, "remove-ready")
                     p = smoke.send(p, "move -10000 -10000"); p = smoke.send(p, "move " + util.read(base + "/remove-ready")); p = smoke.send(p, "down left"); p = smoke.send(p, "up left")

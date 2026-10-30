@@ -1,4 +1,4 @@
-import {themeSettings} from '@dev-os/core';
+import {themeSettings} from '@dev-os/core/theme';
 
 /**
  * Upgrades saved extension state written by an older `settingsVersion`, so that a setting that was renamed or

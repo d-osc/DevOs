@@ -1,0 +1,25 @@
+# Only presentation data crosses the native UI boundary, never flow/token state.
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "./desktop.dev" as util
+fn separator():str {return encoding.decode(Vec<u8>(30),"utf8")}
+fn clean(value:str):str {
+    let out=""
+    for ch in strings.split(value,"") {out=out+(strings.len(ch)==1 && strings.contains("\0\t\r\n"+separator(),ch) ? " " : ch)}
+    return out
+}
+fn text(value:json.Value,key:str):str {return clean(util.text(util.get(value,key)))}
+fn flag(value:json.Value,key:str):str {return util.boolean(util.get(value,key)) ? "1" : "0"}
+fn reply(action:str,value:json.Value):str {
+    if !util.boolean(util.get(value,"ok")) {return "E\t"+text(value,"error")}
+    let hasUsers=strings.equal(json.kind(util.get(value,"users")),"array")
+    let out="S\t"+clean(action)+"\t"+flag(value,"started")+"\t"+flag(value,"liveRoot")+"\t"+flag(value,"created")+"\t"+flag(value,"verified")+"\t"+flag(value,"pending")+"\t${util.number(util.get(value,"interval"))}\t"+text(value,"code")+"\t"+text(value,"github")+"\t"+text(value,"username")+"\t${util.number(util.get(value,"githubId"))}\t"+(hasUsers ? "1" : "0")
+    let users=util.get(value,"users")
+    if hasUsers {for i in 0..(json.len(users) as i64) {
+        let user=json.at(users,i);let username=text(user,"username")
+        if strings.equal(username,"") || strings.equal(username,"devos") {continue}
+        out=out+separator()+"U\t"+username+"\t"+text(user,"name")+"\t"+text(user,"github")+"\t${util.number(util.get(user,"githubId"))}"
+    }}
+    return out
+}

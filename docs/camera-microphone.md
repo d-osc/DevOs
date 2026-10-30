@@ -48,7 +48,7 @@ selection for other Glymur machines. Microphone excludes speaker monitor sources
 These are source corrections; no image or USB was rebuilt for this change.
 Actual built-in microphone signal and WAV recording require verification on
 the ASUS after a future authorized build. Non-building checks:
-`npm run typecheck`, `node tests/microphone-sources.test.mjs`,
+`npm run typecheck`, `d tests/memory-ranking.test.dev`,
 `python3 tests/board-audio.test.py` and `python3 tests/live-usb.test.py`.
 
 Native USB boot `3367a468-2b86-4069-a398-2b182a7b8f84` subsequently showed

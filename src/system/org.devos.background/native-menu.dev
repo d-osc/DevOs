@@ -1,0 +1,24 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn bg_menu_new(parent:*void,event:callback(*u8,i64,*void):void,data:*void):*void
+extern fn bg_menu_reset(menu:*void)
+extern fn bg_menu_add(menu:*void,id:*u8,title:*u8,icon:*u8,separator:i32)
+extern fn bg_menu_free(menu:*void,keep:*void)
+fn useMenu(context:*ui.Context,parent:str,items:ui.Text,revision:i64,decode:fn(ui.Text):ui.Text,selected:fn(ui.Text):void) {
+    let handle=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let events=callback_context(fn(bytes:*u8,length:i64) {unsafe {let value=Vec<u8>();for i in 0..length {value.push(bytes[i])};selected(ui.Text(value))}})
+        let menu=bg_menu_new(ui.find(context,parent),events.call,events.data);handle.set(menu as i64)
+        return fn() {unsafe {handle.set(0);bg_menu_free(menu,events.data)}}
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if handle.get()==0 {return ui.noop};let menu=handle.get() as *void;bg_menu_reset(menu);let standard=false;let separated=false
+        for record in channel.split(items,30) {
+            let fields=channel.split(record,9);if fields.len()!=5 {continue}
+            let custom=channel.integer(fields[4])==1;let separator=custom && standard && !separated
+            if separator {separated=true};if !custom {standard=true}
+            let id=ui.nativeText(decode(fields[1]));let title=ui.nativeText(decode(fields[2]));let icon=ui.nativeText(decode(fields[3]))
+            bg_menu_add(menu,id,title,icon,separator ? 1 : 0);ui.rd_buffer_free(id as *void);ui.rd_buffer_free(title as *void);ui.rd_buffer_free(icon as *void)
+        };return ui.noop
+    }},Vec<i64>(revision))
+}

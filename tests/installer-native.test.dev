@@ -1,0 +1,45 @@
+use "std/test"
+use "std/strings"
+use "std/process"
+use "std/json"
+use "../src/apps/org.devos.installer/model.dev" as model
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn request(extra:str):str { return "{\"action\":\"install\",\"path\":\"/dev/sdz\",\"size\":128849018880,\"username\":\"ada\",\"hostname\":\"devos\",\"password\":\"secret\""+extra+"}\n" }
+fn service(input:str,fail:bool,live:bool):str {
+    tool.require(true,"")
+    let env = Map<str,str>(); env.set("DEV_OS_INSTALL_HELPER",t.root()+"/tests/fixtures/installer-helper.sh"); env.set("DEV_OS_INSTALL_LIVE_FLAG",live ? t.root()+"/tests/fixtures/installer-helper.sh" : "/nonexistent")
+    if fail { env.set("INSTALL_FAIL","1") }
+    let done = tool.run(Vec<str>(t.runner(),t.root()+"/src/apps/org.devos.installer/service.dev","--",t.root()),env,input,60000)
+    t.success(done); return t.out(done)
+}
+test.case("user and computer names follow the original rules",fn() {
+    test.expect(model.validUsername("ada_1-x") && !model.validUsername("Ada") && !model.validUsername("1ada") && !model.validUsername(""),"username rules")
+    test.expect(model.validHostname("devos-1") && !model.validHostname("-devos") && !model.validHostname("devos-") && !model.validHostname("Dev"),"hostname rules")
+})
+test.case("installer output lines become events and chatter is ignored",fn() {
+    t.equal(model.event("STEP 3/10 Copying files"),"S\t3\t10\tCopying files"); t.equal(model.event("ERROR boom"),"X\tboom")
+    t.equal(model.event("DONE Remove the USB"),"D\tRemove the USB"); t.equal(model.event("mkfs: something"),"")
+})
+test.case("service lists disks, validates requests and refuses outside the Live USB",fn() {
+    if strings.equal(process.platform(),"win32") { return }
+    let out = service("{\"action\":\"available\"}\n{\"action\":\"disks\"}\nbad\n"+strings.replace(request(""),"ada","Ada")+"{\"action\":\"nope\"}\n",false,true)
+    t.contains(out,"A\t1"); t.contains(out,"sdz\t/dev/sdz\t128849018880\tTest Disk\t120 GiB\t0\text4"); t.contains(out,"Invalid service request"); t.contains(out,"Unknown service action"); t.contains(out,"X	The installation request is invalid.")
+    let refused = service(request(""),false,false); t.contains(refused,"X\tThe installer runs only from the Live USB.")
+})
+test.case("install streams steps, finishes, and reports failures and wrong passwords",fn() {
+    if strings.equal(process.platform(),"win32") { return }
+    let ok = service(request(""),false,true); t.contains(ok,"S\t1\t10\tPartitioning"); t.contains(ok,"S\t2\t10\tCopying"); t.contains(ok,"D\tRemove the USB drive"); t.lacks(ok,"secret")
+    let failed = service(request(""),true,true); t.contains(failed,"X\tcopy failed")
+    let wrong = service(strings.replace(request(""),"secret","wrong1"),false,true); t.contains(wrong,"X\tbad password")
+})
+test.case("native GTK wizard walks every page against the worker and finishes",fn() {
+    if strings.equal(process.platform(),"win32") { return }
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/native-apps.sh"),Map<str,str>(),"",300000)
+    let helper = t.root()+"/tests/fixtures/installer-helper.sh"
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("DEV_OS_INSTALL_HELPER",helper); env.set("DEV_OS_INSTALL_LIVE_FLAG",helper); env.set("DEVOS_NATIVE_SMOKE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",t.root()+"/dist/native/installer"),env,"",60000)
+    t.success(done); t.contains(t.out(done),"PASS native Installer wizard, streamed installation and cleanup")
+})
+return t.finish()

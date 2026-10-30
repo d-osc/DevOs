@@ -1,0 +1,8 @@
+use "std/io"
+use "std/json"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../system/org.devos.panel/menu-model.dev" as menu
+let reply=result.attempt(fn():json.Value {let request=json.parse(io.read_line());return {ok:true,plan:menu.plan(hw.jget(request,"values"),hw.jstr(request,"key",""),hw.env("HOME"))}})
+if result.isErr(reply) {print(json.stringify({error:hw.errorText(result.message(reply))}));return 1}
+print(json.stringify(result.unwrap(reply)));return 0

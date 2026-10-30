@@ -1,0 +1,41 @@
+# Conservative runtime dependency audit, including DevLang that launches JS hosts.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/regex"
+use "std/result"
+use "./migration-audit.dev" as migration
+fn comment(line:str):bool {
+    return strings.startsWith(line,"#") || strings.startsWith(line,"//") || strings.startsWith(line,"/*") || strings.startsWith(line,"*") || strings.startsWith(line,"<!--")
+}
+fn read(path:str):result.Result<str> {return result.attempt(fn():str {return fs.readFileSync(path,"utf8")})}
+fn audit(root:str):json.Value {
+    let files=Vec<str>()
+    for directory in Vec<str>("src","lib","packages") {
+        for path in migration.scan(root,directory) {if !strings.contains(path,"/tests/") {files.push(path)}}
+    }
+    for directory in Vec<str>("bin","distro/oe/meta-devos/recipes-devos/session/files") {
+        if !fs.is_dir(root+"/"+directory) {continue}
+        for name in fs.readdirSync(root+"/"+directory) {if fs.is_file(root+"/"+directory+"/"+name) && !strings.endsWith(name,".ps1") {files.push(directory+"/"+name)}}
+    }
+    let dependencies=json.array();let gi=json.array();let unreadable=json.array();let executable=regex.compile("\\bgjs\\s+-[mc]\\b","")
+    for path in files {
+        if strings.equal(path,"lib/no-gjs-audit.dev") {continue}
+        let source=read(root+"/"+path)
+        if result.isErr(source) {unreadable=json.push(unreadable,path);continue}
+        let lines=strings.split(result.unwrap(source),"\n")
+        for i in 0..(lines.len() as i64) {
+            let line=strings.trim(lines[i]);if comment(line) {continue}
+            let label=(strings.contains(line,"eq(executable,") || strings.contains(line,".includes(executable)") || strings.contains(line,"executable ===")) && !strings.contains(line,"spawn") && !strings.contains(line,"Subprocess")
+            if !label && (strings.contains(line,"\"gjs\"") || strings.contains(line,"'gjs'") || executable.test(line)) {
+                dependencies=json.push(dependencies,{path:path,line:i+1,code:line})
+            }
+            let javascript=strings.endsWith(path,".ts") || strings.endsWith(path,".tsx") || strings.endsWith(path,".js")
+            if javascript && (strings.contains(line,"gi://") || strings.contains(line,"from 'system'") || strings.contains(line,"from \"system\"")) {
+                gi=json.push(gi,{path:path,line:i+1,code:line})
+            }
+        }
+    }
+    executable.close()
+    return {format:1,ready:json.len(dependencies)==0 && json.len(gi)==0 && json.len(unreadable)==0,legacyRuntimeDependencies:dependencies,giSdkBindings:gi,unreadable:unreadable}
+}

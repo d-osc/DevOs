@@ -1,0 +1,16 @@
+#!/usr/bin/env d
+use "std/json"
+use "../../lib/no-gjs-audit.dev" as audit
+use "../lib/tool.dev" as tool
+fn main():i32 {
+    let report=audit.audit(tool.root());let output=tool.option("--output",tool.root()+"/build/no-gjs-audit.json")
+    tool.jsonWrite(output,report)
+    let legacy=json.len(json.get(report,"legacyRuntimeDependencies"));let bindings=json.len(json.get(report,"giSdkBindings"))
+    print("Remaining GJS runtime/dependency sites: ${legacy}")
+    print("Remaining GI-specific JS/TS binding sites: ${bindings}")
+    let unreadable=json.len(json.get(report,"unreadable"));print("Unreadable source files requiring inspection: ${unreadable}")
+    print("Report: "+output)
+    if !json.bool(json.get(report,"ready")) {print("GJS-free runtime migration is incomplete.");return 1}
+    print("PASS GJS-free runtime source audit");return 0
+}
+return tool.main(main)

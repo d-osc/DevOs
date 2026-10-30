@@ -1,0 +1,22 @@
+# Real GTK events with a test-only, isolated DevLang auth worker.
+use "std/test"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+let executable=t.root()+"/build/react-devlang/login/login-flow"
+test.case("native greeter builds without a JavaScript engine",fn() {
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/native-login.sh"),Map<str,str>(),"",90000)
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",t.root()+"/tests/react-devlang/login-flow.devx",executable,t.root()+"/build/react-devlang/login/host.o"),Map<str,str>(),"",90000)
+    let linked=tool.exec(Vec<str>("ldd",executable));t.contains(linked,"libgtk-3");t.lacks(linked,"mozjs")
+})
+fn run(executable:str,scenario:str):child_process.Output {
+    let env=Map<str,str>();env.set("DEV_OS_ROOT",t.root());env.set("LOGIN_TEST_SCENARIO",scenario);env.set("G_DEBUG","fatal-warnings");env.set("NO_AT_BRIDGE","1")
+    return tool.run(Vec<str>("xvfb-run","-a",executable),env,"",30000)
+}
+test.case("native local enrollment, failed auth, GitHub cancel, verified enrollment and Enter login",fn() {
+    let done=run(executable,"full");t.success(done);t.contains(t.out(done),"PASS native login flow without GJS")
+    t.lacks(t.out(done)+t.err(done),"pass-123")
+})
+test.case("native guest session only succeeds after backend confirmation",fn() {let done=run(executable,"guest");t.success(done);t.contains(t.out(done),"PASS native login flow")})
+test.case("closing the native preview never accepts a session",fn() {let done=run(executable,"close");t.success(done);t.contains(t.out(done),"PASS closing login rejects session")})
+return t.finish()

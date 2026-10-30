@@ -7,15 +7,16 @@ import {ROOT, saveConfig, loadConfig} from '@dev-os/config';
 import {ExtensionManager, clockFormat, systemManifests, loadSystemExtensions} from '@dev-os/extensions';
 import {validateManifest, validateState, validateValues, validateExtensionId} from '@dev-os/extensions/schema';
 
-import {opensInEditor} from '../extensions/org.devos.editor/associations.js';
-import {materialIcon, setMaterialIcons} from '../extensions/org.devos.icons/material.js';
+import {opensInEditor} from '../src/apps/org.devos.editor/associations.js';
+import {materialIcon, setMaterialIcons} from '../src/apps/org.devos.icons/material.js';
+import {packageCategory} from '../src/utils/package-category.js';
 
 
 let passed = 0;
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function fails(callback: () => unknown): void { let failed = false; try { callback(); } catch { failed = true; } assert(failed, 'Expected rejection'); }
 function test(name: string, callback: () => void): void { callback(); passed++; print(`PASS: extensions ${name}`); }
-const manifest = validateManifest(JSON.parse(readText(`${ROOT}/extensions/org.devos.clock/extension.json`)));
+const manifest = validateManifest(JSON.parse(readText(`${ROOT}/src/extensions/org.devos.clock/extension.json`)));
 const temporary = GLib.dir_make_tmp('dev-os-extensions-XXXXXX');
 const paths = {bundled: `${temporary}/bundled`, user: `${temporary}/user`, preferences: `${temporary}/preferences`};
 function file(path: string, content: unknown): void {
@@ -26,17 +27,32 @@ function file(path: string, content: unknown): void {
 try {
     test('system JSON manifests define UI entries and activation order', () => {
         const catalog = systemManifests();
-        assert(catalog.map(item => item.id).join(',') === 'org.devos.theme,org.devos.icons,org.devos.updates,org.devos.store,org.devos.launcher,org.devos.settings,org.devos.files,org.devos.terminal,org.devos.editor,org.devos.camera,org.devos.microphone,org.devos.taskmanager,org.devos.browser,org.devos.diskmanager,org.devos.appstore,org.devos.background,org.devos.installer,org.devos.screenshot,org.devos.panel,org.devos.displaycare', 'Manifest order drives activation');
+        assert(catalog.map(item => item.id).join(',') === 'org.devos.theme,org.devos.icons,org.devos.updates,org.devos.launcher,org.devos.settings,org.devos.files,org.devos.terminal,org.devos.editor,org.devos.camera,org.devos.microphone,org.devos.taskmanager,org.devos.browser,org.devos.diskmanager,org.devos.appstore,org.devos.background,org.devos.installer,org.devos.screenshot,org.devos.panel,org.devos.displaycare', 'Manifest order drives activation');
         const panel = catalog.find(item => item.id === 'org.devos.panel')!;
+        for (const id of ['org.devos.panel', 'org.devos.displaycare', 'org.devos.background']) assert(packageCategory(catalog.find(item => item.id === id)!) === 'system', 'Desktop components are categorized as system');
+        assert(packageCategory(catalog.find(item => item.id === 'org.devos.files')!) === 'app', 'Applications remain in the app category');
+        assert(packageCategory(manifest) === 'extension', 'Optional extensions retain their category');
+        const separated = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/layout-user`, preferences: `${temporary}/layout-preferences`});
+        try {
+            assert(separated.packagePath(panel.id) === `${ROOT}/src/system/${panel.id}`, 'System components resolve from their own folder');
+            for (const id of ['org.devos.background', 'org.devos.displaycare']) assert(separated.packagePath(id) === `${ROOT}/src/system/${id}`, 'Desktop components are separate from apps');
+            assert(separated.packagePath('org.devos.clock') === `${ROOT}/src/extensions/org.devos.clock`, 'Optional extensions retain their separate folder');
+            assert(catalog.every(item => separated.get(item.id).manifest.system), 'All system apps remain available to preferences');
+        } finally { separated.dispose(); }
         assert(validateValues(panel, {}).spacing === 12, 'Panel defaults come from JSON');
         for (const entry of ['../main.js', '/tmp/code.js', 'https://example.com/code.js', 'module.ts']) fails(() => validateManifest({...panel, entry}));
         fails(() => validateManifest({...panel, order: -1}));
+        const {entry: _entry, ...withoutEntry} = panel;
+        assert(validateManifest({...withoutEntry, native: 'panel'}).native === 'panel', 'System UI may name a native executable instead of a JS entry');
+        fails(() => validateManifest({...panel, native: 'panel'}));
+        fails(() => validateManifest({...withoutEntry, native: '../panel'}));
+        fails(() => validateManifest({...withoutEntry, native: 'panel', system: false}));
         fails(() => validateManifest({...panel, enabledByDefault: false}));
         fails(() => validateState(panel, {version: 1, enabled: false, values: {}}));
     });
     const definitions = await loadSystemExtensions();
     test('system loader imports compiled entries declared in JSON', () => {
-        assert(definitions.length === 20 && definitions.every(item => typeof item.activate === 'function'), 'Every JSON entry resolves to a UI extension');
+        assert(definitions.length === systemManifests().length && definitions.every(item => typeof item.activate === 'function'), 'Every JSON entry resolves to a UI extension');
     });
     test('system preferences persist while protecting base packages', () => {
         const panel = systemManifests().find(item => item.id === 'org.devos.panel')!;
@@ -151,7 +167,7 @@ try {
         assert(!Object.hasOwn(loadConfig(path), 'extensions'), 'Core config schema unchanged');
     });
     test('editable settings files preserve existing content and validate before live application', () => {
-        const own = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/json-user`, preferences: `${temporary}/json-preferences`});
+        const own = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/json-user`, preferences: `${temporary}/json-preferences`});
         try {
             const path = own.settingsFile('org.devos.editor');
             const original = readText(path), state = JSON.parse(original);
@@ -177,7 +193,7 @@ try {
         assert(materialIcon('/work/package.json') !== materialIcon('/work/random.json'), 'Exact filename takes priority');
         assert(materialIcon('/work/src', true) === 'dev-os-material-folder-src', 'Specific folder icon');
         assert(materialIcon('/work/constructor') === 'dev-os-material-file' && materialIcon('/work/constructor', true) === 'dev-os-material-folder', 'Unknown names never resolve inherited object keys');
-        const mapping = JSON.parse(readText(`${ROOT}/extensions/org.devos.icons/material/mapping.json`));
+        const mapping = JSON.parse(readText(`${ROOT}/src/apps/org.devos.icons/material/mapping.json`));
         for (const icon of new Set<string>(Object.values<string>({...mapping.names, ...mapping.extensions, ...mapping.folders})))
             assert(GLib.file_test(`${ROOT}/data/icons/hicolor/scalable/apps/${icon}.svg`, GLib.FileTest.IS_REGULAR), `Asset exists for ${icon}`);
         setMaterialIcons(false); assert(materialIcon('/work/view.tsx') === undefined, 'Material toggle falls back to GTK icons');

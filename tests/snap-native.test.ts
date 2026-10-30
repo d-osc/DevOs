@@ -1,5 +1,5 @@
 import {Gtk, GLib, Gdk, type UIContext} from '@dev-os/core';
-import {SnapSashes} from '../extensions/org.devos.launcher/snap-sashes.js';
+import {SnapSashes} from '../src/apps/org.devos.launcher/snap-sashes.js';
 import {Windows, snapLayouts} from '@dev-os/services/windows';
 Gtk.init(null);
 const windows = [1,2,3,4].map(id => new Gtk.Window({title: `Snap native ${id}`, default_width: 320, default_height: 240}));

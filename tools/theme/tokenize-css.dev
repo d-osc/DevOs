@@ -1,0 +1,236 @@
+#!/usr/bin/env d
+# One-time migration: rewrites literal colors in GTK CSS into the shared theme tokens (@dv_*),
+# keeping selectors and layout untouched. Usage: d tools/theme/tokenize-css.dev -- <file.css> [more files]
+# Each literal is classified by hue/chroma/lightness and by the property it is used in, so a mint
+# background tint becomes an accent tint, a pale label color becomes the foreground token, and so on.
+use "std/regex"
+use "std/strings"
+use "std/args"
+use "../lib/tool.dev" as tool
+
+struct Hsl { h: f64; c: f64; l: f64 }
+struct Replaced { text: str; tokens: Vec<str> }
+
+fn hexValue(digit: str): i64 { return strings.indexOf("0123456789abcdef", strings.toLowerCase(digit)) }
+fn hexByte(text: str, at: i64): f64 {
+    return ((hexValue(strings.charAt(text, at)) * 16 + hexValue(strings.charAt(text, at + 1))) as f64) / 255.0
+}
+fn truncate(value: f64): f64 { return (value as i64) as f64 }
+# JavaScript's % on numbers: the remainder has the sign of the dividend.
+fn remainder(a: f64, b: f64): f64 { return a - b * truncate(a / b) }
+fn hsl(r: f64, g: f64, b: f64): Hsl {
+    let max = r
+    if g > max { max = g }
+    if b > max { max = b }
+    let min = r
+    if g < min { min = g }
+    if b < min { min = b }
+    let c = max - min
+    let l = (max + min) / 2.0
+    let h = 0.0
+    if c != 0.0 {
+        if max == r { h = remainder((g - b) / c, 6.0) } else if max == g { h = (b - r) / c + 2.0 } else { h = (r - g) / c + 4.0 }
+        h = remainder(h * 60.0 + 360.0, 360.0)
+    }
+    return Hsl(h, c, l)
+}
+fn hslOf(hex: str): Hsl {
+    let h = strings.replace(hex, "#", "")
+    let full = h
+    if strings.charLength(h) == 3 {
+        full = ""
+        for i in 0..3 { full = full + strings.charAt(h, i) + strings.charAt(h, i) }
+    }
+    return hsl(hexByte(full, 0), hexByte(full, 2), hexByte(full, 4))
+}
+fn role(prop: str): str {
+    if strings.equal(prop, "box-shadow") || strings.equal(prop, "text-shadow") || strings.equal(prop, "-gtk-icon-shadow") { return "shadow" }
+    if strings.equal(prop, "color") || strings.equal(prop, "caret-color") || strings.equal(prop, "-gtk-icon-palette") { return "text" }
+    if strings.startsWith(prop, "border") || strings.startsWith(prop, "outline") { return "line" }
+    return "surface"
+}
+fn family(color: Hsl): str {
+    let h = color.h
+    let c = color.c
+    if c < 0.045 { return "neutral" }
+    if h >= 140.0 && h <= 198.0 && c >= 0.06 { return "accent" }
+    if (h <= 14.0 || h >= 340.0) && c >= 0.12 { return "error" }
+    if h > 14.0 && h < 65.0 && c >= 0.12 { return "warning" }
+    if h >= 65.0 && h < 140.0 && c >= 0.1 { return "success" }
+    if h >= 245.0 && h < 340.0 && c >= 0.17 { return "purple" }
+    if h >= 198.0 && h < 245.0 && c >= 0.2 { return "info" }
+    return "neutral"
+}
+fn classify(hex: str, prop: str, wrapped: bool): str {
+    let color = hslOf(hex)
+    let fam = family(color)
+    let kind = role(prop)
+    let l = color.l
+    if strings.equal(kind, "shadow") && strings.equal(fam, "neutral") || strings.equal(kind, "shadow") && l < 0.2 { return "shadow" }
+    if !strings.equal(fam, "neutral") {
+        if l >= 0.5 {
+            if strings.equal(fam, "accent") { return strings.equal(kind, "text") ? "accent_fg" : "accent" }
+            return fam
+        }
+        if strings.equal(kind, "text") && l < 0.35 { return "on_accent" }
+        if strings.equal(fam, "accent") || strings.equal(fam, "success") || strings.equal(fam, "info") {
+            return l < 0.14 ? "accent_t1" : l < 0.2 ? "accent_t2" : l < 0.27 ? "accent_t3" : "accent_t4"
+        }
+        if strings.equal(fam, "error") { return l < 0.22 ? "error_t1" : "error_t2" }
+        if strings.equal(fam, "warning") { return l < 0.22 ? "warning_t1" : "warning_t2" }
+        return "purple_t1"
+    }
+    if strings.equal(kind, "text") { return l >= 0.93 ? "fg_strong" : l >= 0.78 ? "fg" : l >= 0.52 ? "fg_muted" : l >= 0.3 ? "fg_dim" : "on_accent" }
+    if wrapped { return l >= 0.5 ? "fg" : "shade" }
+    if strings.equal(kind, "line") { return l >= 0.6 ? "fg_muted" : l >= 0.4 ? "line3" : l >= 0.31 ? "line2" : l >= 0.235 ? "line1" : "line0" }
+    if l >= 0.78 { return "fg" }
+    if l >= 0.5 { return "fg_muted" }
+    return l < 0.07 ? "s00" : l < 0.125 ? "s0" : l < 0.155 ? "s1" : l < 0.18 ? "s2" : l < 0.215 ? "s3" : l < 0.25 ? "s4" : l < 0.30 ? "s5" : l < 0.37 ? "s6" : "s7"
+}
+# std/regex reports byte offsets while std/strings.substring counts characters: convert before slicing.
+fn charIndex(text: str, byteOffset: i64): i64 {
+    let index: i64 = 0
+    let bytes: i64 = 0
+    while bytes < byteOffset {
+        bytes += strings.len(strings.charAt(text, index)) as i64
+        index += 1
+    }
+    return index
+}
+fn token(name: str): Replaced { return Replaced("@dv_" + name, Vec<str>(name)) }
+fn hexPair(value: str): str {
+    let n: i64 = 0
+    for i in 0..strings.charLength(value) { n = n * 10 + strings.indexOf("0123456789", strings.charAt(value, i)) }
+    let digits = "0123456789abcdef"
+    return strings.charAt(digits, (n / 16) % 16) + strings.charAt(digits, n % 16)
+}
+
+# Replaces every match of `pattern` in `text` with what the handler returns for the match's groups (group 0 is the whole match).
+fn rewrite(text: str, pattern: str, prop: str, handler: fn(Vec<str>, str): Replaced): Replaced {
+    let re = regex.compile(pattern, "")
+    let out = ""
+    let tokens = Vec<str>()
+    let rest = text
+    while true {
+        let found = re.find(rest)
+        if !found.matched { break }
+        let start = charIndex(rest, found.start)
+        let end = start + strings.charLength(found.text)
+        out = out + strings.substring(rest, 0, start)
+        let replaced = handler(re.captures(found.text), prop)
+        out = out + replaced.text
+        for item in replaced.tokens { tokens.push(item) }
+        rest = strings.substring(rest, end, strings.charLength(rest))
+    }
+    re.close()
+    return Replaced(out + rest, tokens)
+}
+fn rgbaHandler(groups: Vec<str>, prop: str): Replaced {
+    let hex = "#" + hexPair(groups[1]) + hexPair(groups[2]) + hexPair(groups[3])
+    let named = token(classify(hex, prop, true))
+    let alpha = groups[4]
+    if strings.equal(alpha, "") { return named }
+    return Replaced("alpha(" + named.text + ", " + (strings.startsWith(alpha, ".") ? "0" + alpha : alpha) + ")", named.tokens)
+}
+fn alphaHexHandler(groups: Vec<str>, prop: str): Replaced {
+    let named = token(classify(groups[1], prop, true))
+    return Replaced("alpha(" + named.text, named.tokens)
+}
+fn accentName(prop: str): str { return strings.equal(role(prop), "text") ? "accent_fg" : "accent" }
+fn alphaAccentHandler(groups: Vec<str>, prop: str): Replaced {
+    let named = token(accentName(prop))
+    return Replaced("alpha(" + named.text, named.tokens)
+}
+fn accentHandler(groups: Vec<str>, prop: str): Replaced { return token(accentName(prop)) }
+fn hexHandler(groups: Vec<str>, prop: str): Replaced { return token(classify(groups[0], prop, false)) }
+
+struct Tokenized { css: str; tokens: Vec<str> }
+fn literals(value: str): bool {
+    let re = regex.compile("#[0-9a-fA-F]{3,8}\\b|rgba?\\(|@ACCENT@", "")
+    let found = re.test(value)
+    re.close()
+    return found
+}
+fn tokenize(css: str): Tokenized {
+    # The original rule matches `property: value` only when `;` or `}` follows the value; the regex engine here has no
+    # lookahead, so that is checked on the character after the match (a failed start moves on by one character).
+    let re = regex.compile("([a-z-]+)(\\s*:\\s*)([^;{}]*)", "")
+    let out = ""
+    let tokens = Vec<str>()
+    let rest = css
+    while true {
+        let found = re.find(rest)
+        if !found.matched { break }
+        let length = strings.charLength(rest)
+        let start = charIndex(rest, found.start)
+        let end = start + strings.charLength(found.text)
+        let follows = end < length ? strings.charAt(rest, end) : ""
+        if !strings.equal(follows, ";") && !strings.equal(follows, "}") {
+            out = out + strings.substring(rest, 0, start + 1)
+            rest = strings.substring(rest, start + 1, length)
+            continue
+        }
+        let groups = re.captures(found.text)
+        let prop = groups[1]
+        let value = groups[3]
+        out = out + strings.substring(rest, 0, start)
+        rest = strings.substring(rest, end, length)
+        if !literals(value) { out = out + found.text; continue }
+        let step = rewrite(value, "rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*(?:,\\s*([\\d.]+)\\s*)?\\)", prop, rgbaHandler)
+        let next = step.text
+        for item in step.tokens { tokens.push(item) }
+        step = rewrite(next, "alpha\\(\\s*(#[0-9a-fA-F]{3,8})\\b", prop, alphaHexHandler)
+        next = step.text
+        for item in step.tokens { tokens.push(item) }
+        step = rewrite(next, "alpha\\(\\s*@ACCENT@", prop, alphaAccentHandler)
+        next = step.text
+        for item in step.tokens { tokens.push(item) }
+        step = rewrite(next, "@ACCENT@", prop, accentHandler)
+        next = step.text
+        for item in step.tokens { tokens.push(item) }
+        step = rewrite(next, "#[0-9a-fA-F]{3,8}\\b", prop, hexHandler)
+        next = step.text
+        for item in step.tokens { tokens.push(item) }
+        out = out + groups[1] + groups[2] + next
+    }
+    re.close()
+    return Tokenized(out + rest, tokens)
+}
+# "token:count" pairs, most used first (equal counts keep their first-seen order).
+fn usage(tokens: Vec<str>): str {
+    let names = Vec<str>()
+    let counts = Vec<i64>()
+    for item in tokens {
+        let at: i64 = -1
+        for i in 0..(names.len() as i64) { if strings.equal(names[i], item) { at = i; break } }
+        if at < 0 { names.push(item); counts.push(1) } else { counts[at] = counts[at] + 1 }
+    }
+    let order = Vec<i64>()
+    for i in 0..(names.len() as i64) {
+        let place = order.len() as i64
+        for j in 0..(order.len() as i64) { if counts[i] > counts[order[j]] { place = j; break } }
+        let shifted = Vec<i64>()
+        for j in 0..place { shifted.push(order[j]) }
+        shifted.push(i)
+        for j in place..(order.len() as i64) { shifted.push(order[j]) }
+        order = shifted
+    }
+    let parts = Vec<str>()
+    for i in order { parts.push(names[i] + ":${counts[i]}") }
+    return strings.join(parts, " ")
+}
+fn main(): i32 {
+    for i in 0..(args.len() as i64) {
+        let file = args.get(i)
+        if strings.startsWith(file, "--") { continue }
+        let done = tokenize(tool.read(file))
+        tool.write(file, done.css)
+        print(file + " " + usage(done.tokens))
+        let left = regex.compile("#[0-9a-fA-F]{3,8}\\b|rgba?\\(", "")
+        let count = left.findAll(done.css).len() as i64
+        left.close()
+        if count > 0 { print("  remaining literals: ${count}") }
+    }
+    return 0
+}
+return tool.main(main)

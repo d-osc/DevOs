@@ -1,0 +1,89 @@
+use "std/test"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "../src/system/org.devos.background/widget-desktops.dev" as widgets
+use "../src/system/org.devos.background/wallpaper.dev" as wallpaper
+use "../src/system/org.devos.background/context-menu.dev" as menu
+use "../src/system/org.devos.background/command.dev" as command
+use "../src/system/org.devos.background/settings.dev" as settings
+use "./lib/react-devlang.dev" as t
+use "../tools/lib/tool.dev" as tool
+fn desks(second:bool):json.Value {return json.value(Vec<json.Value>({id:1,name:"One",active:!second},{id:2,name:"Two",active:second}))}
+test.case("widget ownership survives workspace ordinal changes",fn() {
+    let first=widgets.active(desks(false),true);let second=widgets.active(desks(true),true)
+    let all=widgets.update({widgetClock:true},second,{widgetNote:true,widgetNoteText:"Second only"})
+    test.expect(json.bool(json.get(widgets.values(all,first),"widgetClock")),"Global widgets must migrate to first desktop")
+    test.expect(!json.bool(json.get(widgets.values(all,second),"widgetClock")),"Widgets leaked to another desktop")
+    all=widgets.update(all,first,{widgetClock:false})
+    t.equal(json.string(json.get(widgets.values(all,second),"widgetNoteText")),"Second only")
+    let renamed=json.set(json.at(desks(true),1),"id",1)
+    let next=widgets.active(json.value(Vec<json.Value>(json.at(desks(true),0),renamed)),true)
+    t.equal(json.string(json.get(next,"key")),json.string(json.get(second,"key")))
+})
+test.case("pending desktops hide widgets and duplicate names remain distinct",fn() {
+    test.expect(json.is_null(widgets.active(json.array(),true)),"Pending desktop got an invented owner")
+    test.expect(!json.bool(json.get(widgets.values({widgetClock:true},json.null_value()),"widgetClock")),"Pending desktop showed global widget")
+    let duplicate=widgets.active(json.value(Vec<json.Value>({name:"ไทย",active:false},{name:"ไทย",active:true})),true)
+    t.equal(json.string(json.get(duplicate,"key")),"[\"ไทย\",1]")
+    let standalone=widgets.active(json.array(),false)
+    test.expect(json.bool(json.get(widgets.values({widgetClock:true},standalone),"widgetClock")),"Standalone global compatibility lost")
+})
+test.case("damaged positions default independently and clamp to screen bounds",fn() {
+    let points=widgets.locations(json.value("{\"widgetClock\":{\"x\":2,\"y\":-3},\"widgetDate\":{\"x\":\"bad\",\"y\":0}}"))
+    test.expect(json.float(json.get(json.get(points,"widgetClock"),"x"))==1.0,"Right bound failed")
+    test.expect(json.float(json.get(json.get(points,"widgetClock"),"y"))==0.0,"Top bound failed")
+    test.expect(!json.has(points,"widgetDate"),"Invalid position accepted")
+    test.expect(json.len(widgets.locations(json.value("invalid")))==0,"Malformed positions failed recovery")
+})
+test.case("settings merge preserves a simultaneous drag on another desktop",fn() {
+    let first=widgets.active(desks(false),true);let second=widgets.active(desks(true),true)
+    let saved=widgets.update({color:"#123456",widgetClock:true},first,{widgetClock:true})
+    let latest=widgets.update(saved,first,{widgetLocations:"{\"widgetClock\":{\"x\":0.7,\"y\":0.4}}"})
+    let draft=widgets.update(saved,second,{widgetNote:true,widgetNoteText:"new note"})
+    let merged=settings.plan(latest,saved,draft)
+    t.equal(json.string(json.get(widgets.values(merged,first),"widgetLocations")),"{\"widgetClock\":{\"x\":0.7,\"y\":0.4}}")
+    t.equal(json.string(json.get(widgets.values(merged,second),"widgetNoteText")),"new note")
+})
+test.case("picture crop geometry retains cover, contain and stretch",fn() {
+    let cover=wallpaper.layout(100.0,100.0,200.0,100.0,"cover")
+    test.expect(json.float(json.get(cover,"x"))== -50.0,"Cover crop changed")
+    let contain=wallpaper.layout(100.0,100.0,200.0,100.0,"contain")
+    test.expect(json.float(json.get(contain,"y"))==25.0,"Contain letterbox changed")
+    let stretch=wallpaper.layout(100.0,100.0,200.0,100.0,"stretch")
+    test.expect(json.float(json.get(stretch,"sx"))==0.5 && json.float(json.get(stretch,"sy"))==1.0,"Stretch changed")
+    let invalid=result.attempt(fn():json.Value {return wallpaper.layout(0.0,1.0,1.0,1.0,"cover")});test.expect(result.isErr(invalid),"Invalid canvas accepted")
+    test.expect(json.int(json.get(wallpaper.pictureSize(10000,5000),"width"))==4096,"Decode bounds changed")
+})
+test.case("custom command placeholders never turn into shell code or rescan replacements",fn() {
+    let args=command.arguments("tool --title 'two words' \"{path}\" {directory}","/tmp/{directory};$(boom)","/home/ไทย")
+    test.expect(args.len()==5,"Quoted argv changed")
+    t.equal(args[2],"two words");t.equal(args[3],"/tmp/{directory};$(boom)");t.equal(args[4],"/home/ไทย")
+    let invalid=result.attempt(fn():Vec<str> {return command.words("tool 'broken")});test.expect(result.isErr(invalid),"Unbalanced quotes accepted")
+})
+test.case("native menu filters defaults, target and enablement",fn() {
+    let custom=json.stringify(json.value(Vec<json.Value>({id:"custom-one",title:"Action",command:"tool '{path}'",enabled:true,target:"background"},{id:"custom-file",title:"Files",command:"tool",enabled:true,target:"file"})))
+    let items=menu.view({menuReload:false,contextCustomItems:custom})
+    test.expect(json.len(items)==9,"Lost defaults or included file-only menu")
+    t.equal(json.string(json.get(json.at(items,8),"id")),"custom-one")
+    test.expect(json.len(menu.view({contextEnabled:false,contextCustomItems:custom}))==0,"Disabled menu still enabled")
+    let duplicate=result.attempt(fn():json.Value {return menu.custom(json.value("[{\"id\":\"menuFiles\",\"title\":\"Bad\"}]"))});test.expect(result.isErr(duplicate),"Default override accepted")
+})
+test.case("the real background worker serves domain actions and recovers after errors",fn() {
+    let requests=Vec<json.Value>(
+        {id:11,action:"widgets",values:{widgetClock:true}},
+        {id:12,action:"widget-update",values:{widgetClock:true},patch:{widgetNote:true}},
+        {id:13,action:"menu",values:{contextEnabled:false}},
+        {id:14,action:"settings-plan",latest:{color:"#123456"},saved:{color:"#123456"},values:{color:"invalid"}},
+        {id:15,action:"picture-layout",width:100,height:100,imageWidth:200,imageHeight:100,fit:"contain"})
+    let input="";for request in requests {input=input+json.stringify(request)+"\n"}
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/service.dev"),Map<str,str>(),input,30000)
+    t.success(done);let lines=strings.split(strings.trim(t.out(done)),"\n")
+    test.expect(lines.len()==5,"Worker lost a response")
+    test.expect(json.bool(json.get(json.get(json.parse(lines[0]),"widgets"),"widgetClock")),"Worker widget view failed")
+    test.expect(json.bool(json.get(json.get(json.parse(lines[1]),"values"),"widgetNote")),"Worker update failed")
+    test.expect(json.len(json.get(json.parse(lines[2]),"items"))==0,"Worker ignored disabled context menu")
+    test.expect(json.has(json.parse(lines[3]),"error"),"Worker accepted invalid settings")
+    test.expect(json.float(json.get(json.get(json.parse(lines[4]),"layout"),"y"))==25.0,"Worker failed recovery")
+})
+return t.finish()

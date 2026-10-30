@@ -1,10 +1,10 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
-import {CameraSettings} from '../extensions/org.devos.camera/settings-view.js';
+import {CameraSettings} from '../src/apps/org.devos.camera/settings-view.js';
 Gtk.init(null);
 const base = GLib.getenv('DEV_OS_ROOT')!;
 const css = new Gtk.CssProvider();
-css.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${base}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
+css.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${base}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 function all(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(all) : [])];}
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 350, () => {resolve(); return GLib.SOURCE_REMOVE;}));

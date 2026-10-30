@@ -1,11 +1,11 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Box, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {SystemSettings} from '../extensions/org.devos.settings/system-view.js';
-import {DisplayCareSettings} from '../extensions/org.devos.settings/display-care-view.js';
-import {unsupportedDisplayCare, type CareSettings, type DisplayCareAction, type DisplayCareControls, type DisplayCareState} from '../extensions/org.devos.settings/display-care.js';
-import {defaultCare, parseCare} from '../extensions/org.devos.displaycare/care.js';
-import type {SystemControls, SystemState} from '../extensions/org.devos.settings/system.js';
+import {SystemSettings} from '../src/apps/org.devos.settings/system-view.js';
+import {DisplayCareSettings} from '../src/apps/org.devos.settings/display-care-view.js';
+import {unsupportedDisplayCare, type CareSettings, type DisplayCareAction, type DisplayCareControls, type DisplayCareState} from '../src/apps/org.devos.settings/display-care.js';
+import {defaultCare, parseCare} from '../packages/compat/display-care.js';
+import type {SystemControls, SystemState} from '../src/apps/org.devos.settings/system.js';
 Gtk.init(null);
 const wait = (ms = 420) => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -29,7 +29,7 @@ function fakeControls(initial: Partial<DisplayCareState>, calls: string[]): Disp
 }
 async function verify() {
     const window = new Gtk.OffscreenWindow(); window.name = 'display-care'; window.set_size_request(1000, 1500); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     const text = (id: string) => find<Gtk.Label>(id)?.get_text() ?? '';
@@ -41,7 +41,9 @@ async function verify() {
         // Parsing shared with the shell: every value is checked on its own.
         const parsed = parseCare('{"dimming": 20, "splendid": "ereading", "temperature": 99, "targetMode": "yes", "pixelRefresh": false}');
         assert(parsed.dimming === 20 && parsed.splendid === 'normal' && parsed.temperature === 0 && parsed.targetMode === false && parsed.pixelRefresh === false, 'Invalid values fall back one by one');
-        assert(JSON.stringify(parseCare('{broken')) === JSON.stringify(defaultCare) && defaultCare.pixelRefresh && defaultCare.panelTransparency && !defaultCare.autoHidePanel && defaultCare.dimming === 100, 'A damaged file gives the defaults (Pixel refresh and transparency on, auto-hide off)');
+        const fallback = parseCare('{broken');
+        assert(Object.keys(fallback).length === Object.keys(defaultCare).length && Object.entries(defaultCare).every(([key, value]) => fallback[key as keyof CareSettings] === value)
+            && defaultCare.pixelRefresh && defaultCare.panelTransparency && !defaultCare.autoHidePanel && defaultCare.dimming === 100, 'A damaged file gives the defaults (Pixel refresh and transparency on, auto-hide off)');
 
         // Supported hardware: every card shows the MyASUS wording and drives the helper.
         const calls: string[] = [], controls = fakeControls({}, calls);

@@ -20,7 +20,8 @@ export async function requestSessionVersion(root: string) {
     const request = sessionRequestPath();
     if (installedSessionRoot() !== root) throw new Error('The selected version changed. Check Updates and try again.');
     const metadata = readJson(`${root}/release.json`) as {version: string};
-    if (!GLib.file_test(`${root}/bin/dev-os-start`, GLib.FileTest.IS_EXECUTABLE) || !GLib.file_test(`${root}/dist/supervisor.js`, GLib.FileTest.IS_REGULAR))
+    const native = ['bin/dev-os-supervisor', 'src/system/supervisor.dev', 'dist/native/libsupervisor.so'].every(path => GLib.file_test(`${root}/${path}`, GLib.FileTest.IS_REGULAR));
+    if (!GLib.file_test(`${root}/bin/dev-os-start`, GLib.FileTest.IS_EXECUTABLE) || !(native || GLib.file_test(`${root}/dist/supervisor.js`, GLib.FileTest.IS_REGULAR)))
         throw new Error('Installed session manager is missing');
     const cancel = new Gio.Cancellable();
     const reported = await run([`${root}/bin/dev-os-shell`, '--version'], cancel);

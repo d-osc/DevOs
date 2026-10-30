@@ -38,10 +38,32 @@ if [ "$mode" = nested ]; then
     elif [ -n "${DISPLAY:-}" ]; then export WLR_BACKENDS=x11
     else printf '%s\n' '--nested needs an existing Wayland or X11 display.' >&2; exit 1; fi
 fi
+# Explicit selection wins over inherited settings; auto delegates native rendering to wlroots.
+renderer=${DEV_OS_RENDERER:-${WLR_RENDERER:-auto}}
+case "$renderer" in
+    auto)
+        unset WLR_RENDERER
+        # WSL can expose DRM nodes while Mesa still uses llvmpipe. Avoid software GL.
+        if [ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}" ]; then
+            if command -v timeout >/dev/null 2>&1 && command -v glxinfo >/dev/null 2>&1 &&
+                timeout 5 glxinfo -B 2>/dev/null | grep -q 'Accelerated: yes'; then
+                export WLR_RENDERER=gles2
+            else
+                export WLR_RENDERER=pixman
+            fi
+        fi ;;
+    gles2|vulkan)
+        unset LIBGL_ALWAYS_SOFTWARE WEBKIT_DISABLE_COMPOSITING_MODE WEBKIT_DISABLE_DMABUF_RENDERER WEBKIT_SKIA_ENABLE_CPU_RENDERING
+        export WLR_RENDERER="$renderer" ;;
+    pixman) export WLR_RENDERER=pixman ;;
+    *) printf 'Unsupported renderer: %s\n' "$renderer" >&2; exit 1 ;;
+esac
+if [ "${WLR_RENDERER:-}" = pixman ]; then export LIBGL_ALWAYS_SOFTWARE=1; fi
 if [ "$mode" = headless ]; then
     export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS="${WLR_HEADLESS_OUTPUTS:-1}"
     unset WAYLAND_DISPLAY DISPLAY
 fi
+printf 'Dev OS: renderer=%s\n' "${WLR_RENDERER:-auto}"
 if [ "$mode" != native ]; then export LABWC_UPDATE_ACTIVATION_ENV=0; fi
 # Quote the startup command for labwc, including paths containing single quotes.
 startup=$(printf '%s' "$base/bin/dev-os-start" | sed "s/'/'\\\\''/g")

@@ -1,0 +1,45 @@
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/wire.dev" as wire
+extern fn pc_now():i64
+extern fn pc_locale()
+extern fn pc_date(stamp:i64):*void
+extern fn pc_format(date:*void,format:str):*u8
+extern fn pc_unref(date:*void)
+extern fn pc_free(value:*void)
+extern fn pc_length(value:*u8):usize
+struct Formatted {valid:bool,text:str}
+fn display(format:str,seconds:bool):str {
+    if !seconds || strings.contains(format,"%S") {return format}
+    let parts=strings.split(format,"%M");if parts.len()==1 {return format+":%S"}
+    let out=parts[0]+"%M:%S"+parts[1];for i in 2..(parts.len() as i64) {out=out+"%M"+parts[i]};return out
+}
+fn selected(core:str,extension:json.Value):str {
+    let fallback=strings.equal(core,"%a %d %b  ·  %H:%M") ? "%H:%M" : core
+    if !strings.equal(json.kind(extension),"object") {return fallback}
+    if json.has(extension,"version") && hw.jnum(extension,"version",-1.0)!=1.0 {return fallback}
+    if !hw.jbool(extension,"enabled",false) {return fallback}
+    let values=hw.jget(extension,"values");let format=hw.jget(values,"format");let seconds=hw.jget(values,"showSeconds")
+    if !json.is_null(format) && !strings.equal(json.kind(format),"string") {return fallback}
+    if !json.is_null(seconds) && !strings.equal(json.kind(seconds),"bool") {return fallback}
+    return display(hw.jstr(values,"format","%a %d %b  ·  %H:%M"),hw.jbool(values,"showSeconds",false))
+}
+fn format(stamp:i64,pattern:str):Formatted {unsafe {
+    if encoding.encode(pattern,"utf8").len()>4096 {return Formatted(false,"")}
+    let date=pc_date(stamp);if date==null {return Formatted(false,"")}
+    let value=pc_format(date,pattern);pc_unref(date);if value==null {return Formatted(false,"")}
+    let size=pc_length(value);let bytes=Vec<u8>();for i in 0..(size as i64) {bytes.push(value[i])};pc_free(value as *void)
+    return Formatted(true,encoding.decode(bytes,"utf8"))
+}}
+fn now():i64 {unsafe {return pc_now()}}
+fn presentation(core:str,extension:json.Value,stamp:i64):json.Value {
+    unsafe {pc_locale()}
+    let clock=format(stamp,selected(core,extension));if !clock.valid {clock=format(stamp,"%H:%M")}
+    return {time:clock.text,date:format(stamp,"%d/%m/%Y").text,tooltip:format(stamp,"%A, %d %B %Y").text,weekday:format(stamp,"%A").text,calendarDate:format(stamp,"%d %B %Y").text,detail:format(stamp,"%H:%M:%S · %Z").text}
+}
+fn frame(core:str,extension:json.Value,stamp:i64):str {
+    let value=presentation(core,extension,stamp)
+    let fields=Vec<str>("C");for key in Vec<str>("time","date","tooltip","weekday","calendarDate","detail") {fields.push(wire.encoded(hw.jstr(value,key,"")))};return strings.join(fields,"\t")
+}

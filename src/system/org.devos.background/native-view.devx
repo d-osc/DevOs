@@ -1,0 +1,132 @@
+# Native renderer preview. Desktop host/settings integration is still pending.
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./scene.dev" as scene
+use "./design.dev" as design
+use "./pace.dev" as pace
+use "./picture.dev" as picture
+use "./native-widget-board.dev" as widgets
+use "./native-theme.dev" as theme
+use "./native-preferences.dev" as preferences
+use "./native-shell.dev" as shell
+extern fn rc_env(name:str):str
+extern fn g_get_monotonic_time():i64
+extern fn bg_timer(interval:i32,call:callback(*void):void,data:*void):u32
+extern fn bg_untimer(timer:u32,keep:*void)
+extern fn gtk_widget_get_scale_factor(widget:*void):i32
+extern fn bg_prepare(root:*void,desktop:i32,monitor:i32):i32
+extern fn bg_picture_new():*void
+extern fn bg_picture_watch(picture:*void,notify:callback(i32,*u8,i64,*void):void,data:*void)
+extern fn bg_picture_unwatch(picture:*void,keep:*void)
+extern fn bg_picture_load(picture:*void,path:*u8,length:i64)
+extern fn bg_picture_width(picture:*void):i32
+extern fn bg_picture_height(picture:*void):i32
+extern fn bg_picture_source(picture:*void,cr:*void)
+extern fn bg_picture_free(picture:*void)
+extern fn bg_picker_new(root:*void,notify:callback(*u8,i64,*void):void,data:*void):*void
+extern fn bg_picker_show(picker:*void)
+extern fn bg_picker_free(picker:*void,keep:*void)
+struct Frame {surface:i64,width:i32,height:i32,revision:i64,style:i64,light:i64,scale:i32,mode:i64,fit:i64,picture:i64,color:i64}
+fn owned(bytes:*u8,length:i64):ui.Text {unsafe {let out=Vec<u8>();for i in 0..length {out.push(bytes[i])};return ui.Text(out)}}
+fn monitorIndex(value:ui.Text):i32 {
+    let result=0
+    for ch in value.bytes {if ch<48 || ch>57 {return -1};result=result*10+(ch-48) as i64;if result>2147483647 {return -1}}
+    return result as i32
+}
+fn styles():Vec<ui.Text> {return Vec<ui.Text>(ui.text("Dunes"),ui.text("Aurora"),ui.text("Contours"),ui.text("Facets"),ui.text("Waves"),ui.text("Bokeh"),ui.text("Orbits"),ui.text("Horizon"),ui.text("Mosaic"),ui.text("Flow"),ui.text("Ripples"),ui.text("Fireflies"),ui.text("Tide"),ui.text("Planets"),ui.text("Starfield"),ui.text("Nebula"),ui.text("Galaxy"),ui.text("Meteors"),ui.text("Eclipse"),ui.text("Matrix"),ui.text("Terminal"),ui.text("Circuit"),ui.text("Radar"),ui.text("Network"))}
+fn App(context:*ui.Context,cache:*scene.Cache,frame:*Frame,photo:*void,desktop:bool):ui.Node {
+    return AppWithAppearance(context,cache,frame,photo,desktop,ui.emptyText(),0)
+}
+fn AppWithAppearance(context:*ui.Context,cache:*scene.Cache,frame:*Frame,photo:*void,desktop:bool,appearance:ui.Text,appearanceRevision:i64):ui.Node {
+    return AppWithRuntime(context,cache,frame,photo,desktop,appearance,appearanceRevision,false,0)
+}
+fn AppWithRuntime(context:*ui.Context,cache:*scene.Cache,frame:*Frame,photo:*void,desktop:bool,appearance:ui.Text,appearanceRevision:i64,paused:bool,interval:i64):ui.Node {
+    return AppWithImageStatus(context,cache,frame,photo,desktop,appearance,appearanceRevision,paused,interval,fn(error:ui.Text) {})
+}
+fn AppWithImageStatus(context:*ui.Context,cache:*scene.Cache,frame:*Frame,photo:*void,desktop:bool,appearance:ui.Text,appearanceRevision:i64,paused:bool,interval:i64,imageStatus:fn(ui.Text):void):ui.Node {
+    let style=ui.useState(context,desktop ? 0 : 9);let light=ui.useState(context,0);let revision=ui.useRef(context,1)
+    let mode=ui.useState(context,0);let fit=ui.useState(context,0);let path=ui.useText(context,ui.emptyText());let error=ui.useText(context,ui.emptyText())
+    let loading=ui.useState(context,0);let pictureRevision=ui.useState(context,0);let picker=ui.useRef(context,0)
+    let themeRevision=ui.useRef(context,0)
+    let customColor=ui.useText(context,ui.emptyText())
+    ui.useEffect(context,fn():fn():void {
+        let fields=channel.split(appearance,9)
+        if fields.len()==6 && ui.equalText(fields[0],ui.text("B")) {
+            mode.set(channel.integer(fields[1]));style.set(channel.integer(fields[2]));fit.set(channel.integer(fields[3]));path.set(widgets.decoded(fields[4]));customColor.set(widgets.decoded(fields[5]))
+        };return ui.noop
+    },Vec<i64>(appearanceRevision))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let notify=callback_context(fn(status:i32,bytes:*u8,length:i64) {loading.set(status==0 ? 1 : 0);let message=owned(bytes,length);error.set(message);imageStatus(message);pictureRevision.set(pictureRevision.get()+1)})
+        bg_picture_watch(photo,notify.call,notify.data)
+        return fn() {unsafe {bg_picture_unwatch(photo,notify.data)}}
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let picked=callback_context(fn(bytes:*u8,length:i64) {path.set(owned(bytes,length));mode.set(2)})
+        let dialog=bg_picker_new((*context).native,picked.call,picked.data);picker.set(dialog as i64)
+        return fn() {unsafe {bg_picker_free(dialog,picked.data)}}
+    }},Vec<i64>())
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let value=mode.value==2 ? path.value : ui.emptyText();let text=ui.nativeText(value);bg_picture_load(photo,text,value.bytes.len() as i64);ui.rd_buffer_free(text as *void)
+        return ui.noop
+    }},Vec<i64>(mode.value,path.revision))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let tick=callback_context(fn() {unsafe {
+            if desktop {let current=theme.rd_css_revision((*context).native);if themeRevision.get()!=current {themeRevision.set(current);ui.queueDraw(context,"wallpaper-native")}}
+            if !paused && mode.get()==0 && style.get()>=9 {revision.set(revision.get()+1);ui.queueDraw(context,"wallpaper-native")}
+        }})
+        let timer=bg_timer(interval>0 ? interval as i32 : pace.interval(style.value as i32,false),tick.call,tick.data)
+        return fn() {unsafe {bg_untimer(timer,tick.data)}}
+    }},Vec<i64>(style.value,paused ? 1 : 0,interval))
+    ui.useEffect(context,fn():fn():void {ui.queueDraw(context,"wallpaper-native");return ui.noop},Vec<i64>(style.value,light.value,mode.value,fit.value,pictureRevision.value,customColor.revision))
+    let options=ui.named("wallpaper-native");options.expand=true;if !desktop {options.width=640;options.height=360}
+    let canvas=ui.DrawingArea(options,fn(cr:*void,width:i32,height:i32) {unsafe {
+        if width<=0 || height<=0 {return}
+        let scale=gtk_widget_get_scale_factor(ui.find(context,"wallpaper-native"))
+        let variant=desktop ? theme.rd_css_revision((*context).native) : light.get()
+        let changed=(*frame).surface==0 || (*frame).width!=width || (*frame).height!=height || (*frame).scale!=scale
+        if changed {if (*frame).surface!=0 {scene.cairo_surface_destroy((*frame).surface as *void)};(*frame).surface=scene.cairo_image_surface_create(0,width*scale,height*scale) as i64;scene.cairo_surface_set_device_scale((*frame).surface as *void,scale as f64,scale as f64);(*frame).width=width;(*frame).height=height;(*frame).scale=scale}
+        if changed || (*frame).style!=style.get() || (*frame).light!=variant || (*frame).mode!=mode.get() || (*frame).fit!=fit.get() || (*frame).picture!=pictureRevision.get() || (*frame).color!=customColor.revision || mode.get()==0 && style.get()>=9 && (*frame).revision!=revision.get() {
+            let pen=scene.cairo_create((*frame).surface as *void);let base=customColor.get().bytes.len()==7 ? scene.color(customColor.get()) : desktop ? theme.base(context) : light.get()==0 ? scene.Color(32.0/255.0,32.0/255.0,32.0/255.0) : scene.Color(231.0/255.0,232.0/255.0,236.0/255.0)
+            let accent=desktop ? theme.accent(context) : scene.Color(0.0,170.0/255.0,1.0)
+            if mode.get()==0 {design.render(pen,style.get() as i32,width as f64,height as f64,(g_get_monotonic_time() as f64)/1000000.0,scene.palette(base,accent),cache)}
+            else {
+                scene.rgb(pen,base);scene.cairo_paint(pen)
+                let iw=bg_picture_width(photo);let ih=bg_picture_height(photo)
+                if mode.get()==2 && iw>0 && ih>0 {
+                    let layout=picture.layout(width as f64,height as f64,iw as f64,ih as f64,fit.get())
+                    scene.cairo_save(pen);scene.cairo_rectangle(pen,0.0,0.0,width as f64,height as f64);scene.cairo_clip(pen);scene.cairo_translate(pen,layout.x,layout.y);scene.cairo_scale(pen,layout.sx,layout.sy);bg_picture_source(photo,pen);scene.cairo_paint(pen);scene.cairo_restore(pen)
+                }
+            }
+            scene.cairo_destroy(pen);(*frame).style=style.get();(*frame).light=variant;(*frame).revision=revision.get();(*frame).mode=mode.get();(*frame).fit=fit.get();(*frame).picture=pictureRevision.get();(*frame).color=customColor.revision
+        }
+        scene.cairo_set_source_surface(cr,(*frame).surface as *void,0.0,0.0);scene.cairo_paint(cr)
+    }})
+    if desktop {return canvas}
+    let selector=ui.Select(ui.named("wallpaper-style"),styles(),style.value,fn(index:i64) {style.set(index)})
+    let modes=ui.Select(ui.named("wallpaper-mode"),Vec<ui.Text>(ui.text("Design"),ui.text("Solid color"),ui.text("Picture")),mode.value,fn(index:i64) {mode.set(index)})
+    let fits=ui.Select(ui.named("wallpaper-fit"),Vec<ui.Text>(ui.text("Cover"),ui.text("Contain"),ui.text("Stretch")),fit.value,fn(index:i64) {fit.set(index)})
+    let controls=mode.value==2 ? <Box spacing={8}><Box orientation="horizontal" spacing={8}><Button id="wallpaper-choose-picture" onClick={() => {unsafe {bg_picker_show(picker.get() as *void)}}}>Choose picture</Button>{fits}</Box><Entry id="wallpaper-path" value={path.value} placeholder="Absolute local picture path" onChange={value => path.set(value)}/></Box> : <Fragment/>
+    return <Box spacing={12} margin={18} expand><Label>DevOs Background · native renderer preview</Label><Box orientation="horizontal" spacing={12}>{modes}{selector}<Button onClick={() => light.set(light.get()==0 ? 1 : 0)}>Dark / Light</Button></Box>{controls}<TextLabel id="wallpaper-image-status" wrap widthChars={60}>{loading.value!=0 ? ui.text("Loading picture…") : error.value}</TextLabel>{canvas}</Box>
+}
+fn run():i32 {unsafe {
+    let production=ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_ROLE")),ui.text("desktop"))
+    let desktop=production || ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_DESKTOP_PREVIEW")),ui.text("1"))
+    let widgetPreview=desktop && ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_WIDGET_PREVIEW")),ui.text("1"))
+    let widgetPreferences=ui.text(rc_env("DEVOS_BACKGROUND_PREFERENCES"))
+    if !desktop && !ui.equalText(ui.text(rc_env("DEVOS_BACKGROUND_PREVIEW")),ui.text("1")) {print("Set DEVOS_BACKGROUND_PREVIEW=1 to run the renderer preview.");return 1}
+    let cache=scene.cache();let frame=Frame(0,0,0,0,-1,-1,0,-1,-1,-1,-1);let painter=&cache;let image=&frame;let photo=bg_picture_new();let prepared=0;let ready=&prepared
+    let ok=ui.runStyled("DevOs · Native Background",960,620,widgets.previewCss(),fn(context:*ui.Context):ui.Node {
+        if desktop {theme.useTheme(context)}
+        ui.useEffect(context,fn():fn():void {unsafe {(*ready)=bg_prepare((*context).native,desktop ? 1 : 0,monitorIndex(ui.text(rc_env("DEVOS_BACKGROUND_MONITOR")))) as i64;if (*ready)==0 {ui.close(context)};return ui.noop}},Vec<i64>())
+        if desktop && (widgetPreview || widgetPreferences.bytes.len()>0) {
+            let initial=widgetPreview ? ui.text("{\"widgetClock\":true,\"widgetDate\":true,\"widgetNote\":true,\"widgetPosition\":\"left\"}") : ui.text("{}")
+            let controls=widgets.useBoard(context,"desktop-widgets",widgets.configuration(initial,widgetPreferences),fn(value:ui.Text) {})
+            preferences.useWatch(context,widgetPreferences,controls.refresh)
+            unsafe {shell.useShell(context,controls,monitorIndex(ui.text(rc_env("DEVOS_BACKGROUND_MONITOR"))))}
+            let overlay=ui.named("desktop-widgets");overlay.expand=true
+            return ui.Overlay(overlay,AppWithRuntime(context,painter,image,photo,desktop,controls.appearance,controls.appearanceRevision,controls.paused,controls.interval))
+        }
+        return App(context,painter,image,photo,desktop)
+    })
+    if frame.surface!=0 {scene.cairo_surface_destroy(frame.surface as *void)};scene.freeCache(&cache);bg_picture_free(photo);return ok && prepared!=0 ? 0 : 1
+}}

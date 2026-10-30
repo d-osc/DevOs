@@ -1,0 +1,2 @@
+use "./native.devx" as installer
+return installer.run()

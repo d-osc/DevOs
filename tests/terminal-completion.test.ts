@@ -2,9 +2,9 @@ import {testTheme} from './theme-helper.js';
 import {Gtk, Gdk, Gio, GLib, removeTree} from '@dev-os/core';
 import {Vte} from '@dev-os/core/vte';
 import {ROOT} from '@dev-os/config';
-import {TerminalCompletion} from '../extensions/org.devos.terminal/completion.js';
-import {QUERY_KEY} from '../extensions/org.devos.terminal/shell-integration.js';
-import {commandSuggestions, byteLength, pathPrefix, type CommandInput} from '../extensions/org.devos.terminal/suggestions.js';
+import {TerminalCompletion} from '../src/apps/org.devos.terminal/completion.js';
+import {QUERY_KEY} from '../src/apps/org.devos.terminal/shell-integration.js';
+import {commandSuggestions, byteLength, pathPrefix, type CommandInput} from '../src/apps/org.devos.terminal/suggestions.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): asserts value {if (!value) throw new Error(message);}
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {resolve(); return GLib.SOURCE_REMOVE;}));
@@ -23,9 +23,10 @@ async function run() {
     const window = new Gtk.Window({default_width: 760, default_height: 460}); window.name = 'terminal';
     const terminal = new Vte.Terminal({hexpand: true, vexpand: true});
     const completion = new TerminalCompletion(terminal);
+    await completion.initialize();
     window.add(completion.widget);
     window.connect('key-press-event', (_window, event) => completion.key(event as unknown as Gdk.Event));
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const snapshot = () => {try {return new TextDecoder().decode(GLib.file_get_contents(`${completion.directory}/state`)[1]).split('\0');} catch {return [];}};
     const key = (keyval: number) => completion.key({get_keyval: () => [true, keyval], get_state: () => [true, 0]} as unknown as Gdk.Event);
@@ -35,7 +36,7 @@ async function run() {
         await new Promise<void>((resolve, reject) => terminal.spawn_async(Vte.PtyFlags.DEFAULT, directory, ['/bin/bash', '--rcfile', completion.script, '-i'], environment, GLib.SpawnFlags.DEFAULT, null, -1, null, (_terminal, _pid, error) => {if (error) reject(error); else resolve();}));
         await until(() => snapshot()[0] === 'ready', 'Shell prompt integration did not start'); await wait();
         for (const keyval of [Gdk.KEY_s, Gdk.KEY_y, Gdk.KEY_s]) {key(keyval); terminal.feed_child(String.fromCharCode(keyval));}
-        await until(() => completion.visible, 'Automatic command dropdown did not open');
+        await until(() => completion.visible, 'Automatic command dropdown did not open').catch(async error => {const probe = await (completion as unknown as {data: {suggest(fields: string[]): Promise<{input: CommandInput; items: unknown[]}>}}).data.suggest(snapshot()); const state = completion as unknown as {ready: boolean; inFlight: boolean; awaiting: boolean; items: unknown[]; version: number; popup: Gtk.Widget}; throw new Error(`${String(error)}; snapshot=${snapshot()[0]}, ready=${state.ready}, inFlight=${state.inFlight}, awaiting=${state.awaiting}, focused=${terminal.has_focus}, items=${state.items.length}, version=${state.version}, popup=${state.popup.get_visible()}, input=${JSON.stringify(probe.input.line)}, catalog=${probe.input.commands.length}, matches=${probe.items.length}`);});
         await wait();
         const panel = completion.widget.get_children().find(widget => widget !== terminal)!;
         const expectedX = Math.max(0, Math.min(terminal.get_allocated_width() - 400, (terminal.get_cursor_position()[0] - 3) * terminal.get_char_width()));

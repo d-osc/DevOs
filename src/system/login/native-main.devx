@@ -1,0 +1,6 @@
+use "./native.devx" as login
+use "react_devlang/ui" as ui
+# Explicit preview while avatars, power controls and visual parity are pending.
+if ui.text(login.environment("DEVOS_LOGIN_PREVIEW")).bytes.len()==0 {print("Native login is a preview; set DEVOS_LOGIN_PREVIEW=1.");return 1}
+let root=login.environment("DEV_OS_ROOT");let runner=login.environment("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+return login.run(login.Config(root,runner,"${root}/src/system/login/service.dev",true,fn(context:*ui.Context) {}))

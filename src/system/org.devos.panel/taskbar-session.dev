@@ -1,0 +1,68 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../services/window-state.dev" as tracking
+use "../org.devos.background/wire.dev" as wire
+use "./taskbar.dev" as taskbar
+use "./taskbar-actions.dev" as actions
+use "./language.dev" as language
+struct State {snapshot:tracking.Snapshot,order:Vec<str>,catalog:json.Value,pinned:bool,layouts:json.Value,layoutDraft:json.Value,collecting:bool,language:bool}
+struct Reply {state:State,payload:json.Value,frame:str,native:bool,action:json.Value}
+fn empty():State {return State(tracking.empty(),Vec<str>(),json.array(),true,json.array(),json.array(),false,false)}
+fn event(previous:State,value:json.Value):State {
+    let next=previous;let kind=hw.jstr(value,"type","")
+    if strings.equal(kind,"connecting") || strings.equal(kind,"disconnected") {next.order=Vec<str>();next.layouts=json.array();next.layoutDraft=json.array();next.collecting=false}
+    if strings.equal(kind,"desktop-begin") {next.layoutDraft=json.array();next.collecting=true}
+    if strings.equal(kind,"keyboard-layout") && next.collecting && language.valid(value) {let items=json.array();for i in 0..(json.len(next.layoutDraft) as i64) {let old=json.at(next.layoutDraft,i);if hw.jnum(old,"index",-1.0)!=hw.jnum(value,"index",-1.0) {items=json.push(items,old)}};next.layoutDraft=json.push(items,value)}
+    if strings.equal(kind,"desktop-done") && next.collecting {next.layouts=next.layoutDraft;next.collecting=false}
+    let key=tracking.id(value)
+    if !strings.equal(key,"") {
+        let retained=Vec<str>();let found=false
+        for old in next.order {if strings.equal(old,key) {found=true;if strings.equal(kind,"closed") {continue}};retained.push(old)}
+        if !found && (strings.equal(kind,"window") || strings.equal(kind,"geometry")) {retained.push(key)}
+        next.order=retained
+    }
+    next.snapshot=tracking.consume(next.snapshot,value);return next
+}
+fn windows(state:State):json.Value {
+    let out=json.array();for key in state.order {let value=hw.jget(state.snapshot.windows,key);if !json.is_null(value) && (json.has(value,"appId") || json.has(value,"title")) {out=json.push(out,value)}};return out
+}
+fn frame(rows:json.Value):str {
+    let out="B"
+    for i in 0..(json.len(rows) as i64) {let row=json.at(rows,i);let ids=Vec<str>();let items=hw.jget(row,"windows")
+        for j in 0..(json.len(items) as i64) {ids.push("${hw.jnum(json.at(items,j),"id",0.0) as i64}")}
+        let fields=Vec<str>("T");for key in Vec<str>("group","id","title","icon","gicon","launch") {fields.push(wire.encoded(hw.jstr(row,key,"")))}
+        for key in Vec<str>("running","active","minimized") {fields.push(hw.jbool(row,key,false) ? "1" : "0")}
+        fields.push(wire.encoded(hw.jstr(row,"tooltip","")));fields.push(strings.join(ids,","));fields.push(hw.jstr(row,"mode","none"));out=out+wire.separator()+strings.join(fields,"\t")
+        let picker=actions.picker(row);let windows=hw.jget(picker,"windows")
+        for j in 0..(json.len(windows) as i64) {let window=json.at(windows,j);let detail=Vec<str>("V",wire.encoded(hw.jstr(row,"group","")),tracking.id(window),wire.encoded(hw.jstr(window,"title","")),wire.encoded(hw.jstr(window,"tooltip","")))
+            for key in Vec<str>("active","minimized","minimizeEnabled") {detail.push(hw.jbool(window,key,false) ? "1" : "0")}
+            for key in Vec<str>("status","maximizeLabel","maximizeIcon","minimizeLabel","minimizeAction") {detail.push(wire.encoded(hw.jstr(window,key,"")))}
+            out=out+wire.separator()+strings.join(detail,"\t")
+        }
+    };return out
+}
+fn handle(previous:State,request:json.Value):Reply {
+    let next=previous;let raw=hw.jget(request,"windows");let events=hw.jget(request,"events");let catalog=hw.jget(request,"catalog")
+    if !json.is_null(raw) {
+        if !strings.equal(json.kind(raw),"array") {result.raise("Expected taskbar window array")}
+        next.snapshot=tracking.empty();next.order=Vec<str>();for i in 0..(json.len(raw) as i64) {next=event(next,json.set(json.at(raw,i),"type","window"))}
+    }
+    if !json.is_null(events) {if !strings.equal(json.kind(events),"array") {result.raise("Expected tracker event array")};for i in 0..(json.len(events) as i64) {next=event(next,json.at(events,i))}}
+    if !json.is_null(catalog) {if !strings.equal(json.kind(catalog),"array") {result.raise("Expected taskbar app catalog")};next.catalog=catalog}
+    if json.has(request,"showPinned") {next.pinned=hw.jbool(request,"showPinned",true)}
+    if json.has(request,"language") {next.language=hw.jbool(request,"language",false)}
+    let rows=taskbar.presentation(windows(next),next.catalog,next.pinned)
+    let native=hw.jbool(request,"wire",false)
+    let actionCount=0;for key in Vec<str>("select","windowAction","launch","keyboard") {if json.has(request,key) {actionCount=actionCount+1}};if actionCount>1 {result.raise("Expected one taskbar action")}
+    let action=json.null_value();if json.has(request,"select") {action=actions.select(rows,hw.jstr(request,"select",""))}
+    if json.has(request,"windowAction") {action=actions.windowAction(rows,hw.jget(request,"windowAction"))}
+    if json.has(request,"launch") {action=actions.launch(rows,hw.jstr(request,"launch",""))}
+    if json.has(request,"keyboard") {action=language.choose(next.layouts,hw.jget(request,"keyboard"))}
+    let payload=json.value({id:hw.jget(request,"id"),rows:rows});if !json.is_null(action) {payload=json.set(payload,"action",action)}
+    let output=native ? frame(rows) : ""
+    if next.language {payload=json.set(payload,"keyboardLayouts",next.layouts);if native {output=output+wire.separator()+language.frame(next.layouts)}}
+    if native && !json.is_null(action) {let kind=hw.jstr(action,"kind","");let tag=strings.equal(kind,"tracker") ? "W" : strings.equal(kind,"shell") ? "S" : "P";output=output+wire.separator()+tag+"\t"+wire.encoded(strings.equal(tag,"P") ? json.stringify(action) : hw.jstr(action,"command",""))}
+    return Reply(next,payload,output,native,action)
+}

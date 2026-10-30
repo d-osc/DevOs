@@ -1,0 +1,9 @@
+/* sample — ทดสอบ unicode comment */
+window { background: #1e1f22; color: #d4d4d4; border: 1px solid rgba(255, 255, 255, .08); }
+button:hover { background-color: #2a2d31; box-shadow: 0 1px 2px rgba(0,0,0,0.4), inset 0 0 0 1px alpha(#ffffff, 0.1); }
+.accent { background: alpha(@ACCENT@, 0.2); color: @ACCENT@; border-color: #3fb950; }
+entry:focus { outline: 2px solid #569cd6; caret-color: #fff; -gtk-icon-shadow: 0 1px #000; }
+.warn { color: #e5c07b; background: #4b3a14; border-bottom: 1px solid rgb(120, 90, 20); }
+.err { color: #f48771; background: #3b1a14 } .purple { background: #2a1f3d; color: #c586c0 }
+label { color: #aaa; } .x{border:1px solid #3c3c3c;margin:0}
+@define-color foo #112233;

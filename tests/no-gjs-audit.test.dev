@@ -1,0 +1,30 @@
+use "std/test"
+use "std/fs"
+use "std/json"
+use "std/uuid"
+use "../lib/no-gjs-audit.dev" as audit
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn fixture():str {
+    let root=t.root()+"/build/no-gjs-fixtures/"+uuid.v4()
+    for dir in Vec<str>("src","lib","packages","bin") {fs.mkdirSync(root+"/"+dir,true)}
+    return root
+}
+test.case("a DevLang filename does not hide a GJS subprocess",fn() {
+    let root=fixture();tool.write(root+"/lib/host.dev","return Command(Vec<str>(\"gjs\",\"-m\",\"host.js\"))\n")
+    let report=audit.audit(root)
+    test.expect(!json.bool(json.get(report,"ready")) && json.len(json.get(report,"legacyRuntimeDependencies"))==1,"Indirect GJS launch was hidden")
+})
+test.case("GTK JS SDK still needs a replacement provider",fn() {
+    let root=fixture();tool.write(root+"/packages/provider.ts","import Gtk from 'gi://Gtk?version=3.0';\n")
+    let report=audit.audit(root);test.expect(!json.bool(json.get(report,"ready")) && json.len(json.get(report,"giSdkBindings"))==1,"GJS-only SDK was declared native")
+})
+test.case("comments and external process labels are not runtime launches",fn() {
+    let root=fixture();tool.write(root+"/lib/host.dev","# exec gjs -m old.js\nif eq(executable,\"gjs\") {return \"JavaScript\"}\n")
+    test.expect(json.bool(json.get(audit.audit(root),"ready")),"Labels falsely require a runtime")
+})
+test.case("unreadable runtime source cannot pass the audit",fn() {
+    let root=fixture();fs.write_bytes(root+"/src/invalid.ts",Vec<u8>(255,254,0,0))
+    let report=audit.audit(root);test.expect(!json.bool(json.get(report,"ready")) && json.len(json.get(report,"unreadable"))==1,"Unreadable source was silently skipped")
+})
+return t.finish()

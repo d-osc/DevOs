@@ -1,0 +1,8 @@
+use "std/encoding"
+fn encoded(value:str):str {
+    let out=Vec<u8>();let hex=encoding.encode("0123456789ABCDEF","utf8")
+    for byte in encoding.encode(value,"utf8") {if byte<32 || byte==37 || byte==127 {out.push(37);out.push(hex[(byte/16) as i64]);out.push(hex[(byte%16) as i64])} else {out.push(byte)}}
+    return encoding.decode(out,"utf8")
+}
+fn separator():str {return encoding.decode(Vec<u8>(30),"utf8")}
+fn optionSeparator():str {return encoding.decode(Vec<u8>(31),"utf8")}

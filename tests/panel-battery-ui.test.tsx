@@ -1,9 +1,9 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Box, Label, createRoot, setBaseIconProvider} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {renderIcon} from '../extensions/org.devos.icons/fa-icons.js';
-import {PanelBattery} from '../extensions/org.devos.panel/battery-view.js';
-import {readPower, type PowerFs} from '../extensions/org.devos.panel/battery.js';
+import {renderIcon} from '../src/apps/org.devos.icons/fa-icons.js';
+import {PanelBattery} from '../packages/compat/panel-legacy/battery-view.js';
+import {readPower, type PowerFs} from '../packages/compat/panel-legacy/battery.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
@@ -26,7 +26,7 @@ async function verify() {
     const window = new Gtk.OffscreenWindow(); window.name = 'battery'; window.set_size_request(360, 380);
     const dark = new Gtk.CssProvider(); dark.load_from_data(new TextEncoder().encode('#panel { background: #1c2128; padding: 8px; } #panel label { color: #dce5ef; }'));
     const container = new Gtk.Box(); window.add(container); const root = createRoot(container);
-    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const theme = new Gtk.CssProvider(); theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, dark, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION - 1); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     setBaseIconProvider((name, size, color) => renderIcon(name, size, color, {pack: 'classic', style: 'solid'}));
     try {

@@ -1,0 +1,12 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+fn plan(request:json.Value):str {
+    if !strings.equal(json.kind(request),"object") {result.raise("Invalid panel command request")}
+    if !json.has(request,"command") {return ""}
+    let value=hw.jget(request,"command");if !strings.equal(json.kind(value),"string") {result.raise("Invalid panel command")}
+    let command=json.string(value)
+    for value in Vec<str>("time","settings","wifi","launcher","task-view","language","accounts") {if strings.equal(command,value) {return command}}
+    result.raise("Unknown panel command");return ""
+}

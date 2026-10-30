@@ -1,0 +1,105 @@
+use "std/fs"
+use "std/strings"
+use "std/child_process"
+use "std/time"
+use "std/encoding"
+use "std/result"
+use "std/json"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn target(log:str):str {let out="";for line in strings.split(tool.read(log),"\n") {if strings.startsWith(line,"PANEL TARGET panel-devices ") {let fields=strings.split(line," ");if fields.len()==5 {out=fields[3]+" "+fields[4]}}};return out}
+fn main():i32 {
+    let root=tool.root();tool.checked(Vec<str>("sh",root+"/tools/build/native-panel.sh"),Map<str,str>(),"",90000)
+    let window=root+"/build/react-devlang/panel/fixtures/taskbar-window"
+    tool.checked(Vec<str>("sh",root+"/packages/react-devlang/tools/build.sh",root+"/tests/react-devlang/panel-taskbar-window.devx",window),Map<str,str>(),"",90000)
+    let refused=tool.run(Vec<str>("xvfb-run","--auto-servernum","env","GDK_BACKEND=x11","DEVOS_PANEL_PREVIEW=1","DEV_OS_ROOT="+root,root+"/dist/native/panel-layout-preview"),Map<str,str>(),"",10000)
+    tool.require(!refused.success,"Native panel fell back to a non-layer X11 window");tool.require(!strings.contains(encoding.decode(refused.stderr,"utf8"),"CRITICAL"),"X11 refusal accessed destroyed GTK objects")
+    let legacy=Map<str,str>();legacy.set("DEVOS_PANEL_RENDERER","legacy")
+    let ownerFixture=root+"/build/react-devlang/panel/legacy-owner"
+    tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror \"$1\" $(pkg-config --cflags --libs gio-2.0) -o \"$2\"","legacy-owner-build",root+"/tests/fixtures/panel-legacy-owner.c",ownerFixture),Map<str,str>(),"",15000)
+    smoke.withSession("panel-owner",legacy,fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_PREVIEW","1");env.set("DEVOS_PANEL_MONITOR","0");env.set("GDK_BACKEND","wayland");env.set("G_DEBUG","fatal-criticals")
+        let owner=smoke.launch(Vec<str>(ownerFixture,session.base+"/legacy-ready"),env,session.base+"/legacy-owner.log")
+        tool.waitFor(fn():bool {tool.require(!owner.ready(),"Legacy lease fixture failed");return fs.existsSync(session.base+"/legacy-ready")},5000,"Legacy lease was not acquired")
+        let done=tool.run(Vec<str>(root+"/dist/native/panel-layout-preview"),env,"",10000);tool.write(root+"/build/panel-ownership-refusal.log",encoding.decode(done.stderr,"utf8")+encoding.decode(done.stdout,"utf8"));tool.require(!done.success,"Native preview stacked over the existing system panel");tool.require(strings.contains(encoding.decode(done.stderr,"utf8"),"system panel is already running"),"Panel ownership refusal was not reported; see build/panel-ownership-refusal.log");tool.require(!strings.contains(encoding.decode(done.stderr,"utf8"),"CRITICAL"),"Panel refusal accessed destroyed widgets")
+        tool.checked(Vec<str>("kill","-TERM","${owner.pid()}"),env,"",5000);owner.wait()
+        print("PASS native preview refuses to stack over the previous renderer's lease")
+    })
+    let extras=Map<str,str>();extras.set("WLR_HEADLESS_OUTPUTS","2");extras.set("DEVOS_PANEL_RENDERER","native-preview")
+    smoke.withSession("panel-layout",extras,fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("DEVOS_PANEL_PREVIEW","1");env.set("DEVOS_PANEL_MONITOR","1");env.set("DEVOS_PANEL_LAYOUT_TRACE","1");env.set("GDK_BACKEND","wayland");env.set("NO_AT_BRIDGE","1");env.set("G_DEBUG","fatal-criticals");env.set("XDG_CONFIG_HOME",session.base+"/native-config")
+        let file=session.base+"/native-config/dev-os/extensions/org.devos.panel.json"
+        let clockFile=session.base+"/native-config/dev-os/extensions/org.devos.clock.json"
+        tool.write(file,"{\"version\":1,\"enabled\":true,\"values\":{\"position\":\"top\",\"height\":48}}")
+        tool.jsonWrite(clockFile,{version:1,enabled:true,values:{format:"CLOCK-A-%S"}})
+        let log=session.base+"/native-panel.log";tool.write(log,"");let child=smoke.launch(Vec<str>(root+"/dist/native/panel-layout-preview"),env,log)
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL ALLOCATION 1280 48 1")},15000,"Native panel did not allocate the second output's upper edge")
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return tool.count(tool.read(log),"PANEL CLOCK CLOCK-A-")>=2},5000,"Native clock did not tick once per second")
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL TRAY READY")},15000,"Native tray did not render its device frame")
+        let duplicate=tool.run(Vec<str>(root+"/dist/native/panel-layout-preview"),env,"",10000);tool.require(!duplicate.success && strings.contains(encoding.decode(duplicate.stderr,"utf8"),"native panel is already running"),"A second native panel was allowed on the same monitor")
+        tool.jsonWrite(clockFile,{version:1,enabled:true,values:{format:"CLOCK-B-%S"}})
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL CLOCK CLOCK-B-")},5000,"Native clock did not reload its extension preferences")
+        tool.require(!strings.contains(tool.read("/proc/${child.pid()}/maps"),"mozjs"),"Native panel UI loaded MozJS")
+        let children=strings.split(strings.trim(tool.read("/proc/${child.pid()}/task/${child.pid()}/children"))," ");tool.require(children.len()>=7 && children.len()<=8,"Panel UI did not separate layout, taskbar, tracker, command, context menu, device, battery-care and deferred account processes")
+        let owned=Vec<str>();for pid in children {
+            owned.push(pid);tool.require(!strings.contains(tool.read("/proc/"+pid+"/maps"),"libgtk-3"),"Layout worker loaded GTK")
+            let nested=strings.trim(tool.read("/proc/"+pid+"/task/"+pid+"/children"))
+            if nested!="" {for interpreter in strings.split(nested," ") {owned.push(interpreter);let maps=tool.read("/proc/"+interpreter+"/maps");tool.require(!strings.contains(maps,"libgtk-3") && !strings.contains(maps,"mozjs"),"Layout interpreter loaded GUI runtime")}}
+        }
+        time.sleep_ms(400);smoke.screenshot(env,root+"/build/screenshots/panel-native-layout-top.png")
+        tool.waitFor(fn():bool {return !strings.equal(target(log),"")},6000,"Native tray target did not allocate")
+        let pointer=smoke.input(smoke.compilePointer(root+"/build/react-devlang/panel/pointer"),session.base,env)
+        pointer=smoke.send(pointer,"move -10000 -10000");pointer=smoke.send(pointer,"move "+target(log));pointer=smoke.send(pointer,"click left")
+        let opening=result.run(fn() {tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL QUICK SETTINGS 1")},6000,"Native Wayland Quick settings did not open")})
+        tool.write(root+"/build/panel-native-wayland.log",tool.read(log));if result.isErr(opening) {smoke.screenshot(env,root+"/build/screenshots/panel-native-quick-settings-failed.png");smoke.closeInput(pointer);result.unwrap(opening)}
+        time.sleep_ms(300);smoke.screenshot(env,root+"/build/screenshots/panel-native-quick-settings-top.png")
+        let dismissed=tool.count(tool.read(log),"PANEL QUICK SETTINGS 0")
+        pointer=smoke.send(pointer,"move -10000 -10000");pointer=smoke.send(pointer,"move 1600 24");pointer=smoke.send(pointer,"click left")
+        tool.waitFor(fn():bool {return tool.count(tool.read(log),"PANEL QUICK SETTINGS 0")>dismissed},6000,"Native Wayland Quick settings did not dismiss on an outside panel click")
+        let app=smoke.launch(Vec<str>(window),env,session.base+"/taskbar-window.log")
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL TASK dev-os-task-manager ") && strings.contains(tool.read(log),"PANEL TASK COUNT 3")},10000,"Native taskbar did not render the real tracker window")
+        time.sleep_ms(400)
+        smoke.screenshot(env,root+"/build/screenshots/panel-native-taskbar-window.png")
+        let closed=tool.count(tool.read(log),"PANEL TASK COUNT 2")
+        tool.checked(Vec<str>("kill","-TERM","${app.pid()}"),env,"",5000);tool.waitFor(fn():bool {return app.ready()},5000,"Taskbar fixture did not stop");app.wait()
+        tool.waitFor(fn():bool {return tool.count(tool.read(log),"PANEL TASK COUNT 2")>closed},10000,"Closed native task did not leave the taskbar")
+        tool.write(file,"{\"version\":1,\"enabled\":true,\"values\":{\"position\":\"bottom\",\"height\":44,\"showPinned\":false,\"showDate\":false}}")
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL ALLOCATION 1280 44 0")},15000,"Native panel did not apply changed edge and height")
+        smoke.screenshot(env,root+"/build/screenshots/panel-native-layout-bottom.png")
+        tool.waitFor(fn():bool {let coordinates=strings.split(target(log)," ");return coordinates.len()==2 && json.int(json.parse(coordinates[1]))>600},6000,"Bottom tray target did not update after allocation")
+        let openedBottom=tool.count(tool.read(log),"PANEL QUICK SETTINGS 1")
+        let entered=tool.count(tool.read(log),"PANEL POINTER panel-devices");let bottomY=718
+        pointer=smoke.send(pointer,"move -10000 -10000");pointer=smoke.send(pointer,"move "+strings.split(target(log)," ")[0]+" ${bottomY}")
+        for attempt in 0..30 {if tool.count(tool.read(log),"PANEL POINTER panel-devices")>entered {break};pointer=smoke.send(pointer,"move 0 -4");bottomY=bottomY-4}
+        tool.require(tool.count(tool.read(log),"PANEL POINTER panel-devices")>entered,"Virtual pointer did not reach the native bottom tray")
+        pointer=smoke.send(pointer,"click left")
+        tool.waitFor(fn():bool {return tool.count(tool.read(log),"PANEL QUICK SETTINGS 1")>openedBottom},6000,"Bottom Quick settings did not open")
+        time.sleep_ms(300);smoke.screenshot(env,root+"/build/screenshots/panel-native-quick-settings-bottom.png")
+        let dismissedBottom=tool.count(tool.read(log),"PANEL QUICK SETTINGS 0")
+        pointer=smoke.send(pointer,"move -10000 -10000");pointer=smoke.send(pointer,"move 1600 ${bottomY}");pointer=smoke.send(pointer,"click left")
+        tool.waitFor(fn():bool {return tool.count(tool.read(log),"PANEL QUICK SETTINGS 0")>dismissedBottom},6000,"Bottom Quick settings did not dismiss on an outside panel click")
+        pointer=smoke.send(pointer,"click right")
+        tool.waitFor(fn():bool {return strings.contains(tool.read(log),"PANEL CONTEXT 1")},5000,"Bottom panel right-click menu did not open")
+        time.sleep_ms(200);smoke.screenshot(env,root+"/build/screenshots/panel-native-context-bottom.png")
+        pointer=smoke.send(pointer,"move -10000 -10000");pointer=smoke.send(pointer,"move 1600 360");pointer=smoke.send(pointer,"click left")
+        tool.waitFor(fn():bool {return strings.contains(tool.read(log),"PANEL CONTEXT 0")},5000,"Native panel context menu did not dismiss");smoke.closeInput(pointer)
+        let careFile=session.base+"/native-config/devos/display-care.json"
+        tool.checked(Vec<str>("mkdir","-p",session.base+"/care-input"),env,"",5000)
+        let edgeInput=smoke.input(smoke.compilePointer(root+"/build/react-devlang/panel/pointer"),session.base+"/care-input",env)
+        edgeInput=smoke.send(edgeInput,"move -10000 -10000");edgeInput=smoke.send(edgeInput,"move 1600 360")
+        tool.jsonWrite(careFile,{panelTransparency:false,autoHidePanel:true})
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL CARE 0 1 1 1 1 1") && strings.contains(tool.read(log),"PANEL CARE HIDDEN")},7000,"Native panel did not apply opaque style and auto-hide")
+        edgeInput=smoke.send(edgeInput,"move -10000 -10000");edgeInput=smoke.send(edgeInput,"move 1600 719")
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL CARE REVEALED")},5000,"Bottom hot edge did not restore native panel")
+        tool.jsonWrite(careFile,{panelTransparency:true,autoHidePanel:false})
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"PANEL CARE 1 0 1 1 1 1")},5000,"Native panel did not restore persistent visibility")
+        smoke.closeInput(edgeInput)
+        tool.checked(Vec<str>("kill","-TERM","${child.pid()}"),env,"",5000);tool.waitFor(fn():bool {return child.ready()},5000,"Native panel did not stop")
+        let done=child.wait();tool.require(done.success,tool.read(log));for pid in owned {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid)},5000,"Panel layout worker survived UI shutdown")}
+        let restartedLog=session.base+"/native-panel-restarted.log";tool.write(restartedLog,"");let restarted=smoke.launch(Vec<str>(root+"/dist/native/panel-layout-preview"),env,restartedLog)
+        tool.waitFor(fn():bool {tool.require(!restarted.ready(),tool.read(restartedLog));return strings.contains(tool.read(restartedLog),"PANEL TRAY READY")},15000,"Panel ownership was not released after shutdown")
+        tool.checked(Vec<str>("kill","-TERM","${restarted.pid()}"),env,"",5000);tool.waitFor(fn():bool {return restarted.ready()},5000,"Restarted panel did not stop");tool.require(restarted.wait().success,tool.read(restartedLog))
+        print("PASS native panel layout on second monitor, live top/bottom and height updates, separate data process, no MozJS, clean shutdown")
+    });return 0
+}
+return tool.main(main)

@@ -71,17 +71,20 @@ fn decode(value: *void): json.Value {
     }
 }
 fn call(bus: *void, path: str, interface: str, method: str, parameters: str, timeout: i32): json.Value {
+    return callService(bus,"org.freedesktop.NetworkManager",path,interface,method,parameters,timeout)
+}
+fn callService(bus: *void, service:str, path: str, interface: str, method: str, parameters: str, timeout: i32): json.Value {
     unsafe {
         let args = g_variant_parse(null, parameters, null, null, null)
         util.require(args as bool, "Invalid D-Bus method parameters.")
         # call_sync consumes a floating parameters reference.
         let slot = calloc(1, 16) as *usize
         util.require(slot as bool, "Could not allocate D-Bus error storage.")
-        let reply = g_dbus_connection_call_sync(bus, "org.freedesktop.NetworkManager", path, interface, method, args, null, 0, timeout, null, slot as *void)
+        let reply = g_dbus_connection_call_sync(bus, service, path, interface, method, args, null, 0, timeout, null, slot as *void)
         let failure = slot[0] as *BusError
         free(slot as *void)
         if !(reply as bool) {
-            let message = "NetworkManager request failed."
+            let message = "D-Bus request failed."
             if failure as bool {
                 let bytes = Vec<u8>()
                 let i = 0

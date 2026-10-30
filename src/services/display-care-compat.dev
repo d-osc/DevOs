@@ -1,0 +1,18 @@
+# Read-only projection for legacy Panel/Settings adapters. Policy lives in DevLang.
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../lib/display-care.dev" as care
+use "../system/org.devos.displaycare/model.dev" as model
+use "../system/org.devos.displaycare/panel.dev" as panel
+while true {let line=io.read_line();if strings.equal(line,"") {break}
+    let response=result.attempt(fn():json.Value {
+        let request=json.parse(line);let op=hw.jstr(request,"op","defaults");let values=care.defaults()
+        if strings.equal(op,"parse") {let parsed=result.attempt(fn():json.Value {return json.parse(hw.jstr(request,"text",""))});values=model.settings(result.isOk(parsed) ? result.unwrap(parsed) : json.null_value())}
+        else if strings.equal(op,"read") || strings.equal(op,"panel") {values=model.settings(hw.loadJson(hw.jstr(request,"path",care.statePath())))}
+        else if !strings.equal(op,"defaults") {result.raise("Unsupported display-care projection")}
+        let response=strings.equal(op,"panel") ? panel.plan(values,hw.jnum(request,"step",0.0) as i64) : json.value({settings:values});return json.set(response,"id",hw.jget(request,"id"))
+    });print(result.isOk(response) ? json.stringify(result.unwrap(response)) : json.stringify({error:hw.errorText(result.message(response))}))
+}

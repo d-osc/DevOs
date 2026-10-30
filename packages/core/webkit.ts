@@ -7,7 +7,7 @@ function isWSL(): boolean {
     catch {return false;}
 }
 
-export const webKitSoftwareRendering = isWSL() || GLib.getenv('WLR_RENDERER') === 'pixman'
+export const webKitSoftwareRendering = (isWSL() && !['gles2', 'vulkan'].includes(GLib.getenv('WLR_RENDERER') || '')) || GLib.getenv('WLR_RENDERER') === 'pixman'
     || ['1', 'true'].includes((GLib.getenv('LIBGL_ALWAYS_SOFTWARE') || '').toLowerCase());
 if (webKitSoftwareRendering) {
     // Configure before creating any WebView or starting WebKit child processes.

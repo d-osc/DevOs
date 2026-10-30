@@ -1,0 +1,40 @@
+# Shell-style argv parsing without starting a shell or expanding user input.
+use "std/strings"
+use "std/result"
+use "std/encoding"
+fn length(value:str):i64 {let count=0;for byte in encoding.encode(value,"utf8") {if byte<128 || byte>=192 {count=count+(byte>=240 ? 2 : 1)}};return count}
+fn words(command:str):Vec<str> {
+    if strings.equal(strings.trim(command),"") || length(command)>2000 || strings.contains(command,"\0") {result.raise("Enter a command of up to 2,000 characters.")}
+    let out=Vec<str>();let word="";let quoted="";let started=false;let escape=false;let comment=false
+    for ch in strings.split(command,"") {
+        if comment {if strings.equal(ch,"\n") {comment=false};continue}
+        if escape {
+            if !strings.equal(ch,"\n") {
+                if strings.equal(quoted,"\"") && !strings.contains("$`\"\\",ch) {word=word+"\\"}
+                word=word+ch;started=true
+            }
+            escape=false;continue
+        }
+        if strings.equal(quoted,"'") {if strings.equal(ch,"'") {quoted=""} else {word=word+ch};continue}
+        if strings.equal(ch,"\\") {escape=true;continue}
+        if strings.equal(quoted,"\"") {if strings.equal(ch,"\"") {quoted=""} else {word=word+ch};continue}
+        if strings.equal(ch,"'") || strings.equal(ch,"\"") {quoted=ch;started=true;continue}
+        if strings.equal(ch,"#") && !started {comment=true;continue}
+        if strings.contains(" \t\r\n",ch) {if started {out.push(word);word="";started=false};continue}
+        word=word+ch;started=true
+    }
+    if escape || !strings.equal(quoted,"") {result.raise("Enter a valid command with balanced quotes.")}
+    if started {out.push(word)}
+    if out.len()==0 {result.raise("Enter a valid command with balanced quotes.")}
+    return out
+}
+fn substitute(value:str,path:str,directory:str):str {
+    let out="";let i=0;let count=strings.charLength(value)
+    while i<count {
+        if i+6<=count && strings.equal(strings.substring(value,i,i+6),"{path}") {out=out+path;i=i+6}
+        else if i+11<=count && strings.equal(strings.substring(value,i,i+11),"{directory}") {out=out+directory;i=i+11}
+        else {out=out+strings.charAt(value,i);i=i+1}
+    }
+    return out
+}
+fn arguments(command:str,path:str,directory:str):Vec<str> {let out=Vec<str>();for word in words(command) {out.push(substitute(word,path,directory))};return out}

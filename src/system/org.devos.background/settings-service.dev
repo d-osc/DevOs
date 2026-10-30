@@ -1,0 +1,24 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "./settings-session.dev" as session
+use "./model.dev" as m
+use "../../../lib/desktop.dev" as util
+extern fn bg_validate_image(path:str):i32
+fn validatePicture(file:str) {
+    unsafe {if bg_validate_image(file)==0 {result.raise("The selected file is not a supported picture, or it cannot be read.")}}
+}
+let state=session.empty();let lastError=""
+while true {
+    let line=io.read_line();if strings.equal(line,"") {break}
+    let parsed=result.attempt(fn():json.Value {return json.parse(line)});let error=lastError;let ack=0
+    if result.isErr(parsed) {error="Invalid background settings request"}
+    else {
+        let request=result.unwrap(parsed);ack=m.num(m.get(request,"id")) as i64;let action=m.text(m.get(request,"action"));let metadata=m.has(Vec<str>("get","tracker","tracker-batch","viewport"),action)
+        let outcome=result.attempt(fn():session.State {return session.handle(state,request,validatePicture)})
+        if result.isOk(outcome) {state=result.unwrap(outcome);if !metadata {error=""}}
+        else if !metadata || !strings.equal(state.file,"") || strings.equal(lastError,"") {error=m.text(m.get(util.error(result.message(outcome)),"error"))}
+    }
+    lastError=error;print(session.response(state,ack,error))
+}

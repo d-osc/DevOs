@@ -1,1 +1,1 @@
-export * from '../../extensions/org.devos.panel/view.js';
+export * from './panel-legacy/view.js';

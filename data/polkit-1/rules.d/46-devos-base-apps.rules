@@ -1,0 +1,28 @@
+// Built-in system controls may use these operations without another password
+// prompt in a local, active administrator session. This is an account policy,
+// not an application sandbox; it does not grant arbitrary pkexec/sudo commands.
+polkit.addRule(function(action, subject) {
+    if (!subject.local || !subject.active || !(subject.user === "root" || subject.isInGroup("wheel")))
+        return polkit.Result.NOT_HANDLED;
+
+    var helpers = {
+        "org.devos.accounts.manage": "/usr/libexec/devos-account-admin",
+        "org.devos.appstore.manage": "/usr/libexec/devos-app-store-admin",
+        "org.devos.battery.care": "/usr/libexec/devos-battery-care",
+        "org.devos.connectivity.change": "/usr/libexec/devos-connectivity",
+        "org.devos.fan.profile": "/usr/libexec/devos-fan-profile",
+        "org.devos.keyboard.fn": "/usr/libexec/devos-keyboard",
+        "org.devos.radio.manage": "/usr/libexec/devos-radio-admin",
+        "org.devos.swap": "/usr/libexec/devos-swap",
+        "org.devos.system.update": "/usr/libexec/devos-system-update"
+    };
+    if (Object.prototype.hasOwnProperty.call(helpers, action.id)) {
+        return action.lookup("program") === helpers[action.id] ? polkit.Result.YES : polkit.Result.NOT_HANDLED;
+    }
+    var services = ["org.freedesktop.NetworkManager.", "org.freedesktop.udisks2.",
+        "org.freedesktop.timedate1.", "org.freedesktop.hostname1.", "org.freedesktop.login1.", "org.bluez."];
+    for (var i = 0; i < services.length; i++) {
+        if (action.id.indexOf(services[i]) === 0) return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

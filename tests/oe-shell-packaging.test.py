@@ -15,7 +15,7 @@ class ShellPackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source, build, dest = (root / name for name in ('source', 'build', 'dest'))
-            for directory in ('bin', 'lib', 'dist', 'data/polkit-1/actions', 'config', 'extensions', 'native'):
+            for directory in ('bin', 'lib', 'dist', 'data/polkit-1/actions', 'config', 'src/apps', 'src/system', 'src/extensions', 'src/services', 'native'):
                 (source / directory).mkdir(parents=True, exist_ok=True)
             build.mkdir()
             files = {
@@ -24,6 +24,13 @@ class ShellPackagingTests(unittest.TestCase):
                 'lib/desktop.dev': (ROOT / 'lib/desktop.dev').read_text(),
                 'native/service.dev': '# fixture',
                 'config/app-store.json': '{}',
+                'src/apps/org.devos.fixture/extension.json': '{"system":true}',
+                'src/services/taskmanager.dev': '# native app service fixture',
+                'dist/native/taskmanager': 'native fixture',
+                'dist/native/system-displaycare': 'native system fixture',
+                'dist/native/boot-splash': 'native splash fixture',
+                'data/polkit-1/rules.d/46-devos-base-apps.rules': '// fixture',
+                'data/mime/packages/org.devos.package.xml': '<mime-info/>',
                 'data/polkit-1/actions/org.devos.accounts.policy': '<policyconfig/>',
                 'data/polkit-1/actions/org.devos.appstore.policy': '<policyconfig/>',
                 'data/polkit-1/actions/org.devos.radio.policy': '<policyconfig/>',
@@ -41,6 +48,7 @@ class ShellPackagingTests(unittest.TestCase):
             for name in ('devos-account-admin', 'devos-pam-auth', 'devos-account-askpass', 'devos-app-store-admin', 'devos-radio-admin', 'devos-battery-care', 'devos-fan-profile', 'devos-swap', 'devos-system-update', 'devos-keyboard', 'devos-connectivity'):
                 files['native/' + name] = '#!/bin/sh\nexit 0\n'
             for name, content in files.items():
+                (source / name).parent.mkdir(parents=True, exist_ok=True)
                 (source / name).write_text(content)
             (build / 'dev-os-window-tracker').write_text('fixture')
             variables = {'D': str(dest), 'S': str(source), 'B': str(build),
@@ -50,6 +58,7 @@ class ShellPackagingTests(unittest.TestCase):
                 body = body.replace('${' + key + '}', value)
             subprocess.run(['sh', '-eu', '-c', body], check=True)
             desktop = dest / 'usr/share/dev-os/bin/dev-os-system'
+            self.assertTrue((dest / 'usr/share/dev-os/src/apps/org.devos.fixture/extension.json').is_file())
             self.assertEqual(desktop.read_bytes(), (source / 'bin/dev-os-system').read_bytes())
             self.assertTrue(desktop.stat().st_mode & 0o111)
             self.assertEqual(desktop.read_bytes(), (dest / 'usr/bin/dev-os-system').read_bytes())
@@ -71,6 +80,8 @@ class ShellPackagingTests(unittest.TestCase):
             self.assertTrue((dest/'usr/share/dev-os/native/radio-system.dev').exists())
             self.assertTrue((dest/'usr/share/dev-os/bin/dev-os-network-settings').exists())
             self.assertTrue((dest/'usr/share/dev-os/lib/network-settings-worker.dev').exists())
+            self.assertTrue((dest/'usr/share/dev-os/src/services/taskmanager.dev').exists())
+            self.assertTrue((dest/'usr/share/dev-os/dist/native/taskmanager').stat().st_mode & 0o111)
 
 
 if __name__ == '__main__':

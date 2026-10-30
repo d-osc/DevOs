@@ -1,0 +1,30 @@
+# Bootstrap diagnostics, without importing GTK/React through a JS runtime.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/process"
+use "./config.dev" as config
+use "./hw.dev" as hw
+extern fn sr_runtime_features():i32
+fn files(root:str,names:Vec<str>):bool {for name in names {if !fs.is_file(root+"/"+name) {return false}};return true}
+fn validConfig():bool {return result.isOk(result.attempt(fn():json.Value {return config.load(config.configPath())}))}
+fn checks(root:str):json.Value {
+    let flags:i32=0;let linux=strings.equal(process.platform(),"linux")
+    let host=fs.is_file(root+"/dist/native/libsupervisor.so")
+    if linux && host {unsafe {flags=sr_runtime_features()}}
+    let editor=true
+    for file in Vec<str>("index.html","app.js","app.css","editor.worker.js","ts.worker.js","json.worker.js","css.worker.js","html.worker.js") {if !fs.is_file(root+"/dist/editor/"+file) {editor=false}}
+    let bundle=true
+    for name in Vec<str>("main","supervisor","app-host","services-host","react-gtk","panel-view","launcher-view","background-view") {if !fs.is_file(root+"/dist/"+name+".js") {bundle=false}}
+    # This records the remaining compatibility dependency honestly until its UI
+    # and app/extension runtime replacement is complete.
+    let legacy=!strings.equal(hw.which("gjs"),"")
+    return {linux:linux,devlang:!strings.equal(hw.which("devrun"),""),glib_2_80:(flags & 1)!=0,
+        labwc:!strings.equal(hw.which("labwc"),""),dbus_run_session:!strings.equal(hw.which("dbus-run-session"),""),setsid:!strings.equal(hw.which("setsid"),""),
+        native_supervisor:host && files(root,Vec<str>("src/system/supervisor.dev","lib/session-supervisor.dev")),
+        window_tracker:fs.is_file(root+"/build/native/dev-os-window-tracker") || fs.is_file(root+"/native/dev-os-window-tracker") || !strings.equal(hw.which("dev-os-window-tracker"),""),
+        gtk3_and_layer_shell:(flags & 6)==6,cairo:(flags & 8)!=0,editor_webkit:(flags & 16)!=0,
+        editor_assets:editor,react_bundle:bundle,legacy_ui_runtime:legacy,config:validConfig()}
+}
+fn healthy(value:json.Value):bool {for key in json.keys(value) {if !json.bool(json.get(value,key)) {return false}};return true}

@@ -1,10 +1,10 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Box, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {SystemSettings} from '../extensions/org.devos.settings/system-view.js';
-import {SpeakerSettings} from '../extensions/org.devos.settings/speaker-view.js';
-import {unsupportedSpeaker, type CustomSlot, type SoundMode, type SpeakerAction, type SpeakerControls, type SpeakerState} from '../extensions/org.devos.settings/speaker.js';
-import type {AudioControls} from '../extensions/org.devos.settings/audio.js';
+import {SystemSettings} from '../src/apps/org.devos.settings/system-view.js';
+import {SpeakerSettings} from '../src/apps/org.devos.settings/speaker-view.js';
+import {unsupportedSpeaker, type CustomSlot, type SoundMode, type SpeakerAction, type SpeakerControls, type SpeakerState} from '../src/apps/org.devos.settings/speaker.js';
+import type {AudioControls} from '../src/apps/org.devos.settings/audio.js';
 Gtk.init(null);
 const wait = (ms = 170) => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -32,7 +32,7 @@ function fakeControls(initial: Partial<SpeakerState>, calls: string[]): SpeakerC
 }
 async function verify() {
     const window = new Gtk.OffscreenWindow(); window.name = 'speaker'; window.set_size_request(900, 1200); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     const text = (id: string) => find<Gtk.Label>(id)?.get_text() ?? '';

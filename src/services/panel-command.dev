@@ -1,0 +1,13 @@
+# Commands arrive once through channel.command; polling is a read-only ping.
+use "std/io"
+use "std/strings"
+use "std/json"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../lib/shell-command.dev" as shell
+use "../system/org.devos.panel/panel-commands.dev" as commands
+use "../system/org.devos.background/wire.dev" as wire
+while true {let line=io.read_line();if strings.equal(line,"") {break}
+    let reply=result.attempt(fn():str {let command=commands.plan(json.parse(line));if !strings.equal(command,"") {let status=shell.remote(Vec<str>(command),hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),hw.env("HOME"));if status!=0 {result.raise(strings.equal(command,"time") ? "Could not open Time settings." : "Could not open settings.")};return "A"};return "R"})
+    print(result.isOk(reply) ? result.unwrap(reply) : "E\t"+wire.encoded(hw.errorText(result.message(reply))))
+}

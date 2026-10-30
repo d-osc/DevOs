@@ -1,0 +1,27 @@
+#!/usr/bin/env d
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+
+fn main(): i32 {
+    tool.scope("devos-react-devlang-", fn(home: str) {
+        let extras = Map<str,str>()
+        extras.set("HOME", home)
+        smoke.withSession("react-devlang-native", extras, fn(session: smoke.Session) {
+            let env = smoke.environment(session)
+            env.set("GDK_BACKEND", "wayland")
+            env.set("G_DEBUG", "fatal-warnings")
+            for name in Vec<str>("lifecycle", "widgets", "jsx-lifecycle") {
+                let output = tool.checked(Vec<str>(session.root + "/build/react-devlang/tests/" + name), env, "", 30000)
+                print(output)
+                print("PASS: native react-devlang Wayland " + name)
+            }
+            env.set("DEV_OS_ROOT",session.root)
+            env.set("DEVOS_NATIVE_SMOKE","1")
+            let taskmanager = tool.checked(Vec<str>(session.root+"/dist/native/taskmanager"),env,"",30000)
+            print(taskmanager)
+            print("PASS: native Task Manager Wayland UI and DevLang service")
+        })
+    })
+    return 0
+}
+return tool.main(main)

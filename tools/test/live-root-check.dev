@@ -19,6 +19,15 @@ fn password(file: str): str {
     tool.require(false, "Root shadow entry is missing.")
     return ""
 }
+fn installerHosts(): i64 {
+    let count: i64 = 0
+    for pid in smoke.processIds("/run/user/0", "/usr/share/dev-os/dist/app-host.js") {
+        for arg in smoke.fields("/proc/" + json.stringify(pid) + "/cmdline") {
+            if strings.equal(arg, "installer") {count = count + 1; break}
+        }
+    }
+    return count
+}
 fn checks(): i32 {
     report("DEVOS_LIVE_ROOT_CHECK_STARTED")
     let session: str = "/usr/share/dev-os"
@@ -63,8 +72,15 @@ fn checks(): i32 {
     tool.checked(Vec<str>("d", session + "/bin/dev-os-app-launch", "--", "dev-os-installer.desktop", session + "/data/applications/dev-os-installer.desktop"), environment, "", 20000)
     tool.waitFor(fn(): bool { return smoke.processIds("/run/user/0", session + "/dist/main.js").len() == 1 }, 5000, "Opening Installer started a duplicate desktop shell.")
     tool.checked(Vec<str>("d", session + "/bin/dev-os-app-launch", "--", "dev-os-installer.desktop", session + "/data/applications/dev-os-installer.desktop"), environment, "", 20000)
-    time.sleep_ms(5000)
-    tool.require(smoke.processIds("/run/user/0", session + "/dist/main.js").len() == 1, "Reopening Installer started a duplicate desktop shell.")
+    # gio launch returns before its remote CLI exits. Under QEMU that short-lived
+    # main.js client can still be alive after five seconds; it is not a desktop.
+    # Require the original shell PID, and the isolated Installer singleton, after
+    # both remote clients have completed rather than counting a fixed-time snapshot.
+    report("DEVOS_LIVE_INSTALLER_CLIENT_PIDS=" + json.stringify(smoke.processIds("/run/user/0", session + "/dist/main.js")))
+    tool.waitFor(fn(): bool {
+        let current = smoke.processIds("/run/user/0", session + "/dist/main.js")
+        return current.len() == 1 && current[0] == shells[0] && installerHosts() == 1
+    }, 30000, "Reopening Installer did not settle to the original shell and one isolated Installer.")
     report("DEVOS_LIVE_INSTALLER_SINGLE_SHELL_PASS; SWAYLOCK_ROOT_PAM_PASS")
     let audio = Map<str,str>(); audio.set("HOME", "/root"); audio.set("XDG_RUNTIME_DIR", "/run/user/0"); audio.set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/0/bus")
     tool.checked(Vec<str>("systemctl", "--user", "is-active", "pipewire.socket", "pipewire-pulse.socket", "wireplumber.service"), audio, "", 10000)

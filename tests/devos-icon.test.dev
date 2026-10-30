@@ -1,0 +1,63 @@
+use "std/test"
+use "std/fs"
+use "std/compression"
+use "std/strings"
+use "std/uuid"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The generator derives every Dev OS mark variant from data/icons/devos/devos-mark.svg. Its output must match what is committed:
+# the SVGs byte for byte, the PNGs pixel for pixel (the deflate encoder may differ, so the compressed bytes are not compared).
+fn be32(data: Vec<u8>, offset: i64): i64 {
+    return ((data[offset] as i64) << 24) | ((data[offset + 1] as i64) << 16) | ((data[offset + 2] as i64) << 8) | (data[offset + 3] as i64)
+}
+fn is(data: Vec<u8>, offset: i64, a: i64, b: i64, c: i64, d: i64): bool {
+    return (data[offset] as i64) == a && (data[offset + 1] as i64) == b && (data[offset + 2] as i64) == c && (data[offset + 3] as i64) == d
+}
+# The inflated scanlines of a PNG's IDAT chunks, plus its width and height.
+struct Decoded { width: i64; height: i64; raw: Vec<u8> }
+fn decode(file: str, inflate: bool): Decoded {
+    let data = fs.read_bytes(file)
+    let idat = Vec<u8>()
+    let width: i64 = 0
+    let height: i64 = 0
+    let offset: i64 = 8
+    while offset < (data.len() as i64) {
+        let length = be32(data, offset)
+        if is(data, offset + 4, 73, 72, 68, 82) { width = be32(data, offset + 8); height = be32(data, offset + 12) }
+        if is(data, offset + 4, 73, 68, 65, 84) { for i in 0..length { idat.push(data[offset + 8 + i]) } }
+        offset += 12 + length
+    }
+    return Decoded(width, height, inflate ? compression.unzlib(idat) : Vec<u8>())
+}
+
+test.case("the generator reproduces the committed icon files", fn() {
+    let root = t.root()
+    let out = root + "/build/devos-icon-test/" + uuid.v4()
+    fs.mkdirSync(out + "/data/icons/devos", true)
+    tool.write(out + "/data/icons/devos/devos-mark.svg", tool.read(root + "/data/icons/devos/devos-mark.svg"))
+    tool.exec(Vec<str>("d", root + "/tools/maintenance/build-devos-icon.dev", "--", "--root", out))
+    for file in Vec<str>("data/icons/devos/devos-mark-currentcolor.svg", "data/icons/devos/devos-mark-transparent.svg",
+        "data/icons/hicolor/scalable/apps/dev-os.svg", "data/icons/hicolor/scalable/apps/dev-os-symbolic.svg") {
+        let expected = strings.replaceAll(tool.read(root + "/" + file), "\r\n", "\n")
+        test.expect(strings.equal(strings.replaceAll(tool.read(out + "/" + file), "\r\n", "\n"), expected), "Differs: " + file)
+    }
+    for size in Vec<i64>(16, 24, 32, 48, 64, 128, 256, 512) {
+        let file = "data/icons/hicolor/${size}x${size}/apps/dev-os.png"
+        # std/compression.unzlib (DevLang 0.5.5) cannot inflate the larger streams (the 256 and 512 pixel files, in both the
+        # committed Node output and its own output), so only the files up to 128 pixels are compared pixel for pixel; the
+        # others are checked for their size.
+        let inflate = size <= 128
+        let made = decode(out + "/" + file, inflate)
+        test.expect(made.width == size && made.height == size, "Wrong size: " + file)
+        if inflate {
+            test.expect((made.raw.len() as i64) == size * (size * 3 + 1), "Wrong amount of pixel data: " + file)
+            let committed = decode(root + "/" + file, true)
+            test.expect(committed.raw.len() == made.raw.len(), "Different amount of pixel data: " + file)
+            let same = true
+            for i in 0..(made.raw.len() as i64) { if made.raw[i] != committed.raw[i] { same = false; break } }
+            test.expect(same, "Pixels differ: " + file)
+        }
+    }
+})
+return t.finish()

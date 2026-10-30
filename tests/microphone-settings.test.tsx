@@ -1,11 +1,11 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
-import {MicrophoneSettings} from '../extensions/org.devos.microphone/settings-view.js';
-import type {AudioControls, AudioState} from '../extensions/org.devos.settings/audio.js';
+import {MicrophoneSettings} from '../src/apps/org.devos.microphone/settings-view.js';
+import type {AudioControls, AudioState} from '../src/apps/org.devos.settings/audio.js';
 Gtk.init(null);
 const base = GLib.getenv('DEV_OS_ROOT')!;
 const css = new Gtk.CssProvider();
-css.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${base}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
+css.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${base}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 const state: AudioState = {inputs: [{id: 1, name: 'internal-mic', title: 'Built-in Microphone', volume: 70, muted: false}], outputs: [], applications: [], defaultInput: 'internal-mic', defaultOutput: ''};
 const controls: AudioControls = {async load() {return state;}, async volume() {}, async mute(_kind, _id, value) {state.inputs[0].muted = value;}, async select() {}, async route() {}, destroy() {}};

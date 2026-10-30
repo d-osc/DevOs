@@ -1,0 +1,45 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../services/window-state.dev" as tracking
+fn launch(rows:json.Value,group:str):json.Value {
+    for i in 0..(json.len(rows) as i64) {let row=json.at(rows,i);if !strings.equal(hw.jstr(row,"group",""),group) {continue};let command=hw.jstr(row,"launch","")
+        if strings.equal(command,"terminal") || strings.equal(command,"files") {return {kind:"shell",command:command}}
+        result.raise("This task cannot be launched.")
+    }
+    result.raise("This task is no longer available.");return json.object()
+}
+fn picker(row:json.Value):json.Value {
+    let windows=hw.jget(row,"windows");let items=json.array();let title=hw.jstr(row,"title","")
+    for i in 0..(json.len(windows) as i64) {let window=json.at(windows,i);let minimized=hw.jbool(window,"minimized",false);let maximized=hw.jbool(window,"maximized",false);let label=hw.jstr(window,"title","")
+        items=json.push(items,{id:hw.jget(window,"id"),title:strings.equal(label,"") ? title : label,tooltip:label,active:hw.jbool(window,"active",false),minimized:minimized,maximized:maximized,status:minimized ? "Minimized" : "",minimizeEnabled:!minimized,minimizeLabel:minimized ? "Restore" : "Minimize",minimizeAction:minimized ? "activate" : "minimize",maximizeLabel:maximized ? "Restore size" : "Maximize",maximizeIcon:maximized ? "window-restore-symbolic" : "window-maximize-symbolic"})
+    }
+    return {kind:"picker",group:hw.jstr(row,"group",""),title:title,windows:items,launch:hw.jget(row,"launch")}
+}
+fn windowAction(rows:json.Value,request:json.Value):json.Value {
+    let id=tracking.id(request);let group=hw.jstr(request,"group","");let action=hw.jstr(request,"action","")
+    if strings.equal(id,"") {result.raise("Invalid task window")}
+    if !strings.equal(action,"activate") && !strings.equal(action,"minimize") && !strings.equal(action,"maximize") && !strings.equal(action,"close") {result.raise("Invalid window action")}
+    for i in 0..(json.len(rows) as i64) {let row=json.at(rows,i);if !strings.equal(hw.jstr(row,"group",""),group) {continue};let windows=hw.jget(row,"windows")
+        for j in 0..(json.len(windows) as i64) {let window=json.at(windows,j);if !strings.equal(tracking.id(window),id) {continue}
+            if strings.equal(action,"minimize") && hw.jbool(window,"minimized",false) {result.raise("This window is already minimized.")}
+            let command=strings.equal(action,"maximize") && hw.jbool(window,"maximized",false) ? "unmaximize" : action
+            return {kind:"tracker",command:command+" "+id}
+        }
+    }
+    result.raise("This task window is no longer available.");return json.object()
+}
+fn select(rows:json.Value,group:str):json.Value {
+    for i in 0..(json.len(rows) as i64) {let row=json.at(rows,i);if !strings.equal(hw.jstr(row,"group",""),group) {continue}
+        let windows=hw.jget(row,"windows");let count=json.len(windows)
+        if count==0 {
+            return launch(rows,group)
+        }
+        if count>1 {return picker(row)}
+        let window=json.at(windows,0);let id=tracking.id(window);if strings.equal(id,"") {result.raise("Invalid task window")}
+        let command=hw.jbool(window,"active",false) && !hw.jbool(window,"minimized",false) ? "minimize" : "activate"
+        return {kind:"tracker",command:command+" "+id}
+    }
+    result.raise("This task is no longer available.");return json.object()
+}

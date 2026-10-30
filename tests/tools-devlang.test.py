@@ -57,6 +57,71 @@ class ToolMigrationTests(unittest.TestCase):
             self.assertNotIn('DEVOS_DESKTOP_LIST', text)
             self.assertIn('workspaces.all' if modern else '(s)->workspaces', text)
             self.assertIn('handle->data = view', foreign.read_text())
+    def test_tab_drag_escape_patch_handles_fresh_and_upgraded_sources(self):
+        for variant in ('legacy', 'upgraded', 'modern'):
+            base = self.base / variant
+            (base / 'include').mkdir(parents=True)
+            (base / 'src/input').mkdir(parents=True)
+            menu = '\t/*\n\t * Handle compositor keybinds\n\t */'
+            cycle = '\tif (server->osd_state.cycle_view) {\n\t\tkey_state_store_pressed_key_as_bound(event->keycode);\n\t\thandle_cycle_view_key(server, &keyinfo);\n\t}\n'
+            old = "\t/* wlroots' drag keyboard grab does not forward Escape to GTK. */\n\tif (seat->drag.active) { wlr_data_source_destroy(seat->seat->drag->source); }\n" if variant == 'upgraded' else ''
+            original = '#include "workspaces.h"\n/* ภาษาไทย */\n' + old + (cycle if variant != 'modern' else '') + menu
+            file = base / 'src/input/keyboard.c'
+            file.write_text(original)
+            self.run_tool('setup/patch-tab-drag.dev', base)
+            patched = file.read_text()
+            self.assertIn('/* ภาษาไทย */', patched)
+            self.assertIn('devos_tab_drag_key(server, event', patched)
+            self.assertIn('!locked &&' if variant == 'modern' else cycle, patched)
+            self.assertNotIn("wlroots' drag keyboard grab", patched)
+            self.assertEqual(patched.count('#include "devos-tab-drag.h"'), 1)
+            before = file.read_bytes()
+            self.run_tool('setup/patch-tab-drag.dev', base)
+            self.assertEqual(before, file.read_bytes())
+
+    def test_touchpad_patch_handles_legacy_cursor_and_modern_button_handlers(self):
+        for modern in (False, True):
+            base = self.base / ('modern' if modern else 'legacy')
+            (base / 'include/input').mkdir(parents=True)
+            (base / 'src/input').mkdir(parents=True)
+            header = 'struct devos_task_view_swipe devos_task_view;\n' + ('session_lock_manager' if modern else 'session_lock')
+            (base / 'include/labwc.h').write_text(header)
+            cursor = base / 'src/input/cursor.c'
+            handler = 'handle_button' if modern else 'cursor_button'
+            cursor.write_text('static void\n' + handler + '(struct wl_listener *listener, void *data)\n{\n\tstruct wlr_pointer_button_event *event = data;\n}\n')
+            (base / 'src/input/gestures.c').write_text('/* DEVOS_TOUCHPAD_MAP_V2 */\n')
+            self.run_tool('setup/patch-touchpad.dev', base)
+            self.assertIn('devos_touchpad_button(seat, event)', cursor.read_text())
+            helper = (base / 'include/input/devos-touchpad.h').read_text()
+            self.assertIn('#include <wlr/backend/libinput.h>', helper)
+            self.assertIn('WL_POINTER_BUTTON_STATE_PRESSED' if modern else 'WLR_BUTTON_PRESSED', helper)
+            before = {file.relative_to(base): file.read_bytes() for file in base.rglob('*') if file.is_file()}
+            self.run_tool('setup/patch-touchpad.dev', base)
+            self.assertEqual(before, {file.relative_to(base): file.read_bytes() for file in base.rglob('*') if file.is_file()})
+
+    def test_modern_menu_patch_preserves_unicode_and_function_boundaries(self):
+        base = self.base / 'modern-menu'
+        (base / 'include').mkdir(parents=True)
+        (base / 'src/menu').mkdir(parents=True)
+        file = base / 'src/menu/menu.c'
+        file.write_text('#include "theme.h"\n/* เมนู → rounded */\n'
+                        'wlr_scene_rect_create(tree, bg_width, theme->menu_item_height, bg_color);\n'
+                        'wlr_scene_rect_create(menuitem->normal_tree, bg_width, bg_height,\n\t\ttheme->menu_items_bg_color);\n'
+                        'wlr_scene_rect_create(menuitem->normal_tree,\n\t\tbg_width, theme->menu_header_height, bg_color);\n'
+                        'int item_y = theme->menu_border_width;\n'
+                        'menu->size.height = item_y + theme->menu_border_width;\n'
+                        'void menu_scene(void) {\n\tstruct lab_scene_rect_options opts = {0};\n'
+                        '\twlr_scene_node_lower_to_bottom(&bg_rect->tree->node);\n}\n'
+                        '/* ฟังก์ชันถัดไป */\nvoid next_function(void) {}\n')
+        self.run_tool('setup/patch-menu-shape.dev', base)
+        text = file.read_text()
+        self.assertIn('/* เมนู → rounded */', text)
+        self.assertIn('void menu_scene(void) {\n\tdevos_menu_finish_scene(menu);\n}', text)
+        self.assertTrue(text.endswith('/* ฟังก์ชันถัดไป */\nvoid next_function(void) {}\n'))
+        before = file.read_bytes()
+        self.run_tool('setup/patch-menu-shape.dev', base)
+        self.assertEqual(before, file.read_bytes())
+
     def test_initrd_hook_order_and_idempotence(self):
         path = self.base / 'ORDER'
         path.write_text('/scripts/casper-bottom/99casperboot "$@"\n')

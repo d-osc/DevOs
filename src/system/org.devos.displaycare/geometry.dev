@@ -1,0 +1,10 @@
+use "std/json"
+use "std/math"
+use "../../../lib/hw.dev" as hw
+fn edgePercent(level:i64):i64 {let value=level<0 ? 0 : level>4 ? 4 : level;return Vec<i64>(0,12,22,34,50)[value]}
+fn edgeAlpha(level:i64):f64 {return edgePercent(level) as f64/100.0}
+fn edgeActive(level:i64,present:bool,onBattery:bool):bool {return level>0 && present && onBattery}
+fn edgeBand(width:i64,height:i64):i64 {return math.round((width<height ? width : height) as f64*0.08) as i64}
+fn contains(bounds:json.Value,x:i64,y:i64):bool {let left=hw.jnum(bounds,"x",0.0) as i64;let top=hw.jnum(bounds,"y",0.0) as i64;return x>=left && y>=top && x<left+hw.jnum(bounds,"width",0.0) as i64 && y<top+hw.jnum(bounds,"height",0.0) as i64}
+fn localRect(window:json.Value,area:json.Value):json.Value {return {x:(hw.jnum(window,"x",0.0)-hw.jnum(area,"x",0.0)) as i64,y:(hw.jnum(window,"y",0.0)-hw.jnum(area,"y",0.0)) as i64,width:hw.jnum(window,"width",0.0) as i64,height:hw.jnum(window,"height",0.0) as i64}}
+fn refreshColors():Vec<Vec<i64>> {return Vec<Vec<i64>>(Vec<i64>(1,1,1),Vec<i64>(1,0,0),Vec<i64>(0,1,0),Vec<i64>(0,0,1),Vec<i64>(0,0,0))}

@@ -1,0 +1,46 @@
+use "std/test"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "../src/system/org.devos.panel/menu-model.dev" as menu
+use "./lib/react-devlang.dev" as t
+fn custom():str {return json.stringify([{id:"custom-test",title:"Echo",command:"echo '{directory}' 'literal;$(no)'",enabled:true,target:"background"},{id:"custom-file",title:"File",command:"echo file",enabled:true,target:"file"}])}
+test.case("native panel menu preserves nine builtins and filters disabled defaults",fn() {
+    let rows=menu.presentation({});test.expect(json.len(rows)==9,"Panel lost a default action")
+    t.equal(json.string(json.get(json.at(rows,0),"title")),"Panel settings");t.equal(json.string(json.get(json.at(rows,8),"key")),"menuSettings")
+    test.expect(json.len(menu.presentation({menuTerminal:false}))==8,"Disabled Terminal remains visible")
+    test.expect(json.len(menu.presentation({contextEnabled:false}))==0,"Master disable ignored")
+})
+test.case("custom menu filtering and separator placement stay in the worker",fn() {
+    let rows=menu.presentation({contextCustomItems:custom()});test.expect(json.len(rows)==11 && json.bool(json.get(json.at(rows,9),"separator")),"Custom separator changed")
+    t.equal(json.string(json.get(json.at(rows,10),"key")),"custom-test")
+    test.expect(!json.has(json.at(rows,10),"command"),"Presentation exposed raw custom command")
+    test.expect(json.len(menu.presentation({contextCustomItems:"broken"}))==9,"Damaged custom actions removed default entries")
+})
+test.case("activation revalidates latest availability and produces literal argv",fn() {
+    let plan=menu.plan({contextCustomItems:custom()},"custom-test","/tmp/a folder%f")
+    let args=json.get(plan,"argv");t.equal(json.string(json.at(args,1)),"/tmp/a folder%f");t.equal(json.string(json.at(args,2)),"literal;$(no)")
+    test.expect(result.isErr(result.attempt(fn():json.Value {return menu.plan({menuTerminal:false},"menuTerminal","/tmp")})),"Stale disabled action was accepted")
+    test.expect(result.isErr(result.attempt(fn():json.Value {return menu.plan({contextEnabled:false,contextCustomItems:custom()},"custom-test","/tmp")})),"Disabled custom action was accepted")
+    t.equal(json.string(json.get(menu.plan({},"menuTaskManager","/tmp"),"command")),"task-manager")
+})
+test.case("native context worker executes fresh builtin choices once and recovers",fn() {
+    tool.scope("panel-context-",fn(dir:str) {
+        let library=dir+"/rpc.so";tool.checked(Vec<str>("cc","-shared","-fPIC",t.root()+"/tests/fixtures/panel-rpc.c","-o",library),Map<str,str>(),"",15000)
+        let env=Map<str,str>();env.set("PANEL_RPC_LOG",dir+"/calls");env.set("XDG_CONFIG_HOME",dir+"/config")
+        let file=dir+"/config/dev-os/extensions/org.devos.panel.json";tool.jsonWrite(file,{version:1,values:{menuTerminal:false}})
+        let input="{}\n{\"key\":\"menuApplications\"}\n{}\n{\"key\":\"menuTerminal\"}\n{\"key\":4}\n{}\n"
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-context-menu.dev","--ffi-lib",library),env,input,15000);t.success(done);t.equal(strings.trim(tool.read(dir+"/calls")),"launcher");test.expect(tool.count(t.out(done),"A\n")==1 && tool.count(t.out(done),"E\t")==2,"Menu mutation replayed or malformed selection accepted");t.lacks(t.out(done),"M\tmenuTerminal\t")
+        tool.jsonWrite(file,{version:1,values:{contextEnabled:false}});let off=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-context-menu.dev","--ffi-lib",library),env,"{}\n{\"key\":\"menuApplications\"}\n",15000);t.success(off);test.expect(strings.startsWith(t.out(off),"M\nE\t"),"Disabled menu remained active")
+    })
+})
+test.case("native custom menu launches literal argv without corrupting service stdout",fn() {
+    tool.scope("panel-custom-",fn(dir:str) {
+        let program=dir+"/action";let log=dir+"/arguments";tool.write(program,"#!/bin/sh\necho 'not a service frame'\nprintf '%s\\n' \"$@\" > \"$PANEL_CUSTOM_LOG\"\n");tool.chmod(program,"755")
+        let env=Map<str,str>();env.set("XDG_CONFIG_HOME",dir+"/config");env.set("PANEL_CUSTOM_LOG",log)
+        let items=json.stringify([{id:"custom-test",title:"Literal",command:program+" 'literal;$(false)'",target:"background",enabled:true}]);tool.jsonWrite(dir+"/config/dev-os/extensions/org.devos.panel.json",{version:1,values:{contextCustomItems:items}})
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-context-menu.dev","--ffi-lib",t.root()+"/dist/native/libpanel-taskbar.so"),env,"{\"key\":\"custom-test\"}\n{}\n",15000);t.success(done);test.expect(strings.startsWith(t.out(done),"A\nM"),"Custom launch did not acknowledge immediately");t.lacks(t.out(done),"not a service frame");tool.waitFor(fn():bool {return strings.contains(tool.read(log),"literal;$(false)")},3000,"Custom argv expanded or launch failed");test.expect(tool.count(tool.read(log),"literal;")==1,"Polling repeated a custom launch")
+    })
+})
+return t.finish()

@@ -24,6 +24,13 @@ async function fixture(base: string) {
     await requestSessionVersion(root);
     const result = readJson<{root: string; version: string}>(request);
     if (result.root !== root || result.version !== '0.3.6') throw new Error('Version request metadata mismatch');
+    Gio.File.new_for_path(request).delete(null);
+    Gio.File.new_for_path(`${root}/dist/supervisor.js`).delete(null);
+    GLib.mkdir_with_parents(`${root}/src/system`, 0o700); GLib.mkdir_with_parents(`${root}/dist/native`, 0o700);
+    for (const path of ['bin/dev-os-supervisor', 'src/system/supervisor.dev', 'dist/native/libsupervisor.so'])
+        GLib.file_set_contents(`${root}/${path}`, 'native fixture\n');
+    await requestSessionVersion(root);
+    if (readJson<{root: string}>(request).root !== root) throw new Error('Native session version request failed');
 }
 async function main() {
     if (ARGV[0] === '--fixture') { await fixture(ARGV[1]); return; }

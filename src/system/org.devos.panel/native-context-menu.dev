@@ -1,0 +1,24 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+use "./native-wire.dev" as wire
+extern fn rc_env(name:str):str
+extern fn panel_menu_new(root:*void,selected:callback(*u8,i64,*void):void,data:*void):*void
+extern fn panel_menu_reset(menu:*void)
+extern fn panel_menu_separator(menu:*void)
+extern fn panel_menu_add(menu:*void,key:*u8,title:*u8,icon:*u8)
+extern fn panel_menu_free(menu:*void,keep:*void)
+fn populate(menu:*void,frame:ui.Text) {unsafe {
+    panel_menu_reset(menu)
+    for record in channel.split(frame,30) {let fields=channel.split(record,9);if fields.len()==1 && ui.equalText(fields[0],ui.text("Q")) {panel_menu_separator(menu)};if fields.len()==4 && ui.equalText(fields[0],ui.text("M")) {let key=ui.nativeText(wire.decoded(fields[1]));let title=ui.nativeText(wire.decoded(fields[2]));let icon=ui.nativeText(wire.decoded(fields[3]));panel_menu_add(menu,key,title,icon);wire.rd_buffer_free(key as *void);wire.rd_buffer_free(title as *void);wire.rd_buffer_free(icon as *void)}}
+}}
+fn attach(context:*ui.Context):ui.Text {
+    let pipe=ui.useRef(context,0);let previous=ui.useText(context,ui.emptyText());let error=ui.useText(context,ui.emptyText())
+    ui.useEffect(context,fn():fn():void {unsafe {
+        if !(*context).alive {return ui.noop}
+        let selected=callback_context(fn(bytes:*u8,length:i64) {unsafe {if !(*context).alive {return};let key=Vec<u8>();for i in 0..length {key.push(bytes[i])};error.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"key\":"),channel.quote(ui.Text(key)),ui.text("}"))))}})
+        let menu=panel_menu_new((*context).native,selected.call,selected.data);let root=rc_env("DEV_OS_ROOT");let runner=rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+        let disconnect=channel.connectWithLibrary(context,runner,"${root}/src/services/panel-context-menu.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(frame:ui.Text) {let fields=channel.split(frame,9);if ui.equalText(frame,ui.text("A")) {return};if fields.len()>1 && ui.equalText(fields[0],ui.text("E")) {error.set(wire.decoded(fields[1]));return};if !ui.equalText(frame,previous.get()) {populate(menu,frame);previous.set(frame)}},fn(value:i64) {pipe.set(value);channel.interval(value,1000);channel.send(value,ui.text("{}"))})
+        return fn() {unsafe {disconnect();panel_menu_free(menu,selected.data)}}
+    }},Vec<i64>())
+    return error.value
+}

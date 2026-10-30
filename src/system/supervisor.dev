@@ -1,0 +1,14 @@
+#!/usr/bin/env devrun
+use "std/args"
+use "std/json"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../lib/session-supervisor.dev" as supervisor
+fn main():i32 {
+    let options=json.object()
+    for i in 0..(args.len() as i64) { if args.get(i)=="--options" && i+1<args.len() as i64 { options=json.parse(args.get(i+1)) } }
+    return supervisor.run(hw.env("DEV_OS_ROOT"),options)
+}
+let outcome=result.attempt(main)
+if result.isErr(outcome) { hw.stderr("Dev OS supervisor: "+result.message(outcome)); return 1 }
+return result.unwrap(outcome)

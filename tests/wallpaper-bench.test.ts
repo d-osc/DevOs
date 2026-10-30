@@ -1,8 +1,8 @@
 import {GLib} from '@dev-os/core';
 import Cairo from 'cairo';
-import {drawDesign} from '../extensions/org.devos.background/design.js';
-import {motionStyles} from '../extensions/org.devos.background/motion.js';
-import {motionInterval} from '../extensions/org.devos.background/pace.js';
+import {drawDesign} from '../packages/compat/background-legacy/design.js';
+import {motionStyles} from '../packages/compat/background-legacy/motion.js';
+import {motionInterval} from '../packages/compat/background-legacy/pace.js';
 import {wallpaperColors} from '@dev-os/core';
 
 /** Draw cost of every animated wallpaper on the 2880x1800 OLED panel, and the processor share it needs at its real frame rate.

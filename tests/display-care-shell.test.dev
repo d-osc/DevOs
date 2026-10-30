@@ -1,0 +1,41 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.displaycare/geometry.dev" as geometry
+use "../src/system/org.devos.displaycare/panel.dev" as panel
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("edge strength and geometry preserve the display-care shell rules",fn() {
+    test.expect(geometry.edgeAlpha(0)==0.0 && geometry.edgeAlpha(9)==0.5,"Edge strength bounds changed")
+    for level in 1..5 {test.expect(geometry.edgeAlpha(level)>geometry.edgeAlpha(level-1),"Edge strength did not increase")}
+    test.expect(geometry.edgeActive(2,true,true) && !geometry.edgeActive(2,true,false) && !geometry.edgeActive(0,true,true) && !geometry.edgeActive(2,false,false),"Edge dimming ignored battery state")
+    test.expect(geometry.edgeBand(1920,1200)==96,"Edge band changed")
+    let local=geometry.localRect({x:1020,y:90,width:800,height:600},{x:1920,y:0,width:1920,height:1044});test.expect(json.int(json.get(local,"x"))==-900 && json.int(json.get(local,"y"))==90,"Work-area translation changed")
+    test.expect(geometry.contains({x:1920,y:0,width:1920,height:1200},1921,1) && !geometry.contains({x:1920,y:0,width:1920,height:1200},100,1),"Monitor matching changed")
+})
+test.case("pixel refresh colors preserve white, primaries and black",fn() {
+    let colors=geometry.refreshColors();test.expect(colors.len()==5 && colors[0][0]==1 && colors[0][1]==1 && colors[0][2]==1 && colors[4][0]==0 && colors[4][1]==0 && colors[4][2]==0,"Refresh palette changed")
+})
+test.case("pixel shift visits all nine positions while keeping the content size",fn() {
+    let seen=Map<str,bool>();for step in 0..18 {let values=panel.shiftMargins(step);test.expect(values[0]+values[1]==2 && values[2]+values[3]==2,"Pixel Shift resized content");for value in values {test.expect(value>=0 && value<=2,"Pixel Shift exceeded two pixels")};seen.set("${values[0]},${values[2]}",true)}
+    test.expect(seen.len()==9 && panel.pixelShiftSteps().len()==9,"Pixel Shift did not visit all positions")
+    t.equal(panel.frame({panelTransparency:false,autoHidePanel:true},2),"O\t0\t1\t2\t0\t2\t0\t1500")
+    t.equal(panel.frame({panelTransparency:true,autoHidePanel:false},0),"O\t1\t0\t1\t1\t1\t1\t1500")
+})
+test.case("settings projection recovers malformed input and prepares panel margins in DevLang",fn() {
+    let input="bad\n{\"id\":1,\"op\":\"parse\",\"text\":\"{\\\"temperature\\\":1.5,\\\"pixelRefresh\\\":false,\\\"edgeBrightness\\\":3}\"}\n{\"id\":2,\"op\":\"panel\",\"path\":\"/nonexistent/display-care.json\",\"step\":8}\n"
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/display-care-compat.dev"),Map<str,str>(),input,15000);t.success(done)
+    let rows=strings.split(strings.trim(t.out(done)),"\n");test.expect(json.has(json.parse(rows[0]),"error"),"Malformed request accepted");let state=json.get(json.parse(rows[1]),"settings");test.expect(json.int(json.get(state,"temperature"))==0 && !json.bool(json.get(state,"pixelRefresh")) && json.int(json.get(state,"edgeBrightness"))==3,"Field validation changed")
+    let frame=json.parse(rows[2]);let margins=json.get(frame,"margins");test.expect(json.int(json.at(margins,0))==2 && json.int(json.at(margins,3))==2 && json.int(json.get(frame,"id"))==2,"Panel projection changed")
+})
+test.case("read-only projection preserves saved panel preferences and file contents",fn() {
+    tool.scope("display-care-projection-",fn(dir:str) {
+        let file=dir+"/care.json";let saved="{\"panelTransparency\":false,\"autoHidePanel\":true,\"targetMode\":true}";tool.write(file,saved)
+        let input=json.stringify({id:1,op:"read",path:file})+"\n"+json.stringify({id:2,op:"panel",path:file,step:2})+"\n"
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/display-care-compat.dev"),Map<str,str>(),input,15000);t.success(done)
+        let rows=strings.split(strings.trim(t.out(done)),"\n");for row in rows {let values=json.get(json.parse(row),"settings");test.expect(!json.bool(json.get(values,"panelTransparency")) && json.bool(json.get(values,"autoHidePanel")),"Saved panel preferences changed")}
+        let frame=json.parse(rows[1]);test.expect(json.int(json.at(json.get(frame,"margins"),0))==2 && json.int(json.at(json.get(frame,"margins"),2))==2,"Saved panel projection lost Pixel Shift")
+        t.equal(tool.read(file),saved)
+    })
+})
+return t.finish()

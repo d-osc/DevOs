@@ -1,4 +1,4 @@
-import {Gio, GLib} from '@dev-os/core';
+import {Gio, GLib} from '@dev-os/core/base';
 
 export interface LidSource { watch(handler: (closed: boolean) => void): () => void; }
 

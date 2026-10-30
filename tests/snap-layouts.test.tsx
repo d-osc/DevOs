@@ -3,7 +3,7 @@ import {Gtk, Gdk, GLib, React, createRoot} from '@dev-os/core';
 import {snapCells, resizeSnap, fitSnapGroup} from '@dev-os/services/snap-geometry';
 import {ROOT} from '@dev-os/config';
 import {snapLayouts, validSnapMembers, type DesktopWindow, type WindowControls, type SnapGroup} from '@dev-os/services/windows';
-import {SnapLayouts} from '../extensions/org.devos.launcher/snap-view.js';
+import {SnapLayouts} from '../src/apps/org.devos.launcher/snap-view.js';
 Gtk.init(null);
 function assert(value: unknown, message: string) {if (!value) throw new Error(message);}
 const state: DesktopWindow[] = [1, 2, 3, 4].map(id => ({id, title: `Window ${id}`, appId: 'test', active: id === 1, minimized: false, desktop: 1}));
@@ -28,7 +28,7 @@ const listeners = new Set<() => void>();
 let groups: SnapGroup[] = [{id: 7, layout: 'halves', members: [{id: 1, region: 'devos-half-left'}, {id: 2, region: 'devos-half-right'}]}];
 const controls: WindowControls = {state, canSnap: true, get snapGroups() {return groups;}, subscribe: listener => {listeners.add(listener); return () => {listeners.delete(listener);};}, activate() {}, toggle() {}, arrange: (layout, ids) => {assert(dismissed, 'Dismiss before arranging'); applied = `${layout}:${ids}`;}, restoreSnapGroup: id => {restored = id;}, removeSnapGroup: id => {removed = id; groups = []; listeners.forEach(listener => listener());}};
 const window = new Gtk.OffscreenWindow(); window.set_size_request(1000, 660);
-const css = new Gtk.CssProvider(); css.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
+const css = new Gtk.CssProvider(); css.load_from_data(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme()));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 const screenshot = (suffix: string) => {
     const path = GLib.getenv('DEV_OS_TEST_SCREENSHOT'); if (!path) return;

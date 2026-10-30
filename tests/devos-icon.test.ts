@@ -23,17 +23,17 @@ test('the icon theme carries the app icon and a monochrome symbolic variant', ()
 test('the greeter mark has a transparent background', () => {
     const mark = read('data/icons/devos/devos-mark-transparent.svg');
     assert(!mark.includes('#242424') && mark.includes('#EAEAEA'), 'transparent mark keeps the light shapes only');
-    assert(read('extensions/org.devos.settings/login-view.tsx').includes('devos-mark-transparent.svg'), 'greeter uses it');
+    assert(read('src/apps/org.devos.settings/login-view.tsx').includes('devos-mark-transparent.svg'), 'greeter uses it');
 });
 test('PNG sizes exist for the app icon', () => {
     for (const size of [16, 24, 32, 48, 64, 128, 256, 512]) assert(GLib.file_test(`${ROOT}/data/icons/hicolor/${size}x${size}/apps/dev-os.png`, GLib.FileTest.EXISTS), `${size}px PNG`);
 });
 test('the shell shows the mark where it used to show placeholders', () => {
-    for (const file of ['extensions/org.devos.settings/login-view.tsx', 'extensions/org.devos.settings/os-login.tsx']) assert(read(file).includes('brandIcon') && !read(file).includes('login-brand">D<'), `${file} greeter mark`);
-    assert(read('extensions/org.devos.installer/extension.tsx').includes('iconName="dev-os"'), 'installer sidebar mark');
-    assert(read('extensions/org.devos.launcher/view.tsx').includes('dev-os-symbolic'), 'launcher header mark');
-    assert(read('extensions/org.devos.panel/view.tsx').includes('iconName="dev-os-symbolic"'), 'panel menu button mark');
-    assert(read('extensions/org.devos.settings/about-view.tsx').includes('iconName="dev-os"'), 'About mark');
+    for (const file of ['src/apps/org.devos.settings/login-view.tsx', 'src/apps/org.devos.settings/os-login.tsx']) assert(read(file).includes('brandIcon') && !read(file).includes('login-brand">D<'), `${file} greeter mark`);
+    assert(read('src/apps/org.devos.installer/native.devx').includes('"dev-os-symbolic"'), 'installer sidebar uses the transparent theme-aware mark');
+    assert(read('src/apps/org.devos.launcher/view.tsx').includes('dev-os-symbolic'), 'launcher header mark');
+    assert(read('src/system/org.devos.panel/native.devx').includes('"dev-os-symbolic"'), 'native panel menu button mark');
+    assert(read('src/apps/org.devos.settings/about-view.tsx').includes('iconName="dev-os"'), 'About mark');
     assert(read('distro/oe/meta-devos/recipes-devos/splash/files/devos-splash.c').includes('static void mark('), 'boot splash mark');
 });
 print(`devos-icon test: ${count} checks passed`);

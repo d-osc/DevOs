@@ -1,0 +1,46 @@
+# External application memory policy: system apps keep their identity and never consume third-party ranks.
+use "std/regex"
+use "std/strings"
+
+fn systemApps(): Vec<str> {
+    return Vec<str>("dev-os-shell.desktop", "dev-os-terminal.desktop", "dev-os-files.desktop",
+        "dev-os-browser.desktop", "dev-os-editor.desktop", "dev-os-task-manager.desktop",
+        "dev-os-camera.desktop", "dev-os-microphone.desktop", "dev-os-screenshot.desktop", "dev-os-installer.desktop",
+        "dev-os-disk-manager.desktop", "dev-os-app-store.desktop",
+        "dev-os-settings.desktop", "org.devos.settings.desktop",
+        "org.devos.files.desktop", "org.devos.terminal.desktop")
+}
+fn contains(items: Vec<str>, id: str): bool {
+    for item in items { if strings.equal(item, id) { return true } }
+    return false
+}
+fn isSystemApp(id: str): bool {
+    if contains(systemApps(), strings.toLowerCase(id)) { return true }
+    let re = regex.compile("^org\\.devos\\.App\\.(settings|files|terminal|editor|camera|microphone|taskmanager|browser|diskmanager|appstore|installer|screenshot)\\.s[a-f0-9]+$", "i")
+    let found = re.test(id)
+    re.close()
+    return found
+}
+# Open external apps, most recently focused first; previous order is kept for the rest, newly opened apps are appended.
+fn rankExternalApps(previous: Vec<str>, open: Vec<str>, focused: str): Vec<str> {
+    let live = Vec<str>()
+    for id in open {
+        let lower = strings.toLowerCase(id)
+        if !isSystemApp(lower) && !contains(live, lower) { live.push(lower) }
+    }
+    let ranked = Vec<str>()
+    for id in previous {
+        let lower = strings.toLowerCase(id)
+        if contains(live, lower) && !contains(ranked, lower) { ranked.push(lower) }
+    }
+    for id in live { if !contains(ranked, id) { ranked.push(id) } }
+    let active = strings.toLowerCase(focused)
+    if strings.equal(active, "") || !contains(live, active) { return ranked }
+    let ordered = Vec<str>(active)
+    for id in ranked { if !strings.equal(id, active) { ordered.push(id) } }
+    return ordered
+}
+# Speaker loopback inputs are not microphones, even if advertised as Audio/Source.
+fn isMicrophoneSource(deviceClass: str, deviceName: str, nodeName: str): bool {
+    return !strings.equal(deviceClass, "monitor") && !strings.endsWith(deviceName, ".monitor") && !strings.endsWith(nodeName, ".monitor")
+}

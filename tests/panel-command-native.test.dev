@@ -1,0 +1,22 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../src/system/org.devos.panel/panel-commands.dev" as commands
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("panel command planner accepts only supported settings routes",fn() {
+    t.equal(commands.plan({}),"");for command in Vec<str>("time","settings","wifi","launcher","task-view","language","accounts") {t.equal(commands.plan({command:command}),command)}
+    for value in Vec<json.Value>({command:"time; logout"},{command:"logout"},{command:3},{command:null},json.array()) {test.expect(result.isErr(result.attempt(fn():str {return commands.plan(value)})),"Invalid panel command accepted")}
+})
+test.case("panel command worker executes RPC once without replay or retry",fn() {
+    tool.scope("panel-command-",fn(dir:str) {
+        let library=dir+"/rpc.so";tool.checked(Vec<str>("cc","-shared","-fPIC",t.root()+"/tests/fixtures/panel-rpc.c","-o",library),Map<str,str>(),"",15000)
+        for failed in Vec<str>("0","1") {let log=dir+"/calls-"+failed;let env=Map<str,str>();env.set("PANEL_RPC_LOG",log);env.set("PANEL_RPC_FAIL",failed)
+            let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-command.dev","--ffi-lib",library),env,"{}\n{\"command\":\"time\"}\n{}\n{\"command\":\"time; logout\"}\nbad\n{}\n",15000);t.success(done)
+            t.equal(strings.trim(tool.read(log)),"time");let rows=strings.split(strings.trim(t.out(done)),"\n");test.expect(rows.len()==6,"Worker stopped after malformed command");t.equal(rows[0],"R");t.equal(rows[2],"R");t.equal(rows[5],"R")
+            if strings.equal(failed,"1") {t.contains(rows[1],"Could not open Time settings.")} else {t.equal(rows[1],"A")};t.contains(rows[3],"Unknown panel command")
+        }
+    })
+})
+return t.finish()

@@ -1,15 +1,27 @@
-import {Gtk, Gio, GLib, readText} from '@dev-os/core';
+import {loadImage} from '../src/apps/org.devos.screenshot/capture.js';
+import {Gtk, Gdk, Gio, GLib, readText} from '@dev-os/core';
 import GdkPixbuf from 'gi://GdkPixbuf?version=2.0';
 import {ROOT} from '@dev-os/config';
-import {cropFreeform, cropRectangle, saveSnip, type Frame} from '../extensions/org.devos.screenshot/capture.js';
+import {DesktopShell} from '@dev-os/shell';
+import {cropFreeform, cropRectangle, saveSnip, type Frame} from '../src/apps/org.devos.screenshot/capture.backend.js';
 import {
     SNIP_MODES, desktopBounds, imageScale, intersect, normalizeRect, pathBounds, scaleRect, snipFileName, thin, uniqueName, usable
-} from '../extensions/org.devos.screenshot/geometry.js';
-import {PALETTE, drawStrokes, renderAnnotated, type Stroke} from '../extensions/org.devos.screenshot/editor.js';
+} from '../src/apps/org.devos.screenshot/geometry.js';
+import {PALETTE, drawStrokes, renderAnnotated, type Stroke} from '../src/apps/org.devos.screenshot/editor.js';
+import {SnipOverlay, type Snip} from '../src/apps/org.devos.screenshot/overlay.js';
 
 Gtk.init(null);
 let passed = 0;
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
+function asyncTest(name: string, callback: () => Promise<void>) {
+    const loop = new GLib.MainLoop(null, false); let failure: unknown;
+    void callback().catch(error => {failure = error;}).finally(() => loop.quit()); loop.run();
+    if (failure) throw failure; passed++; print(`PASS: screenshot ${name}`);
+}
+const waitResult = (ready: () => boolean) => new Promise<void>((resolve, reject) => {
+    const deadline = GLib.get_monotonic_time() + 5000000;
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {if (ready()) {resolve(); return GLib.SOURCE_REMOVE;} if (GLib.get_monotonic_time() > deadline) {reject(new Error('Screenshot service timed out')); return GLib.SOURCE_REMOVE;} return GLib.SOURCE_CONTINUE;});
+});
 function same(actual: unknown, expected: unknown, message: string): void { assert(JSON.stringify(actual) === JSON.stringify(expected), `${message}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`); }
 function test(name: string, callback: () => void): void { callback(); passed++; print(`PASS: screenshot ${name}`); }
 
@@ -96,6 +108,51 @@ test('annotations are burnt into the exported image', () => {
     assert(PALETTE.length >= 5 && typeof drawStrokes === 'function', 'Palette and drawing helper are exported');
 });
 
+asyncTest('native GDK events select, capture and cancel', async () => {
+    const fixture = frame(), path = `${GLib.get_tmp_dir()}/devos-overlay-fixture-${GLib.uuid_string_random()}.png`;
+    fixture.pixbuf.savev(path, 'png', [], []);
+    fixture.pixbuf = await loadImage(path); Gio.File.new_for_path(path).delete(null);
+    // Signal callbacks receive the Gdk.Event union, not EventButton fields.
+    const mouse = (type: Gdk.EventType, x: number, y: number, button = 1) => {
+        const event = Gdk.Event.new(type);
+        const fields = event as unknown as {motion: Gdk.EventMotion; button: Gdk.EventButton};
+        if (type === Gdk.EventType.MOTION_NOTIFY) Object.assign(fields.motion, {x, y});
+        else Object.assign(fields.button, {x, y, button});
+        return event;
+    };
+    for (const mode of ['rectangle', 'freeform', 'fullscreen'] as const) {
+        let result: Snip | null | undefined;
+        const overlay = Object.assign(Object.create(SnipOverlay.prototype), {
+            frame: fixture, mode, windows: [], start: null, current: null, outline: [], finished: false,
+            done: (snip: Snip | null) => {result = snip;},
+        });
+        const rect = {x: 10, y: 20, width: 100, height: 60};
+        assert(overlay.press(mouse(Gdk.EventType.BUTTON_PRESS, 5, 5), rect), `${mode} accepts native left click`);
+        if (mode !== 'fullscreen') {
+            overlay.motion(mouse(Gdk.EventType.MOTION_NOTIFY, 30, 5), rect);
+            overlay.motion(mouse(Gdk.EventType.MOTION_NOTIFY, 30, 30), rect);
+            overlay.release(mouse(Gdk.EventType.BUTTON_RELEASE, 30, 30), rect);
+        }
+        await waitResult(() => result !== undefined);
+        assert(result && result.pixbuf.get_width() === (mode === 'fullscreen' ? 100 : 25), `${mode} returns selected pixels`);
+    }
+    let cancelled = false;
+    const overlay = Object.assign(Object.create(SnipOverlay.prototype), {windows: [], finished: false, done: () => {cancelled = true;}});
+    const escape = Gdk.Event.new(Gdk.EventType.KEY_PRESS);
+    (escape as unknown as {key: Gdk.EventKey}).key.keyval = Gdk.KEY_Escape;
+    assert(overlay.key(escape), 'Native Escape is handled'); await waitResult(() => cancelled);
+    assert(cancelled, 'Native Escape cancels the overlay');
+});
+
+test('shell dispatches the app and capture commands to the extension', () => {
+    const invoked: string[] = [];
+    const shell = {startupError: null, invoke: (command: string) => invoked.push(command)} as unknown as InstanceType<typeof DesktopShell>;
+    for (const command of ['screenshot-app', 'screenshot']) {
+        assert(DesktopShell.prototype.handleArguments.call(shell, [command], '/') === 0, `${command} succeeds`);
+    }
+    same(invoked, ['screenshot-app', 'screenshot'], 'Both commands reach the screenshot extension');
+});
+
 test('wiring: command, hotkey, launcher entry, icons, manifest', () => {
     const main = readText(`${ROOT}/src/main.ts`), labwc = readText(`${ROOT}/config/labwc/rc.xml`);
     assert(/'screenshot', 'screenshot-app'/.test(main), 'dev-os-shell accepts screenshot and screenshot-app');
@@ -104,7 +161,7 @@ test('wiring: command, hotkey, launcher entry, icons, manifest', () => {
     const desktop = readText(`${ROOT}/data/applications/dev-os-screenshot.desktop`);
     assert(/Exec=dev-os-shell screenshot-app/.test(desktop) && /Icon=dev-os-screenshot/.test(desktop) && /\[Desktop Action Snip\]/.test(desktop), 'Launcher entry with a New snip action');
     for (const name of ['dev-os-screenshot', 'dev-os-screenshot-symbolic']) assert(GLib.file_test(`${ROOT}/data/icons/hicolor/scalable/apps/${name}.svg`, GLib.FileTest.EXISTS), `${name} icon`);
-    const manifest = JSON.parse(readText(`${ROOT}/extensions/org.devos.screenshot/extension.json`));
+    const manifest = JSON.parse(readText(`${ROOT}/src/apps/org.devos.screenshot/extension.json`));
     assert(manifest.id === 'org.devos.screenshot' && manifest.entry === 'org.devos.screenshot.js' && manifest.enabledByDefault === true && manifest.system === true, 'Manifest');
 });
 print(`${passed} screenshot tests passed`);

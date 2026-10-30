@@ -3,8 +3,9 @@ import Cairo from 'cairo';
 import {Gtk, Gio, Gdk} from './native.js';
 import {Image} from './view.js';
 import {createRoot} from './renderer.js';
-import {baseImage} from './base-icons.js';
+import {baseImage, releaseImageIcons} from './base-icons.js';
 import {activeFamily, activeTheme, onThemeChange, themeTokens} from './theme.js';
+import {roundedOpaqueRegion} from './window-shape.js';
 
 export interface WindowHeaderOptions {
     title: string;
@@ -20,35 +21,49 @@ export function mountWindowHeader(window: Gtk.ApplicationWindow, options: Window
     const visual = window.get_screen().get_rgba_visual();
     if (visual && !window.get_realized()) window.set_visual(visual);
     window.get_style_context().add_class('devos-rounded-window');
-    const transparentCorners = new Cairo.Region();
+    let opaqueSignature = '';
     const roundSignal = window.connect('draw', (_widget, cr) => {
-        const state = window.get_window()?.get_state() ?? 0;
-        if (state & (Gdk.WindowState.MAXIMIZED | Gdk.WindowState.FULLSCREEN)) return false;
-        // Gtk.Window allocations include invisible CSD shadow margins. Round
-        // the visible client rectangle, rather than those transparent margins.
-        const body = window.get_child()?.get_allocation(), header = window.get_titlebar()?.get_allocation();
-        if (!body || !header) return false;
-        const x = Math.min(body.x, header.x), y = Math.min(body.y, header.y);
-        const width = Math.max(body.x + body.width, header.x + header.width) - x;
-        const height = Math.max(body.y + body.height, header.y + header.height) - y;
-        const radius = Math.min(10, width / 2, height / 2);
-        cr.setOperator(Cairo.Operator.SOURCE); cr.setSourceRGBA(0, 0, 0, 0); cr.paint(); cr.setOperator(Cairo.Operator.OVER);
-        cr.pushGroup();
-        Gtk.ApplicationWindow.prototype.vfunc_draw.call(window, cr);
-        cr.popGroupToSource();
-        cr.newPath();
-        cr.arc(x + width - radius, y + radius, radius, -Math.PI / 2, 0);
-        cr.arc(x + width - radius, y + height - radius, radius, 0, Math.PI / 2);
-        cr.arc(x + radius, y + height - radius, radius, Math.PI / 2, Math.PI);
-        cr.arc(x + radius, y + radius, radius, Math.PI, Math.PI * 1.5);
-        cr.closePath(); cr.clip();
-        cr.paint();
-        // GTK advertises tiled decorations as an opaque rectangle. That leaves
-        // stale pixels behind our transparent corners unless the hint is cleared.
-        window.get_window()?.set_opaque_region(transparentCorners);
-        return true;
+        try {
+            const state = window.get_window()?.get_state() ?? 0;
+            if (state & (Gdk.WindowState.MAXIMIZED | Gdk.WindowState.FULLSCREEN)) return false;
+            // Gtk.Window allocations include invisible CSD shadow margins. Round
+            // the visible client rectangle, rather than those transparent margins.
+            const body = window.get_child()?.get_allocation(), header = window.get_titlebar()?.get_allocation();
+            if (!body || !header) return false;
+            const x = Math.min(body.x, header.x), y = Math.min(body.y, header.y);
+            const width = Math.max(body.x + body.width, header.x + header.width) - x;
+            const height = Math.max(body.y + body.height, header.y + header.height) - y;
+            const radius = Math.min(10, width / 2, height / 2);
+            cr.setOperator(Cairo.Operator.SOURCE); cr.setSourceRGBA(0, 0, 0, 0); cr.paint(); cr.setOperator(Cairo.Operator.OVER);
+            // Clip the native draw directly: a full-window intermediate group costs
+            // an extra buffer and blend on every repaint, especially on CPU rendering.
+            cr.save();
+            cr.newPath();
+            cr.arc(x + width - radius, y + radius, radius, -Math.PI / 2, 0);
+            cr.arc(x + width - radius, y + height - radius, radius, 0, Math.PI / 2);
+            cr.arc(x + radius, y + height - radius, radius, Math.PI / 2, Math.PI);
+            cr.arc(x + radius, y + radius, radius, Math.PI, Math.PI * 1.5);
+            cr.closePath(); cr.clip();
+            Gtk.ApplicationWindow.prototype.vfunc_draw.call(window, cr);
+            cr.restore();
+            // Keep the rounded corners transparent without making the *entire*
+            // window translucent to the compositor. Transparent themes opt out.
+            const opaque = window.get_opacity() === 1 && window.get_style_context().get_background_color(Gtk.StateFlags.NORMAL).alpha === 1
+                && titlebar.get_style_context().get_background_color(Gtk.StateFlags.NORMAL).alpha === 1;
+            const signature = `${x},${y},${width},${height},${radius},${opaque}`;
+            if (signature !== opaqueSignature) {
+                window.get_window()?.set_opaque_region(roundedOpaqueRegion(x, y, width, height, radius, opaque));
+                opaqueSignature = signature;
+            }
+            return true;
+        } finally {
+            // The GJS wrapper holds the native target surface alive until GC.
+            // Release it at the signal boundary, including early returns/errors.
+            cr.$dispose();
+        }
     });
-    const roundStateSignal = window.connect('window-state-event', () => {window.queue_draw(); return false;});
+    const roundStateSignal = window.connect('window-state-event', () => {opaqueSignature = ''; window.queue_draw(); return false;});
+    const roundStyleSignal = window.connect('style-updated', () => {opaqueSignature = '';});
     const titlebar = new Gtk.HeaderBar({title: options.title, show_close_button: true,
         has_subtitle: false, decoration_layout: ':minimize,maximize,close'});
     titlebar.get_style_context().add_class('app-titlebar');
@@ -116,9 +131,11 @@ export function mountWindowHeader(window: Gtk.ApplicationWindow, options: Window
         window.disconnect(titleSignal);
         window.disconnect(roundSignal);
         window.disconnect(roundStateSignal);
+        window.disconnect(roundStyleSignal);
         gesture.disconnect(signal);
         gesture.reset();
         unwatchTheme();
+        releaseImageIcons(snapButton);
         iconRoot.unmount();
         Gtk.StyleContext.remove_provider_for_screen(screen, style);
         Gtk.StyleContext.remove_provider_for_screen(screen, controls);

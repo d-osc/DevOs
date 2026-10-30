@@ -1,1 +1,1 @@
-export * from '../../extensions/org.devos.settings/view.js';
+export * from '../../src/apps/org.devos.settings/view.js';

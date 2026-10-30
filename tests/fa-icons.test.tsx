@@ -3,7 +3,7 @@ import {ROOT} from '@dev-os/config';
 import {
     PACKS, STYLES, PACK_STYLES, DEFAULT_CHOICE, hasCombination, parseChoice, savedChoice, faName, resolveIcon, iconSvg, renderIcon,
     type IconData, type GlyphSet, type Pack, type Style
-} from '../extensions/org.devos.icons/fa-icons.js';
+} from '../src/apps/org.devos.icons/fa-icons.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
@@ -12,7 +12,8 @@ const index = readJson(`${ROOT}/data/icons/fa/index.json`) as {mapping: Record<s
 const names = Object.keys(index.mapping).map(name => `${name}-symbolic`);
 const appIcons = Object.keys(index.mapping).filter(name => name.startsWith('dev-os-'));
 const theme = Gtk.IconTheme.get_default(); theme.prepend_search_path(`${ROOT}/data/icons`);
-assert(appIcons.length === 11, 'All eleven base applications use assets/ outlines');
+assert(appIcons.length === 12, 'All twelve base applications use assets/ outlines');
+assert(index.mapping['dev-os-screenshot'] === 'camera-viewfinder', 'Screenshot uses the camera-viewfinder asset');
 for (const name of appIcons) {
     for (const suffix of ['', '-symbolic']) assert(theme.load_icon(`${name}${suffix}`, 48, Gtk.IconLookupFlags.FORCE_SIZE), `${name}${suffix} loads in GTK`);
     assert(resolveIcon(`${name}-symbolic`, DEFAULT_CHOICE), `${name} resolves through the selected Font Awesome pack`);

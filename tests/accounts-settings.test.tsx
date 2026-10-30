@@ -1,9 +1,9 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {AccountsSettings} from '../extensions/org.devos.settings/accounts-view.js';
-import type {AccountControls} from '../extensions/org.devos.settings/accounts.js';
-import type {GreeterControls} from '../extensions/org.devos.settings/os-login.js';
+import {AccountsSettings} from '../src/apps/org.devos.settings/accounts-view.js';
+import type {AccountControls} from '../src/apps/org.devos.settings/accounts.js';
+import type {GreeterControls} from '../src/apps/org.devos.settings/os-login.js';
 Gtk.init(null);
 const loop = new GLib.MainLoop(null, false);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 70, () => {resolve(); return GLib.SOURCE_REMOVE;}));
@@ -14,7 +14,7 @@ async function test() {
     const controls: AccountControls = {async request(action, clientId) {actions.push(action); return {identity: {provider: 'guest', name: 'Guest'}, clientId: clientId ?? 'configured', system: {available: true, currentUser: 'alice', users: [{username: 'alice', name: 'Alice', uid: 1001, home: '/home/alice', githubId}, ...(created ? [{username: 'bob', name: 'Bob', uid: 1002, home: '/home/bob'}] : [])], firstSetup: false}};}, destroy() {released++;}};
     const enrollment: GreeterControls = {async request(action, data) {if (action === 'enroll-create') {created = data; return {created: true, username: 'bob'};} return {};}, destroy() {}};
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(1280, 720); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     try {

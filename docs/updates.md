@@ -236,7 +236,7 @@ workflow ปัจจุบัน build อัตโนมัติเฉพา�
 `packages/updates/service.ts` ดูแลการตรวจ ดาวน์โหลด ติดตั้ง และย้อนกลับ.
 `packages/updates/protocol.ts` ตรวจข้อมูล release และ archive.
 `packages/extensions/settings-pages.ts` เป็น registry ใน base สำหรับ Settings page contributions.
-UI อยู่ใน `extensions/org.devos.updates/view.tsx` แบบ React + TypeScript; configuration อยู่ใน `extension.json`.
+UI อยู่ใน `src/apps/org.devos.updates/view.tsx` แบบ React + TypeScript; configuration อยู่ใน `extension.json`.
 extension เรียก `context.registerSettingsPage(id, Component)` เพื่อแทน generic JSON form ของ extension ตัวเอง.
 เมื่อ unregister จะกลับไปใช้ form ปกติ; runtime เก็บ cleanup ของ contribution ให้อัตโนมัติ.
 

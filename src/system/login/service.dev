@@ -1,0 +1,4 @@
+#!/usr/bin/env d
+# Separate stateful auth/enrollment processes use the same authoritative backend.
+use "../../../lib/greeter-service.dev" as service
+return service.run(true)

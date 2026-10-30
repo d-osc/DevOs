@@ -20,7 +20,7 @@ export function validateExtensionId(value: unknown): string {
 export function validateManifest(value: unknown): ExtensionManifest {
     const input = object(value, 'Manifest');
     validateKeys(input, ['id', 'name', 'description', 'version', 'apiVersion', 'settingsVersion', 'enabledByDefault', 'settings', 'kind',
-        ...(input.kind === 'ui' ? ['system', 'entry', 'order'] : [])], 'manifest');
+        ...(input.kind === 'ui' ? ['system', 'entry', 'native', 'order'] : [])], 'manifest');
     validateExtensionId(input.id);
     for (const key of ['name', 'description', 'version']) string(input[key], key);
     if (input.apiVersion !== 1) throw new Error('Unsupported extension API version');
@@ -30,7 +30,11 @@ export function validateManifest(value: unknown): ExtensionManifest {
     if (input.kind !== undefined && input.kind !== 'settings' && input.kind !== 'ui') throw new Error('Invalid extension kind');
     if (input.kind === 'ui') {
         if (typeof input.system !== 'boolean') throw new Error('UI system flag must be boolean');
-        if (typeof input.entry !== 'string' || !/^[a-z][a-z0-9.-]*\.js$/.test(input.entry)) throw new Error('UI entry must be a flat JavaScript filename');
+        if (input.native !== undefined) {
+            // A native system app ships a DevLang executable in dist/native instead of a JavaScript entry.
+            if (input.entry !== undefined || typeof input.native !== 'string' || !/^[a-z][a-z0-9-]*$/.test(input.native)) throw new Error('Native UI needs a plain executable name and no JavaScript entry');
+            if (input.system !== true) throw new Error('Only system UI can be native');
+        } else if (typeof input.entry !== 'string' || !/^[a-z][a-z0-9.-]*\.js$/.test(input.entry)) throw new Error('UI entry must be a flat JavaScript filename');
         if (typeof input.order !== 'number' || !Number.isSafeInteger(input.order) || input.order < 0) throw new Error('UI order must be a non-negative integer');
         if (input.system && !input.enabledByDefault) throw new Error('System UI must be enabled by default');
     }

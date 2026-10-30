@@ -1,0 +1,56 @@
+use "std/test"
+use "std/strings"
+use "../lib/memory-policy.dev" as policy
+use "./lib/react-devlang.dev" as t
+
+fn same(a: Vec<str>, b: Vec<str>): bool { return strings.equal(strings.join(a, "|"), strings.join(b, "|")) }
+fn external(): Vec<str> {
+    let items = Vec<str>()
+    for i in 1..9 { items.push("external-${i}.desktop") }
+    return items
+}
+fn system(): Vec<str> {
+    return Vec<str>("dev-os-editor.desktop", "dev-os-terminal.desktop", "dev-os-app-store.desktop", "dev-os-files.desktop",
+        "org.devos.settings.desktop", "dev-os-task-manager.desktop", "dev-os-disk-manager.desktop")
+}
+fn join(a: Vec<str>, b: Vec<str>): Vec<str> {
+    let all = Vec<str>()
+    for item in a { all.push(item) }
+    for item in b { all.push(item) }
+    return all
+}
+test.case("system tools are recognised and third-party apps are not", fn() {
+    for id in system() { test.expect(policy.isSystemApp(id), id) }
+    test.expect(!policy.isSystemApp("google-chrome.desktop"), "chrome")
+    test.expect(!policy.isSystemApp("com.microsoft.VSCode.desktop"), "vscode")
+    test.expect(!policy.isSystemApp("dev-os-third-party.desktop"), "third party")
+    test.expect(policy.isSystemApp("org.devos.App.files.s1a2b"), "sandboxed system app")
+})
+test.case("external MRU order, closing and duplicate windows", fn() {
+    let ext = external()
+    let first = ext[0]
+    test.expect(same(policy.rankExternalApps(Vec<str>(), join(system(), ext), system()[0]), ext), "system focus keeps order")
+    let focused = Vec<str>(ext[7])
+    for i in 0..7 { focused.push(ext[i]) }
+    test.expect(same(policy.rankExternalApps(ext, join(system(), ext), ext[7]), focused), "focused app first")
+    test.expect(same(policy.rankExternalApps(join(system(), ext), join(ext, system()), system()[1]), ext), "system ids in previous are dropped")
+    let rest = Vec<str>()
+    for i in 1..8 { if i != 5 { rest.push(ext[i]) } }
+    let closed = Vec<str>()
+    for i in 1..8 { closed.push(ext[i]) }
+    let expected = Vec<str>(ext[5])
+    for item in closed { if !strings.equal(item, ext[5]) { expected.push(item) } }
+    test.expect(same(policy.rankExternalApps(ext, closed, ext[5]), expected), "closing removes the window")
+    test.expect(same(policy.rankExternalApps(Vec<str>(), Vec<str>("GOOGLE-CHROME.desktop", "google-chrome.desktop"), "GOOGLE-CHROME.desktop"), Vec<str>("google-chrome.desktop")), "duplicates collapse")
+    test.expect(strings.equal(first, "external-1.desktop"), "fixture")
+})
+test.case("microphone inputs are kept and speaker monitors excluded", fn() {
+    test.expect(!policy.isMicrophoneSource("monitor", "", ""), "class monitor")
+    test.expect(!policy.isMicrophoneSource("", "alsa_output.platform-sound.stereo.monitor", ""), "device monitor")
+    test.expect(!policy.isMicrophoneSource("", "", "alsa_output.usb-headset.monitor"), "node monitor")
+    test.expect(policy.isMicrophoneSource("sound", "alsa_input.platform-sound.HiFi__Mic__source", ""), "internal mic")
+    test.expect(policy.isMicrophoneSource("", "alsa_input.usb-microphone.analog-stereo", ""), "usb mic")
+    test.expect(policy.isMicrophoneSource("", "my.monitor.microphone", ""), "monitor in the middle")
+    test.expect(policy.isMicrophoneSource("", "", ""), "unknown metadata must not hide hardware")
+})
+return t.finish()

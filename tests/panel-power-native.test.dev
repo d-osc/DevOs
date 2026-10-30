@@ -1,0 +1,49 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "../src/system/org.devos.panel/power-model.dev" as power
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn fixture(supplies:json.Value,check:fn(json.Value):void) {
+    tool.scope("panel-power-",fn(dir:str) {
+        for name in json.keys(supplies) {let attributes=json.get(supplies,name);for key in json.keys(attributes) {tool.write(dir+"/"+name+"/"+key,json.string(json.get(attributes,key)))}}
+        check(power.read(dir))
+    })
+}
+test.case("charging and low battery keep the original icons and labels",fn() {
+    fixture({BAT0:{type:"Battery",status:"Charging",capacity:"72"},AC:{type:"Mains",online:"1"}},fn(value:json.Value) {
+        test.expect(json.int(json.get(value,"battery"))==72 && json.bool(json.get(value,"acOnline")),"Power state changed")
+        let view=json.get(value,"batteryPresentation");t.equal(json.string(json.get(view,"text")),"72% · Charging");t.equal(json.string(json.get(view,"icon")),"battery-good-charging-symbolic")
+    })
+    fixture({BAT0:{type:"Battery",status:"Discharging",capacity:"9"}},fn(value:json.Value) {let view=json.get(value,"batteryPresentation");t.equal(json.string(json.get(view,"text")),"9%");t.equal(json.string(json.get(view,"className")),"panel-battery-low")})
+})
+test.case("unreported percentages use energy and charge counters in fallback order",fn() {
+    fixture({BAT0:{type:"Battery",status:"Discharging",capacity:"bad",energy_now:"25",energy_full:"50",charge_now:"1",charge_full:"4"}},fn(value:json.Value) {test.expect(json.int(json.get(value,"battery"))==50,"Energy fallback lost")})
+    fixture({BAT0:{type:"Battery",status:"Discharging",energy_now:"70",energy_full:"50",charge_now:"1",charge_full_design:"4"}},fn(value:json.Value) {test.expect(json.int(json.get(value,"battery"))==25,"Design-charge fallback lost")})
+    fixture({BAT0:{type:"Battery",status:"Charging",energy_now:"68357000",energy_full:"70857000"}},fn(value:json.Value) {test.expect(json.int(json.get(value,"battery"))==96,"qcom counters rounded incorrectly")})
+})
+test.case("invalid and absent capacities never become zero percent",fn() {
+    for raw in Vec<str>("","bad","-1","101","Infinity") {fixture(json.value({BAT0:{type:"Battery",status:"Charging",capacity:raw}}),fn(value:json.Value) {test.expect(json.is_null(json.get(value,"battery")),"Invalid percentage became zero");t.equal(json.string(json.get(json.get(value,"batteryPresentation"),"text")),"Charging")})}
+    fixture({BAT0:{type:"Battery",status:"Discharging",energy_now:"1",energy_full:"0"}},fn(value:json.Value) {test.expect(json.is_null(json.get(value,"battery")),"Divided by zero")})
+})
+test.case("peripherals and absent batteries are excluded and internal supplies sort deterministically",fn() {
+    fixture({BAT1:{type:"Battery",status:"Discharging",capacity:"40"},BAT0:{type:"Battery",status:"Discharging"},mouse:{type:"Battery",scope:"Device",capacity:"5"},absent:{type:"Battery",present:"0",capacity:"100"}},fn(value:json.Value) {test.expect(json.int(json.get(value,"battery"))==40,"Wrong system battery selected")})
+    fixture({mouse:{type:"Battery",scope:"Device",capacity:"5"},absent:{type:"Battery",present:"0"}},fn(value:json.Value) {test.expect(!json.bool(json.get(value,"batteryFound")),"Peripheral exposed as system battery")})
+})
+test.case("adapter-only, unknown firmware status and full-charge presentation stay distinct",fn() {
+    fixture({AC:{type:"USB",online:"1"}},fn(value:json.Value) {test.expect(!json.bool(json.get(value,"batteryFound")) && json.bool(json.get(value,"acFound")),"Adapter detection lost");t.equal(json.string(json.get(json.get(value,"batteryPresentation"),"text")),"No battery data")})
+    fixture({BAT0:{type:"Battery",status:"Unknown",capacity:"80"},AC:{type:"Mains",online:"1"}},fn(value:json.Value) {t.equal(json.string(json.get(value,"batteryStatus")),"Not charging");t.equal(json.string(json.get(json.get(value,"batteryPresentation"),"text")),"80% · Plugged in")})
+    fixture({BAT0:{type:"Battery",status:"Full",capacity:"100"}},fn(value:json.Value) {t.equal(json.string(json.get(json.get(value,"batteryPresentation"),"icon")),"battery-full-symbolic")})
+    fixture({},fn(value:json.Value) {test.expect(!json.bool(json.get(value,"batteryFound")) && !json.bool(json.get(value,"acFound")),"Desktop invented power supplies")})
+})
+test.case("panel worker preserves request identity and recovers from malformed input",fn() {
+    tool.scope("panel-power-service-",fn(dir:str) {
+        tool.write(dir+"/class/power_supply/BAT0/type","Battery");tool.write(dir+"/class/power_supply/BAT0/capacity","61")
+        let env=Map<str,str>();env.set("DEVOS_PANEL_SYS",dir)
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-power.dev"),env,"bad\n{\"id\":42}\n",15000);t.success(done)
+        let frames=strings.split(strings.trim(t.out(done)),"\n");test.expect(frames.len()==2,"Missing responses")
+        test.expect(json.has(json.parse(frames[0]),"error"),"Malformed request accepted")
+        let frame=json.parse(frames[1]);test.expect(json.int(json.get(frame,"id"))==42 && json.int(json.get(json.get(frame,"power"),"battery"))==61,"Worker protocol changed")
+    })
+})
+return t.finish()

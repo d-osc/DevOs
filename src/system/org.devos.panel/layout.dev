@@ -1,0 +1,22 @@
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+fn bounded(value:json.Value,fallback:i64,minimum:i64,maximum:i64):i64 {
+    if !strings.equal(json.kind(value),"number") {return fallback}
+    let number=json.float(value);if number<minimum as f64 {return minimum};if number>maximum as f64 {return maximum};return (number+0.5) as i64
+}
+fn options(values:json.Value,desktopHeight:json.Value):json.Value {
+    let fallback=bounded(desktopHeight,36,32,96);let height=hw.jget(values,"height")
+    let chosen=strings.equal(json.kind(height),"number") && json.float(height)>=32.0 ? bounded(height,fallback,32,96) : fallback
+    return {position:strings.equal(hw.jstr(values,"position",""),"top") ? "top" : "bottom",height:chosen,
+        iconSize:bounded(hw.jget(values,"iconSize"),16,14,28),spacing:bounded(hw.jget(values,"spacing"),12,0,32),itemSpacing:bounded(hw.jget(values,"itemSpacing"),2,0,16),
+        showPinned:hw.jbool(values,"showPinned",true),showDate:hw.jbool(values,"showDate",true)}
+}
+fn wire(values:json.Value,desktopHeight:json.Value):str {
+    let plan=options(values,desktopHeight)
+    let top=strings.equal(hw.jstr(plan,"position",""),"top") ? 1 : 0
+    let height=hw.jnum(plan,"height",36.0) as i64;let icon=hw.jnum(plan,"iconSize",16.0) as i64
+    let spacing=hw.jnum(plan,"spacing",12.0) as i64;let items=hw.jnum(plan,"itemSpacing",2.0) as i64
+    let pinned=hw.jbool(plan,"showPinned",true) ? 1 : 0;let date=hw.jbool(plan,"showDate",true) ? 1 : 0
+    return "L\t${top}\t${height}\t${icon}\t${spacing}\t${items}\t${pinned}\t${date}"
+}

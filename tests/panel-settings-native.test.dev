@@ -1,0 +1,39 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../src/system/org.devos.panel/settings-session.dev" as session
+use "../src/system/org.devos.panel/settings-model.dev" as model
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("panel draft changes and reset never write before Apply",fn() {
+    tool.scope("panel-settings-",fn(dir:str) {
+        let file=dir+"/panel.json";let original=json.stringify({version:1,enabled:true,values:{height:0,position:"bottom",future:"preserve"}});tool.write(file,original)
+        let state=session.handle(session.empty(),{action:"configure",root:t.root(),preferences:file});state=session.handle(state,{action:"preset",value:"comfortable"});test.expect(session.dirty(state),"Preset did not update draft");t.equal(tool.read(file),original);t.contains(session.response(state,2,""),"L\t0\t44\t20")
+        state=session.handle(state,{action:"reset"});test.expect(!session.dirty(state),"Reset left dirty draft");t.equal(tool.read(file),original)
+        state=session.handle(state,{action:"edit",key:"position",index:0});state=session.handle(state,{action:"apply"});let saved=json.parse(tool.read(file));let values=json.get(saved,"values");t.equal(json.string(json.get(values,"position")),"top");t.equal(json.string(json.get(values,"future")),"preserve");test.expect(!session.dirty(state),"Apply did not advance baseline")
+    })
+})
+test.case("panel Apply merges unrelated external edits and rejects conflicting writes",fn() {
+    tool.scope("panel-settings-merge-",fn(dir:str) {
+        let file=dir+"/panel.json";tool.jsonWrite(file,{version:1,enabled:true,values:{height:36,spacing:12}});let state=session.handle(session.empty(),{action:"configure",root:t.root(),preferences:file});state=session.handle(state,{action:"edit",key:"spacing",value:"20"})
+        tool.jsonWrite(file,{version:1,enabled:true,values:{height:44,spacing:12,future:7}});state=session.handle(state,{action:"apply"});let values=json.get(json.parse(tool.read(file)),"values");test.expect(json.int(json.get(values,"height"))==44 && json.int(json.get(values,"spacing"))==20 && json.int(json.get(values,"future"))==7,"External edits were overwritten")
+        state=session.handle(state,{action:"edit",key:"spacing",value:"22"});let external=json.parse(tool.read(file));let latest=json.set(json.get(external,"values"),"spacing",23);tool.jsonWrite(file,json.set(external,"values",latest));let unchanged=tool.read(file)
+        test.expect(result.isErr(result.attempt(fn():session.State {return session.handle(state,{action:"apply"})})),"Conflicting edit was overwritten");t.equal(tool.read(file),unchanged)
+    })
+})
+test.case("panel numeric edits validate bounds and height inheritance",fn() {
+    for value in Vec<json.Value>(json.value(-1),json.value(31),json.value(97),json.value(36.5),json.value("36")) {test.expect(result.isErr(result.attempt(fn():json.Value {return model.checked("height",value)})),"Invalid panel height accepted")}
+    test.expect(json.int(model.checked("height",json.value(0)))==0,"Desktop height inheritance rejected")
+    tool.scope("panel-settings-step-",fn(dir:str) {
+        let state=session.handle(session.empty(),{action:"configure",root:t.root(),preferences:dir+"/panel.json"});state=session.handle(state,{action:"toggle",key:"followHeight"});test.expect(json.int(json.get(state.draft,"height"))>=32,"Following height toggle lost effective height");state=session.handle(state,{action:"edit",key:"iconSize",value:"28"});state=session.handle(state,{action:"step",key:"iconSize",delta:1});test.expect(json.int(json.get(state.draft,"iconSize"))==28,"Stepper exceeded max")
+    })
+})
+test.case("panel custom actions retain IDs across editing and require Apply",fn() {
+    tool.scope("panel-settings-custom-",fn(dir:str) {
+        let file=dir+"/panel.json";let state=session.handle(session.empty(),{action:"configure",root:t.root(),preferences:file});state=session.handle(state,{action:"custom-form",key:"title",value:"ไทย"});state=session.handle(state,{action:"custom-form",key:"command",value:"echo 'literal;$(false)'"});state=session.handle(state,{action:"custom-save"});let items=json.parse(json.string(json.get(state.draft,"contextCustomItems")));test.expect(json.len(items)==1,"Custom action missing");let id=json.string(json.get(json.at(items,0),"id"));test.expect(strings.startsWith(id,"custom-"),"Custom ID invalid")
+        state=session.handle(state,{action:"custom-toggle",key:id});state=session.handle(state,{action:"custom-edit",key:id});state=session.handle(state,{action:"custom-form",key:"title",value:"Updated"});state=session.handle(state,{action:"custom-save"});items=json.parse(json.string(json.get(state.draft,"contextCustomItems")));test.expect(json.len(items)==1 && !json.bool(json.get(json.at(items,0),"enabled")),"Editing changed custom identity or enabled state");t.equal(json.string(json.get(json.at(items,0),"id")),id)
+        state=session.handle(state,{action:"apply"});state=session.handle(state,{action:"custom-delete",key:id});state=session.handle(state,{action:"reset"});test.expect(json.len(json.parse(json.string(json.get(state.draft,"contextCustomItems"))))==1,"Reset did not restore saved custom action")
+    })
+})
+return t.finish()

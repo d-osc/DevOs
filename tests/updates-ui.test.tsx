@@ -4,7 +4,7 @@ import {ROOT} from '@dev-os/config';
 import {ExtensionManager} from '@dev-os/extensions';
 import {Updates, type UpdateTransport} from '@dev-os/updates';
 import {patchAssetName} from '@dev-os/updates/manifest';
-import {UpdatesView} from '../extensions/org.devos.updates/view.js';
+import {UpdatesView} from '../src/apps/org.devos.updates/view.js';
 
 Gtk.init(null);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 170, () => { resolve(); return GLib.SOURCE_REMOVE; }));
@@ -27,9 +27,9 @@ function installedFixture(directory: string, version: string, key: string) {
 async function verify() {
     const temporary = GLib.dir_make_tmp('dev-os-updates-ui-XXXXXX');
     const window = new Gtk.OffscreenWindow(); window.set_size_request(900, 900); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
-    const preferences = new ExtensionManager({bundled: `${ROOT}/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
+    const preferences = new ExtensionManager({system: `${ROOT}/src/apps`, components: `${ROOT}/src/system`, bundled: `${ROOT}/src/extensions`, user: `${temporary}/packages`, preferences: `${temporary}/preferences`});
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T | undefined;
     const text = (id: string) => (find<Gtk.Label>(id)?.get_text() ?? '');
     const click = (id: string) => (find<Gtk.Button>(id) as Gtk.Button).emit('clicked');

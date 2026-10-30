@@ -1,6 +1,6 @@
 import {Gtk, readText, themeTokens, themeTokenNames, themeFamilyNames, paletteFor, type ThemeName} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {terminalScheme} from '../extensions/org.devos.terminal/colors.js';
+import {terminalScheme} from '../src/apps/org.devos.terminal/colors.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
@@ -8,7 +8,7 @@ let count = 0;
 function test(name: string, body: () => void) { body(); count++; print(`PASS: ${name}`); }
 
 const sources: Record<string, string> = {
-    'extensions/org.devos.theme/style.css': readText(`${ROOT}/extensions/org.devos.theme/style.css`),
+    'src/apps/org.devos.theme/style.css': readText(`${ROOT}/src/apps/org.devos.theme/style.css`),
     'packages/core/window-header.ts': readText(`${ROOT}/packages/core/window-header.ts`),
 };
 /** Files where literal colors are expected: none yet. Add a path here, with a reason, before adding a literal. */
@@ -34,7 +34,7 @@ test('every @dv_ token used by the CSS is defined in both themes', () => {
         for (const token of used) assert(themeTokenNames.includes(token), `${file}: @dv_${token} is not defined`);
         for (const family of themeFamilyNames) for (const name of names) for (const token of used) assert(themeTokens(name, family).includes(`@define-color dv_${token} `), `${family}/${name} defines dv_${token}`);
     }
-    const style = sources['extensions/org.devos.theme/style.css']!;
+    const style = sources['src/apps/org.devos.theme/style.css']!;
     const used = new Set([...style.matchAll(/@dv_(\w+)/g)].map(match => match[1]!));
     const unused = themeTokenNames.filter(token => !used.has(token));
     print(`INFO: ${used.size} tokens used by style.css; ${unused.length} defined for other consumers: ${unused.join(', ')}`);
@@ -51,7 +51,7 @@ test('no literal colors outside the token definitions', () => {
     }
 });
 test('border tokens are faint: 8-14% of the foreground in dark, 10-16% in light, and used on the main surfaces', () => {
-    const style = sources['extensions/org.devos.theme/style.css']!;
+    const style = sources['src/apps/org.devos.theme/style.css']!;
     for (const family of themeFamilyNames) for (const name of names) {
         const tokens = themeTokens(name, family), [lo, hi] = name === 'dark' ? [0.08, 0.14] : [0.10, 0.16];
         for (const token of ['border', 'border_soft']) {
@@ -64,7 +64,7 @@ test('border tokens are faint: 8-14% of the foreground in dark, 10-16% in light,
 });
 test('both complete stylesheets compile in GTK', () => {
     for (const family of themeFamilyNames) for (const name of names) {
-        const style = themeTokens(name, family) + sources['extensions/org.devos.theme/style.css']!;
+        const style = themeTokens(name, family) + sources['src/apps/org.devos.theme/style.css']!;
         const provider = new Gtk.CssProvider();
         provider.load_from_data(new TextEncoder().encode(style));
         provider.load_from_data(new TextEncoder().encode(themeTokens(name, family) + `.app-titlebar { background: @dv_s1; color: @dv_fg; }`));

@@ -12,8 +12,8 @@ from fontTools.pens.transformPen import TransformPen
 root = Path(__file__).resolve().parents[2]
 assets = Path(sys.argv[1]) if len(sys.argv) > 1 else root / 'assets'
 out = root / 'data/icons/fa'
-mapping = json.loads((root / 'extensions/org.devos.icons/fa/mapping.json').read_text('utf-8'))
-fonts = json.loads((root / 'extensions/org.devos.icons/fa/fonts.json').read_text('utf-8'))
+mapping = json.loads((root / 'src/apps/org.devos.icons/fa/mapping.json').read_text('utf-8'))
+fonts = json.loads((root / 'src/apps/org.devos.icons/fa/fonts.json').read_text('utf-8'))
 
 # name -> codepoint from fontawesome.css (`.fa-a,.fa-b{--fa:"\f120"}`)
 names = {}

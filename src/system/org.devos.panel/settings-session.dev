@@ -1,0 +1,52 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/uuid"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/config.dev" as config
+use "./settings-model.dev" as model
+use "./preferences.dev" as prefs
+use "./layout.dev" as layout
+use "./menu-model.dev" as menu
+use "../org.devos.background/context-menu.dev" as custom
+use "../org.devos.background/wire.dev" as wire
+struct State {file:str,defaults:json.Value,saved:json.Value,draft:json.Value,height:json.Value,status:str,editor:str,title:str,command:str}
+fn empty():State {return State("",json.object(),json.object(),json.object(),json.value(36),"","","","")}
+fn patch(state:State,key:str,value:json.Value):State {let next=state;next.draft=json.set(next.draft,key,model.checked(key,value));next.status="";return next}
+fn handle(state:State,request:json.Value):State {
+    let next=state;let action=hw.jstr(request,"action","")
+    if strings.equal(action,"configure") {next=empty();next.file=hw.jstr(request,"preferences","");if strings.equal(next.file,"") {result.raise("A Panel preferences file is required")};next.defaults=model.defaults(hw.jstr(request,"root",""));let envelope=prefs.load(next.file,next.defaults);next.saved=model.merge(next.defaults,hw.jget(envelope,"values"));next.draft=next.saved;next.height=hw.jget(config.load(config.configPath()),"panel_height");return next}
+    if strings.equal(action,"get") {return next};if strings.equal(next.file,"") {result.raise("Panel settings are not configured")}
+    if strings.equal(action,"reset") {next.draft=next.saved;next.status="";next.editor="";next.title="";next.command="";return next}
+    if strings.equal(action,"apply") {custom.custom(hw.jget(next.draft,"contextCustomItems"));let baseline=next.defaults;let saved=next.saved;let draft=next.draft;next.draft=prefs.edit(next.file,baseline,fn(latest:json.Value):json.Value {return model.commit(model.merge(baseline,latest),saved,draft)});next.saved=next.draft;next.status="Panel updated on all displays.";return next}
+    if strings.equal(action,"edit") || strings.equal(action,"toggle") {
+        let key=hw.jstr(request,"key","");let value=hw.jget(request,"value")
+        if strings.equal(key,"followHeight") {if !strings.equal(action,"toggle") {result.raise("Use the toggle action")};let followed=hw.jnum(next.draft,"height",0.0)==0.0;value=followed ? hw.jget(layout.options(next.draft,next.height),"height") : json.value(0);return patch(next,"height",value)}
+        if model.isBool(key) {if !strings.equal(action,"toggle") {result.raise("Use the toggle action")};value=json.value(!hw.jbool(next.draft,key,true))}
+        else if strings.equal(key,"position") {let index=hw.jget(request,"index");if !strings.equal(json.kind(index),"number") || (json.float(index)!=0.0 && json.float(index)!=1.0) {result.raise("Invalid panel edge")};value=json.value(json.int(index)==0 ? "top" : "bottom")}
+        else if model.bounds(key).len()>0 {if !strings.equal(json.kind(value),"string") {result.raise("Enter a whole number")};value=json.parse(json.string(value))}
+        return patch(next,key,value)
+    }
+    if strings.equal(action,"step") {let key=hw.jstr(request,"key","");let range=model.bounds(key);let delta=hw.jget(request,"delta");if range.len()==0 || !strings.equal(json.kind(delta),"number") || (json.float(delta)!=-1.0 && json.float(delta)!=1.0) {result.raise("Invalid panel size step")};if strings.equal(key,"height") && hw.jnum(next.draft,"height",0.0)==0.0 {return next};let current=hw.jnum(layout.options(next.draft,next.height),key,0.0) as i64;let number=current+json.int(delta);if number<range[0] || number>range[1] {return next};return patch(next,key,json.value(number))}
+    if strings.equal(action,"preset") {let name=hw.jstr(request,"value","");if strings.equal(name,"compact") {next=patch(next,"height",json.value(36));next=patch(next,"iconSize",json.value(16));return patch(next,"itemSpacing",json.value(2))};if strings.equal(name,"comfortable") {next=patch(next,"height",json.value(44));next=patch(next,"iconSize",json.value(20));return patch(next,"itemSpacing",json.value(4))};if strings.equal(name,"spacious") {next=patch(next,"height",json.value(56));next=patch(next,"iconSize",json.value(24));return patch(next,"itemSpacing",json.value(8))};result.raise("Unknown panel preset")}
+    if strings.equal(action,"custom-clear") {next=patch(next,"contextCustomItems",json.value("[]"));next.editor="";return next}
+    if strings.equal(action,"custom-form") {let key=hw.jstr(request,"key","");let value=hw.jget(request,"value");if !strings.equal(json.kind(value),"string") {result.raise("Enter text for the custom action")};if strings.equal(key,"title") {next.title=json.string(value)}else if strings.equal(key,"command") {next.command=json.string(value)}else {result.raise("Unknown custom action field")};return next}
+    if strings.equal(action,"custom-cancel") {next.editor="";next.title="";next.command="";return next}
+    let items=custom.custom(hw.jget(next.draft,"contextCustomItems"));let key=hw.jstr(request,"key","");let out=json.array();let found=false
+    if strings.equal(action,"custom-save") {key=next.editor;if strings.equal(key,"") {key="custom-"+uuid.v4()};let item=json.value({id:key,title:next.title,command:next.command,target:"background",enabled:true});for i in 0..(json.len(items) as i64) {let old=json.at(items,i);if strings.equal(hw.jstr(old,"id",""),key) {item=json.set(item,"enabled",hw.jget(old,"enabled"));out=json.push(out,item);found=true}else {out=json.push(out,old)}};if !found {out=json.push(out,item)};next=patch(next,"contextCustomItems",json.value(json.stringify(out)));next.editor="";next.title="";next.command="";return next}
+    for i in 0..(json.len(items) as i64) {let item=json.at(items,i);if strings.equal(hw.jstr(item,"id",""),key) {found=true;if strings.equal(action,"custom-edit") {next.editor=key;next.title=hw.jstr(item,"title","");next.command=hw.jstr(item,"command","");return next};if strings.equal(action,"custom-delete") {continue};if strings.equal(action,"custom-toggle") {item=json.set(item,"enabled",!hw.jbool(item,"enabled",true))}else {result.raise("Unknown custom action operation")}};out=json.push(out,item)}
+    if !found {result.raise("This custom action no longer exists")};return patch(next,"contextCustomItems",json.value(json.stringify(out)))
+}
+fn dirty(state:State):bool {return !strings.equal(json.stringify(state.saved),json.stringify(state.draft))}
+fn field(key:str,title:str,kind:str,value:str,options:str,enabled:bool):str {return wire.separator()+"F\t"+key+"\t"+kind+"\t"+wire.encoded(title)+"\t"+wire.encoded(value)+"\t"+wire.encoded(options)+"\t1\t"+(enabled ? "1" : "0")}
+fn response(state:State,ack:i64,error:str):str {
+    let out="K\t${ack}\t${dirty(state) ? 1 : 0}\t"+wire.encoded(error)+"\t"+wire.encoded(state.status)+"\t";let options=layout.options(state.draft,state.height);out=out+wire.separator()+layout.wire(state.draft,state.height)
+    out=out+field("position","Position on screen","select",strings.equal(hw.jstr(options,"position","bottom"),"top") ? "0" : "1","Top edge"+wire.optionSeparator()+"Bottom edge",true)
+    let following=hw.jnum(state.draft,"height",0.0)==0.0;out=out+field("followHeight","Use Desktop panel height","bool",following ? "1" : "0","",true)
+    let keys=Vec<str>("height","iconSize","itemSpacing","spacing");let titles=Vec<str>("Panel height","App icon size","Space between buttons","Space between sections");for i in 0..4 {let key=keys[i];out=out+field(key,titles[i],"number","${hw.jnum(options,key,0.0) as i64}","",!strings.equal(key,"height") || !following)}
+    for key in Vec<str>("showPinned","showDate","contextEnabled") {let title=strings.equal(key,"showPinned") ? "Terminal & Files shortcuts" : strings.equal(key,"showDate") ? "Date below the clock" : "Panel right-click menu";out=out+field(key,title,"bool",hw.jbool(state.draft,key,true) ? "1" : "0","",true)}
+    let items=menu.defaults();for i in 0..(json.len(items) as i64) {let item=json.at(items,i);let key=hw.jstr(item,"key","");out=out+field(key,hw.jstr(item,"title",""),"bool",hw.jbool(state.draft,key,true) ? "1" : "0","",hw.jbool(state.draft,"contextEnabled",true))}
+    let preview=menu.view(state.draft);for i in 0..(json.len(preview) as i64) {let item=json.at(preview,i);out=out+wire.separator()+"M\t"+wire.encoded(hw.jstr(item,"title",""))+"\t"+wire.encoded(hw.jstr(item,"icon","system-run-symbolic"))}
+    let parsed=result.attempt(fn():json.Value {return custom.custom(hw.jget(state.draft,"contextCustomItems"))});if result.isErr(parsed) {out=out+wire.separator()+"I\t"+wire.encoded("Saved custom actions are invalid. Clear them to add new actions.")}else {let entries=result.unwrap(parsed);for i in 0..(json.len(entries) as i64) {let item=json.at(entries,i);out=out+wire.separator()+"C\t"+hw.jstr(item,"id","")+"\t"+wire.encoded(hw.jstr(item,"title",""))+"\t"+wire.encoded(hw.jstr(item,"command",""))+"\t${hw.jbool(item,"enabled",true) ? 1 : 0}"}}
+    return out+wire.separator()+"E\t"+wire.encoded(state.editor)+"\t"+wire.encoded(state.title)+"\t"+wire.encoded(state.command)
+}

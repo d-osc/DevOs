@@ -5,6 +5,7 @@
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wlr/backend/libinput.h>
 #include "common/spawn.h"
 #include "session-lock.h"
 

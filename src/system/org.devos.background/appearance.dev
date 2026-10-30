@@ -1,0 +1,11 @@
+# Stable native presentation fields, derived from the same policy as the legacy
+# frontend. Theme colors remain live UI inputs unless explicitly overridden.
+use "std/json"
+use "std/strings"
+use "./model.dev" as m
+fn view(values:json.Value):json.Value {
+    let config=m.config(json.object(),values);let names=m.styles();let style=0
+    for i in 0..(names.len() as i64) {if strings.equal(names[i],m.text(m.get(config,"style"))) {style=i}}
+    let mode=m.text(m.get(config,"mode"));let fit=m.text(m.get(config,"fit"))
+    return {mode:strings.equal(mode,"picture") ? 2 : strings.equal(mode,"solid") ? 1 : 0,style:style,fit:strings.equal(fit,"contain") ? 1 : strings.equal(fit,"stretch") ? 2 : 0,imagePath:m.text(m.get(config,"imagePath")),color:m.text(m.get(config,"background"))}
+}

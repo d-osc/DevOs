@@ -173,6 +173,12 @@ static void command(const char *line) {
             zwlr_foreign_toplevel_handle_v1_unset_minimized(w->handle);
             zwlr_foreign_toplevel_handle_v1_activate(w->handle, seat);
         } else if (!strcmp(action, "minimize")) zwlr_foreign_toplevel_handle_v1_set_minimized(w->handle);
+        else if (!strcmp(action, "maximize") || !strcmp(action, "unmaximize")) {
+            zwlr_foreign_toplevel_handle_v1_unset_minimized(w->handle);
+            if (!strcmp(action, "maximize")) zwlr_foreign_toplevel_handle_v1_set_maximized(w->handle);
+            else zwlr_foreign_toplevel_handle_v1_unset_maximized(w->handle);
+            if (seat) zwlr_foreign_toplevel_handle_v1_activate(w->handle, seat);
+        }
         else if (!strcmp(action, "close")) zwlr_foreign_toplevel_handle_v1_close(w->handle);
         else if (!strcmp(action, "move") && workspaces && sscanf(line, "%15s %u %u", action, &id, &desktop) == 3)
             devos_workspace_manager_v1_move_window(workspaces, wl_proxy_get_id((struct wl_proxy *)w->handle), desktop);

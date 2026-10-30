@@ -29,9 +29,11 @@ fn env(base: str, root: str): Map<str,str> {
     let env = Map<str,str>()
     env.set("XDG_RUNTIME_DIR", base + "/runtime")
     env.set("XDG_CONFIG_HOME", base + "/config")
-    env.set("PATH", path.dirname(process.execPath()) + ":" + root + "/build/wsl/bin:" + root + "/bin:" + process.getenv("PATH"))
+    env.set("PATH", root + "/build/wsl/bin:" + path.dirname(process.execPath()) + ":" + root + "/bin:" + process.getenv("PATH"))
     env.set("GTK_USE_PORTAL", "0")
     env.set("DEV_OS_LOGIN", "0")
+    # Fixture backgrounds are launched explicitly; production integration opts in.
+    env.set("DEVOS_NATIVE_SYSTEMS", "0")
     env.set("WLR_HEADLESS_OUTPUTS", "1")
     return env
 }
@@ -86,17 +88,39 @@ fn digits(value: str): bool {
     return true
 }
 fn environment(session: Session): Map<str,str> {
-    let ids = processIds(session.runtime, session.root + "/dist/main.js")
-    tool.require(ids.len() == 1, "Private shell environment unavailable.")
-    let env = session.env
-    for variable in fields("/proc/" + json.stringify(ids[0]) + "/environ") {
-        let parts = strings.split(variable, "=")
-        if parts.len() < 2 { continue }
-        let fieldName = parts[0]
-        let value = strings.substring(variable, strings.charLength(fieldName) + 1, strings.charLength(variable))
-        env.set(fieldName, value)
+    # Startup command clients can briefly share main.js, then exit. Wait for the
+    # persistent shell, and tolerate /proc entries disappearing during the scan.
+    for attempt in 0..100 {
+        let candidates = processIds(session.runtime, session.root + "/dist/main.js")
+        let ids = Vec<i64>()
+        for pid in candidates {
+            let selected = result.attempt(fn():bool {
+                let args = fields("/proc/${pid}/cmdline")
+                for i in 0..(args.len() as i64) {
+                    if strings.endsWith(args[i],".js") {
+                        return strings.equal(args[i],session.root+"/dist/main.js") && (i+1 == args.len() as i64 || i+2 == args.len() as i64 && strings.equal(args[i+1],"shell"))
+                    }
+                }
+                return false
+            })
+            if result.unwrapOr(selected,false) { ids.push(pid) }
+        }
+        if ids.len() == 1 {
+            let variables = result.attempt(fn():Vec<str> { return fields("/proc/${ids[0]}/environ") })
+            if result.isOk(variables) {
+                let env = session.env
+                for variable in result.unwrap(variables) {
+                    let parts = strings.split(variable,"="); if parts.len() < 2 { continue }
+                    let fieldName = parts[0]
+                    env.set(fieldName,strings.substring(variable,strings.charLength(fieldName)+1,strings.charLength(variable)))
+                }
+                return env
+            }
+        }
+        time.sleep_ms(50)
     }
-    return env
+    tool.require(false,"Private shell environment unavailable.\n"+tool.read(session.log))
+    return session.env
 }
 fn cleanup(session: Session) {
     stop(session.child)

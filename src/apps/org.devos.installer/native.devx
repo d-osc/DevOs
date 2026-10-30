@@ -1,0 +1,195 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn rd_block_close(root:*void,blocked:i32)
+
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn lower(ch:u8):bool { return ch >= 97 && ch <= 122 }
+fn digit(ch:u8):bool { return ch >= 48 && ch <= 57 }
+// Same rules as src/apps/org.devos.installer/model.dev (native builds cannot import std modules).
+fn validUsername(value:ui.Text):bool {
+    let bytes=value.bytes; let count=bytes.len() as i64
+    if count < 1 || count > 32 || !lower(bytes[0]) { return false }
+    for ch in bytes { if !lower(ch) && !digit(ch) && ch != 95 && ch != 45 { return false } }
+    return true
+}
+fn validHostname(value:ui.Text):bool {
+    let bytes=value.bytes; let count=bytes.len() as i64
+    if count < 1 || count > 63 { return false }
+    for i in 0..count { let ch=bytes[i]; if !lower(ch) && !digit(ch) && (ch != 45 || i == 0 || i == count-1) { return false } }
+    return true
+}
+fn label(value:ui.Text,className:str):ui.Node {
+    let options=ui.props(); options.xalign=0.0; options.wrap=true
+    if className != "" { options.className=ui.text(className) }
+    return ui.withProps(ui.TextLabel(value),options)
+}
+fn words(value:str,className:str):ui.Node { return label(ui.text(value),className) }
+fn header(title:str,subtitle:str):ui.Node {
+    let options=ui.props(); options.spacing=4
+    return ui.Box(options,Vec<ui.Node>(words(title,"installer-title"),words(subtitle,"subtle")))
+}
+fn field(title:str,id:str,value:ui.Text,password:bool,placeholder:str,changed:fn(ui.Text):void):ui.Node {
+    let options=ui.named(id); options.placeholder=ui.text(placeholder)
+    let input=password ? ui.PasswordEntry(options,value,changed) : ui.Entry(options,value,changed)
+    let box=ui.props(); box.spacing=6
+    return ui.Box(box,Vec<ui.Node>(words(title,"installer-field-label"),input))
+}
+fn nav(back:fn():void,hasBack:bool,id:str,text:str,enabled:bool,action:fn():void):ui.Node {
+    let options=ui.props(); options.vertical=false; options.spacing=12; options.className=ui.text("installer-navigation"); options.halign=2
+    let next=ui.named(id); next.sensitive=enabled; next.className=ui.text(id=="installer-erase" ? "destructive-action" : "suggested-action")
+    let items=Vec<ui.Node>()
+    if hasBack { items.push(ui.Button(ui.named("installer-back"),"Back",back)) }
+    items.push(ui.Button(next,text,action))
+    return ui.Box(options,items)
+}
+fn App(context:*ui.Context):ui.Node {
+    let page=ui.useState(context,0); let available=ui.useState(context,0)
+    let disks=ui.useText(context,ui.emptyText()); let loaded=ui.useState(context,0); let selected=ui.useText(context,ui.emptyText())
+    let username=ui.useText(context,ui.emptyText()); let hostname=ui.useText(context,ui.text("devos"))
+    let password=ui.useText(context,ui.emptyText()); let repeat=ui.useText(context,ui.emptyText()); let typed=ui.useText(context,ui.emptyText())
+    let step=ui.useState(context,0); let total=ui.useState(context,10); let stepText=ui.useText(context,ui.text("Starting…"))
+    let message=ui.useText(context,ui.emptyText()); let error=ui.useText(context,ui.emptyText()); let pipe=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root=environment("DEV_OS_ROOT"); let mode=environment("DEV_OS_THEME"); let family=environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len()==0 { unsafe { mode=rd_default_theme() } }
+        if ui.text(family).bytes.len()==0 { family="vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header_for((*context).native,"Install Dev OS","${root}/data/icons","installer","dev-os-installer")
+        }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe { if rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"installer") == 0 { error.set(ui.text("Could not register the application control service.")) } }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let root=environment("DEV_OS_ROOT"); let runner=environment("DEVLANG_RUN"); if ui.text(runner).bytes.len()==0 { runner="d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.installer/service.dev",root,fn(value:ui.Text) {
+            if value.bytes.len()==0 { return }
+            let kind=value.bytes[0]; let parts=channel.split(value,9)
+            if kind==65 { available.set(parts.len() > 1 && parts[1].bytes.len() > 0 && parts[1].bytes[0]==49 ? 1 : 0) }
+            else if kind==76 { disks.set(value); loaded.set(1) }
+            else if kind==83 && parts.len() > 3 { step.set(channel.integer(parts[1])); total.set(channel.integer(parts[2])); stepText.set(ui.concatText(Vec<ui.Text>(ui.text("Step "),parts[1],ui.text(" of "),parts[2],ui.text(": "),parts[3]))) }
+            else if kind==68 { message.set(parts.len() > 1 ? parts[1] : ui.emptyText()); page.set(5); unsafe { rd_block_close((*context).native,0) } }
+            else if kind==88 { error.set(parts.len() > 1 ? parts[1] : ui.emptyText()); page.set(6); unsafe { rd_block_close((*context).native,0) } }
+            else if kind==69 { error.set(parts.len() > 1 ? parts[1] : ui.emptyText()); loaded.set(1) }
+        },fn(value:i64) { pipe.set(value); channel.command(value,ui.text("{\"action\":\"available\"}")) })
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        if page.get()==1 { loaded.set(0); error.set(ui.emptyText()); channel.command(pipe.get(),ui.text("{\"action\":\"disks\"}")) }
+        return ui.noop
+    },Vec<i64>(page.value))
+    let rows=channel.split(disks.value,30); let list=Vec<Vec<ui.Text>>()
+    for i in 1..(rows.len() as i64) { let fields=channel.split(rows[i],9); if fields.len() > 6 { list.push(fields) } }
+    let chosen=Vec<ui.Text>(); for fields in list { if ui.equalText(fields[1],selected.value) { chosen=fields } }
+    let formError=""
+    if !validUsername(username.value) { formError="The user name must start with a lowercase letter and use only letters, digits, - and _." }
+    else if !validHostname(hostname.value) { formError="The computer name may use lowercase letters, digits and -." }
+    else if password.value.bytes.len() < 4 { formError="The password needs at least 4 characters." }
+    else if !ui.equalText(password.value,repeat.value) { formError="The passwords do not match." }
+    let stages=Vec<str>("Welcome","Choose a disk","Your account","Review","Installation")
+    let current=page.value >= 4 ? 4 : page.value
+    let sidebar=ui.props(); sidebar.spacing=22; sidebar.width=208; sidebar.className=ui.text("installer-sidebar")
+    let steps=Vec<ui.Node>(); let stageBox=ui.props(); stageBox.spacing=18; stageBox.expand=true
+    for i in 0..5 {
+        let row=ui.props(); row.vertical=false; row.spacing=12; row.className=ui.text(i==current ? "installer-stage current" : i < current ? "installer-stage complete" : "installer-stage")
+        let number=ui.props(); number.className=ui.text("installer-stage-number")
+        steps.push(ui.Box(row,Vec<ui.Node>(ui.withProps(ui.Label(i < current ? "✓" : "0${i+1}"),number),words(stages[i],""))))
+    }
+    let icon=ui.props(); icon.iconSize=40; icon.halign=1
+    let brand=ui.props(); brand.spacing=6
+    let side=ui.Box(sidebar,Vec<ui.Node>(ui.Icon(icon,"dev-os-symbolic"),ui.Box(brand,Vec<ui.Node>(words("DEV OS","installer-wordmark"),words("A fresh start.","installer-sidebar-title"))),ui.Box(stageBox,steps),words("LIVE USB · ARM64","installer-sidebar-note")))
+    let body=Vec<ui.Node>()
+    let goto0=fn() { error.set(ui.emptyText()); page.set(0) }
+    if available.value==0 {
+        body.push(header("Install Dev OS","The installer erases a whole disk, so it runs only from the Live USB."))
+        body.push(ui.withProps(words("Start this computer from the Dev OS Live USB to install. Nothing was changed.","error"),ui.named("installer-unavailable")))
+    } else if page.value==0 {
+        body.push(header("Make it your own.","A workspace on your computer, ready whenever you are."))
+        body.push(words("The installer will erase one whole disk that you choose and set up Dev OS on it, with a user account of your own. Other disks are not changed. Plug in your charger and keep this window open until it finishes.",""))
+        body.push(nav(goto0,false,"installer-start","Start",true,fn() { page.set(1) }))
+    } else if page.value==1 {
+        body.push(header("Choose the disk to erase","Only internal, unused disks are listed. The Live USB itself and disks in use are never offered."))
+        let items=Vec<ui.Node>(); let column=ui.props(); column.spacing=8
+        if loaded.value==0 { items.push(ui.withProps(words("Looking for disks…",""),ui.named("installer-disks-loading"))) }
+        else if list.len()==0 { items.push(ui.withProps(words("No suitable disk was found (at least 8 GiB, not in use, not read-only).",""),ui.named("installer-disks-empty"))) }
+        for fields in list {
+            let options=ui.named("installer-disk-${items.len()}"); options.className=ui.text(ui.equalText(fields[1],selected.value) ? "disk-device selected" : "disk-device")
+            let rowBox=ui.props(); rowBox.spacing=2; let path=fields[1]
+            let model_=ui.concatText(Vec<ui.Text>(fields[3].bytes.len() > 0 ? fields[3] : ui.text("Unknown disk"),ui.text(" · "),fields[4],ui.text(" · "),fields[1]))
+            let detail=ui.concatText(Vec<ui.Text>(fields[6].bytes.len() > 0 ? ui.concatText(Vec<ui.Text>(ui.text("Contains existing data ("),fields[6],ui.text(") that will be erased"))) : ui.text("Appears empty"),fields[5].bytes[0]==49 ? ui.text(" · removable") : ui.emptyText()))
+            items.push(ui.WidgetButton(options,ui.Box(rowBox,Vec<ui.Node>(label(model_,""),label(detail,"subtle"))),fn() { selected.set(path) }))
+        }
+        let scroll=ui.props(); scroll.height=240
+        body.push(ui.Scroll(scroll,ui.Box(column,items)))
+        if error.value.bytes.len() > 0 { body.push(ui.withProps(label(error.value,"error"),ui.named("installer-error"))) }
+        let refresh=ui.props(); refresh.vertical=false; refresh.spacing=12
+        body.push(ui.Box(refresh,Vec<ui.Node>(ui.Button(ui.named("installer-refresh"),"Refresh",fn() { loaded.set(0); channel.command(pipe.get(),ui.text("{\"action\":\"disks\"}")) }),nav(goto0,true,"installer-next","Next",chosen.len() > 0,fn() { page.set(2) }))))
+    } else if page.value==2 {
+        body.push(header("Your account","You will sign in with this user. It can administer the computer."))
+        body.push(field("User name","installer-username",username.value,false,"User name (lowercase)",fn(v:ui.Text) { username.set(v) }))
+        body.push(field("Computer name","installer-hostname",hostname.value,false,"Computer name",fn(v:ui.Text) { hostname.set(v) }))
+        body.push(field("Password","installer-password",password.value,true,"Password · at least 4 characters",fn(v:ui.Text) { password.set(v) }))
+        body.push(field("Confirm password","installer-confirm",repeat.value,true,"Repeat the password",fn(v:ui.Text) { repeat.set(v) }))
+        if formError != "" && (username.value.bytes.len() > 0 || password.value.bytes.len() > 0 || repeat.value.bytes.len() > 0) { body.push(ui.withProps(words(formError,"error"),ui.named("installer-form-error"))) }
+        body.push(nav(fn() { page.set(1) },true,"installer-next","Next",formError=="",fn() { typed.set(ui.emptyText()); page.set(3) }))
+    } else if page.value==3 && chosen.len() > 0 {
+        let path=chosen[1]
+        body.push(header("Erase and install","This cannot be undone."))
+        body.push(ui.withProps(label(ui.concatText(Vec<ui.Text>(ui.text("Everything on "),chosen[3].bytes.len() > 0 ? chosen[3] : ui.text("this disk"),ui.text(" ("),chosen[4],ui.text(", "),path,ui.text(") will be permanently erased."),chosen[6].bytes.len() > 0 ? ui.concatText(Vec<ui.Text>(ui.text(" It currently contains "),chosen[6],ui.text("."))) : ui.emptyText())),"error"),ui.named("installer-warning")))
+        body.push(label(ui.concatText(Vec<ui.Text>(ui.text("Dev OS will be installed for the user \""),username.value,ui.text("\" on a computer named \""),hostname.value,ui.text("\"."))),""))
+        body.push(label(ui.concatText(Vec<ui.Text>(ui.text("Type "),path,ui.text(" to confirm:"))),""))
+        let confirm=ui.named("installer-confirm-disk"); confirm.placeholder=path
+        body.push(ui.Entry(confirm,typed.value,fn(v:ui.Text) { typed.set(v) }))
+        body.push(nav(fn() { page.set(2) },true,"installer-erase","Erase disk and install",ui.equalText(typed.value,path),fn() {
+            let request=ui.concatText(Vec<ui.Text>(ui.text("{\"action\":\"install\",\"path\":"),channel.quote(path),ui.text(",\"size\":"),chosen[2],ui.text(",\"username\":"),channel.quote(username.value),ui.text(",\"hostname\":"),channel.quote(hostname.value),ui.text(",\"password\":"),channel.quote(password.value),ui.text("}")))
+            step.set(0); stepText.set(ui.text("Starting…")); page.set(4)
+            unsafe { rd_block_close((*context).native,1) }
+            channel.command(pipe.get(),request); password.set(ui.emptyText()); repeat.set(ui.emptyText())
+        }))
+    } else if page.value==4 {
+        body.push(header("Installing Dev OS","Do not turn off the computer or remove the USB drive."))
+        let bar=ui.named("installer-progress")
+        body.push(ui.Progress(bar,step.value > 0 ? (step.value as f64 - 1.0)/(total.value as f64) + 0.02 : 0.02))
+        body.push(ui.withProps(label(stepText.value,""),ui.named("installer-step")))
+    } else if page.value==5 {
+        body.push(header("Dev OS is installed","Remove the USB drive, then restart the computer."))
+        if message.value.bytes.len() > 0 { body.push(label(message.value,"")) }
+        body.push(ui.Button(ui.named("installer-restart"),"Restart now",fn() { channel.command(pipe.get(),ui.text("{\"action\":\"reboot\"}")) }))
+    } else {
+        body.push(header("The installation did not finish","The disk may be partly written and will not start Dev OS yet. Your other disks were not changed."))
+        body.push(ui.withProps(label(error.value,"error"),ui.named("installer-failure")))
+        body.push(nav(fn() { page.set(3) },false,"installer-retry","Try again",true,fn() { error.set(ui.emptyText()); page.set(1) }))
+    }
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_NATIVE_SMOKE")).bytes.len() == 0 { return ui.noop }
+        if available.value==1 && page.value==0 { ui.click(context,"installer-start") }
+        else if page.value==1 && loaded.value==1 && list.len() > 0 { if chosen.len()==0 { ui.click(context,"installer-disk-0") } else { ui.click(context,"installer-next") } }
+        else if page.value==2 {
+            if username.value.bytes.len()==0 { ui.change(context,"installer-username","ada") }
+            else if password.value.bytes.len()==0 { ui.change(context,"installer-password","secret") }
+            else if repeat.value.bytes.len()==0 { ui.change(context,"installer-confirm","secret") }
+            else if formError=="" { ui.click(context,"installer-next") }
+        }
+        else if page.value==3 { if typed.value.bytes.len()==0 { ui.change(context,"installer-confirm-disk","/dev/sdz") } else { ui.click(context,"installer-erase") } }
+        else if page.value==5 { print("PASS native Installer wizard, streamed installation and cleanup"); ui.close(context) }
+        else if page.value==6 { print("FAIL native Installer wizard reported an installation error"); ui.close(context) }
+        return ui.noop
+    },Vec<i64>(page.value,loaded.value,available.value,selected.revision,username.revision,password.revision,repeat.revision,typed.revision))
+    let bodyBox=ui.props(); bodyBox.spacing=22; bodyBox.expand=true; bodyBox.className=ui.text("installer-body"); bodyBox.margin=32
+    let shell=ui.props(); shell.vertical=false; shell.spacing=0; shell.expand=true; shell.className=ui.text("installer-shell")
+    let scroll=ui.props(); scroll.expand=true
+    return ui.Box(shell,Vec<ui.Node>(side,ui.Scroll(scroll,ui.Box(bodyBox,body))))
+}
+fn run():i32 {
+    let id=environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len()==0 { id="org.devos.App.installer.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Install Dev OS",1000,700,App) ? 0 : 1
+}

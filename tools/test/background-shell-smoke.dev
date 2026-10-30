@@ -1,0 +1,25 @@
+use "std/strings"
+use "std/fs"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    let root=tool.root();let binary=root+"/build/react-devlang/background/background-live-shell"
+    tool.checked(Vec<str>("sh",root+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",root+"/packages/react-devlang/tools/build.sh",root+"/tests/react-devlang/background-live-shell.devx",binary,root+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    smoke.withSession("background-shell",Map<str,str>(),fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("DEV_OS_ROOT",root);env.set("DEVOS_BACKGROUND_TRACKER","");env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","0");env.set("GDK_BACKEND","wayland");env.set("NO_AT_BRIDGE","1");env.set("G_DEBUG","fatal-criticals")
+        let log=root+"/build/react-devlang/background/live-shell.log";tool.write(log,"");let child=smoke.launch(Vec<str>(binary),env,log)
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(log));return strings.contains(tool.read(log),"LIVE SHELL READY")},15000,"Native background did not receive live tracker state")
+        let children=strings.split(strings.trim(tool.read("/proc/${child.pid()}/task/${child.pid()}/children"))," ");tool.require(children.len()==2,"Native UI did not start separate data and tracker processes")
+        let tracker=false;let worker=false
+        for pid in children {let command=tool.read("/proc/"+pid+"/cmdline");if strings.contains(command,"dev-os-window-tracker") {tracker=true};if strings.contains(command,"widget-service.dev") {worker=true};tool.require(!strings.contains(tool.read("/proc/"+pid+"/maps"),"mozjs"),"Native child loaded MozJS")}
+        tool.require(tracker && worker,"Native runtime child identities were incorrect");tool.require(!strings.contains(tool.read("/proc/${child.pid()}/maps"),"mozjs"),"Native background UI loaded MozJS")
+        smoke.screenshot(env,root+"/build/screenshots/background-live-shell.png")
+        tool.checked(Vec<str>("kill","-TERM","${child.pid()}"),env,"",5000);tool.waitFor(fn():bool {return child.ready()},5000,"Native background did not stop");let done=child.wait();tool.require(done.success,tool.read(log))
+        for pid in children {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid)},5000,"Native child survived UI shutdown")}
+        print("PASS live Wayland tracker, separate DevLang data service, native background UI, no MozJS and complete shutdown")
+    });return 0
+}
+return tool.main(main)

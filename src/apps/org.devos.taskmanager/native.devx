@@ -1,0 +1,149 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn sorting(index:i64):str {
+    let names = Vec<str>("cpu","memory","gpu","gpuMemory","swap","disk","network","name","pid")
+    return names[index % 9]
+}
+fn message(query:ui.Text,sort:i64,paused:i64,action:ui.Text):ui.Text {
+    return ui.concatText(Vec<ui.Text>(
+        ui.text("{\"query\":"),channel.quote(query),ui.text(",\"sort\":\"${sorting(sort)}\",\"paused\":${paused != 0},"),action,ui.text("}")
+    ))
+}
+fn request(pipe:i64,query:ui.Text,sort:i64,paused:i64,action:ui.Text) { channel.send(pipe,message(query,sort,paused,action)) }
+fn command(pipe:i64,query:ui.Text,sort:i64,paused:i64,action:ui.Text) { channel.command(pipe,message(query,sort,paused,action)) }
+fn label(value:ui.Text,chars:i32,width:i32,subtle:bool):ui.Node {
+    let options=ui.props(); options.widthChars=chars; options.width=width; options.xalign=0.5
+    if subtle { options.className=ui.text("subtle") }
+    return ui.withProps(ui.TextLabel(value),options)
+}
+fn pair(first:ui.Text,second:ui.Text,width:i32):ui.Node {
+    let options=ui.props(); options.width=width; options.spacing=2
+    return ui.Box(options,Vec<ui.Node>(label(first,-1,-1,false),label(second,-1,-1,true)))
+}
+fn stat(title:str,value:ui.Text,detail:ui.Text):ui.Node {
+    let options=ui.props(); options.expand=true; options.spacing=5; options.className=ui.text("task-stat")
+    let titleStyle=ui.props(); titleStyle.className=ui.text("subtle")
+    let valueStyle=ui.props(); valueStyle.className=ui.text("task-value")
+    return ui.Box(options,Vec<ui.Node>(ui.withProps(ui.Label(title),titleStyle),ui.withProps(ui.TextLabel(value),valueStyle),ui.withProps(ui.TextLabel(detail),titleStyle)))
+}
+fn App(context:*ui.Context):ui.Node {
+    let snapshot = ui.useText(context,ui.text("S\t—\t—\t—\tLoading processes…\t"))
+    let error = ui.useText(context,ui.emptyText())
+    let query = ui.useText(context,ui.emptyText()); let sort = ui.useState(context,0); let paused = ui.useState(context,0)
+    let selected = ui.useText(context,ui.emptyText()); let confirm = ui.useState(context,0); let pipe = ui.useRef(context,0)
+    let smoke = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root=environment("DEV_OS_ROOT"); let mode=environment("DEV_OS_THEME"); let family=environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len()==0 { unsafe { mode=rd_default_theme() } }
+        if ui.text(family).bytes.len()==0 { family="vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Task Manager","${root}/data/icons")
+        }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe { if rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"task-manager") == 0 { error.set(ui.text("Could not register the application control service.")) } }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        return channel.connect(context,runner,"${root}/src/services/taskmanager.dev",root,fn(value:ui.Text) {
+            if value.bytes.len() > 0 && value.bytes[0] == 69 {
+                let parts = channel.split(value,9); if parts.len() > 1 { error.set(parts[1]) }
+            } else { snapshot.set(value); error.set(ui.emptyText()) }
+        },fn(value:i64) {
+            pipe.set(value); request(value,query.get(),sort.get(),paused.get(),ui.text("\"action\":\"get\""))
+        })
+    },Vec<i64>())
+    let records = channel.split(snapshot.value,30); let summary = channel.split(records[0],9)
+    let rows = Vec<ui.Node>(); let canStop = false
+    let chosen = channel.split(selected.value,9)
+    for i in 1..(records.len() as i64) {
+        let record = records[i]; let fields = channel.split(record,9); if fields.len() < 19 { continue }
+        let pid = channel.integer(fields[1]); let start = channel.integer(fields[2])
+        let active = chosen.len() >= 4 && ui.equalText(chosen[1],fields[1]) && ui.equalText(chosen[2],fields[2])
+        if active && channel.integer(fields[3]) == 1 { canStop = true }
+        let nameStyle=ui.props(); nameStyle.ellipsize=true
+        let subtle=ui.props(); subtle.className=ui.text("subtle")
+        let program=ui.props(); program.expand=true; program.spacing=2; program.width=160
+        let columns=Vec<ui.Node>(ui.Box(program,Vec<ui.Node>(ui.withProps(ui.TextLabel(fields[11]),nameStyle),ui.withProps(ui.TextLabel(fields[12]),subtle))),label(fields[1],8,-1,false),label(fields[5],9,-1,false),label(fields[6],12,-1,false),pair(fields[13],fields[14],110),label(fields[8],10,-1,false),pair(fields[15],fields[16],145),pair(fields[17],fields[18],145))
+        let options = ui.keyed(pid); options.id = ui.text("process-${pid}"); options.className = ui.text(active ? "task-process selected" : "task-process")
+        let line = ui.props(); line.vertical = false; line.spacing = 12
+        let button = ui.WidgetButton(options,ui.Box(line,columns),fn() { selected.set(record); confirm.set(0) }); button.tag = start; rows.push(button)
+    }
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_NATIVE_SMOKE")).bytes.len() > 0 && records.len() > 1 {
+            if smoke.get() == 0 {
+                smoke.set(1)
+                ui.change(context,"task-search","Task Manager")
+                ui.select(context,"task-sort",1)
+                ui.click(context,"task-pause")
+            } else if summary.len() >= 9 && ui.equalText(summary[6],ui.text("Task Manager")) && ui.equalText(summary[7],ui.text("memory")) && channel.integer(summary[8]) == 1 {
+                print("PASS native Task Manager service, search, sorting, pause and cleanup")
+                ui.close(context)
+            }
+        }
+        return ui.noop
+    },Vec<i64>(snapshot.revision))
+    let headings = ui.props(); headings.vertical = false; headings.spacing = 12; headings.className=ui.text("task-columns")
+    let programHeading=ui.props(); programHeading.expand=true; programHeading.width=160
+    let headers=Vec<ui.Node>(ui.withProps(ui.Label("PROGRAM / USER"),programHeading),label(ui.text("PID"),8,-1,false),label(ui.text("CPU"),9,-1,false),label(ui.text("MEMORY"),12,-1,false),label(ui.text("GPU / MEM"),-1,110,false),label(ui.text("SWAP"),10,-1,false),label(ui.text("DISK R / W"),-1,145,false),label(ui.text("TCP NETWORK ↓ / ↑"),-1,145,false))
+    let search=ui.named("task-search"); search.expand=true; search.placeholder=ui.text("Search app, command, PID or user")
+    let choices=Vec<ui.Text>(); for name in Vec<str>("CPU usage","Memory usage","GPU usage","GPU memory","Swap usage","Disk activity","TCP network activity","Name","PID") { choices.push(ui.text(name)) }
+    let message = error.value.bytes.len() > 0 ? error.value : summary.len() > 5 ? summary[5] : ui.emptyText()
+    return <Box expand spacing={16} className="task-manager-body">
+        <Box vertical={false} spacing={12}>
+            <Box expand spacing={0}><Label className="task-title">Task Manager</Label><Label className="subtle">See what is running on your desktop</Label></Box>
+            <Button id="task-pause" onClick={() => {
+                let next = paused.get() == 0 ? 1 : 0; paused.set(next); channel.pause(pipe.get(),next != 0)
+                request(pipe.get(),query.get(),sort.get(),next,ui.text("\"action\":\"get\""))
+            }}>{paused.value == 0 ? "Pause updates" : "Resume updates"}</Button>
+        </Box>
+        <Box vertical={false} spacing={12}>
+            {stat("CPU",summary[1],summary.len()>10 ? summary[10] : ui.text("Sampling…"))}
+            {stat("Memory",summary.len()>9 ? summary[9] : ui.text("—"),summary[2])}
+            {stat("Swap",summary.len()>11 ? summary[11] : ui.text("—"),summary.len()>12 ? summary[12] : ui.text("Sampling…"))}
+        </Box>
+        <Box vertical={false} spacing={12}>
+            {ui.SearchEntry(search,query.value,fn(value:ui.Text) {
+                query.set(value); request(pipe.get(),value,sort.get(),paused.get(),ui.text("\"action\":\"get\""))
+            })}
+            {ui.Select(ui.named("task-sort"),choices,sort.value,fn(next:i64) {
+                sort.set(next); request(pipe.get(),query.get(),next,paused.get(),ui.text("\"action\":\"get\""))
+            })}
+        </Box>
+        {ui.Box(headings,headers)}
+        <Scroll expand><Box spacing={3}>{...rows}{rows.len()==0 && <Label className="subtle">{snapshot.revision>0 ? "No matching processes" : "Loading processes…"}</Label>}</Box></Scroll>
+        {message.bytes.len()>0 && <TextLabel id="task-error" className="error" value={message}/>}
+        {confirm.value != 0 && <Box className="task-confirm" spacing={10}>
+            <Label>Stop the selected process? Unsaved work may be lost.</Label>
+            <Box vertical={false} spacing={8}>
+                <Button onClick={() => confirm.set(0)}>Cancel</Button>
+                <Button sensitive={canStop} onClick={() => {
+                    command(pipe.get(),query.get(),sort.get(),paused.get(),ui.text("\"action\":\"stop\",\"pid\":${channel.integer(chosen[1])},\"start\":\"${channel.integer(chosen[2])}\",\"force\":false")); confirm.set(0)
+                }}>End task</Button>
+                <Button sensitive={canStop} onClick={() => {
+                    command(pipe.get(),query.get(),sort.get(),paused.get(),ui.text("\"action\":\"stop\",\"pid\":${channel.integer(chosen[1])},\"start\":\"${channel.integer(chosen[2])}\",\"force\":true")); confirm.set(0)
+                }}>Force stop</Button>
+            </Box>
+        </Box>}
+        <Box vertical={false} spacing={12}>
+            <TextLabel className="subtle" expand wrap value={summary[4]}/>
+            <Button id="task-end" sensitive={canStop} onClick={() => confirm.set(1)}>End task…</Button>
+        </Box>
+    </Box>
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.taskmanager.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Task Manager",1300,680,App) ? 0 : 1
+}

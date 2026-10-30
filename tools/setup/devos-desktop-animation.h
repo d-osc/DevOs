@@ -86,6 +86,7 @@ bool devos_scene_copy(struct wlr_scene_node *source, struct wlr_scene_tree *pare
         wlr_scene_buffer_set_dest_size(clone, buffer->dst_width, buffer->dst_height);
         wlr_scene_buffer_set_transform(clone, buffer->transform);
         wlr_scene_buffer_set_opacity(clone, buffer->opacity);
+        wlr_scene_buffer_set_opaque_region(clone, &buffer->opaque_region);
         copy = &clone->node;
     }
     if (copy) wlr_scene_node_set_position(copy, source->x, source->y);

@@ -1,0 +1,51 @@
+use "std/test"
+use "std/strings"
+use "std/json"
+use "std/fs"
+use "../lib/shell-command.dev" as command
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+test.case("session identity matches the existing shell protocol",fn() {
+    let runtime="/run/user/1000";let display="wayland-2"
+    let expected="org.devos.Shell.sffd36965438d2c3e"
+    t.equal(command.applicationId(runtime,display),expected)
+    test.expect(!strings.equal(command.applicationId(runtime,"wayland-3"),expected),"Different sessions share identity")
+})
+test.case("argument validation preserves editor and package lists",fn() {
+    test.expect(command.valid(Vec<str>("editor","/tmp/ภาษา ไทย.txt","/tmp/other")),"Editor filenames rejected")
+    test.expect(command.valid(Vec<str>("package-install","/tmp/pkg.dpk")),"Package files rejected")
+    test.expect(command.valid(Vec<str>("doctor","--json")),"Doctor JSON rejected")
+    test.expect(command.valid(Vec<str>("settings.background")),"Native Background Settings command rejected")
+    test.expect(command.valid(Vec<str>("settings.panel")),"Native Panel Settings command rejected")
+    test.expect(command.valid(Vec<str>("accounts")) && command.valid(Vec<str>("switch-user")) && command.valid(Vec<str>("switch-user","alice")),"Native account routes rejected")
+    test.expect(!command.valid(Vec<str>("switch-user","--json")) && !command.valid(Vec<str>("switch-user","alice","bob")) && !command.valid(Vec<str>("switch-user","a/b")),"Invalid user route accepted")
+    test.expect(!command.valid(Vec<str>("editor","--json")) && !command.valid(Vec<str>("reload","extra")) && !command.valid(Vec<str>("unknown")),"Invalid command accepted")
+})
+test.case("version and help need no GJS or session bus",fn() {
+    let env=Map<str,str>();env.set("DEV_OS_ROOT",t.root());env.set("DBUS_SESSION_BUS_ADDRESS","unix:path=/nonexistent-devos-command-bus")
+    let source=t.root()+"/src/system/command.dev"
+    let version=tool.run(Vec<str>(t.runner(),source,"--","--version"),env,"",15000);t.success(version)
+    t.contains(t.out(version),json.string(json.get(json.parse(tool.read(t.root()+"/dist/build-info.json")),"version")))
+    let help=tool.run(Vec<str>(t.runner(),source,"--","--help"),env,"",15000);t.success(help);t.contains(t.out(help),"task-manager")
+})
+test.case("updated session resolver validates installed metadata without GJS",fn() {
+    tool.scope("devos-selected-session-",fn(dir:str) {
+        let key="1.2.3-0123456789ab";let root=dir+"/dev-os-updates/releases/"+key
+        tool.jsonWrite(root+"/release.json",{format:1,version:"1.2.3",platform:"linux-arm64"})
+        tool.jsonWrite(dir+"/dev-os-updates/history.json",{current:{key:key,version:"1.2.3",repository:"owner/repo",platform:"linux-arm64"},previous:null})
+        let env=Map<str,str>();env.set("XDG_DATA_HOME",dir)
+        let done=tool.run(Vec<str>(t.runner(),t.root()+"/bin/dev-os-session-root"),env,"",15000);t.success(done);t.equal(strings.trim(t.out(done)),root)
+        tool.jsonWrite(root+"/release.json",{format:1,version:"9.9.9",platform:"linux-arm64"})
+        let rejected=tool.run(Vec<str>(t.runner(),t.root()+"/bin/dev-os-session-root"),env,"",15000);test.expect(!rejected.success,"Mismatched release accepted")
+    })
+})
+test.case("a remote status of 75 never replays a command through GJS",fn() {
+    tool.scope("devos-native-client-status-",fn(dir:str) {
+        tool.write(dir+"/devrun","#!/bin/sh\nexit 75\n");tool.chmod(dir+"/devrun","755")
+        tool.write(dir+"/gjs","#!/bin/sh\ntouch \"$DEVOS_GJS_PROBE\"\nexit 97\n");tool.chmod(dir+"/gjs","755")
+        let env=Map<str,str>();env.set("PATH",dir+":/usr/bin:/bin");env.set("DEVOS_GJS_PROBE",dir+"/gjs-invoked")
+        let done=tool.run(Vec<str>("sh",t.root()+"/bin/dev-os-shell","reload"),env,"",15000)
+        test.expect(done.code==75,"Remote exit status was changed");test.expect(!fs.existsSync(dir+"/gjs-invoked"),"Command was replayed through GJS")
+    })
+})
+return t.finish()

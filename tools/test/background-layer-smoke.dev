@@ -1,0 +1,26 @@
+# Dedicated layer-shell test in a private two-output compositor.
+use "std/strings"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    let root=tool.root();let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",root+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let binary=root+"/build/react-devlang/background/background-layer"
+    tool.checked(Vec<str>("sh",root+"/packages/react-devlang/tools/build.sh",root+"/tests/react-devlang/background-layer.devx",binary,root+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+    let extras=Map<str,str>();extras.set("WLR_HEADLESS_OUTPUTS","2")
+    smoke.withSession("background-layer",extras,fn(session:smoke.Session) {
+        let env=smoke.environment(session);env.set("GDK_BACKEND","wayland");env.set("DEVOS_BACKGROUND_MONITOR","1");env.set("NO_AT_BRIDGE","1")
+        tool.write(session.base+"/layer.log","")
+        let child=smoke.launch(Vec<str>(binary),env,session.base+"/layer.log")
+        tool.waitFor(fn():bool {tool.require(!child.ready(),tool.read(session.base+"/layer.log"));return strings.contains(tool.read(session.base+"/layer.log"),"LAYER READY monitor=1")},10000,"Native background layer did not render")
+        tool.require(!strings.contains(tool.read("/proc/${child.pid()}/maps"),"mozjs"),"Native layer loaded MozJS")
+        smoke.screenshot(env,root+"/build/screenshots/background-native-layer.png")
+        tool.checked(Vec<str>("kill","-TERM","${child.pid()}"),env,"",5000)
+        tool.waitFor(fn():bool {return child.ready()},5000,"Native layer did not stop on SIGTERM")
+        let done=child.wait();tool.require(done.success,"Native layer shutdown failed: "+tool.read(session.base+"/layer.log"))
+        print("PASS native background layer selects the second monitor and shuts down cleanly")
+    })
+    return 0
+}
+return tool.main(main)

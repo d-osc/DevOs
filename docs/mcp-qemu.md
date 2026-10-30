@@ -1,10 +1,10 @@
 # QEMU VM control for Claude (MCP)
 
-`tools/mcp/qemu-vm/server.ts` is a dependency-free MCP server (stdio) that lets
+`tools/mcp/qemu-vm/server.dev` is a dependency-free DevLang MCP server (stdio) that lets
 Claude start, watch and drive ARM64 QEMU VMs of DevOs images. The repo-level
 `.mcp.json` registers it as `devos-qemu`; Claude Code asks for approval the
-first time the project is opened. It needs Node.js 22.18+/24 (runs the `.ts`
-directly), and `qemu-system-aarch64` + `python3` on the Linux side. On Windows
+first time the project is opened. It needs the DevLang `d` runtime on the host (`d tools/mcp/qemu-vm/server.dev`; tool schemas are in
+`tools.json`), and `qemu-system-aarch64` + `d` on the Linux side. On Windows
 every Linux command goes through WSL (`DEVOS_WSL_DISTRO`, default `Ubuntu`).
 
 | Tool | Purpose |

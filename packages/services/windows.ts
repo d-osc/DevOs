@@ -44,6 +44,8 @@ export interface WindowControls {
     subscribe(listener: () => void): () => void;
     activate(id: number): void;
     toggle(id: number): void;
+    minimize?(id: number): void;
+    maximize?(id: number): void;
     close?(id: number): void;
     readonly desktops?: readonly DesktopWorkspace[];
     readonly keyboardLayouts?: readonly KeyboardLayout[];
@@ -120,8 +122,8 @@ export class Windows implements WindowControls {
     private memoryTimer = 0;
     private memoryWriting = false;
     private minimizedOrder: number[] = [];
-    constructor() {
-        this.memoryTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {this.publishMemory(); return GLib.SOURCE_CONTINUE;});
+    constructor(private options: {memoryPolicy?: boolean} = {}) {
+        if (options.memoryPolicy !== false) this.memoryTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, () => {this.publishMemory(); return GLib.SOURCE_CONTINUE;});
         const helper = [`${ROOT}/build/native/dev-os-window-tracker`, `${ROOT}/native/dev-os-window-tracker`]
             .find(path => GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE)) ?? GLib.find_program_in_path('dev-os-window-tracker');
         if (!helper) { printerr('Dev OS: build the window tracker with tools/setup/bootstrap-window-tracker.sh'); return; }
@@ -149,6 +151,7 @@ export class Windows implements WindowControls {
         });
     }
     private publishMemory() {
+        if (this.options.memoryPolicy === false) return;
         const apps = desktopApps();
         const key = (window: DesktopWindow) => findDesktopApp(apps, window.appId)?.get_id()?.toLowerCase();
         const open = new Set(this.state.map(key).filter((value): value is string => !!value));
@@ -207,7 +210,7 @@ export class Windows implements WindowControls {
             }
         });
     }
-    private send(action: 'activate' | 'minimize' | 'close', id: number) {
+    private send(action: 'activate' | 'minimize' | 'maximize' | 'unmaximize' | 'close', id: number) {
         if (this.disposed || !this.input || !this.entries.has(id)) return;
         this.queue.push(`${action} ${id}\n`); this.write();
     }
@@ -222,6 +225,8 @@ export class Windows implements WindowControls {
         });
     }
     activate(id: number) { this.send('activate', id); }
+    minimize(id: number) {this.send('minimize', id);}
+    maximize(id: number) {this.send(this.state.find(window => window.id === id)?.maximized ? 'unmaximize' : 'maximize', id);}
     gesture(action: 'next' | 'previous' | 'restore') {const target = gestureWindowTarget(this.state, this.desktops.find(desktop => desktop.active)?.id, action, this.minimizedOrder); if (target) this.activate(target.id);}
     setKeyboardLayout(index: number) {if (this.disposed || !this.input || !this.keyboardLayouts.some(layout => layout.index === index)) return; this.queue.push(`layout ${index}\n`); this.write();}
     close(id: number) {this.send('close', id);}
@@ -250,6 +255,7 @@ const builtinApps = [
     {group: 'dev-os-browser', title: 'Browser', icon: 'dev-os-browser-symbolic', id: 'dev-os-browser'},
     {group: 'dev-os-camera', title: 'Camera', icon: 'dev-os-camera-symbolic', id: 'dev-os-camera'},
     {group: 'dev-os-microphone', title: 'Microphone', icon: 'dev-os-microphone-symbolic', id: 'dev-os-microphone'},
+    {group: 'dev-os-screenshot', title: 'Screenshot', icon: 'dev-os-screenshot-symbolic', id: 'dev-os-screenshot'},
     {group: 'dev-os-task-manager', title: 'Task Manager', icon: 'dev-os-task-manager-symbolic', id: 'dev-os-task-manager'},
     {group: 'dev-os-disk-manager', title: 'Disk Manager', icon: 'dev-os-disk-manager-symbolic', id: 'dev-os-disk-manager'},
     {group: 'dev-os-app-store', title: 'App Store', icon: 'dev-os-app-store-symbolic', id: 'dev-os-app-store'},
@@ -263,7 +269,7 @@ export function builtinWindowApp(group: string) {return builtinApps.find(app => 
 export function windowGroup(window: DesktopWindow) {
     // Built-in app windows share the shell's Wayland application ID. Identify
     // their app-specific title prefix before looking up external desktop files.
-    if (/^(?:gjs|org\.devos\.Shell(?:\..*)?)$/i.test(window.appId)) {
+    if (/^(?:gjs|org\.devos\.(?:Shell|App\.[a-z]+)(?:\..*)?)$/i.test(window.appId)) {
         const title = window.title.replace(/^Dev OS /, '');
         const app = builtinApps.find(app => title === app.title || title.startsWith(`${app.title} ·`));
         if (app) return app.group;

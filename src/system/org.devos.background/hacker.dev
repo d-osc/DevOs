@@ -1,0 +1,92 @@
+# Original hacker scenes compiled to native DevLang, including cached glyph masks.
+use "./scene.dev" as s
+use "react_devlang/ui" as ui
+fn hash(a:f64,b:f64):f64 {
+    let x=(a as i64) as u32;let y=(b as i64) as u32
+    let h=((x^2654435769)*2246822507)^((y+2135587861)*3266489909)
+    h=(h^(h>>15))*739982445;h=h^(h>>12)
+    return ((h%100000) as f64)/100000.0
+}
+fn green(p:s.Palette):s.Color {return p.dark ? s.mix(s.Color(0.25,0.95,0.5),p.accent,0.25) : s.mix(s.Color(0.04,0.42,0.24),p.accent,0.2)}
+fn dot(cr:*void,cache:*s.Cache,x:f64,y:f64,r:f64,c:s.Color,a:f64) {s.sprite(cr,cache,2,x,y,r,c,a)}
+fn haze(cr:*void,cache:*s.Cache,x:f64,y:f64,r:f64,c:s.Color,a:f64) {s.sprite(cr,cache,1,x,y,r,c,a)}
+fn glyphs(cache:*s.Cache,size:i32):Vec<i64> {unsafe {
+    if (*cache).glyphSize==size && (*cache).glyphs.len()>0 {return (*cache).glyphs}
+    for surface in (*cache).glyphs {s.cairo_surface_destroy(surface as *void)}
+    (*cache).glyphs.clear();(*cache).glyphSize=size
+    let chars=ui.text("01ABCDEF789<>/{}[]$#%=+*:;");let cell=s.ceil((size as f64)*1.3) as i32
+    for ch in chars.bytes {
+        let surface=s.cairo_image_surface_create(2,cell,cell);let pen=s.cairo_create(surface)
+        s.cairo_select_font_face(pen,"Monospace",0,0);s.cairo_set_font_size(pen,size as f64);s.rgba(pen,s.Color(1.0,1.0,1.0),1.0);s.cairo_move_to(pen,0.0,size as f64);s.show(pen,ui.Text(Vec<u8>(ch)));s.cairo_destroy(pen);(*cache).glyphs.push(surface as i64)
+    }
+    return (*cache).glyphs
+}}
+fn matrix(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let g=green(p);haze(cr,cache,w*0.5,h*1.05,s.max(w,h)*0.6,g,p.dark ? 0.10 : 0.14)
+    let size=s.max(7.0,s.floor(h/90.0+0.5));let columns=s.ceil(w/(size*0.95)) as i64;let masks=glyphs(cache,size as i32)
+    for col in 0..columns {let column=col as f64;let speed=4.0+hash(column,1.0)*9.0;let length=16.0+s.floor(hash(column,2.0)*12.0);let span=h/size+length;let head=s.fmod(t*speed*(0.6+hash(column,3.0)*0.6)+hash(column,4.0)*span,span);let x=column*size*0.95;let fade=0.35+hash(column,5.0)*0.65
+        for n in 0..(length as i64) {let step=n as f64;let row=s.floor(head)-step;if row<0.0 || row*size>h+size {continue}
+            let age=step/length;let index=s.floor(hash(column*977.0+row,s.floor(t*(n!=0 ? 0.35 : 6.0)+hash(row,column)*5.0))*(masks.len() as f64)) as usize
+            let alpha=(n!=0 ? s.pow(1.0-age,1.8)*(p.dark ? 0.42 : 0.34) : (p.dark ? 0.85 : 0.5))*fade
+            s.rgba(cr,n!=0 ? g : s.mix(g,s.Color(1.0,1.0,1.0),p.dark ? 0.55 : 0.0),alpha);s.cairo_mask_surface(cr,masks[index] as *void,x,row*size-size)
+        }
+    }
+}}
+fn snippets():Vec<str> {return Vec<str>(
+    "$ ssh -i ~/.ssh/devos root@10.0.0.7","$ nmap -sV -p 22,80,443 10.0.0.0/24","[ ok ] handshake complete","0x7ffd3a90  48 89 e5 48 83 ec 20 e8",
+    "fn main() -> Result<()> {","  let key = derive(&seed, 4096);","  socket.send(&frame)?;","  Ok(())","}","$ tcpdump -ni wlan0 port 443",
+    "[ ..] resolving dev-os.local","GET /api/v1/status HTTP/1.1","200 OK  12ms","$ grep -rn \"TODO\" src/ | wc -l","sudo systemctl restart devos-shell",
+    "const sock = new WebSocket(url);","0x00401a2c  mov  rax, [rbp-0x18]","0x00401a30  call 0x401b90","[warn] retry 2/5 in 800ms","$ cargo build --release",
+    "uid=0(root) gid=0(root)","ECDSA key fingerprint SHA256:Qm3x","$ git log --oneline | head","packets: 4096 captured, 0 dropped")}
+fn terminal(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let g=green(p);haze(cr,cache,w*0.3,h*0.4,s.max(w,h)*0.55,g,p.dark ? 0.08 : 0.12);let size=s.max(7.0,s.floor(h/78.0+0.5));let lineHeight=size*1.5;s.cairo_select_font_face(cr,"Monospace",0,0);s.cairo_set_font_size(cr,size)
+    let lefts=Vec<f64>(0.04,0.38,0.72);let spans=Vec<f64>(0.30,0.30,0.26);let speeds=Vec<f64>(22.0,16.0,28.0);let strengths=Vec<f64>(1.0,0.8,0.7);let text=snippets()
+    for panel in 0..3 {let rows=s.ceil(h/lineHeight)+2.0;let offset=s.fmod(t*speeds[panel],lineHeight);let first=s.floor(t*speeds[panel]/lineHeight)
+        for row in -1..(rows as i64) {let index=first+(row as f64);let y=(rows-(row as f64))*lineHeight-offset-lineHeight;let line=ui.text(text[s.floor(hash(index,(panel as f64)*31.0)*(text.len() as f64)) as usize]);let edge=s.min(1.0,s.min(y/(h*0.18),(h-y)/(h*0.18)));if edge<=0.0 {continue}
+            s.rgba(cr,g,(p.dark ? 0.30 : 0.26)*strengths[panel]*edge*(line.bytes.len()>0 && line.bytes[0]==36 ? 1.5 : 1.0));s.cairo_move_to(cr,w*lefts[panel],y)
+            let shortened=Vec<u8>();let limit=s.floor(w*spans[panel]/(size*0.6)) as i64
+            for i in 0..(line.bytes.len() as i64) {if i>=limit {break};shortened.push(line.bytes[i])};s.show(cr,ui.Text(shortened))
+        }
+    }
+    s.rgba(cr,g,p.dark ? 0.5 : 0.4);s.cairo_move_to(cr,w*0.04,h*0.93);s.show(cr,ui.text("devos@live:~$"))
+    if (s.floor(t*1.6) as i64)%2==0 {s.cairo_rectangle(cr,w*0.04+size*7.9,h*0.93-size*0.85,size*0.55,size*1.05);s.cairo_fill(cr)}
+}}
+struct Point {x:f64,y:f64}
+fn circuit(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let g=green(p);haze(cr,cache,w*0.65,h*0.5,s.max(w,h)*0.6,g,p.dark ? 0.09 : 0.13);let seed=1337 as u32;let step=s.max(8.0,h/24.0)
+    for trace in 0..30 {
+        let gx=s.floor(s.random(&seed)*w/step);let gy=s.floor(s.random(&seed)*h/step);let points=Vec<Point>(Point(gx*step,gy*step));let direction=s.floor(s.random(&seed)*4.0) as i64
+        for segment in 0..4 {let length=3.0+s.floor(s.random(&seed)*8.0);let dx=direction==0 ? 1.0 : direction==2 ? -1.0 : 0.0;let dy=direction==1 ? 1.0 : direction==3 ? -1.0 : 0.0;gx=gx+dx*length;gy=gy+dy*length;points.push(Point(gx*step,gy*step));direction=(direction+(s.random(&seed)>0.5 ? 1 : 3))%4}
+        let lengths=Vec<f64>(0.0);for i in 1..(points.len() as i64) {let dx=points[i].x-points[i-1].x;let dy=points[i].y-points[i-1].y;lengths.push(lengths[i-1]+s.sqrt(dx*dx+dy*dy))}
+        let total=lengths[lengths.len()-1];s.cairo_new_path(cr);for i in 0..(points.len() as i64) {let point=points[i];if i!=0 {s.cairo_line_to(cr,point.x,point.y)} else {s.cairo_move_to(cr,point.x,point.y)}}
+        s.cairo_set_line_width(cr,0.8);s.rgba(cr,g,p.dark ? 0.13 : 0.16);s.cairo_stroke(cr)
+        for point in Vec<Point>(points[0],points[points.len()-1]) {s.rgba(cr,g,p.dark ? 0.28 : 0.24);s.cairo_arc(cr,point.x,point.y,1.6,0.0,s.tau());s.cairo_stroke(cr)}
+        let pulses=1+trace%2;let speed=1.0/(6.0+s.random(&seed)*8.0)
+        for pulse in 0..pulses {for tail in 0..7 {
+            let along=s.fmod(s.fmod(t*speed+s.random(&seed)+(pulse as f64)/(pulses as f64),1.0)+1.0,1.0)*total-(tail as f64)*2.2;if along<0.0 || along>total {continue}
+            let seg=1;while (seg as usize)<lengths.len()-1 && lengths[seg]<along {seg=seg+1}
+            let f=(along-lengths[seg-1])/s.max(0.000001,lengths[seg]-lengths[seg-1]);let a=points[seg-1];let b=points[seg]
+            dot(cr,cache,a.x+(b.x-a.x)*f,a.y+(b.y-a.y)*f,tail!=0 ? 2.4 : 5.0,tail!=0 ? g : s.mix(g,s.Color(1.0,1.0,1.0),p.dark ? 0.4 : 0.0),(p.dark ? 0.8 : 0.55)*(1.0-(tail as f64)/7.0))
+        }}
+    }
+}}
+fn radar(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let g=green(p);let cx=w*0.7;let cy=h*0.5;let radius=s.min(w*0.42,h*0.46);let sweep=s.fmod(t/7.0,1.0)*s.tau();haze(cr,cache,cx,cy,radius*1.6,g,p.dark ? 0.10 : 0.14);s.cairo_set_line_width(cr,0.8);s.rgba(cr,g,p.dark ? 0.18 : 0.22)
+    for ring in 1..5 {s.cairo_new_path(cr);s.cairo_arc(cr,cx,cy,radius*(ring as f64)/4.0,0.0,s.tau());s.cairo_stroke(cr)}
+    for tick in 0..12 {let angle=(tick as f64)/12.0*s.tau();s.cairo_move_to(cr,cx+s.cos(angle)*radius*0.96,cy+s.sin(angle)*radius*0.96);s.cairo_line_to(cr,cx+s.cos(angle)*radius,cy+s.sin(angle)*radius)}
+    s.cairo_move_to(cr,cx-radius,cy);s.cairo_line_to(cr,cx+radius,cy);s.cairo_move_to(cr,cx,cy-radius);s.cairo_line_to(cr,cx,cy+radius);s.cairo_stroke(cr)
+    for wedge in 0..36 {let index=wedge as f64;let a0=sweep-(index+1.0)*0.028;let a1=sweep-index*0.028;s.cairo_new_path(cr);s.cairo_move_to(cr,cx,cy);s.cairo_arc(cr,cx,cy,radius,a0,a1);s.cairo_close_path(cr);s.rgba(cr,g,(p.dark ? 0.22 : 0.2)*s.pow(1.0-index/36.0,2.0));s.cairo_fill(cr)}
+    s.cairo_new_path(cr);s.cairo_move_to(cr,cx,cy);s.cairo_line_to(cr,cx+s.cos(sweep)*radius,cy+s.sin(sweep)*radius);s.cairo_set_line_width(cr,1.0);s.rgba(cr,g,p.dark ? 0.55 : 0.45);s.cairo_stroke(cr)
+    let seed=99 as u32;for blip in 0..9 {let angle=s.random(&seed)*s.tau();let distance=(0.2+s.random(&seed)*0.75)*radius;let since=s.fmod(s.fmod(sweep-angle,s.tau())+s.tau(),s.tau());let lit=s.pow(s.max(0.0,1.0-since/4.2),2.0);if lit<0.02 {continue};dot(cr,cache,cx+s.cos(angle)*distance,cy+s.sin(angle)*distance,4.5,s.mix(g,s.Color(1.0,1.0,1.0),p.dark ? 0.35 : 0.0),(p.dark ? 0.9 : 0.6)*lit)}
+}}
+fn network(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let g=green(p);let reach=s.max(w,h);haze(cr,cache,w*0.75,h*0.35,reach*0.6,g,p.dark ? 0.09 : 0.13);let seed=4242 as u32;let points=Vec<Point>()
+    for i in 0..30 {let x=s.random(&seed);let y=s.random(&seed);let phase=s.random(&seed)*s.tau();let amount=0.01+s.random(&seed)*0.02;let period=40.0+s.random(&seed)*60.0;points.push(Point((x+s.sin(t/period*s.tau()+phase)*amount)*w,(y+s.cos(t/period*s.tau()*0.9+phase)*amount)*h))}
+    let link=reach*0.24;s.cairo_set_line_width(cr,0.7)
+    for a in 0..30 {for b in (a+1)..30 {let dx=points[a].x-points[b].x;let dy=points[a].y-points[b].y;let distance=s.sqrt(dx*dx+dy*dy);if distance>link {continue}
+        s.rgba(cr,g,(p.dark ? 0.16 : 0.2)*(1.0-distance/link));s.cairo_new_path(cr);s.cairo_move_to(cr,points[a].x,points[a].y);s.cairo_line_to(cr,points[b].x,points[b].y);s.cairo_stroke(cr)
+        let seed=(a*97+b) as f64;if hash(seed,7.0)<0.45 {let f=s.fmod(t/(4.0+hash(seed,8.0)*6.0)+hash(seed,9.0),1.0);let k=hash(seed,10.0)>0.5 ? f : 1.0-f;dot(cr,cache,points[a].x+(points[b].x-points[a].x)*k,points[a].y+(points[b].y-points[a].y)*k,4.0,s.mix(g,s.Color(1.0,1.0,1.0),p.dark ? 0.4 : 0.0),(p.dark ? 0.8 : 0.55)*s.sin(f*s.pi()))}
+    }}
+    for i in 0..30 {let point=points[i];let size=1.6+((i%4) as f64)*0.5;s.rgba(cr,g,p.dark ? 0.55 : 0.45);s.cairo_rectangle(cr,point.x-size/2.0,point.y-size/2.0,size,size);s.cairo_fill(cr);s.rgba(cr,g,p.dark ? 0.18 : 0.2);s.cairo_arc(cr,point.x,point.y,size*2.2,0.0,s.tau());s.cairo_stroke(cr)}
+}}
+fn draw(cr:*void,style:i32,w:f64,h:f64,t:f64,p:s.Palette,cache:*s.Cache) {if style==19 {matrix(cr,cache,w,h,t,p)} else if style==20 {terminal(cr,cache,w,h,t,p)} else if style==21 {circuit(cr,cache,w,h,t,p)} else if style==22 {radar(cr,cache,w,h,t,p)} else {network(cr,cache,w,h,t,p)}}

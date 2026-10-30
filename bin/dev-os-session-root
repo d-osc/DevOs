@@ -1,0 +1,9 @@
+#!/usr/bin/env d
+# Resolve the immutable installed session without loading a JavaScript runtime.
+use "std/result"
+use "../lib/session-version.dev" as versions
+use "../lib/hw.dev" as hw
+let selected=result.attempt(versions.selected)
+if result.isErr(selected) {hw.stderr("Install a release in Settings → Updates first: "+hw.errorText(result.message(selected)));return 1}
+print(result.unwrap(selected))
+return 0

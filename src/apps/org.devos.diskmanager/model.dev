@@ -1,0 +1,66 @@
+# Disk Manager presentation model. The service formats everything; the UI only draws rows.
+use "std/json"
+use "std/strings"
+use "../../../lib/task-metrics.dev" as m
+use "../../../lib/task-view.dev" as view
+
+fn fixed2(value:f64):str {
+    let rounded = (value*100.0+0.5) as i64; let cents = rounded%100
+    return "${rounded/100}."+(cents < 10 ? "0" : "")+"${cents}"
+}
+fn size(bytes:f64):str {
+    return bytes >= 1099511627776.0 ? fixed2(bytes/1099511627776.0)+" TiB" : bytes >= 1073741824.0 ? view.fixed(bytes/1073741824.0)+" GiB" : view.fixed(bytes/1048576.0)+" MiB"
+}
+fn flatten(disk:json.Value):Vec<json.Value> {
+    let out = Vec<json.Value>(disk); let children = m.get(disk,"children")
+    if strings.equal(json.kind(children),"array") {
+        for i in 0..(json.len(children) as i64) { for item in flatten(json.at(children,i)) { out.push(item) } }
+    }
+    return out
+}
+fn mounts(part:json.Value):str {
+    let points = m.get(part,"mountpoints"); let out = ""
+    if strings.equal(json.kind(points),"array") {
+        for i in 0..(json.len(points) as i64) {
+            let point = m.text(json.at(points,i)); if strings.equal(point,"") { continue }
+            out = strings.equal(out,"") ? point : out+", "+point
+        }
+    }
+    return strings.equal(out,"") ? "Not mounted" : out
+}
+fn partition(disk:json.Value,part:json.Value):str {
+    let kind = strings.equal(m.text(m.get(part,"fstype")),"") ? m.text(m.get(part,"type")) : m.text(m.get(part,"fstype"))
+    let label = m.text(m.get(part,"label")); let detail = kind+(strings.equal(label,"") ? "" : " · "+label)+" · "+mounts(part)
+    let usage = ""
+    if !json.is_null(m.get(part,"fsused")) && !json.is_null(m.get(part,"fsavail")) { usage = size(m.num(m.get(part,"fsused")))+" used · "+size(m.num(m.get(part,"fsavail")))+" available" }
+    let uuid = m.text(m.get(part,"uuid"))
+    return "P\t"+view.clean(m.text(m.get(disk,"path")))+"\t"+view.clean(m.text(m.get(part,"path")))+"\t"+size(m.num(m.get(part,"size")))+"\t"+view.clean(detail)+"\t"+view.clean(usage)+"\t"+view.clean(uuid)
+}
+fn capacity(disk:json.Value):str {
+    let parts = m.get(disk,"children"); let out = ""
+    if strings.equal(json.kind(parts),"array") && json.len(parts) > 0 {
+        for i in 0..(json.len(parts) as i64) { let part = json.at(parts,i); out = out+(i > 0 ? "," : "")+"${m.num(m.get(part,"size")) as i64}" }
+    } else { out = "${m.num(m.get(disk,"size")) as i64}" }
+    return out
+}
+fn disk(disk:json.Value):str {
+    let model = strings.trim(m.text(m.get(disk,"model"))); let title = strings.equal(model,"") ? m.text(m.get(disk,"name")) : model
+    let table = m.text(m.get(disk,"pttype")); let tableText = strings.equal(table,"") ? "No partition table" : strings.toUpperCase(table)
+    let readOnly = json.has(disk,"ro") && strings.equal(json.kind(json.get(disk,"ro")),"bool") && json.bool(json.get(disk,"ro"))
+    let subtitle = m.text(m.get(disk,"path"))+" · "+size(m.num(m.get(disk,"size")))+" · "+tableText+(readOnly ? " · Read only" : "")
+    let icon = strings.equal(m.text(m.get(disk,"tran")),"usb") ? "drive-removable-media-symbolic" : "drive-harddisk-symbolic"
+    return "D\t"+view.clean(m.text(m.get(disk,"path")))+"\t"+size(m.num(m.get(disk,"size")))+"\t"+icon+"\t"+view.clean(title)+"\t"+view.clean(subtitle)+"\t"+capacity(disk)
+}
+# S<US>wsl<US>error, then one record per disk (D) and partition (P), separated by ASCII 30.
+fn frame(state:json.Value,error:str):str {
+    let wsl = json.has(state,"wsl") && strings.equal(json.kind(json.get(state,"wsl")),"bool") && json.bool(json.get(state,"wsl"))
+    let out = "S\t"+(wsl ? "1" : "0")+"\t"+view.clean(error)
+    let devices = m.get(state,"devices")
+    if strings.equal(json.kind(devices),"array") {
+        for i in 0..(json.len(devices) as i64) {
+            let item = json.at(devices,i); out = out+view.separator()+disk(item)
+            for part in flatten(item) { out = out+view.separator()+partition(item,part) }
+        }
+    }
+    return out
+}

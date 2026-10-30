@@ -39,7 +39,7 @@ jobs:
         # tracker needs the Wayland headers, and the lock-screen test needs the pinned swaylock.
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwayland-dev libwayland-bin gjs \
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
             gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl python3-gi gir1.2-nm-1.0 python3-yaml xvfb xauth
           sudo sh tools/setup/bootstrap-lock.sh
@@ -59,10 +59,75 @@ jobs:
           echo "$RUNNER_TEMP/devlang-d-$DEVLANG_VERSION-linux-$arch" >> "$GITHUB_PATH"
       - name: Install npm dependencies
         run: npm ci
+      - name: Check DevLang models and preserved npm APIs
+        run: |
+          d tests/session-model.test.dev
+          d tests/theme-palette-devlang.test.dev
+          d tests/migration-compat.test.dev
+          d tests/no-gjs-audit.test.dev
+          d tests/splash-native.test.dev
+          d tests/greeter-native.test.dev
+          d tests/background-domain.test.dev
+          d tests/background-cleanup.test.dev
+          d tests/background-widget-service.test.dev
+          d tests/background-settings.test.dev
+          d tests/panel-power-native.test.dev
+          d tests/panel-devices-native.test.dev
+          d tests/panel-device-actions-native.test.dev
+          d tests/panel-menu-model.test.dev
+          d tests/panel-layout-native.test.dev
+          d tests/panel-taskbar-native.test.dev
+          d tests/display-care-shell.test.dev
+          d tests/system-displaycare-native.test.dev
+          d tools/maintenance/migration-audit.dev
       - name: Type check
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+      - name: Native session lifecycle and JS supervisor binding
+        run: |
+          d tests/supervisor-native.test.dev
+          d tests/shell-command-native.test.dev
+          d tests/background-actions.test.dev
+          d tools/test/splash-native-smoke.dev
+          d tests/login-native.test.dev
+          d tests/background-render-native.test.dev
+          d tests/background-ui-native.test.dev
+          d tests/background-picture-native.test.dev
+          d tests/background-theme-native.test.dev
+          d tests/background-preferences-native.test.dev
+          d tests/background-shell-native.test.dev
+          d tests/background-settings-native.test.dev
+          d tools/test/background-layer-smoke.dev
+          d tools/test/background-widgets-smoke.dev
+          d tools/test/background-shell-smoke.dev
+          d tools/test/background-settings-smoke.dev
+          d tools/test/background-settings-production-smoke.dev
+          d tools/test/panel-power-smoke.dev
+          d tools/test/panel-layout-smoke.dev
+          d tools/test/panel-session-power-smoke.dev
+          d tools/test/panel-runtime-smoke.dev
+          d tools/test/panel-settings-production-smoke.dev
+          d tests/panel-taskbar-render-native.test.dev
+          d tests/panel-taskbar-catalog.test.dev
+          d tests/panel-clock-native.test.dev
+          d tests/panel-alerts-native.test.dev
+          d tests/panel-session-power-native.test.dev
+          d tests/panel-accounts-native.test.dev
+          d tests/panel-settings-native.test.dev
+          d tests/system-panel-native.test.dev
+          d tests/panel-command-native.test.dev
+          d tests/panel-tray-native.test.dev
+          d tests/panel-battery-care-native.test.dev
+          gjs -m dist/native-action-test.js
+          xvfb-run --auto-servernum env GDK_BACKEND=x11 gjs -m dist/panel-menu-data-test.js
+          xvfb-run --auto-servernum env GDK_BACKEND=x11 gjs -m dist/panel-taskbar-data-test.js
+          d tools/test/background-menu-smoke.dev -- panel top
+          d tools/test/background-menu-smoke.dev -- panel bottom
+          sh tools/build/native-background-runtime.sh
+          d tools/test/background-runtime-smoke.dev
+          xvfb-run --auto-servernum env GDK_BACKEND=x11 gjs -m dist/supervisor-test.js
+          gjs -m dist/version-request-test.js
       - name: Shell tests under GJS
         run: xvfb-run --auto-servernum env GDK_BACKEND=x11 npm run check
       - name: Python tests

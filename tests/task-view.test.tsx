@@ -1,7 +1,7 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {TaskViewLive} from '../extensions/org.devos.launcher/task-view.js';
+import {TaskViewLive} from '../src/apps/org.devos.launcher/task-view.js';
 import type {DesktopWindow, DesktopWorkspace, WindowControls} from '@dev-os/services/windows';
 import {gestureWindowTarget} from '@dev-os/services/windows';
 Gtk.init(null);
@@ -34,7 +34,7 @@ async function verify() {
         moveToDesktop: (id, desktop) => {moved = id; state = state.map(window => window.id === id ? {...window, desktop} : window); listeners.forEach(listener => listener());}};
     const window = new Gtk.OffscreenWindow(); window.name = 'task-view'; window.set_size_request(1200, 780);
     const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     try {

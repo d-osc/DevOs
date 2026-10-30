@@ -42,9 +42,9 @@ class MilestoneWiringTests(unittest.TestCase):
 
     def test_compositor_start_launches_the_window_splash_when_enabled(self):
         for text in ((ROOT / 'bin/dev-os-start').read_text(), (SESSION / 'devos-greeter').read_text()):
-            self.assertIn('devos-splash-window.js', text)
+            self.assertIn('dist/native/boot-splash', text)
             self.assertIn('devos-splash --step compositor', text)
-            self.assertRegex(text, r'gjs -m [^\n]*(devos-splash-window\.js|\$splash_window)[^\n]*&')  # background, never awaited
+            self.assertRegex(text, r'"\$splash_window"[^\n]*&')  # native, background, never awaited
         start = (ROOT / 'bin/dev-os-start').read_text()
         for escape in ("*' devos.splash=0 '*", "*' debug '*", "*' systemd.show_status=1 '*", "*' splash '*)"):
             self.assertIn(escape, start)  # the same escape hatches as the initramfs
@@ -52,11 +52,11 @@ class MilestoneWiringTests(unittest.TestCase):
 
     def test_recipe_installs_window_units_and_dependencies(self):
         recipe = (RECIPE / 'devos-splash_0.1.bb').read_text()
-        for name in ('devos-splash-window.js', 'devos-splash-system.service'):
+        for name in ('devos-splash-system.service',):
             self.assertTrue((FILES / name).is_file(), name)
             self.assertIn(f'file://{name}', recipe)
-        self.assertIn('${libexecdir}/devos-splash-window.js', recipe)
-        self.assertRegex(recipe, r'RDEPENDS:\$\{PN\} = "[^"]*\bgjs\b[^"]*\bgtk\+3\b')
+        self.assertNotIn('gjs', recipe)
+        self.assertIn('dist/native/boot-splash', (ROOT / 'distro/oe/meta-devos/recipes-devos/shell/devos-shell_0.3.6.bb').read_text())
         system = (FILES / 'devos-splash-system.service').read_text()
         self.assertIn('ConditionPathExists=/run/devos-splash.d', system)  # nothing happens without the boot splash
         self.assertIn('ExecStart=-/usr/bin/devos-splash --step system', system)  # a '-' prefix: never a failed unit
@@ -66,22 +66,17 @@ class MilestoneWiringTests(unittest.TestCase):
         self.assertIn('sleep 150', quit_unit)  # a backstop only: the milestones end the animation
         self.assertIn('--quit --text', quit_unit)
 
-    def test_window_script_is_generated_from_the_c_font_and_follows_the_protocol(self):
-        generated = (FILES / 'devos-splash-window.js').read_text()
-        with tempfile.TemporaryDirectory() as tmp:
-            copy = Path(tmp)
-            for name in ('generate-window.py', 'devos-splash-window.js.in', 'devos-splash.c'): (copy / name).write_bytes((FILES / name).read_bytes())
-            subprocess.run(['python3' if not splash.os.name == 'nt' else 'python', str(copy / 'generate-window.py')], check=True)
-            self.assertEqual((copy / 'devos-splash-window.js').read_text(), generated, 'run generate-window.py after changing the font or the template')
-        rows = re.findall(r'\{((?:0x[0-9A-Fa-f]{2},?){5})\}', (FILES / 'devos-splash.c').read_text().split('FONT[95][5] = {')[1].split('};')[0])
-        self.assertEqual(len(rows), 95)
-        for status in ('Starting services', 'Starting desktop', 'Loading shell', 'Almost ready'): self.assertIn(status, generated)
-        for name in ('system', 'session', 'compositor', 'window', 'shell', 'ready'): self.assertIn(f"'{name}'", generated)
-        self.assertIn('FADE_OUT = 0.3', generated)                       # ~300 ms fade
-        self.assertIn('WATCHDOG', generated)                              # never stays up forever
-        self.assertIn('Gdk.KEY_Escape', generated)                       # Esc closes it
-        self.assertIn('/window', generated)                              # announces its first frame
-        self.assertIn('System.exit(0)', generated)                       # no splash directory: nothing to show
+    def test_native_window_uses_the_c_font_and_milestone_protocol(self):
+        generated = (ROOT / 'src/system/splash-font.dev').read_text()
+        table = (FILES / 'devos-splash.c').read_text().split('FONT[95][5] = {')[1].split('};')[0]
+        self.assertEqual(re.findall(r'0x[0-9A-Fa-f]{2}', table), re.findall(r'0x[0-9A-Fa-f]{2}', generated))
+        renderer = (ROOT / 'src/system/splash.dev').read_text()
+        model = (ROOT / 'lib/splash-model.dev').read_text()
+        for status in ('Starting services', 'Starting desktop', 'Loading shell', 'Almost ready'): self.assertIn(status, model)
+        for name in ('system', 'session', 'compositor', 'window', 'shell', 'ready'): self.assertIn(f'"{name}"', renderer)
+        self.assertIn('DEVOS_SPLASH_WINDOW_TIMEOUT', renderer)
+        self.assertIn('GDK_KEY_Escape', (ROOT / 'src/system/splash-host.c').read_text())
+        self.assertNotIn('gjs', renderer)
 
 
 class MilestoneDaemonTests(unittest.TestCase):

@@ -1,0 +1,2 @@
+use "./native.devx" as diskmanager
+return diskmanager.run()

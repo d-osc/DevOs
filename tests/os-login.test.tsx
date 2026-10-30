@@ -1,8 +1,8 @@
 import {React, Gtk, GLib, createRoot} from '@dev-os/core';
-import {OSLogin, type GreeterControls} from '../extensions/org.devos.settings/os-login.js';
-import {UsersSettings} from '../extensions/org.devos.settings/users-view.js';
-import {NewUserWizard} from '../extensions/org.devos.settings/new-user.js';
-import {SwitchUserView} from '../extensions/org.devos.settings/switch-user.js';
+import {OSLogin, type GreeterControls} from '../src/apps/org.devos.settings/os-login.js';
+import {UsersSettings} from '../src/apps/org.devos.settings/users-view.js';
+import {NewUserWizard} from '../src/apps/org.devos.settings/new-user.js';
+import {SwitchUserView} from '../src/apps/org.devos.settings/switch-user.js';
 Gtk.init(null);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 70, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}

@@ -1,12 +1,12 @@
 import {Gtk, Gio, GLib, removeTree} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
 import {
-    packageKind, isPackageFile, unsafeArchivePath, listTar, archiveLooksInstallable, installableFile, tarGzInstallable, inspectPackage, parseAr, parseDebControl,
+    packageKind, nativePackageName, isPackageFile, unsafeArchivePath, listTar, archiveLooksInstallable, installableFile, tarGzInstallable, inspectPackage, parseAr, parseDebControl,
     memoryStream, gunzipSource, PACKAGE_MIME_TYPES, LIMITS,
-} from '../extensions/org.devos.appstore/package-file.js';
-import {parseInstallOutput, parseList, PackageManagerCli, PM_ENV} from '../extensions/org.devos.appstore/package-backend.js';
-import {openPackageFile, installAction} from '../extensions/org.devos.files/package-open.js';
-import {createFileContextMenu, fileMenuOptions} from '../extensions/org.devos.files/context-menu.js';
+} from '../src/apps/org.devos.appstore/package-file.js';
+import {parseInstallOutput, parseList, resolvePackageManager, packageManagerBinary, PackageManagerCli, PM_ENV} from '../src/apps/org.devos.appstore/package-backend.js';
+import {openPackageFile, installAction} from '../src/apps/org.devos.files/package-open.js';
+import {createFileContextMenu, fileMenuOptions} from '../src/apps/org.devos.files/context-menu.js';
 
 Gtk.init(null);
 const loop = new GLib.MainLoop(null, false);
@@ -76,7 +76,9 @@ const goodDpk = () => gzip(tar(tarEntry('package.json', manifest()), tarEntry('b
 
 function formats() {
     assert(packageKind('/a/b/App.DPK') === 'dpk' && packageKind('x.deb') === 'deb' && packageKind('x.rpm') === 'rpm' && packageKind('/h/x.tar.gz') === 'tar.gz', 'four package types recognised, case-insensitive');
-    assert(!packageKind('x.tar') && !packageKind('x.gz') && !packageKind('x.dpkx') && !packageKind('.tar.gz') && !packageKind('x.txt') && !packageKind('x.deb.bak'), 'near-miss names are not packages');
+    assert(packageKind('x.dpkx') === 'dpk', 'DevOsPM dpkx alias is supported');
+    assert(nativePackageName(' Vendor.App_1+test ') === 'vendor-app_1-test', 'Native identity normalization matches DevOsPM');
+    assert(!packageKind('x.tar') && !packageKind('x.gz') && !packageKind('.tar.gz') && !packageKind('x.txt') && !packageKind('x.deb.bak'), 'near-miss names are not packages');
     assert(isPackageFile('a.rpm') && !isPackageFile('a.png'), 'isPackageFile');
     assert(unsafeArchivePath('../x') && unsafeArchivePath('a/../../x') && unsafeArchivePath('/etc/passwd') && unsafeArchivePath('a\\b') && unsafeArchivePath('C:/x') && unsafeArchivePath('a\0b') && !unsafeArchivePath('bin/hello') && !unsafeArchivePath('a..b/c'), 'path traversal rules');
     assert(archiveLooksInstallable([{name: './package.json'}]) && archiveLooksInstallable([{name: 'dev-package.json'}]) && archiveLooksInstallable([{name: 'share/applications/x.desktop'}]), 'manifest or desktop marks installable');
@@ -167,16 +169,20 @@ function parsers() {
     assert(list.length === 2 && list[0].previousVersion === '0.9.0' && list[0].files === 2 && list[0].commands[0] === 'hello' && list[1].kind === 'extension', 'list --json parsed');
 }
 async function backend() {
-    const script = write('fake-devospm', `#!/bin/sh
+    const script = write('dev', `#!/bin/sh
 echo "$@" >> "${temporary}/calls.log"
 case "$1" in
+  --version) echo 'dev 0.6.4' ;;
   list) echo '{"packages":{"hello-app":{"active":{"manifest":{"version":"1.0.0"},"kind":"app","bytes":1,"files":{}},"previous":null}},"extensions":{}}' ;;
   install) case "$*" in *boom*) echo "dev: Archive has too many entries" >&2; exit 1;; esac
            echo "Preparing installation..." >&2; echo "Installed hello-app 1.2.0"; echo "Path: /x"; echo "Run: dev run hello" ;;
   remove) echo "Removed $2" ;;
   rollback) echo "Rolled back $2 to 1.0.0" ;;
 esac
-`); GLib.spawn_command_line_sync(`chmod +x ${script}`); GLib.setenv(PM_ENV, script, true);
+`); GLib.spawn_command_line_sync(`chmod +x ${script}`);
+    const originalPath = GLib.getenv('PATH') ?? '';
+    GLib.unsetenv(PM_ENV); GLib.setenv('PATH', `${temporary}:${originalPath}`, true);
+    assert(packageManagerBinary() === script, 'App Store finds dev in PATH without requiring devospm');
     const cli = new PackageManagerCli(), stages: string[] = [], dpk = write('hello-app-1.2.0.dpk', goodDpk());
     const done = await cli.install(dpk, line => stages.push(line));
     assert(done.id === 'hello-app' && done.commands[0] === 'hello' && stages.includes('Preparing installation...') && !cli.busy, 'install streams progress lines and parses the result');
@@ -187,8 +193,16 @@ esac
     let refused = ''; try {await cli.install(write('x.txt', 'x'), () => {});} catch (error) {refused = String(error);} assert(refused.includes('Not a package file'), 'non-package files are never passed to the package manager');
     assert((await cli.installed())[0].id === 'hello-app' && (await cli.rollback('hello-app')) === '1.0.0', 'list and rollback');
     await cli.remove('hello-app'); assert(new TextDecoder().decode(GLib.file_get_contents(`${temporary}/calls.log`)[1]).includes('remove hello-app'), 'remove');
-    GLib.setenv(PM_ENV, `${temporary}/missing`, true); let absent = ''; try {await cli.installed();} catch (error) {absent = String(error);} assert(absent.includes('not installed'), 'missing package manager is explained');
-    GLib.unsetenv(PM_ENV);
+    GLib.setenv(PM_ENV, `${temporary}/missing`, true); let absent = ''; try {await cli.installed();} catch (error) {absent = String(error);} assert(absent.includes('unavailable'), 'missing package manager is explained');
+    GLib.setenv(PM_ENV, script, true);
+    assert(packageManagerBinary() === script, 'An explicit package-manager override is supported');
+    GLib.unsetenv(PM_ENV); GLib.setenv('PATH', `${temporary}/missing-bin`, true);
+    assert(resolvePackageManager([`${temporary}/missing-bin/dev`]) === null, 'A missing dev command is reported');
+    const devlang = write('devlang-alias', '#!/bin/sh\necho "d 0.5.5"\n');
+    GLib.setenv('PATH', originalPath, true); GLib.spawn_command_line_sync(`chmod +x ${devlang}`);
+    assert(resolvePackageManager([devlang]) === null, 'A DevLang dev alias must not receive package commands');
+    assert(resolvePackageManager([devlang, script]) === script, 'A valid dev package manager is found after an unrelated dev executable');
+    GLib.setenv('PATH', originalPath, true);
 }
 async function main() {
     try {

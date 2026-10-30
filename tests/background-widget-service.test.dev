@@ -1,0 +1,150 @@
+use "std/test"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/fs"
+use "std/result"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+use "../src/system/org.devos.background/widget-desktops.dev" as widgets
+use "../src/system/org.devos.background/preferences.dev" as prefs
+use "../src/system/org.devos.background/context-menu.dev" as menu
+use "../src/system/org.devos.background/appearance.dev" as appearance
+use "../src/services/window-state.dev" as shell
+use "../src/system/org.devos.background/model.dev" as model
+fn request(lines:Vec<str>):Vec<str> {
+    let input="";for line in lines {input=input+line+"\n"}
+    let env=Map<str,str>();env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","0")
+    env.set("DEVOS_BACKGROUND_POWER_ROOT","/nonexistent-devos-test-power")
+    let output=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/widget-service.dev"),env,input,15000)
+    t.success(output);return strings.split(strings.trim(t.out(output)),"\n")
+}
+fn committed(line:str):json.Value {
+    let records=strings.split(line,encoding.decode(Vec<u8>(30),"utf8"))
+    for record in records {if strings.startsWith(record,"P\t") {return json.parse(strings.replaceAll(strings.substring(record,2,strings.charLength(record)),"%25","%"))}}
+    test.expect(false,"Missing service commit");return json.object()
+}
+test.case("widget service preserves Unicode and separates edited state from polling",fn() {
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{widgetClock:true,widgetNote:true,widgetNoteText:"ภาษาไทย %\nline\tend"}}),"{\"action\":\"move\",\"key\":\"widgetClock\",\"x\":0.4,\"y\":0.3}","{\"action\":\"get\"}","{\"action\":\"remove\",\"key\":\"widgetClock\"}"))
+    test.expect(lines.len()==4,"Response framing changed");t.contains(lines[0],"ภาษาไทย %25%0Aline%09end")
+    t.lacks(lines[0],"P\t");t.lacks(lines[2],"P\t")
+    let moved=committed(lines[1]);let points=json.parse(json.string(json.get(moved,"widgetLocations")))
+    test.expect(json.float(json.get(json.get(points,"widgetClock"),"x"))==0.4,"Move lost normalized coordinate")
+    t.equal(json.string(json.get(moved,"widgetNoteText")),"ภาษาไทย %\nline\tend")
+    test.expect(!json.bool(json.get(committed(lines[3]),"widgetClock")),"Remove was lost")
+})
+test.case("widget edits remain scoped to their desktop",fn() {
+    let desks=json.value(Vec<json.Value>({name:"One",active:false},{name:"Two",active:true}))
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{widgetClock:true},desktops:desks}),"{\"action\":\"remove\",\"key\":\"widgetClock\"}"))
+    let saved=committed(lines[1]);let first=widgets.active(json.value(Vec<json.Value>({name:"One",active:true},{name:"Two",active:false})),true);let second=widgets.active(desks,true)
+    test.expect(json.bool(json.get(widgets.values(saved,first),"widgetClock")),"Another desktop lost its widget")
+    test.expect(!json.bool(json.get(widgets.values(saved,second),"widgetClock")),"Current desktop retained removed widget")
+})
+test.case("widget service recovers after malformed requests and clamps positions",fn() {
+    let lines=request(Vec<str>("invalid","{\"action\":\"move\",\"key\":\"other\",\"x\":0,\"y\":0}","{\"action\":\"move\",\"key\":\"widgetClock\",\"x\":\"bad\",\"y\":0}","{\"action\":\"move\",\"key\":\"widgetClock\",\"x\":2,\"y\":-1}","{\"action\":\"get\"}"))
+    test.expect(lines.len()==5,"Bad request killed service");for i in 0..3 {test.expect(strings.startsWith(lines[i],"E\t"),"Invalid request accepted")}
+    let saved=committed(lines[3]);let points=json.parse(json.string(json.get(saved,"widgetLocations")));let point=json.get(points,"widgetClock")
+    test.expect(json.float(json.get(point,"x"))==1.0 && json.float(json.get(point,"y"))==0.0,"Position escaped bounds");t.contains(lines[4],"S\tdefault\t")
+})
+test.case("persisted widget positions and removal survive a worker restart",fn() {tool.scope("background-prefs-",fn(base:str) {
+    let file=base+"/prefs.json";let configure=json.stringify({action:"configure",preferences:file,values:{widgetClock:true,widgetNote:true,widgetNoteText:"ไทย %",mode:"picture",imagePath:"/wallpaper.png"}})
+    request(Vec<str>(configure,"{\"action\":\"move\",\"key\":\"widgetClock\",\"x\":0.6,\"y\":0.2}","{\"action\":\"remove\",\"key\":\"widgetNote\"}"))
+    let state=prefs.load(file,json.object());let values=json.get(state,"values");t.equal(json.string(json.get(values,"mode")),"picture");t.equal(json.string(json.get(values,"imagePath")),"/wallpaper.png");t.equal(json.string(json.get(values,"widgetNoteText")),"ไทย %")
+    let lines=request(Vec<str>(configure,"{\"action\":\"get\"}"));t.contains(lines[1],"W\t0\t1\t600000\t200000");t.contains(lines[1],"W\t2\t0\t")
+})})
+test.case("native preference edits re-read other writers and preserve the envelope",fn() {tool.scope("background-merge-",fn(base:str) {
+    let file=base+"/prefs.json";tool.jsonWrite(file,{version:1,enabled:false,custom:"keep",values:{mode:"solid",widgetClock:true,widgetDate:true}})
+    prefs.edit(file,json.object(),fn(latest:json.Value):json.Value {return json.set(latest,"widgetClock",false)})
+    let edited=json.parse(tool.read(file));let values=json.set(json.get(edited,"values"),"color","#abcdef");edited=json.set(edited,"values",values);tool.jsonWrite(file,edited)
+    prefs.edit(file,json.object(),fn(latest:json.Value):json.Value {return json.set(latest,"widgetDate",false)})
+    let saved=json.parse(tool.read(file));test.expect(!json.bool(json.get(saved,"enabled")),"Enabled state changed");t.equal(json.string(json.get(saved,"custom")),"keep");let result=json.get(saved,"values")
+    t.equal(json.string(json.get(result,"color")),"#abcdef");test.expect(!json.bool(json.get(result,"widgetClock")) && !json.bool(json.get(result,"widgetDate")),"Another writer's edit was lost")
+})})
+test.case("damaged or future preferences are never overwritten",fn() {tool.scope("background-invalid-",fn(base:str) {
+    let file=base+"/prefs.json"
+    for original in Vec<str>("broken","{\"version\":2,\"enabled\":true,\"values\":{}}","{\"version\":1,\"enabled\":true,\"values\":[]}") {
+        tool.write(file,original);let outcome=result.attempt(fn():json.Value {return prefs.edit(file,json.object(),fn(value:json.Value):json.Value {return value})})
+        test.expect(result.isErr(outcome),"Invalid preferences accepted");t.equal(tool.read(file),original)
+        let lines=request(Vec<str>(json.stringify({action:"configure",preferences:file,values:{}}),"{\"action\":\"get\"}"));test.expect(strings.startsWith(lines[0],"E\t"),"Damaged file did not report an error");test.expect(strings.startsWith(lines[1],"S\t"),"Failed configure corrupted current session")
+    }
+})})
+test.case("desktop switches retain scoped edits without reconfiguring values",fn() {
+    let first=json.value(Vec<json.Value>({name:"One",active:true},{name:"Two",active:false}));let second=json.value(Vec<json.Value>({name:"One",active:false},{name:"Two",active:true}))
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{widgetClock:true},desktops:first}),json.stringify({action:"desktop",desktops:second}),"{\"action\":\"remove\",\"key\":\"widgetClock\"}",json.stringify({action:"desktop",desktops:first})))
+    t.contains(lines[1],"W\t0\t0\t");t.contains(lines[3],"W\t0\t1\t");t.lacks(lines[1],"P\t")
+})
+test.case("two native workers preserve independent edits to one preferences file",fn() {tool.scope("background-workers-",fn(base:str) {
+    let file=base+"/prefs.json";tool.jsonWrite(file,{version:1,enabled:true,values:{widgetClock:true,widgetDate:true,widgetNote:true}})
+    let configure=json.stringify({action:"configure",preferences:file,values:{}})+"\n"
+    let argv=Vec<str>(t.root()+"/src/system/org.devos.background/widget-service.dev")
+    let a=child_process.spawn(t.runner(),argv,child_process.Options("",15000,1048576,encoding.encode(configure+"{\"action\":\"remove\",\"key\":\"widgetClock\"}\n","utf8")))
+    let b=child_process.spawn(t.runner(),argv,child_process.Options("",15000,1048576,encoding.encode(configure+"{\"action\":\"remove\",\"key\":\"widgetDate\"}\n","utf8")))
+    let one=a.wait();let two=b.wait();t.success(one);t.success(two);t.lacks(t.out(one),"E\t");t.lacks(t.out(two),"E\t")
+    let values=json.get(prefs.load(file,json.object()),"values")
+    test.expect(!json.bool(json.get(values,"widgetClock")) && !json.bool(json.get(values,"widgetDate")),"Concurrent native edit was lost")
+    test.expect(json.bool(json.get(values,"widgetNote")),"Unrelated widget changed")
+})})
+test.case("menu activation validates enablement and returns a one-shot plan",fn() {
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{menuFiles:false}}),"{\"action\":\"activate\",\"key\":\"menuFiles\"}","{\"action\":\"activate\",\"key\":\"menuTerminal\"}","{\"action\":\"get\"}","{\"action\":\"activate\",\"key\":\"forged\"}"))
+    t.contains(lines[0],"M\tmenuTerminal\tTerminal\tutilities-terminal-symbolic\t0");t.lacks(lines[0],"M\tmenuFiles\t")
+    test.expect(strings.startsWith(lines[1],"E\t"),"Disabled action accepted");t.contains(lines[2],"A\t");t.contains(lines[2],"\"command\":\"terminal\"");t.contains(lines[2],"\"kind\":\"shell\"");t.lacks(lines[2],"P\t");t.lacks(lines[3],"A\t")
+    test.expect(strings.startsWith(lines[4],"E\t"),"Forged action accepted")
+})
+test.case("custom menu plans preserve literal argv and never execute while planning",fn() {tool.scope("background-menu-",fn(base:str) {
+    let file=base+"/must-not-exist";let custom=json.stringify(json.value(Vec<json.Value>({id:"custom-test",title:"ไทย %\tmenu",enabled:true,target:"background",command:"touch '"+file+"' '{path}' '$(no-expand)'"})))
+    let action=menu.action({contextCustomItems:custom},"custom-test","/home/ไทย {path}");let argv=json.get(action,"argv")
+    t.equal(json.string(json.at(argv,0)),"touch");t.equal(json.string(json.at(argv,1)),file);t.equal(json.string(json.at(argv,2)),"/home/ไทย {path}");t.equal(json.string(json.at(argv,3)),"$(no-expand)");test.expect(!fs.existsSync(file),"Planning executed a command")
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{contextCustomItems:custom}}),"{\"action\":\"activate\",\"key\":\"custom-test\"}"));t.contains(lines[0],"ไทย %25%09menu");t.contains(lines[1],"A\t");test.expect(!fs.existsSync(file),"Worker executed an action plan")
+})})
+test.case("disabled context menus and file-only custom actions cannot be invoked",fn() {
+    let custom=json.stringify(json.value(Vec<json.Value>({id:"custom-file",title:"File",enabled:true,target:"file",command:"tool"})))
+    let hidden=result.attempt(fn():json.Value {return menu.action({contextCustomItems:custom},"custom-file","/tmp")});test.expect(result.isErr(hidden),"File-only action leaked onto desktop")
+    let disabled=result.attempt(fn():json.Value {return menu.action({contextEnabled:false},"menuTerminal","/tmp")});test.expect(result.isErr(disabled),"Disabled context menu was invoked")
+})
+test.case("native wallpaper wire fields preserve validated mode, style, fit, Unicode path and color",fn() {
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{mode:"picture",style:"radar",fit:"contain",imagePath:"/tmp/ไทย%\t.png",useDesktopColor:false,color:"#ABCdef"}})))
+    t.contains(lines[0],"B\t2\t22\t1\t/tmp/ไทย%25%09.png\t#ABCdef")
+    let defaults=appearance.view({mode:"invalid",style:"invalid",fit:"invalid",useDesktopColor:false,color:"bad"})
+    test.expect(json.int(json.get(defaults,"mode"))==0 && json.int(json.get(defaults,"style"))==0 && json.int(json.get(defaults,"fit"))==0,"Invalid wallpaper options did not default")
+    t.equal(json.string(json.get(defaults,"color")),"")
+})
+test.case("desktop theme color wins unless the custom color override is explicitly enabled",fn() {
+    t.equal(json.string(json.get(appearance.view({color:"#112233"}),"color")),"")
+    t.equal(json.string(json.get(appearance.view({useDesktopColor:true,color:"#112233"}),"color")),"")
+    t.equal(json.string(json.get(appearance.view({useDesktopColor:false,color:"#112233"}),"color")),"#112233")
+    let stretch=appearance.view({mode:"solid",style:"meteors",fit:"stretch"});test.expect(json.int(json.get(stretch,"mode"))==1 && json.int(json.get(stretch,"style"))==17 && json.int(json.get(stretch,"fit"))==2,"Native indices changed")
+})
+test.case("workspace tracker batches publish atomically and accept desktop zero",fn() {
+    let state=shell.consume(shell.empty(),{type:"connecting"});test.expect(state.known,"Connecting tracker exposed standalone widgets")
+    state=shell.consume(state,{type:"desktop-begin"});state=shell.consume(state,{type:"desktop",id:0,name:"One",active:true});state=shell.consume(state,{type:"desktop",id:1,name:"Two",active:false});state=shell.consume(state,{type:"desktop-done"})
+    test.expect(json.len(state.desktops)==2,"Desktop zero was lost");let before=widgets.active(state.desktops,true)
+    state=shell.consume(state,{type:"desktop-begin"});state=shell.consume(state,{type:"desktop",id:0,name:"One",active:false})
+    t.equal(json.string(json.get(widgets.active(state.desktops,true),"key")),json.string(json.get(before,"key")))
+    state=shell.consume(state,{type:"desktop",id:1,name:"Two",active:true});state=shell.consume(state,{type:"desktop-done"})
+    t.equal(json.string(json.get(widgets.active(state.desktops,true),"name")),"Two")
+})
+test.case("window tracker merges geometry and clears stale coverage on disconnect",fn() {
+    let state=shell.consume(shell.empty(),{type:"geometry",id:1,geometry:{x:1280,y:0,width:1280,height:720}})
+    state=shell.consume(state,{type:"window",id:1,maximized:true,minimized:false,desktop:0})
+    test.expect(json.has(json.at(shell.windows(state),0),"geometry"),"Window update discarded earlier geometry")
+    state=shell.consume(state,{type:"window",id:1,title:"Changed"});test.expect(json.bool(json.get(json.at(shell.windows(state),0),"maximized")),"Partial update lost window flags")
+    state=shell.consume(state,{type:"closed",id:1});test.expect(json.len(shell.windows(state))==0,"Closed window remained")
+    state=shell.consume(state,{type:"window",id:2,fullscreen:true});state=shell.consume(state,{type:"disconnected"})
+    test.expect(json.len(shell.windows(state))==0 && state.known && json.len(state.desktops)==0,"Disconnected tracker left stale coverage or widgets")
+    state=shell.consume(state,{type:"ready"});test.expect(!state.known,"Compositor without workspace protocol did not restore standalone mode")
+})
+test.case("service pauses only the covered output and resumes for minimize or another desktop",fn() {
+    let lines=request(Vec<str>(json.stringify({action:"configure",values:{style:"radar"}}),json.stringify({action:"viewport",monitor:{x:1280,y:0,width:1280,height:720},single:false}),json.stringify({action:"tracker",event:{type:"window",id:1,maximized:true,minimized:false,geometry:{x:0,y:0,width:1280,height:720}}}),json.stringify({action:"tracker",event:{type:"geometry",id:1,geometry:{x:1280,y:0,width:1280,height:720}}}),json.stringify({action:"tracker",event:{type:"window",id:1,minimized:true}}),json.stringify({action:"tracker",event:{type:"disconnected"}})))
+    t.contains(lines[2],"R\t0\t67");t.contains(lines[3],"R\t1\t67");t.contains(lines[4],"R\t0\t67");t.contains(lines[5],"R\t0\t67")
+    let desktops=json.value(Vec<json.Value>({id:0,active:true},{id:1,active:false}));let monitor=json.value({x:0,y:0,width:1280,height:720})
+    test.expect(!model.covered(json.value(Vec<json.Value>({maximized:true,desktop:1})),desktops,monitor,true),"Window on another desktop paused this desktop")
+    test.expect(model.covered(json.value(Vec<json.Value>({maximized:true,desktop:1,sticky:true})),desktops,monitor,true),"Sticky window was ignored")
+})
+test.case("service doubles animation interval while on battery",fn() {tool.scope("background-battery-",fn(base:str) {
+    tool.write(base+"/BAT0/type","Battery");tool.write(base+"/BAT0/status","Discharging")
+    let env=Map<str,str>();env.set("DEVOS_BACKGROUND_POWER_ROOT",base);env.set("DEVOS_BACKGROUND_EXECUTE_ACTIONS","0")
+    let input=json.stringify({action:"configure",values:{style:"radar"}})+"\n"
+    let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/system/org.devos.background/widget-service.dev"),env,input,15000);t.success(done);t.contains(t.out(done),"R\t0\t134")
+})})
+return t.finish()

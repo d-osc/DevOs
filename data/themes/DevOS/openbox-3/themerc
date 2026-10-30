@@ -14,6 +14,8 @@ window.inactive.border.color: #273845
 # Shared window-header menus, including native and external applications.
 menu.width.min: 224
 menu.width.max: 320
+menu.border.width: 1
+menu.border.color: #48515d
 menu.items.padding.x: 16
 menu.items.padding.y: 6
 menu.items.bg.color: #20242b

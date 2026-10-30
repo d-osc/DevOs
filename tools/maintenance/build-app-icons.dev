@@ -1,0 +1,56 @@
+#!/usr/bin/env d
+# GTK app icons use the same Font Awesome outlines extracted from assets/ as the shell.
+# Run after build-fa-icons.py when updating assets; no font dependency is needed here.
+# Usage: d tools/maintenance/build-app-icons.dev [-- dev-os-name ...]   (no names: every dev-os-* icon)
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/args"
+use "../lib/tool.dev" as tool
+
+fn readJson(root: str, file: str): json.Value { return json.parse(tool.read(root + "/" + file)) }
+# Half of a whole-number difference, as the number text an SVG viewBox uses (no trailing zero, no "-0").
+fn halved(difference: i64): str {
+    if difference == 0 { return "0" }
+    if difference % 2 == 0 { return "-${difference / 2}" }
+    return "-${difference / 2}.5"
+}
+fn selected(name: str, names: Vec<str>): bool {
+    if names.len() == 0 { return true }
+    for item in names { if strings.equal(item, name) { return true } }
+    return false
+}
+fn main(): i32 {
+    let root = tool.root()
+    let index = readJson(root, "data/icons/fa/index.json")
+    let mapping = json.get(index, "mapping")
+    let duotone = readJson(root, "data/icons/fa/duotone-solid.json")
+    let classic = readJson(root, "data/icons/fa/classic-solid.json")
+    let names = Vec<str>()
+    for i in 0..(args.len() as i64) { if !strings.startsWith(args.get(i), "--") { names.push(args.get(i)) } }
+    let count: i64 = 0
+    for name in json.keys(mapping) {
+        if !strings.startsWith(name, "dev-os-") || !selected(name, names) { continue }
+        let glyphName = json.string(json.get(mapping, name))
+        let isDuotone = json.has(json.get(duotone, "icons"), glyphName)
+        let set = isDuotone ? duotone : classic
+        tool.require(json.has(json.get(set, "icons"), glyphName), "Missing app outline from assets/: " + name + " (" + glyphName + ")")
+        let glyph = json.get(json.get(set, "icons"), glyphName)
+        let width = json.int(json.get(glyph, "w"))
+        let upm = json.int(json.get(set, "upm"))
+        let side = width > upm ? width : upm
+        let offset = halved(side - width)
+        let secondary = json.has(glyph, "d2") ? "<path d=\"" + json.string(json.get(glyph, "d2")) + "\" opacity=\".4\"/>" : ""
+        let family = isDuotone ? "duotone" : "solid"
+        for variant in 0..2 {
+            let symbolic = variant == 1
+            let fill = symbolic ? "#2e3436" : "#57a5e5"
+            let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\" viewBox=\"" + offset + " 0 " + "${side} ${side}" + "\"><!-- Font Awesome: assets/font/fa-" + family + "-900.woff2; " + glyphName + " --><g fill=\"" + fill + "\">" + secondary + "<path d=\"" + json.string(json.get(glyph, "d")) + "\"/></g></svg>\n"
+            tool.write(root + "/data/icons/hicolor/scalable/apps/" + name + (symbolic ? "-symbolic" : "") + ".svg", svg)
+            count += 1
+        }
+    }
+    print("Generated ${count} GTK app icons from assets/ outlines (${root}/).")
+    return 0
+}
+return tool.main(main)

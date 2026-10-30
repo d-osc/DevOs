@@ -1,0 +1,33 @@
+# Preserve an explicit Escape cancellation across the compositor / app boundary.
+use "std/fs"
+use "std/path"
+use "std/module"
+use "std/args"
+use "std/strings"
+use "std/result"
+fn main(): i32 {
+    if args.len() == 1 && strings.equal(args.get(0), "--validate") {return 0}
+    if args.len() != 1 {result.raise("Usage: d patch-tab-drag.dev -- LABWC_SOURCE")}
+    let source = args.get(0)
+    fs.copyFileSync(path.dirname(module.entry()) + "/devos-tab-drag.h", source + "/include/devos-tab-drag.h")
+    let file = source + "/src/input/keyboard.c"
+    let text = strings.replaceAll(fs.readFileSync(file, "utf8"), "\r\n", "\n")
+    if strings.contains(text, "#include \"devos-tab-drag.h\"") {print("Dev OS tab drag cancellation is current"); return 0}
+    let modern = !strings.contains(text, "server->osd_state.cycle_view")
+    let anchor = modern ? "\t/*\n\t * Handle compositor keybinds\n\t */" : "\tif (server->osd_state.cycle_view) {\n\t\tkey_state_store_pressed_key_as_bound(event->keycode);"
+    # Replace the old server-only Escape handler when upgrading a WSL checkout.
+    let old = strings.split(text, "\t/* wlroots' drag keyboard grab does not forward Escape to GTK. */")
+    if old.len() == 2 {
+        let tail = strings.split(old[1], anchor)
+        if tail.len() != 2 {result.raise("Old tab drag Escape handler has no end anchor")}
+        text = old[0] + anchor + tail[1]
+    }
+    if strings.split(text, anchor).len() != 2 {result.raise("Tab drag keyboard anchor missing or ambiguous")}
+    text = strings.replace(text, anchor, "\tif (" + (modern ? "!locked && " : "") + "devos_tab_drag_key(server, event, keyinfo.translated.syms, keyinfo.translated.nr_syms)) {\n\t\treturn " + (modern ? "LAB_KEY_HANDLED_TRUE" : "true") + ";\n\t}\n\n" + anchor)
+    if strings.split(text, "#include \"workspaces.h\"").len() != 2 {result.raise("Tab drag include anchor missing")}
+    text = strings.replace(text, "#include \"workspaces.h\"", "#include \"workspaces.h\"\n#include \"devos-tab-drag.h\"")
+    fs.writeFileSync(file, text)
+    print("Dev OS tab drag cancellation installed")
+    return 0
+}
+return main()

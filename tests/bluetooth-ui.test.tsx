@@ -1,13 +1,13 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, createRoot, GLib} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {BluetoothDevicesSettings} from '../extensions/org.devos.settings/bluetooth-view.js';
-import type {BluetoothControls, BluetoothState} from '../extensions/org.devos.settings/bluetooth.js';
+import {BluetoothDevicesSettings} from '../src/apps/org.devos.settings/bluetooth-view.js';
+import type {BluetoothControls, BluetoothState} from '../src/apps/org.devos.settings/bluetooth.js';
 
 Gtk.init(null);
 const theme = new Gtk.CssProvider();
 theme.load_from_data(new TextEncoder().encode(new TextDecoder().decode(
-    GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, theme, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {

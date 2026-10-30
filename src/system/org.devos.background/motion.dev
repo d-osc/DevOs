@@ -1,0 +1,82 @@
+# Native versions of the ambient and space scenes, with deterministic original seeds.
+use "./scene.dev" as s
+use "./hacker.dev" as hacker
+fn glow(cr:*void,cache:*s.Cache,x:f64,y:f64,r:f64,c:s.Color,a:f64) {s.sprite(cr,cache,0,x,y,r,c,a)}
+fn stars(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette,count:i64,seedValue:u32,drift:f64) {unsafe {
+    let seed=seedValue;let white=s.Color(0.92,0.95,1.0);let dots=s.batch(p.dark ? Vec<s.Color>(s.mix(white,p.cool,0.22),s.mix(white,p.warm,0.22)) : Vec<s.Color>(p.accent))
+    for i in 0..count {
+        let x0=s.random(&seed);let y0=s.random(&seed);let depth=0.25+s.random(&seed)*0.75;let rate=0.4+s.random(&seed)*1.4;let offset=s.random(&seed)*s.tau()
+        let x=s.fmod(s.fmod(x0-t*drift*depth,1.0)+1.0,1.0)*w;let size=0.3+depth*0.75+(s.random(&seed)>0.97 ? 0.6 : 0.0);let twinkle=0.65+0.35*s.sin(t*rate+offset)
+        s.dot(&dots,p.dark && i%3==0 ? 1 : 0,(p.dark ? 0.3+depth*0.55 : 0.16+depth*0.3)*twinkle,x,y0*h,size)
+    };s.dots(cr,dots)
+}}
+struct Blob {color:s.Color,alpha:f64,period:f64,phase:f64,ax:f64,reach:f64}
+fn flow(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let blobs=Vec<Blob>(Blob(p.accent,0.26,70.0,0.0,0.7,0.6),Blob(p.cool,0.22,95.0,2.0,0.5,0.55),Blob(p.warm,0.16,120.0,4.0,0.6,0.5),Blob(p.cool,0.12,80.0,1.0,0.3,0.4))
+    for b in blobs {let a=t/b.period*s.tau()+b.phase;glow(cr,cache,w*(0.5+b.ax*0.5*s.sin(a)),h*(0.5+0.45*s.cos(a*1.3+b.phase)),s.max(w,h)*b.reach,b.color,p.dark ? b.alpha : b.alpha*1.25)}
+}}
+fn ripples(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let reach=s.max(w,h);glow(cr,cache,w*0.72,h*0.45,reach*0.6,p.accent,p.dark ? 0.22 : 0.28);glow(cr,cache,w*0.1,h*0.9,reach*0.55,p.cool,p.dark ? 0.16 : 0.24);s.cairo_set_line_width(cr,0.8)
+    for i in 0..7 {let phase=s.fmod(t/22.0+(i as f64)/7.0,1.0);let fade=s.sin(s.min(1.0,phase*6.0)*s.pi()/2.0)*s.pow(1.0-phase,1.6);s.cairo_new_path(cr);s.cairo_arc(cr,w*0.72,h*0.45,phase*reach*0.95,0.0,s.tau());s.rgba(cr,i%2!=0 ? p.cool : p.accent,(p.dark ? 0.20 : 0.32)*fade);s.cairo_stroke(cr)}
+}}
+fn fireflies(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let reach=s.max(w,h);glow(cr,cache,w*0.75,h*0.25,reach*0.65,p.accent,p.dark ? 0.20 : 0.27);glow(cr,cache,w*0.1,h*0.85,reach*0.6,p.cool,p.dark ? 0.15 : 0.22);let seed=31 as u32
+    for i in 0..46 {
+        let x0=s.random(&seed);let y0=s.random(&seed);let speed=1.0/(140.0+s.random(&seed)*160.0);let sway=0.01+s.random(&seed)*0.03;let rate=0.2+s.random(&seed)*0.5;let offset=s.random(&seed)*s.tau();let size=(0.5+s.random(&seed)*1.6)*s.min(w,h)/160.0
+        let x=(x0+s.sin(t*rate+offset)*sway)*w;let y=s.fmod(s.fmod(y0-t*speed,1.0)+1.0,1.0)*h;let twinkle=0.45+0.55*s.sin(t*(0.6+rate)+offset);let c=i%3!=0 ? p.accent : i%2!=0 ? p.warm : p.cool
+        s.sprite(cr,cache,3,x,y,size*4.0,c,0.55*twinkle)
+    }
+}}
+struct Tide {color:s.Color,level:f64,period:f64,frequency:f64,alpha:f64}
+fn tide(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    glow(cr,cache,w*0.78,h*0.2,s.max(w,h)*0.6,p.accent,p.dark ? 0.2 : 0.26)
+    let layers=Vec<Tide>(Tide(p.cool,0.56,40.0,1.6,0.16),Tide(p.accent,0.68,55.0,2.1,0.2),Tide(p.warm,0.8,70.0,2.7,0.15),Tide(p.cool,0.92,90.0,3.3,0.22))
+    for i in 0..4 {let l=layers[i];let layer=i as f64;let amplitude=h*(0.035+layer*0.008);s.cairo_new_path(cr);s.cairo_move_to(cr,0.0,h)
+        for n in 0..49 {let x=(n as f64)/48.0*w;s.cairo_line_to(cr,x,h*l.level+s.sin(x/w*s.tau()*l.frequency/2.0+t/l.period*s.tau()*(i%2!=0 ? -1.0 : 1.0)+layer)*amplitude+s.sin(x/w*s.tau()*0.7-t/(l.period*1.7)*s.tau())*amplitude*0.6)}
+        s.cairo_line_to(cr,w,h);s.cairo_close_path(cr);let g=s.cairo_pattern_create_linear(0.0,h*(l.level-0.1),0.0,h);s.stop(g,0.0,l.color,p.dark ? l.alpha*0.75 : l.alpha*1.25);s.stop(g,1.0,l.color,0.0);s.fillGradient(cr,g,false)
+    }
+}}
+fn starfield(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let reach=s.max(w,h);glow(cr,cache,w*0.8,h*0.2,reach*0.6,p.accent,p.dark ? 0.12 : 0.22);s.cairo_save(cr);s.cairo_translate(cr,w*0.5,h*0.5);s.cairo_rotate(cr,-0.5)
+    let band=s.cairo_pattern_create_linear(0.0,-h*0.3,0.0,h*0.3);s.stop(band,0.0,p.cool,0.0);s.stop(band,0.5,p.cool,p.dark ? 0.10 : 0.16);s.stop(band,1.0,p.cool,0.0);s.cairo_rectangle(cr,-reach,-h*0.3,reach*2.0,h*0.6);s.fillGradient(cr,band,false);s.cairo_restore(cr);stars(cr,cache,w,h,t,p,320,11,1.0/900.0)
+}}
+fn nebula(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let colors=Vec<s.Color>(p.accent,p.cool,p.warm)
+    for i in 0..7 {let cloud=i as f64;let a=t/(150.0+cloud*37.0)*s.tau()+cloud*1.7;glow(cr,cache,w*(0.5+0.38*s.sin(a+cloud)),h*(0.5+0.36*s.cos(a*0.8+cloud*2.1)),s.max(w,h)*(0.32+((i%3) as f64)*0.1),colors[i%3],p.dark ? 0.17 : 0.24)}
+    stars(cr,cache,w,h,t,p,170,5,1.0/1500.0)
+}}
+fn galaxy(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let cx=w*0.68;let cy=h*0.46;let spin=t*0.012;let unit=s.min(w*0.55,h*1.0);glow(cr,cache,cx,cy,unit*0.5,p.accent,p.dark ? 0.30 : 0.36);glow(cr,cache,cx,cy,unit*0.12,p.warm,p.dark ? 0.35 : 0.3);glow(cr,cache,w*0.1,h*0.9,s.max(w,h)*0.5,p.cool,p.dark ? 0.10 : 0.18)
+    let seed=2026 as u32;let white=s.Color(0.92,0.95,1.0);let dots=s.batch(p.dark ? Vec<s.Color>(s.mix(white,p.cool,0.35),s.mix(white,p.warm,0.35)) : Vec<s.Color>(p.accent))
+    for i in 0..1200 {let arm=(i%2) as f64;let along=s.pow(s.random(&seed),1.05);let theta=along*4.4+arm*s.pi()+spin+(s.random(&seed)-0.5)*0.55*(1.0-along*0.5);let radius=unit*(0.03+along*0.55);let px=s.cos(theta)*radius;let py=s.sin(theta)*radius*0.46;let x=cx+px*s.cos(-0.5)-py*s.sin(-0.5);let y=cy+px*s.sin(-0.5)+py*s.cos(-0.5);let twinkle=0.7+0.3*s.sin(t*(0.5+s.random(&seed))+(i as f64));s.dot(&dots,p.dark && i%3==0 ? 1 : 0,(p.dark ? 0.5 : 0.3)*(1.0-along*0.6)*twinkle,x,y,0.35+s.random(&seed)*0.7)}
+    s.dots(cr,dots);stars(cr,cache,w,h,t,p,110,9,1.0/2400.0)
+}}
+fn meteors(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let reach=s.max(w,h);glow(cr,cache,w*0.25,h*0.2,reach*0.55,p.cool,p.dark ? 0.13 : 0.2);stars(cr,cache,w,h,t,p,260,3,1.0/1100.0)
+    let periods=Vec<f64>(7.3,11.1,17.9);let shifts=Vec<f64>(0.0,0.37,0.71)
+    for i in 0..3 {let cycle=t/periods[i]+shifts[i];let phase=s.fmod(cycle,1.0);if phase>0.07 {continue}
+        let progress=phase/0.07;let seed=(s.floor(cycle)*7.0+(i as f64)*101.0+13.0) as u32;let sx=w*(0.1+s.random(&seed)*0.6);let sy=h*(0.02+s.random(&seed)*0.35);let angle=0.45+s.random(&seed)*0.3;let length=reach*0.16;let travel=reach*0.3*progress;let hx=sx+s.cos(angle)*travel;let hy=sy+s.sin(angle)*travel;let tx=hx-s.cos(angle)*length;let ty=hy-s.sin(angle)*length
+        let trail=s.cairo_pattern_create_linear(tx,ty,hx,hy);let strength=s.sin(progress*s.pi());let color=p.dark ? s.Color(0.92,0.96,1.0) : p.accent;s.stop(trail,0.0,color,0.0);s.stop(trail,1.0,color,(p.dark ? 0.7 : 0.5)*strength);s.cairo_set_source(cr,trail);s.cairo_set_line_width(cr,0.9);s.cairo_set_line_cap(cr,1);s.cairo_new_path(cr);s.cairo_move_to(cr,tx,ty);s.cairo_line_to(cr,hx,hy);s.cairo_stroke(cr);s.cairo_pattern_destroy(trail)
+    }
+}}
+fn moon(cr:*void,x:f64,y:f64,r:f64,p:s.Palette) {unsafe {
+    let body=s.cairo_pattern_create_radial(x-r*0.4,y-r*0.4,0.0,x,y,r);s.stop(body,0.0,p.dark ? s.Color(0.62,0.68,0.74) : s.mix(p.base,s.Color(1.0,1.0,1.0),0.5),p.dark ? 0.75 : 0.9);s.stop(body,1.0,p.dark ? s.Color(0.05,0.07,0.1) : p.accent,p.dark ? 0.9 : 0.5);s.cairo_arc(cr,x,y,r,0.0,s.tau());s.fillGradient(cr,body,false)
+}}
+fn eclipse(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    stars(cr,cache,w,h,t,p,200,17,1.0/2600.0);let unit=s.min(w,h);let radius=unit*0.27;let cx=w*0.72;let cy=h*0.56
+    let halo=s.cairo_pattern_create_radial(cx,cy,radius*0.96,cx,cy,radius*1.45);s.stop(halo,0.0,p.accent,p.dark ? 0.42 : 0.5);s.stop(halo,0.25,p.accent,p.dark ? 0.14 : 0.2);s.stop(halo,1.0,p.accent,0.0)
+    let orbit=t/110.0*s.tau();let mx=cx+s.cos(orbit)*radius*2.1;let my=cy-radius*0.35+s.sin(orbit)*radius*0.55;let mr=radius*0.17;let behind=s.sin(orbit)<0.0;if behind {moon(cr,mx,my,mr,p)}
+    s.cairo_arc(cr,cx,cy,radius*1.45,0.0,s.tau());s.fillGradient(cr,halo,false)
+    let planet=s.cairo_pattern_create_radial(cx-radius*0.45,cy-radius*0.5,radius*0.05,cx,cy,radius);s.stop(planet,0.0,s.mix(p.accent,s.Color(1.0,1.0,1.0),p.dark ? 0.25 : 0.55),p.dark ? 0.6 : 0.85);s.stop(planet,0.55,p.accent,p.dark ? 0.16 : 0.45);s.stop(planet,1.0,p.dark ? s.Color(0.0,0.0,0.0) : p.cool,p.dark ? 0.92 : 0.5);s.cairo_arc(cr,cx,cy,radius,0.0,s.tau());s.fillGradient(cr,planet,false);if !behind {moon(cr,mx,my,mr,p)}
+}}
+fn planets(cr:*void,cache:*s.Cache,w:f64,h:f64,t:f64,p:s.Palette) {unsafe {
+    let cx=w*0.7;let cy=h*0.5;let unit=s.min(w*0.5,h*0.8);glow(cr,cache,cx,cy,unit*(0.55+0.04*s.sin(t/6.0)),p.accent,p.dark ? 0.24 : 0.32);glow(cr,cache,w*0.1,h*0.9,s.max(w,h)*0.5,p.cool,p.dark ? 0.15 : 0.22);s.cairo_set_line_width(cr,0.7)
+    for i in 0..9 {let ring=i as f64;let tilt= -0.5+ring*0.11;let squash=0.38+ring*0.045;let radius=unit*(0.28+ring*0.13);s.cairo_save(cr);s.cairo_translate(cr,cx,cy);s.cairo_rotate(cr,tilt);s.cairo_scale(cr,1.0,squash);s.cairo_new_path(cr);s.cairo_arc(cr,0.0,0.0,radius,0.0,s.tau());s.cairo_restore(cr);s.rgba(cr,i%3!=0 ? p.cool : p.accent,(p.dark ? 0.09 : 0.17)*(1.0-ring*0.07));s.cairo_stroke(cr)
+        let angle=ring*1.9+t*(0.9/(ring+2.0))*(i%2!=0 ? -1.0 : 1.0);let dx=s.cos(angle)*radius;let dy=s.sin(angle)*radius*squash;s.rgba(cr,p.accent,p.dark ? 0.32 : 0.4);s.cairo_arc(cr,cx+dx*s.cos(tilt)-dy*s.sin(tilt),cy+dx*s.sin(tilt)+dy*s.cos(tilt),1.0+((i%3) as f64)*0.5,0.0,s.tau());s.cairo_fill(cr)
+    }
+}}
+fn draw(cr:*void,style:i32,w:f64,h:f64,t:f64,p:s.Palette,cache:*s.Cache) {unsafe {
+    s.rgb(cr,p.base);s.cairo_paint(cr)
+    if style==9 {flow(cr,cache,w,h,t,p)} else if style==10 {ripples(cr,cache,w,h,t,p)} else if style==11 {fireflies(cr,cache,w,h,t,p)} else if style==12 {tide(cr,cache,w,h,t,p)} else if style==13 {planets(cr,cache,w,h,t,p)} else if style==14 {starfield(cr,cache,w,h,t,p)} else if style==15 {nebula(cr,cache,w,h,t,p)} else if style==16 {galaxy(cr,cache,w,h,t,p)} else if style==17 {meteors(cr,cache,w,h,t,p)} else if style==18 {eclipse(cr,cache,w,h,t,p)} else {hacker.draw(cr,style,w,h,t,p,cache)}
+    s.shade(cr,cache,w as i32,h as i32,p)
+}}

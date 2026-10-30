@@ -1,0 +1,14 @@
+#!/usr/bin/env d
+use "std/regex"
+use "std/strings"
+use "../lib/tool.dev" as tool
+fn main():i32 {
+    let source=tool.read(tool.root()+"/distro/oe/meta-devos/recipes-devos/splash/files/devos-splash.c")
+    let table=strings.split(strings.split(source,"FONT[95][5] = {")[1],"\n};")[0]
+    let pattern=regex.compile("0x[0-9A-Fa-f]{2}","");let bytes=pattern.findAll(table);pattern.close()
+    tool.require(bytes.len()==475,"The framebuffer font must contain 95 five-byte glyphs")
+    let out="# Generated from devos-splash.c by tools/build/splash-font.dev.\nfn bytes():Vec<u8> {return Vec<u8>(\n"
+    for i in 0..(bytes.len() as i64) {out=out+bytes[i]+(i+1==bytes.len() as i64 ? "" : ",")+((i+1)%25==0 ? "\n" : "")}
+    tool.write(tool.option("--output",tool.root()+"/src/system/splash-font.dev"),out+")}\n");return 0
+}
+return tool.main(main)

@@ -1,0 +1,43 @@
+use "std/test"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "../src/system/org.devos.panel/battery-care.dev" as care
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn environment(dir:str):Map<str,str> {let env=Map<str,str>();env.set("DEVOS_PANEL_BATTERY_HELPER",t.root()+"/tests/fixtures/panel-battery-care.sh");env.set("PANEL_CARE_CALLS",dir+"/calls");for key in Vec<str>("STATE","BAD","DENIED","UNSUPPORTED","HIDDEN","DISABLED") {env.set("PANEL_CARE_"+key,dir+"/"+key)};tool.write(dir+"/STATE","off");tool.write(dir+"/calls","");return env}
+fn run(input:str,env:Map<str,str>):str {let done=tool.run(Vec<str>(t.runner(),t.root()+"/src/services/panel-battery-care.dev"),env,input,15000);t.success(done);return t.out(done)}
+test.case("full-charge remaining labels preserve rounded minutes and hours",fn() {
+    t.equal(care.remaining(0),"1 min");t.equal(care.remaining(-3),"1 min");t.equal(care.remaining(60),"1 min");t.equal(care.remaining(61),"2 min");t.equal(care.remaining(3599),"1 h 0 min");t.equal(care.remaining(3661),"1 h 2 min")
+})
+test.case("battery control visibility requires support, preference and care or full mode",fn() {
+    for supported in Vec<bool>(false,true) {for quick in Vec<bool>(false,true) {for enabled in Vec<bool>(false,true) {for full in Vec<bool>(false,true) {let value=care.presentation({supported:supported,quick:quick,care:enabled,full:full,remaining:3661,limit:80});test.expect(json.bool(json.get(value,"visible"))==(supported && quick && (enabled || full)),"Battery control visibility changed")}}}}
+    t.equal(json.string(json.get(care.presentation({full:true,remaining:3661}),"detail")),"Charging to 100% · Battery Care returns in 1 h 2 min")
+})
+test.case("panel battery actions reject malformed requests before helper execution",fn() {
+    for value in Vec<json.Value>({action:"care"},{action:2},{action:"full",enabled:"on"},json.array()) {test.expect(result.isErr(result.run(fn() {care.validate(value)})),"Invalid battery action accepted")}
+})
+test.case("persistent full-charge commands run once and duplicate desired state is a no-op",fn() {
+    tool.scope("panel-care-actions-",fn(dir:str) {let env=environment(dir);let input="{\"present\":false}\n{\"present\":true}\n{\"present\":true,\"action\":\"full\",\"enabled\":true}\n{\"present\":true}\n{\"present\":true,\"action\":\"full\",\"enabled\":true}\n{\"present\":true,\"action\":\"full\",\"enabled\":false}\n{\"present\":true}\n";let out=run(input,env)
+        let calls=tool.read(dir+"/calls");test.expect(tool.count(calls,"full on")==1 && tool.count(calls,"full off")==1,"Polling or duplicate switch state repeated a mutation");t.contains(out,"F\t1\t1\tCharging to 100%25");t.contains(out,"Battery Care limits charging to 80%25")
+    })
+})
+test.case("fresh capability loss and denied authorization never retry a mutation",fn() {
+    tool.scope("panel-care-unavailable-",fn(dir:str) {let env=environment(dir)
+        for key in Vec<str>("UNSUPPORTED","HIDDEN","DISABLED") {tool.write(dir+"/"+key,"1");let out=run("{\"present\":true,\"action\":\"full\",\"enabled\":true}\n",env);t.contains(out,"no longer available");tool.exec(Vec<str>("rm","--",dir+"/"+key))}
+        t.lacks(tool.read(dir+"/calls"),"full on");tool.write(dir+"/DENIED","1");let denied=run("{\"present\":true,\"action\":\"full\",\"enabled\":true}\n{\"present\":true}\n",env);t.contains(denied,"E\tBattery permission denied by fixture");test.expect(tool.count(tool.read(dir+"/calls"),"full on")==1,"Denied full-charge action retried")
+    })
+})
+test.case("absent batteries skip the helper and malformed results do not kill polling",fn() {
+    tool.scope("panel-care-protocol-",fn(dir:str) {let env=environment(dir);run("{\"present\":false}\n",env);t.equal(tool.read(dir+"/calls"),"");tool.write(dir+"/BAD","1");let out=run("bad\n{\"present\":true}\n{\"present\":false}\n",env);t.contains(out,"Battery settings returned invalid data.");t.contains(out,"F\t0\t0\t")})
+})
+test.case("native panel preserves the real battery helper contract on isolated supplies",fn() {
+    tool.scope("panel-care-core-",fn(dir:str) {
+        let supply=dir+"/sys/class/power_supply/BAT0";tool.write(supply+"/type","Battery");tool.write(supply+"/present","1");tool.write(supply+"/capacity","70");tool.write(supply+"/charge_control_end_threshold","80");tool.write(dir+"/state","care=1\nfull_until=0\n")
+        tool.write(dir+"/systemd","#!/bin/sh\nexit 0\n");tool.chmod(dir+"/systemd","755")
+        let env=Map<str,str>();env.set("DEVOS_PANEL_BATTERY_HELPER",t.root()+"/bin/dev-os-battery-care");env.set("DEVOS_BATTERY_CARE_CORE",t.root()+"/native/devos-battery-care");env.set("DEVOS_BATTERY_SYS",dir);env.set("DEVOS_BATTERY_STATE",dir+"/state");env.set("DEVOS_BATTERY_NOW","1800000000");env.set("DEVOS_BATTERY_ALLOW_USER","1");env.set("DEVOS_BATTERY_QUICK_CONF",dir+"/quick.conf");env.set("DEVOS_BATTERY_SYSTEMD_RUN",dir+"/systemd");env.set("DEVOS_BATTERY_SYSTEMCTL",dir+"/systemd")
+        let out=run("{\"present\":true}\n{\"present\":true,\"action\":\"full\",\"enabled\":true}\n{\"present\":true,\"action\":\"full\",\"enabled\":false}\n",env)
+        t.lacks(out,"E\t");t.contains(out,"F\t1\t1\tCharging to 100%25");t.equal(strings.trim(tool.read(supply+"/charge_control_end_threshold")),"80")
+    })
+})
+return t.finish()

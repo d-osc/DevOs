@@ -1,11 +1,11 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Box, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {SystemSettings} from '../extensions/org.devos.settings/system-view.js';
-import {BatteryCareSettings} from '../extensions/org.devos.settings/battery-care-view.js';
-import {remainingText, unsupportedBatteryCare, type BatteryCareAction, type BatteryCareControls, type BatteryCareState} from '../extensions/org.devos.settings/battery-care.js';
-import {PanelFullCharge} from '../extensions/org.devos.panel/battery-view.js';
-import type {SystemControls, SystemState} from '../extensions/org.devos.settings/system.js';
+import {SystemSettings} from '../src/apps/org.devos.settings/system-view.js';
+import {BatteryCareSettings} from '../src/apps/org.devos.settings/battery-care-view.js';
+import {remainingText, unsupportedBatteryCare, type BatteryCareAction, type BatteryCareControls, type BatteryCareState} from '../src/apps/org.devos.settings/battery-care.js';
+import {PanelFullCharge} from '../packages/compat/panel-legacy/battery-view.js';
+import type {SystemControls, SystemState} from '../src/apps/org.devos.settings/system.js';
 Gtk.init(null);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 170, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -30,7 +30,7 @@ function fakeControls(initial: Partial<BatteryCareState>, calls: string[]): Batt
 async function verify() {
     assert(remainingText(86400) === '24 h 0 min' && remainingText(3599) === '1 h 0 min' && remainingText(3000) === '50 min' && remainingText(5) === '1 min', 'Remaining time is formatted for people');
     const window = new Gtk.OffscreenWindow(); window.name = 'battery'; window.set_size_request(900, 760); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     const text = (id: string) => find<Gtk.Label>(id)?.get_text() ?? '';

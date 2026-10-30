@@ -1,4 +1,4 @@
-param([ValidateSet('run', 'updated', 'check', 'smoke', 'doctor', 'drivers', 'bootstrap', 'build', 'demo')][string]$Mode = 'run', [ValidatePattern('^$|^[a-z][a-z0-9_-]{0,30}$')][string]$User = '', [switch]$X11)
+param([ValidateSet('run', 'updated', 'check', 'smoke', 'doctor', 'drivers', 'bootstrap', 'build', 'demo')][string]$Mode = 'run', [ValidatePattern('^$|^[a-z][a-z0-9_-]{0,30}$')][string]$User = '', [switch]$X11, [ValidateSet('auto', 'gles2', 'pixman')][string]$Renderer = 'auto')
 $ErrorActionPreference = 'Stop'
 if ($Mode -in @('run', 'check', 'smoke', 'build', 'demo')) {
     Push-Location $PSScriptRoot
@@ -7,7 +7,13 @@ if ($Mode -in @('run', 'check', 'smoke', 'build', 'demo')) {
         else { & node tools/build/build.ts }
         if ($LASTEXITCODE -ne 0) { throw 'React build failed. Run npm ci first.' }
     } finally { Pop-Location }
-    if ($Mode -eq 'build') { exit 0 }
+    if ($Mode -eq 'build') {
+        $taskNativeBuildRoot = (& wsl -d Ubuntu --exec wslpath -a $PSScriptRoot).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $taskNativeBuildRoot) { throw 'Cannot resolve native app sources in WSL.' }
+        & wsl -d Ubuntu --exec sh "$taskNativeBuildRoot/tools/build/native-apps.sh"
+        if ($LASTEXITCODE -ne 0) { throw 'Native DevLang app build failed.' }
+        exit 0
+    }
 }
 $linuxRoot = (& wsl -d Ubuntu --exec wslpath -a $PSScriptRoot).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the source directory inside WSL Ubuntu.' }
@@ -19,10 +25,14 @@ $devPath = "$linuxRoot/build/wsl/bin:$linuxPath"
 if ($Mode -in @('run', 'check', 'smoke')) {
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-window-tracker.sh"
     if ($LASTEXITCODE -ne 0) { throw 'Wayland window tracker could not be built.' }
+    if ($Mode -ne 'run') {
+        & wsl -d Ubuntu --exec sh "$linuxRoot/tools/build/native-apps.sh"
+        if ($LASTEXITCODE -ne 0) { throw 'Native DevLang apps could not be built.' }
+    }
 }
 if ($Mode -eq 'updated') {
     $taskRuntimePath = ($linuxPath -split ':' | Where-Object { $_ -notmatch '^/mnt/[a-z]/' }) -join ':'
-    $taskUpdatedEnv = @("PATH=$linuxRoot/build/wsl/bin:$taskRuntimePath", 'WLR_RENDERER=pixman')
+    $taskUpdatedEnv = @("PATH=$linuxRoot/build/wsl/bin:$taskRuntimePath", "DEV_OS_RENDERER=$Renderer")
     if (Test-Path -LiteralPath "$PSScriptRoot/build/wsl/vte") {
         $taskUpdatedEnv += "GI_TYPELIB_PATH=$linuxRoot/build/wsl/vte/usr/lib/$taskMultiarch/girepository-1.0"
         $taskUpdatedEnv += "LD_LIBRARY_PATH=$linuxRoot/build/wsl/vte/usr/lib/$taskMultiarch"
@@ -47,6 +57,8 @@ if ($Mode -eq 'updated') {
     if ($LASTEXITCODE -ne 0) { throw 'Lock screen dependency could not be installed.' }
     & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-panel-tools.sh"
     if ($LASTEXITCODE -ne 0) { Write-Warning 'Audio controls need pactl or wpctl.' }
+    & wsl -d Ubuntu -- sh "$linuxRoot/tools/setup/bootstrap-pm.sh"
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'App Store needs the dev package manager. See tools/setup/bootstrap-pm.sh.' }
     Write-Host 'Preparing desktop runtime on the Linux filesystem...'
     $taskRuntimeRoot = & "$PSScriptRoot/tools/setup/stage-wsl-runtime.ps1" -ProjectRoot $PSScriptRoot
     if ($taskRuntimeRoot -notmatch '^/tmp/dev-os-runtime-[a-zA-Z0-9]+$') { throw 'Unexpected Linux runtime directory.' }
@@ -57,11 +69,11 @@ if ($Mode -eq 'updated') {
             if ($X11) { throw '-X11 is not supported with -User.' }
             $taskSelectedUid = (& wsl -d Ubuntu -u root -- "$taskRuntimeRoot/build/wsl/bin/d" "$linuxRoot/tools/setup/prepare-wsl-user.dev" -- $User $taskRuntimeRoot).Trim()
             if ($LASTEXITCODE -ne 0 -or $taskSelectedUid -notmatch '^\d+$') { throw 'Cannot prepare the selected Linux user session.' }
-            & wsl -d Ubuntu -u $User --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "XDG_RUNTIME_DIR=/run/user/$taskSelectedUid" WAYLAND_DISPLAY=/mnt/wslg/runtime-dir/wayland-0 "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" DEV_OS_LOGIN=0 WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
+            & wsl -d Ubuntu -u $User --exec env "PATH=$taskRuntimeRoot/build/wsl/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "XDG_RUNTIME_DIR=/run/user/$taskSelectedUid" WAYLAND_DISPLAY=/mnt/wslg/runtime-dir/wayland-0 "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" DEV_OS_LOGIN=0 "DEV_OS_RENDERER=$Renderer" "$taskRuntimeRoot/bin/dev-os-session" --nested
         } else {
             # -X11 shows the nested compositor as an X11 (XWayland) window instead of a Wayland one.
             $taskBackendEnv = if ($X11) { @('-u', 'WAYLAND_DISPLAY', 'DISPLAY=:0') } else { @() }
-            & wsl -d Ubuntu --exec env @taskBackendEnv "PATH=$taskRuntimeRoot/build/wsl/bin:$taskRuntimePath" "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" WLR_RENDERER=pixman "$taskRuntimeRoot/bin/dev-os-session" --nested
+            & wsl -d Ubuntu --exec env @taskBackendEnv "PATH=$taskRuntimeRoot/build/wsl/bin:$taskRuntimePath" "DEV_OS_WINDOWS_PROJECT=$PSScriptRoot" "DEV_OS_RENDERER=$Renderer" "$taskRuntimeRoot/bin/dev-os-session" --nested
         }
         $taskSessionExit = $LASTEXITCODE
     } finally {

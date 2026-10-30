@@ -1,0 +1,22 @@
+use "std/test"
+use "std/json"
+use "std/fs"
+use "std/strings"
+use "../lib/theme-palette.dev" as palette
+use "./lib/react-devlang.dev" as t
+test.case("alpha colors preserve JS compositing and GTK rounding",fn() {
+    t.equal(palette.flatten("#ffffff80","#000000"),"#808080")
+    t.equal(palette.flatten("#12345600","#abcdef"),"#abcdef")
+    t.equal(palette.flatten("#AbCdEf","#000000"),"#abcdef")
+    t.equal(palette.rgba("#11223380"),"rgba(17, 34, 51, 0.502)")
+    t.equal(palette.rgba("#fff"),"rgba(255, 255, 255, 1)")
+})
+test.case("all generated palettes match the npm binding and native data",fn() {
+    let data=palette.generate(t.root())
+    t.equal(json.stringify(data),json.stringify(json.parse(fs.readFileSync(t.root()+"/data/themes/palettes.json","utf8"))))
+    let source=fs.readFileSync(t.root()+"/packages/core/theme-palette.ts","utf8");let tables=strings.split(source,"Object.freeze(")
+    test.expect(tables.len()==4,"Missing npm theme exports")
+    let names=Vec<str>("familyPalettes","paletteSources","syntaxRules")
+    for i in 0..3 {t.equal(json.stringify(json.parse(strings.split(tables[i+1],");")[0])),json.stringify(json.get(data,names[i])))}
+})
+return t.finish()

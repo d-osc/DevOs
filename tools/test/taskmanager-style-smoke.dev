@@ -1,0 +1,22 @@
+use "std/time"
+use "std/child_process"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    smoke.withSession("taskmanager-style",Map<str,str>(),fn(session:smoke.Session) {
+        let env=smoke.environment(session); env.set("DEV_OS_ROOT",session.root); env.set("GDK_BACKEND","wayland"); env.set("NO_AT_BRIDGE","1")
+        let original=smoke.launch(Vec<str>("gjs","-m",session.root+"/dist/app-host.js","taskmanager","task-manager"),env,session.base+"/old.log")
+        time.sleep_ms(7500)
+        tool.require(!original.ready(),tool.read(session.base+"/old.log"))
+        smoke.screenshot(env,session.root+"/build/screenshots/taskmanager-original.png")
+        smoke.stop(original)
+        let native=smoke.launch(Vec<str>(session.root+"/dist/native/taskmanager"),env,session.base+"/native.log")
+        time.sleep_ms(7500)
+        tool.require(!native.ready(),tool.read(session.base+"/native.log"))
+        smoke.screenshot(env,session.root+"/build/screenshots/taskmanager-native.png")
+        smoke.stop(native)
+        print("PASS original and native Task Manager screenshots captured in an isolated compositor")
+    })
+    return 0
+}
+return tool.main(main)

@@ -25,7 +25,7 @@ class GreeterPowerTests(unittest.TestCase):
         self.assertIn('root-session-enabled', init)
 
     def test_power_actions_are_logged_and_errors_are_shown(self):
-        power = (ROOT / 'extensions/org.devos.panel/power.ts').read_text()
+        power = (ROOT / 'src/system/org.devos.panel/power.ts').read_text()
         for token in ("'devos-power'", 'strip_remote_error', '[!direct]', 'accepted by logind'):
             self.assertIn(token, power)
         recipe = (SESSION / 'devos-session.bb').read_text()

@@ -1,0 +1,42 @@
+use "std/fs"
+use "std/strings"
+use "std/child_process"
+use "std/json"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn count(value:str,part:str):i64 { return strings.split(value,part).len() as i64 - 1 }
+fn main():i32 {
+    let extras=Map<str,str>(); extras.set("WLR_HEADLESS_OUTPUTS","2"); extras.set("DEVOS_SYSTEM_TRACE","1")
+    smoke.withSession("background-model",extras,fn(session:smoke.Session) {
+        let script=session.root+"/src/system/org.devos.background/service.dev"
+        let supervisors=smoke.processIds(session.runtime,session.root+"/src/system/supervisor.dev")
+        tool.require(supervisors.len()>0,"Session did not use the DevLang supervisor")
+        tool.require(smoke.processIds(session.runtime,session.root+"/dist/supervisor.js").len()==0,"Session still started a GJS supervisor")
+        let marker="DevOs model data ready: src/system/org.devos.background/service.dev"
+        tool.waitFor(fn():bool { return strings.contains(tool.read(session.log),marker) },15000,"Background model failed: "+tool.read(session.log))
+        let env=smoke.environment(session)
+        tool.write(session.base+"/probe-bin/gjs","#!/bin/sh\necho unexpected > \"$DEVOS_GJS_PROBE\"\nexit 97\n")
+        tool.chmod(session.base+"/probe-bin/gjs","755")
+        env.set("DEVOS_GJS_PROBE",session.base+"/gjs-client-invoked");env.set("PATH",session.base+"/probe-bin:"+env.get("PATH"))
+        tool.checked(Vec<str>("sh",session.root+"/bin/dev-os-shell","overlays-hide"),env,"",15000)
+        let diagnostics=json.parse(tool.checked(Vec<str>("sh",session.root+"/bin/dev-os-shell","doctor","--json"),env,"",15000))
+        tool.require(json.bool(json.get(diagnostics,"native_supervisor")),"Native diagnostics did not run")
+        tool.require(!fs.existsSync(session.base+"/gjs-client-invoked"),"A native command launched GJS")
+        let workers=smoke.processIds(session.runtime,script)
+        tool.require(workers.len()>0,"Background service must run outside the shell UI")
+        # Only terminate this private compositor's workers, not the user's desktop.
+        # Killing the interpreter also allows its waiting d launcher to exit.
+        for pid in workers {
+            if strings.equal(strings.trim(tool.read("/proc/${pid}/task/${pid}/children")),"") && fs.existsSync("/proc/${pid}") {
+                tool.exec(Vec<str>("kill","-TERM","--","${pid}"))
+            }
+        }
+        tool.waitFor(fn():bool { return count(tool.read(session.log),marker)>=2 },20000,"Background model did not restart and consume its latest snapshot: "+tool.read(session.log))
+        tool.require(!session.child.ready(),"Shell stopped during model recovery")
+        for pid in workers { tool.require(!fs.existsSync("/proc/${pid}"),"Old worker leaked after recovery") }
+        smoke.screenshot(smoke.environment(session),session.root+"/build/screenshots/background-devlang-model.png")
+        print("PASS background DevLang IPC on two monitors, worker recovery, snapshot replay and old-process cleanup")
+    })
+    return 0
+}
+return tool.main(main)

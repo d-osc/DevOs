@@ -11,7 +11,7 @@ and a small light circle (bottom-right) on a `#242424` square. Do not change its
 | `data/icons/hicolor/scalable/apps/dev-os-symbolic.svg` | Monochrome `dev-os-symbolic` for the panel and other recoloured UI. |
 | `data/icons/hicolor/<16…512>x<…>/apps/dev-os.png` | Raster sizes: 16, 24, 32, 48, 64, 128, 256, 512. |
 
-Regenerate everything but the master with `node tools/maintenance/build-devos-icon.mjs` (no external renderer needed).
+Regenerate everything but the master with `d tools/maintenance/build-devos-icon.dev` (no external renderer needed).
 
 Where the shell shows it: the panel menu button and launcher header (`dev-os-symbolic`), the login and OS-login
 greeters, the installer sidebar and the About page (`dev-os`), and the boot splash, which draws the same two shapes

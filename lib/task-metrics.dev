@@ -1,0 +1,159 @@
+# Source-runtime data processing for the native Task Manager service.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+use "std/regex"
+use "std/child_process"
+use "./processes.dev" as proc
+use "./devstr.dev" as utf8
+
+fn eq(a:str,b:str):bool { return strings.equal(a,b) }
+fn basename(value:str):str { let parts = strings.split(value,"/"); return parts[parts.len() as i64-1] }
+fn get(value:json.Value,key:str):json.Value { return eq(json.kind(value),"object") && json.has(value,key) ? json.get(value,key) : json.null_value() }
+fn text(value:json.Value):str { return eq(json.kind(value),"string") ? json.string(value) : "" }
+fn num(value:json.Value):f64 { return eq(json.kind(value),"number") ? json.float(value) : 0.0 }
+fn read(file:str):str { let value = result.attempt(fn():str { return fs.readFileSync(file,"utf8") }); return result.isOk(value) ? result.unwrap(value) : "" }
+fn capture(text:str,pattern:str,index:i64):str {
+    let re = regex.compile(pattern, "m"); let values = re.captures(text); re.close()
+    return values.len() as i64 > index ? values[index] : ""
+}
+fn counter(text:str,key:str):json.Value {
+    let value = capture(text,"^" + regex.escape(key) + ":[ \\t]*([0-9]+)",1)
+    return eq(value,"") ? json.null_value() : json.value(proc.intOf(value))
+}
+fn rate(now:json.Value,before:json.Value,seconds:f64):json.Value {
+    if json.is_null(now) || json.is_null(before) || num(now) < num(before) || seconds <= 0.0 { return json.null_value() }
+    return json.value((num(now)-num(before))/seconds)
+}
+fn role(name:str):str {
+    let roles = json.parse("{\"settings\":\"Settings\",\"files\":\"Files\",\"terminal\":\"Terminal\",\"editor\":\"Editor\",\"camera\":\"Camera\",\"microphone\":\"Microphone\",\"taskmanager\":\"Task Manager\",\"browser\":\"Browser\",\"diskmanager\":\"Disk Manager\",\"appstore\":\"App Store\",\"installer\":\"Installer\",\"screenshot\":\"Screenshot\"}")
+    return json.has(roles,name) ? text(json.get(roles,name)) : name
+}
+fn identity(command:str,fallback:str,root:str):str {
+    let args = strings.split(command,"\0"); if args.len() == 0 { return fallback }
+    let executable = basename(args[0])
+    if eq(executable,"taskmanager") { return "Task Manager · Native UI" }
+    if eq(executable,"system-displaycare") { return "Display Care · Native UI" }
+    if eq(executable,"gjs") || eq(executable,"gjs-console") {
+        for i in 0..(args.len() as i64) {
+            if !strings.startsWith(args[i],root + "/dist/") { continue }
+            let name = basename(args[i])
+            if (eq(name,"app-host.js") || eq(name,"app-service-host.js")) && i+1 < args.len() as i64 { return role(args[i+1]) + (eq(name,"app-host.js") ? " · UI" : " · Service") }
+            if eq(name,"main.js") { return "DevOs · Desktop" }; if eq(name,"supervisor.js") { return "DevOs · Supervisor" }; if eq(name,"services-host.js") { return "DevOs · System Services" }
+        }
+        for arg in args { if strings.endsWith(arg,".js") { return "GJS · " + basename(arg) } }
+        return "GJS · JavaScript"
+    }
+    for arg in args { if strings.endsWith(arg,"/src/services/taskmanager.dev") { return "Task Manager · DevLang Service" } }
+    for arg in args { if strings.endsWith(arg,"/src/system/org.devos.displaycare/service.dev") { return "Display Care · DevLang Service" } }
+    for arg in args { if strings.endsWith(arg,"/src/system/org.devos.background/service.dev") { return "Background · DevLang Service" } }
+    for arg in args { if strings.endsWith(arg,"/src/system/supervisor.dev") { return "DevOs · DevLang Supervisor" } }
+    if eq(executable,"d") || eq(executable,"devrun") || eq(executable,"python") || eq(executable,"python3") || eq(executable,"sh") || eq(executable,"bash") {
+        for arg in args {
+            if !eq(capture(arg,"(?:^|/)(dev-os-[\\w-]+|[\\w-]+\\.(?:py|dev|sh))$",1),"") { return basename(arg) }
+        }
+    }
+    return fallback
+}
+fn gpuClient(contents:str):json.Value {
+    if !strings.contains(contents,"drm-driver:") { return json.null_value() }
+    let driver = capture(contents,"^drm-driver:[ \\t]*(\\S+)",1); let id = capture(contents,"^drm-client-id:[ \\t]*([0-9]+)",1)
+    if eq(driver,"") || eq(id,"") { return json.null_value() }
+    let device = capture(contents,"^drm-pdev:[ \\t]*(\\S+)",1); if eq(device,"") { device = driver }
+    let engines = json.object(); let regions = json.object()
+    for line in strings.split(contents,"\n") {
+        let name = capture(line,"^drm-engine-([^ :]+):[ \\t]*([0-9]+)[ \\t]+ns[ \\t]*$",1)
+        if !eq(name,"") {
+            let capacity = counter(contents,"drm-engine-capacity-" + name); if json.is_null(capacity) { capacity = json.value(1) }
+            if num(capacity) > 0.0 { engines = json.set(engines,name,{busy:proc.intOf(capture(line,":\\s*([0-9]+)",1)),capacity:capacity}) }
+        }
+    }
+    for prefix in Vec<str>("memory","resident") {
+        for line in strings.split(contents,"\n") {
+            let name = capture(line,"^drm-" + prefix + "-([^ :]+):[ \\t]*([0-9]+)(?:[ \\t]+(KiB|MiB))?[ \\t]*$",1)
+            if eq(name,"") { continue }
+            let amount = proc.intOf(capture(line,":\\s*([0-9]+)",1)); let unit = capture(line,"(KiB|MiB)",1)
+            regions = json.set(regions,name,json.value(amount * (eq(unit,"MiB") ? 1048576 : eq(unit,"KiB") ? 1024 : 1)))
+        }
+    }
+    let memory = json.null_value(); for name in json.keys(regions) { memory = json.value(num(memory) + num(json.get(regions,name))) }
+    return {id:device+":"+id,device:device,engines:engines,memory:memory}
+}
+fn gpu(folder:str,previous:json.Value,seconds:f64):json.Value {
+    let clients = json.object(); let busy = json.object(); let memory = json.null_value()
+    let files = result.attempt(fn():Vec<str> { return fs.readdirSync(folder+"/fdinfo") })
+    if result.isOk(files) {
+        for fd in result.unwrap(files) {
+            # DRM fields identify the client; non-DRM descriptors have none.
+            let client = gpuClient(read(folder+"/fdinfo/"+fd)); if json.is_null(client) { continue }
+            let id = text(get(client,"id")); if json.has(clients,id) { continue }
+            let old = get(previous,id); let engines = get(client,"engines")
+            for engine in json.keys(engines) {
+                let value = json.get(engines,engine); let before = get(get(old,"engines"),engine)
+                if !json.is_null(before) && json.int(get(value,"busy")) < json.int(get(before,"busy")) { value = json.set(value,"busy",get(before,"busy")) }
+                engines = json.set(engines,engine,value)
+                if !json.is_null(before) && num(get(value,"capacity")) == num(get(before,"capacity")) && seconds > 0.0 {
+                    let key = text(get(client,"device"))+":"+engine
+                    let delta = json.int(get(value,"busy"))-json.int(get(before,"busy"))
+                    busy = json.set(busy,key,json.value(num(get(busy,key)) + delta as f64/(seconds*1000000000.0*num(get(value,"capacity")))*100.0))
+                }
+            }
+            client = json.set(client,"engines",engines); clients = json.set(clients,id,client)
+            if !json.is_null(get(client,"memory")) { memory = json.value(num(memory)+num(get(client,"memory"))) }
+        }
+    }
+    let usage = json.null_value(); for key in json.keys(busy) { if json.is_null(usage) || num(json.get(busy,key)) > num(usage) { usage = json.get(busy,key) } }
+    if num(usage) > 100.0 { usage = json.value(100.0) }
+    return {usage:usage,memory:memory,clients:clients}
+}
+fn sockets():json.Value {
+    let output = result.attempt(fn():child_process.Output { return child_process.execFileSync("ss",Vec<str>("-tinpeHO"),child_process.Options("",1500,4194304,Vec<u8>())) })
+    if result.isErr(output) { return json.null_value() }; let done = result.unwrap(output); if !done.success { return json.null_value() }
+    return socketCounters(encoding.decode(done.stdout,"utf8"))
+}
+fn socketCounters(contents:str):json.Value {
+    let items = json.array()
+    for line in strings.split(contents,"\n") {
+        let inode = capture(line,"\\bino:([0-9]+)",1); if eq(inode,"") { continue }
+        let sent = capture(line,"\\bbytes_sent:([0-9]+)",1); if eq(sent,"") { sent = capture(line,"\\bbytes_acked:([0-9]+)",1) }
+        let received = capture(line,"\\bbytes_received:([0-9]+)",1); if eq(sent,"") && eq(received,"") { continue }
+        let remaining = line; let seen = json.object()
+        while true {
+            let pid = capture(remaining,"\\bpid=([0-9]+)",1); if eq(pid,"") { break }
+            if !json.has(seen,pid) { items = json.push(items,{pid:proc.intOf(pid),inode:inode,sent:proc.intOf(sent),received:proc.intOf(received)}); seen = json.set(seen,pid,true) }
+            let index = strings.indexOf(remaining,"pid="+pid); remaining = utf8.byteSlice(remaining,index+4+strings.len(pid) as i64,strings.len(remaining) as i64)
+        }
+    }
+    return items
+}
+fn enrich(state:json.Value,previous:json.Value,seconds:f64,root:str):json.Value {
+    let rows = get(state,"processes"); let next = json.object(); let network = sockets(); let oldSockets = get(previous,"sockets"); let newSockets = json.object()
+    for i in 0..(json.len(rows) as i64) {
+        let item = json.at(rows,i); let pid = json.int(get(item,"pid")); let key = "${pid}:"+text(get(item,"start")); let folder = "/proc/${pid}"; let before = get(get(previous,"processes"),key)
+        let command = read(folder+"/cmdline"); item = json.set(item,"command",strings.replaceAll(command,"\0"," ")); item = json.set(item,"name",identity(command,text(get(item,"name")),root))
+        let swap = counter(read(folder+"/status"),"VmSwap"); item = json.set(item,"swap",json.is_null(swap) ? json.null_value() : json.value(num(swap)*1024.0))
+        let io = read(folder+"/io"); let diskRead = counter(io,"read_bytes"); let diskWrite = counter(io,"write_bytes")
+        item = json.set(item,"diskRead",rate(diskRead,get(before,"read"),seconds)); item = json.set(item,"diskWrite",rate(diskWrite,get(before,"write"),seconds))
+        let graphics = gpu(folder,get(before,"gpu"),seconds); item = json.set(item,"gpu",get(graphics,"usage")); item = json.set(item,"gpuMemory",get(graphics,"memory"))
+        let readable = result.attempt(fn():Vec<str> { return fs.readdirSync(folder+"/fd") })
+        let visible = !json.is_null(network) && !json.is_null(before) && !json.is_null(oldSockets) && result.isOk(readable)
+        let received = visible ? json.value(0.0) : json.null_value(); let sent = received
+        if !json.is_null(network) {
+            for j in 0..(json.len(network) as i64) {
+                let socket = json.at(network,j); if json.int(get(socket,"pid")) != pid { continue }
+                let socketKey = key+":"+text(get(socket,"inode")); newSockets = json.set(newSockets,socketKey,socket)
+                if visible {
+                    let old = get(oldSockets,socketKey)
+                    let r = rate(get(socket,"received"),json.is_null(old) ? json.value(0) : get(old,"received"),seconds)
+                    let s = rate(get(socket,"sent"),json.is_null(old) ? json.value(0) : get(old,"sent"),seconds)
+                    received = json.value(num(received)+num(r)); sent = json.value(num(sent)+num(s))
+                }
+            }
+        }
+        item = json.set(item,"networkReceive",received); item = json.set(item,"networkSend",sent)
+        next = json.set(next,key,{read:diskRead,write:diskWrite,gpu:get(graphics,"clients")}); rows[i] = item
+    }
+    return {state:json.set(state,"processes",rows),previous:{processes:next,sockets:json.is_null(network) ? json.null_value() : newSockets}}
+}

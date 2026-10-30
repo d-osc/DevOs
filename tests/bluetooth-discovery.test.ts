@@ -1,5 +1,5 @@
 import {Gio, GLib} from '@dev-os/core';
-import {BluetoothDiscovery} from '../extensions/org.devos.settings/bluetooth-discovery.js';
+import {BluetoothDiscovery} from '../src/apps/org.devos.settings/bluetooth-discovery.js';
 function assert(value: unknown, message: string) {if (!value) throw new Error(message);}
 async function verify() {
     const daemon = Gio.TestDBus.new(Gio.TestDBusFlags.NONE); daemon.up();

@@ -33,6 +33,13 @@ fn main(): i32 {
     let assets = path.dirname(module.entry())
     let modern = strings.contains(read(source + "/include/labwc.h"), "struct session_lock_manager *session_lock_manager")
     let text = read(assets + "/devos-workspaces.c")
+    if !modern {
+        text = strings.replaceAll(text, "#include \"output.h\"", "/* Legacy output declarations are in labwc.h. */")
+        text = strings.replaceAll(text, "view_snap_to_region(view, region);", "view_snap_to_region(view, region, true);")
+        text = strings.replaceAll(text, "view_get_region_snap_box(view, &region)", "devos_legacy_region_snap_box(view, &region)")
+        let compat = "static struct wlr_box devos_legacy_region_snap_box(struct view *view, struct region *region) {\n    struct wlr_box geo = region->geo;\n    if (rc.gap) {\n        double half = rc.gap / 2.0, x = half, y = half, w = -rc.gap, h = -rc.gap;\n        struct wlr_box area = output_usable_area_in_layout_coords(region->output);\n        if (geo.x == area.x) {x += half; w -= half;}\n        if (geo.y == area.y) {y += half; h -= half;}\n        if (geo.x + geo.width == area.x + area.width) w -= half;\n        if (geo.y + geo.height == area.y + area.height) h -= half;\n        geo.x += x; geo.y += y; geo.width += w; geo.height += h;\n    }\n    struct border margin = ssd_get_margin(view->ssd);\n    geo.x += margin.left; geo.y += margin.top;\n    geo.width -= margin.left + margin.right; geo.height -= margin.top + margin.bottom;\n    return geo;\n}\n"
+        text = strings.replaceAll(text, "void devos_workspaces_init(struct server *server);", compat + "void devos_workspaces_init(struct server *server);")
+    }
     if modern { text = strings.replaceAll(text, "#include \"labwc.h\"", "#include \"labwc.h\"\n#include \"input/input.h\"\n#include \"input/keyboard.h\"") }
     text = strings.replaceAll(text, "DEVOS_DESKTOP_LIST", modern ? "&(s)->workspaces.all" : "&(s)->workspaces")
     text = strings.replaceAll(text, "DEVOS_CURRENT_DESKTOP", modern ? "(s)->workspaces.current" : "(s)->workspace_current")

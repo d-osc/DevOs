@@ -1,0 +1,129 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+extern fn cairo_set_source_rgba(cr:*void,r:f64,g:f64,b:f64,a:f64)
+extern fn cairo_rectangle(cr:*void,x:f64,y:f64,w:f64,h:f64)
+extern fn cairo_fill(cr:*void)
+
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn field(fields:Vec<ui.Text>,index:i64):ui.Text { return (fields.len() as i64) > index ? fields[index] : ui.emptyText() }
+fn label(value:ui.Text,className:str):ui.Node {
+    let options=ui.props(); options.xalign=0.0; options.wrap=true
+    if className != "" { options.className=ui.text(className) }
+    return ui.withProps(ui.TextLabel(value),options)
+}
+// Capacity overview: partitions are drawn in proportion to their sizes over the disk width.
+fn capacityMap(sizes:ui.Text):ui.Node {
+    let options=ui.named("disk-map"); options.expand=true; options.height=70
+    let parts=channel.split(sizes,44)
+    return ui.DrawingArea(options,fn(cr:*void,width:i32,height:i32) {
+        let colors=Vec<f64>(0.30,0.73,0.45,0.31,0.55,0.88,0.62,0.43,0.85,0.93,0.60,0.27)
+        let sum=0.0; for part in parts { sum = sum + channel.integer(part) as f64 }
+        if sum < 1.0 { sum = 1.0 }
+        let offset=0.0; let index=0
+        for part in parts {
+            let extent=(width as f64)*(channel.integer(part) as f64)/sum; let at=(index%4)*3
+            unsafe {
+                cairo_set_source_rgba(cr,colors[at],colors[at+1],colors[at+2],1.0)
+                cairo_rectangle(cr,offset,0.0,extent > 3.0 ? extent-2.0 : 1.0,height as f64); cairo_fill(cr)
+            }
+            offset = offset + extent; index = index + 1
+        }
+    })
+}
+fn partitionCard(fields:Vec<ui.Text>):ui.Node {
+    let card=ui.props(); card.spacing=6; card.className=ui.text("disk-partition")
+    let top=ui.props(); top.vertical=false; top.spacing=12
+    let name=ui.props(); name.expand=true; name.xalign=0.0
+    let rows=Vec<ui.Node>(ui.Box(top,Vec<ui.Node>(ui.withProps(ui.TextLabel(field(fields,2)),name),ui.TextLabel(field(fields,3)))),label(field(fields,4),"subtle"))
+    if field(fields,5).bytes.len() > 0 { rows.push(label(field(fields,5),"subtle")) }
+    if field(fields,6).bytes.len() > 0 { rows.push(label(ui.concatText(Vec<ui.Text>(ui.text("UUID: "),field(fields,6))),"subtle")) }
+    return ui.Box(card,rows)
+}
+fn App(context:*ui.Context):ui.Node {
+    let snapshot=ui.useText(context,ui.text("S\t0\t"))
+    let error=ui.useText(context,ui.emptyText()); let selected=ui.useText(context,ui.emptyText())
+    let busy=ui.useState(context,1); let pipe=ui.useRef(context,0); let smoke=ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root=environment("DEV_OS_ROOT"); let mode=environment("DEV_OS_THEME"); let family=environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len()==0 { unsafe { mode=rd_default_theme() } }
+        if ui.text(family).bytes.len()==0 { family="vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header_for((*context).native,"Disk Manager","${root}/data/icons","disk-manager","dev-os-disk-manager")
+        }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe { if rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"disk-manager") == 0 { error.set(ui.text("Could not register the application control service.")) } }
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let root=environment("DEV_OS_ROOT"); let runner=environment("DEVLANG_RUN"); if ui.text(runner).bytes.len()==0 { runner="d" }
+        return channel.connect(context,runner,"${root}/src/apps/org.devos.diskmanager/service.dev",root,fn(value:ui.Text) {
+            busy.set(0)
+            if value.bytes.len() > 0 && value.bytes[0]==69 { let parts=channel.split(value,9); if parts.len() > 1 { error.set(parts[1]) } }
+            else { snapshot.set(value); error.set(ui.emptyText()) }
+        },fn(value:i64) { pipe.set(value); channel.send(value,ui.text("{\"action\":\"get\"}")) })
+    },Vec<i64>())
+    let records=channel.split(snapshot.value,30); let summary=channel.split(records[0],9)
+    let disks=Vec<Vec<ui.Text>>()
+    for i in 1..(records.len() as i64) {
+        let fields=channel.split(records[i],9)
+        if fields.len() > 6 && fields[0].bytes.len() > 0 && fields[0].bytes[0]==68 { disks.push(fields) }
+    }
+    let chosen=disks.len() > 0 ? disks[0] : Vec<ui.Text>()
+    for fields in disks { if ui.equalText(fields[1],selected.value) { chosen=fields } }
+    let items=Vec<ui.Node>()
+    for fields in disks {
+        let active=chosen.len() > 0 && ui.equalText(fields[1],chosen[1])
+        let options=ui.props(); options.className=ui.text(active ? "disk-device selected" : "disk-device"); options.id=ui.text("disk-device-${items.len()}")
+        let row=ui.props(); row.vertical=false; row.spacing=10; let text=ui.props(); text.spacing=5
+        let iconOptions=ui.props(); iconOptions.iconSize=24
+        let path=fields[1]
+        items.push(ui.WidgetButton(options,ui.Box(row,Vec<ui.Node>(ui.Icon(iconOptions,fields[3].bytes.len() > 0 ? "drive-harddisk-symbolic" : "drive-harddisk-symbolic"),ui.Box(text,Vec<ui.Node>(label(fields[1],""),label(fields[2],"subtle"))))),fn() { selected.set(path) }))
+    }
+    let detail=Vec<ui.Node>()
+    if chosen.len() > 6 {
+        let box=ui.props(); box.spacing=8; box.className=ui.text("disk-summary")
+        detail.push(ui.Box(box,Vec<ui.Node>(label(chosen[4],"disk-name"),label(chosen[5],"subtle"))))
+        detail.push(capacityMap(chosen[6]))
+        detail.push(label(ui.text("Capacity overview · relative partition sizes, not exact sector boundaries."),"subtle"))
+        for i in 1..(records.len() as i64) {
+            let fields=channel.split(records[i],9)
+            if fields.len() > 6 && fields[0].bytes.len() > 0 && fields[0].bytes[0]==80 && ui.equalText(fields[1],chosen[1]) { detail.push(partitionCard(fields)) }
+        }
+    } else { detail.push(label(ui.text(busy.value != 0 ? "Reading disks…" : "No block devices found"),"")) }
+    let wsl=summary.len() > 1 && summary[1].bytes.len() > 0 && summary[1].bytes[0]==49
+    let message=error.value.bytes.len() > 0 ? error.value : summary.len() > 2 ? summary[2] : ui.emptyText()
+    ui.useEffect(context,fn():fn():void {
+        if ui.text(environment("DEVOS_NATIVE_SMOKE")).bytes.len() > 0 && disks.len() > 0 {
+            if smoke.get()==0 { smoke.set(1); ui.click(context,"disks-refresh") }
+            else if smoke.get()==1 && busy.value==0 && ui.click(context,"disk-device-0") { print("PASS native Disk Manager service, refresh and cleanup"); ui.close(context) }
+        }
+        return ui.noop
+    },Vec<i64>(snapshot.revision,busy.value))
+    let side=ui.props(); side.spacing=8
+    let list=ui.props(); list.width=230
+    let body=ui.props(); body.vertical=false; body.spacing=20; body.expand=true
+    let header=ui.props(); header.vertical=false; header.spacing=12
+    let titles=ui.props(); titles.expand=true; titles.spacing=0
+    let content=ui.props(); content.spacing=16; content.expand=true
+    return <Box expand spacing={16} className="disk-manager-body">
+        {ui.Box(header,Vec<ui.Node>(ui.Box(titles,Vec<ui.Node>(label(ui.text("Disk Manager"),"task-title"),label(ui.text("Storage and partitions"),"subtle"))),<Button id="disks-refresh" sensitive={busy.value==0} onClick={() => { busy.set(1); channel.send(pipe.get(),ui.text("{\"action\":\"get\"}")) }}>Refresh</Button>))}
+        {wsl && label(ui.text("WSL shows Linux virtual disks and explicitly attached devices. Windows drives such as C: are not physical disks in this list."),"disk-notice")}
+        {ui.Box(body,Vec<ui.Node>(ui.Scroll(list,ui.Box(side,items)),ui.Scroll(content,ui.Box(content,detail))))}
+        {label(ui.text(busy.value != 0 ? "Refreshing disks..." : "Disk information - read only"),"subtle")}
+        {message.bytes.len() > 0 && <TextLabel id="disks-error" className="error" wrap value={message}/>}
+    </Box>
+}
+fn run():i32 {
+    let id=environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len()==0 { id="org.devos.App.diskmanager.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Disk Manager",1040,720,App) ? 0 : 1
+}

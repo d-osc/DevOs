@@ -1,0 +1,195 @@
+# Session policy lives here; the C host only owns GLib subprocess handles/signals.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/uuid"
+use "./hw.dev" as hw
+use "./posix.dev" as posix
+use "./desktop.dev" as util
+use "./config.dev" as config
+use "./session-version.dev" as versions
+extern fn sp_init()
+extern fn sp_finish()
+extern fn sp_stopping():i32
+extern fn sp_step()
+extern fn sp_wait(milliseconds:i32)
+extern fn sp_builder():*void
+extern fn sp_arg(builder:*void,value:str)
+extern fn sp_spawn(builder:*void):*void
+extern fn sp_detach(builder:*void):i32
+extern fn sp_pid(child:*void):i64
+extern fn sp_done(child:*void):i32
+extern fn sp_code(child:*void):i32
+extern fn sp_free(child:*void)
+struct Command { args:Vec<str>, role:str }
+struct Child { handle:*void, role:str, observed:bool }
+struct SystemRestart {command:Command,at:f64,times:Vec<f64>,retired:i64}
+fn nativeName(name:str):bool {
+    if strings.charLength(name)<1 || strings.charLength(name)>80 || !strings.contains("abcdefghijklmnopqrstuvwxyz",strings.substring(name,0,1)) {return false}
+    for ch in strings.split(name,"") {if !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789-",ch) {return false}};return true
+}
+fn systems(root:str):Vec<Command> {
+    let directory=root+"/src/system";let out=Vec<Command>();if !fs.is_dir(directory) {return out}
+    for folder in fs.readdirSync(directory) {
+        if !fs.is_dir(directory+"/"+folder) {continue}
+        let file=directory+"/"+folder+"/extension.json";if !fs.is_file(file) {continue}
+        let manifest=json.parse(fs.readFileSync(file,"utf8"));let native=util.get(manifest,"native");if json.is_null(native) {continue}
+        let name=util.text(native);util.require(nativeName(name) && util.boolean(util.get(manifest,"system")) && strings.equal(util.text(util.get(manifest,"kind")),"ui") && strings.equal(util.text(util.get(manifest,"id")),folder),"Invalid native system manifest: "+folder)
+        let binary=root+"/dist/native/"+name;util.require(fs.is_file(binary),"Native system executable is missing: "+name)
+        out.push(Command(Vec<str>("env","DEV_OS_ROOT="+root,binary),"native:"+folder))
+    };return out
+}
+fn builder(command:Vec<str>):*void {
+    let handle:*void=null
+    unsafe { handle=sp_builder(); sp_arg(handle,"setsid") }
+    for arg in command { unsafe { sp_arg(handle,config.expandHome(arg)) } }
+    return handle
+}
+fn start(command:Command):Child {
+    let handle:*void=null
+    unsafe { handle=sp_spawn(builder(command.args)) }
+    let valid=false; unsafe { valid=handle as bool }
+    util.require(valid,"Could not start "+strings.join(command.args," "))
+    return Child(handle,command.role,false)
+}
+fn tryStart(command:Command):result.Result<Child> { return result.attempt(fn():Child { return start(command) }) }
+fn done(child:Child):bool { let value:i32=0; unsafe { value=sp_done(child.handle) }; return value!=0 }
+fn code(child:Child):i32 { let value:i32=0; unsafe { value=sp_code(child.handle) }; return value }
+fn pid(child:Child):i64 { let value:i64=0; unsafe { value=sp_pid(child.handle) }; return value }
+fn signal(children:Vec<Child>,value:i32) { for child in children { if pid(child)>0 { posix.killGroup(pid(child),value) } } }
+fn alive(children:Vec<Child>):bool { for child in children { if !done(child) || (pid(child)>0 && posix.killGroup(pid(child),0)) { return true } }; return false }
+fn settled(children:Vec<Child>):bool { for child in children { if !done(child) { return false } }; return true }
+fn services(root:str):Command {
+    let override=hw.env("DEV_OS_SERVICES_HOST")
+    return strings.equal(override,"") ? Command(Vec<str>("gjs","-m",root+"/dist/services-host.js"),"services") : Command(Vec<str>(override),"services")
+}
+fn plan(root:str,options:json.Value):Vec<Command> {
+    let data=config.load(config.configPath()); let shell=hw.env("DEV_OS_SHELL")
+    util.require(!strings.equal(shell,""),"DEV_OS_SHELL is missing")
+    let out=Vec<Command>()
+    if !strings.equal(hw.env("DEV_OS_POLKIT_AGENT_STARTED"),"1") && !strings.equal(hw.env("WLR_BACKENDS"),"headless") && strings.equal(hw.env("WSL_DISTRO_NAME"),"") && strings.equal(hw.env("WSL_INTEROP"),"") {
+        for path in Vec<str>("/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1","/usr/libexec/polkit-gnome-authentication-agent-1","polkit-gnome-authentication-agent-1") {
+            if !strings.equal(hw.which(path),"") { out.push(Command(Vec<str>(path),"agent")); break }
+        }
+    }
+    if !strings.equal(json.kind(util.get(options,"services")),"bool") || json.bool(json.get(options,"services")) { out.push(services(root)) }
+    out.push(Command(Vec<str>(shell),"shell"))
+    if !strings.equal(hw.env("DEVOS_NATIVE_SYSTEMS"),"0") && (!strings.equal(json.kind(util.get(options,"nativeSystem")),"bool") || json.bool(json.get(options,"nativeSystem"))) {for command in systems(root) {out.push(command)}}
+    let autostart=json.get(data,"autostart")
+    for i in 0..(json.len(autostart) as i64) {
+        let row=json.at(autostart,i); let args=Vec<str>()
+        for j in 0..(json.len(row) as i64) { args.push(json.string(json.at(row,j))) }
+        if !strings.equal(hw.which(config.expandHome(args[0])),"") { out.push(Command(args,"autostart")) }
+        else { hw.stderr("Dev OS: skipping missing autostart command "+args[0]) }
+    }
+    return out
+}
+fn tryPlan(root:str,options:json.Value):result.Result<Vec<Command>> { return result.attempt(fn():Vec<Command> { return plan(root,options) }) }
+fn recent(times:Vec<f64>,now:f64,window:f64):Vec<f64> { let out=Vec<f64>(); for value in times { if now-value<=window { out.push(value) } }; out.push(now); return out }
+fn switchRequest(request:str):str {
+    let root=json.string(json.get(json.parse(fs.readFileSync(request,"utf8")),"root"))
+    util.require(strings.equal(root,versions.selected()),"Requested runtime is no longer the installed selection")
+    return root
+}
+fn trySwitch(request:str):result.Result<str> { return result.attempt(fn():str { return switchRequest(request) }) }
+fn cleanPath(value:str,old:str):str { let out=Vec<str>(); for path in strings.split(value,":") { if !strings.equal(path,old) { out.push(path) } }; return strings.join(out,":") }
+fn compositorPid(value:str):i64 {
+    if strings.equal(value,"") || strings.startsWith(value,"0") {return 0}
+    for ch in strings.split(value,"") {if !strings.contains("0123456789",ch) {return 0}}
+    let number=hw.toInt(value,0)
+    return number>0 && number<=2147483647 ? number : 0
+}
+fn run(root:str,options:json.Value):i32 {
+    let delay=hw.jnum(options,"restartDelaySeconds",1.0); let maximum=hw.jnum(options,"maxRestarts",5.0); let window=hw.jnum(options,"restartWindowSeconds",300.0)
+    util.require(delay>=0.0 && maximum>=0.0 && maximum<=1000.0 && window>=0.0,"Invalid supervisor restart policy")
+    let request=hw.envOr("XDG_RUNTIME_DIR","/tmp")+"/dev-os-version-"+uuid.v4()+".json"
+    util.require(posix.setEnv("DEV_OS_VERSION_REQUEST",request),"Could not set session environment")
+    unsafe { sp_init() }
+    let children=Vec<Child>(); let closing=false; let shutdownAt=0.0; let killed=false; let resultCode:i32=0; let restartRoot=""
+    let shellAt=0.0; let servicesAt=0.0; let shellTimes=Vec<f64>(); let serviceTimes=Vec<f64>()
+    let nativeRestarts=Vec<SystemRestart>()
+    let initial=tryPlan(root,options)
+    if result.isOk(initial) {
+        for command in result.unwrap(initial) {
+            if strings.startsWith(command.role,"native:") {nativeRestarts.push(SystemRestart(command,0.0,Vec<f64>(),0))}
+            let child=tryStart(command)
+            if result.isErr(child) { hw.stderr("Dev OS session: "+result.message(child)); resultCode=1; closing=true; break }
+            children.push(result.unwrap(child))
+        }
+    } else { hw.stderr("Dev OS session: "+result.message(initial)); resultCode=1; closing=true }
+    while true {
+        unsafe { sp_step(); if sp_stopping()!=0 { closing=true } }
+        let now=hw.nowSeconds()
+        for i in 0..(children.len() as i64) {
+            let child=children[i]; if child.observed || !done(child) { continue }
+            child.observed=true; children[i]=child
+            if strings.equal(child.role,"shell") {
+                if !closing { resultCode=code(child) }
+                if !closing && resultCode!=0 {
+                    shellTimes=recent(shellTimes,now,window)
+                    if shellTimes.len() as f64<=maximum { shellAt=now+delay; hw.stderr("Dev OS supervisor: shell crashed; restarting") }
+                    else { hw.stderr("Dev OS supervisor: shell crashed repeatedly; ending the session"); closing=true }
+                } else if !closing {
+                    if fs.existsSync(request) {
+                        let selected=trySwitch(request)
+                        if result.isOk(selected) { restartRoot=result.unwrap(selected) } else { hw.stderr("Dev OS version request rejected: "+result.message(selected)) }
+                    }
+                    closing=true
+                }
+            } else if strings.equal(child.role,"services") && !closing {
+                serviceTimes=recent(serviceTimes,now,window)
+                if serviceTimes.len() as f64<=maximum { servicesAt=now+(delay>0.001 ? delay : 0.001); hw.stderr("Dev OS supervisor: restarting services independently of the desktop") }
+                else { hw.stderr("Dev OS services crashed repeatedly; ending the session"); resultCode=1; closing=true }
+            } else if strings.startsWith(child.role,"native:") && !closing {
+                # A CLI driver can leave descendants after its native owner exits.
+                if pid(child)>0 {posix.killGroup(pid(child),15)}
+                for j in 0..(nativeRestarts.len() as i64) {
+                    let policy=nativeRestarts[j];if !strings.equal(policy.command.role,child.role) {continue}
+                    policy.retired=pid(child)
+                    policy.times=recent(policy.times,now,window)
+                    if policy.times.len() as f64<=maximum {policy.at=now+(delay>0.001 ? delay : 0.001);hw.stderr("Dev OS supervisor: restarting "+child.role+" independently of the shell")}
+                    else {hw.stderr("Dev OS native system crashed repeatedly: "+child.role);resultCode=1;closing=true}
+                    nativeRestarts[j]=policy
+                }
+            }
+        }
+        if !closing {
+            let command=Command(Vec<str>(),"")
+            if shellAt>0.0 && now>=shellAt { shellAt=0.0; command=Command(Vec<str>(hw.env("DEV_OS_SHELL")),"shell") }
+            else if servicesAt>0.0 && now>=servicesAt { servicesAt=0.0; command=services(root) }
+            else {for j in 0..(nativeRestarts.len() as i64) {let policy=nativeRestarts[j];if policy.at>0.0 && now>=policy.at {policy.at=0.0;command=policy.command;if policy.retired>0 {posix.killGroup(policy.retired,9);policy.retired=0};nativeRestarts[j]=policy;break}}}
+            if command.args.len()>0 {
+                let started=tryStart(command)
+                if result.isOk(started) { children.push(result.unwrap(started)); if strings.equal(command.role,"shell") {resultCode=0} } else { hw.stderr(result.message(started)); resultCode=1; closing=true }
+            }
+        }
+        if closing {
+            if shutdownAt==0.0 { shutdownAt=now+3.0; signal(children,15) }
+            if !killed && now>=shutdownAt { killed=true; signal(children,9) }
+            if settled(children) && (killed || !alive(children)) { break }
+        }
+        # Wait for a child/signal or the next policy deadline, rather than polling.
+        let wait:i32=1000
+        if !closing {
+            if shellAt>0.0 && (shellAt-now)*1000.0<wait as f64 {wait=((shellAt-now)*1000.0) as i32}
+            if servicesAt>0.0 && (servicesAt-now)*1000.0<wait as f64 {wait=((servicesAt-now)*1000.0) as i32}
+            for policy in nativeRestarts {if policy.at>0.0 && (policy.at-now)*1000.0<wait as f64 {wait=((policy.at-now)*1000.0) as i32}}
+        } else if !killed && (shutdownAt-now)*1000.0<wait as f64 {wait=((shutdownAt-now)*1000.0) as i32}
+        unsafe {sp_wait(wait>0 ? wait : 1)}
+    }
+    if fs.existsSync(request) { fs.unlinkSync(request) }
+    for child in children { unsafe { sp_free(child.handle) } }
+    unsafe { sp_finish() }
+    if !strings.equal(restartRoot,"") {
+        posix.setEnv("PATH",restartRoot+"/bin:"+cleanPath(hw.envOr("PATH","/usr/bin:/bin"),root+"/bin"))
+        posix.setEnv("XDG_DATA_DIRS",restartRoot+"/data:"+cleanPath(hw.envOr("XDG_DATA_DIRS","/usr/local/share:/usr/share"),root+"/data"))
+        posix.setEnv("DEV_OS_ROOT",restartRoot); posix.setEnv("DEV_OS_SHELL",restartRoot+"/bin/dev-os-shell")
+        let ok:i32=0; unsafe { ok=sp_detach(builder(Vec<str>(restartRoot+"/bin/dev-os-start"))) }
+        if ok!=0 { print("Dev OS: switching session runtime to "+restartRoot); return 0 }
+        resultCode=1
+    }
+    let compositor=compositorPid(hw.env("LABWC_PID"))
+    if compositor>0 { posix.send(compositor,15) }
+    return resultCode
+}

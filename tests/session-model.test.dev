@@ -1,0 +1,52 @@
+use "std/test"
+use "std/fs"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "std/uuid"
+use "../lib/config.dev" as config
+use "../lib/session-version.dev" as versions
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn invalid(value:json.Value):bool {return result.isErr(result.attempt(fn():json.Value {return config.validate(value)}))}
+fn validVersion(value:str):bool {return result.isOk(result.attempt(fn():str {return versions.version(json.value(value))}))}
+fn validSelection(value:str):bool {return result.isOk(result.attempt(fn():str {return versions.selectedAt(value)}))}
+# Retain these tiny fixtures under build for inspection on both Windows and Linux.
+fn fixture(body:fn(str):void) {let dir=t.root()+"/build/session-model-fixtures/"+uuid.v4();fs.mkdirSync(dir,true);body(dir)}
+fn metadata(dir:str):str {
+ let key="1.2.3-0123456789ab";let root=dir+"/data/dev-os-updates/releases/"+key
+ tool.jsonWrite(root+"/release.json",{format:1,version:"1.2.3",platform:"linux-arm64"})
+ tool.jsonWrite(dir+"/data/dev-os-updates/history.json",{current:{key:key,version:"1.2.3",platform:"linux-arm64",repository:"owner/repo"},previous:null})
+ return root
+}
+test.case("configuration preserves the npm config contract",fn() {
+    let value=config.validate({name:"Custom",panel_height:48,accent:"legacy",background:"legacy",autostart:[["sh","-c","exit 0"]]})
+    t.equal(json.string(json.get(value,"name")),"Custom");test.expect(json.int(json.get(value,"panel_height"))==48,"Panel height changed")
+    test.expect(!json.has(value,"accent") && !json.has(value,"background"),"Legacy colors not removed")
+    test.expect(json.len(json.get(value,"terminal"))==1 && json.len(json.get(value,"autostart"))==1,"Defaults lost")
+})
+test.case("configuration rejects unknown, fractional and malformed commands",fn() {
+    test.expect(invalid({unknown:true}) && invalid({panel_height:48.5}) && invalid({panel_height:31}),"Invalid scalar accepted")
+    test.expect(invalid({files:[]}) && invalid({autostart:[["sh",7]]}) && invalid({name:"  "}),"Malformed command accepted")
+    test.expect(invalid(json.parse("{\"terminal\":[\"bad\\u0000argument\"]}")),"NUL command accepted")
+})
+test.case("version accepts supported tags and rejects unsafe numbers",fn() {
+    t.equal(versions.version(json.value("v1.2.3-ux3407na-dev")),"1.2.3")
+    for value in Vec<str>("01.2.3","1.2.3-other","9007199254740992.0.0","1.2.3/path") {
+        # Bind the parameter in a helper to avoid relying on loop-local closure capture.
+        test.expect(!validVersion(value),"Unsafe version accepted")
+    }
+})
+test.case("installed selection checks metadata and rejects path keys",fn() {
+    fixture(fn(dir:str) {
+        let root=metadata(dir); t.equal(versions.selectedAt(dir+"/data/dev-os-updates"),root)
+        tool.jsonWrite(root+"/release.json",{format:1,version:"9.9.9",platform:"linux-arm64"})
+        test.expect(!validSelection(dir+"/data/dev-os-updates"),"Mismatched metadata accepted")
+        tool.jsonWrite(dir+"/data/dev-os-updates/history.json",{current:{key:"../../escape",version:"1.2.3",platform:"linux-arm64",repository:"owner/repo"},previous:null})
+        test.expect(!validSelection(dir+"/data/dev-os-updates"),"Escaping key accepted")
+    })
+})
+
+return t.finish()
+
+

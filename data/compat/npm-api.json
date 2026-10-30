@@ -1,0 +1,287 @@
+{
+  "format": 1,
+  "packages": [
+    {
+      "directory": "packages/compat",
+      "name": "@dev-os/compat",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        },
+        "./background-view": {
+          "types": "./dist/background-view.d.ts",
+          "import": "./dist/background-view.js"
+        },
+        "./background": {
+          "types": "./dist/background.d.ts",
+          "import": "./dist/background.js"
+        },
+        "./gtk": {
+          "types": "./dist/gtk.d.ts",
+          "import": "./dist/gtk.js"
+        },
+        "./launcher-view": {
+          "types": "./dist/launcher-view.d.ts",
+          "import": "./dist/launcher-view.js"
+        },
+        "./launcher": {
+          "types": "./dist/launcher.d.ts",
+          "import": "./dist/launcher.js"
+        },
+        "./panel-view": {
+          "types": "./dist/panel-view.d.ts",
+          "import": "./dist/panel-view.js"
+        },
+        "./panel": {
+          "types": "./dist/panel.d.ts",
+          "import": "./dist/panel.js"
+        },
+        "./preferences": {
+          "types": "./dist/preferences.d.ts",
+          "import": "./dist/preferences.js"
+        },
+        "./settings-view": {
+          "types": "./dist/settings-view.d.ts",
+          "import": "./dist/settings-view.js"
+        },
+        "./settings": {
+          "types": "./dist/settings.d.ts",
+          "import": "./dist/settings.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/config",
+      "name": "@dev-os/config",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/core",
+      "name": "@dev-os/core",
+      "exports": {
+        "./theme": {
+          "types": "./dist/theme.d.ts",
+          "import": "./dist/theme.js"
+        },
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        },
+        "./base": {
+          "types": "./dist/base.d.ts",
+          "import": "./dist/base.js"
+        },
+        "./soup": {
+          "types": "./dist/soup.d.ts",
+          "import": "./dist/soup.js"
+        },
+        "./vte": {
+          "types": "./dist/vte.d.ts",
+          "import": "./dist/vte.js"
+        },
+        "./webkit": {
+          "types": "./dist/webkit.d.ts",
+          "import": "./dist/webkit.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/extensions",
+      "name": "@dev-os/extensions",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        },
+        "./clock": {
+          "types": "./dist/clock.d.ts",
+          "import": "./dist/clock.js"
+        },
+        "./manager": {
+          "types": "./dist/manager.d.ts",
+          "import": "./dist/manager.js"
+        },
+        "./monitor-ui": {
+          "types": "./dist/monitor-ui.d.ts",
+          "import": "./dist/monitor-ui.js"
+        },
+        "./runtime": {
+          "types": "./dist/runtime.d.ts",
+          "import": "./dist/runtime.js"
+        },
+        "./schema": {
+          "types": "./dist/schema.d.ts",
+          "import": "./dist/schema.js"
+        },
+        "./settings-pages": {
+          "types": "./dist/settings-pages.d.ts",
+          "import": "./dist/settings-pages.js"
+        },
+        "./store-protocol": {
+          "types": "./dist/store-protocol.d.ts",
+          "import": "./dist/store-protocol.js"
+        },
+        "./store": {
+          "types": "./dist/store.d.ts",
+          "import": "./dist/store.js"
+        },
+        "./system": {
+          "types": "./dist/system.d.ts",
+          "import": "./dist/system.js"
+        },
+        "./types": {
+          "types": "./dist/types.d.ts",
+          "import": "./dist/types.js"
+        },
+        "./user": {
+          "types": "./dist/user.d.ts",
+          "import": "./dist/user.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/runtime",
+      "name": "@dev-os/runtime",
+      "exports": {
+        "./processes": {
+          "types": "./dist/processes.d.ts",
+          "import": "./dist/processes.js"
+        },
+        "./lid": {
+          "types": "./dist/lid.d.ts",
+          "import": "./dist/lid.js"
+        },
+        "./lock": {
+          "types": "./dist/lock.d.ts",
+          "import": "./dist/lock.js"
+        },
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        },
+        "./doctor": {
+          "types": "./dist/doctor.d.ts",
+          "import": "./dist/doctor.js"
+        },
+        "./remote": {
+          "types": "./dist/remote.d.ts",
+          "import": "./dist/remote.js"
+        },
+        "./session-version": {
+          "types": "./dist/session-version.d.ts",
+          "import": "./dist/session-version.js"
+        },
+        "./sleep": {
+          "types": "./dist/sleep.d.ts",
+          "import": "./dist/sleep.js"
+        },
+        "./app-service": {
+          "types": "./dist/app-service.d.ts",
+          "import": "./dist/app-service.js"
+        },
+        "./app-channel": {
+          "types": "./dist/app-channel.d.ts",
+          "import": "./dist/app-channel.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/services",
+      "name": "@dev-os/services",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        },
+        "./apps": {
+          "types": "./dist/apps.d.ts",
+          "import": "./dist/apps.js"
+        },
+        "./layers": {
+          "types": "./dist/layers.d.ts",
+          "import": "./dist/layers.js"
+        },
+        "./signals": {
+          "types": "./dist/signals.d.ts",
+          "import": "./dist/signals.js"
+        },
+        "./window-tabs": {
+          "types": "./dist/window-tabs.d.ts",
+          "import": "./dist/window-tabs.js"
+        },
+        "./snap-geometry": {
+          "types": "./dist/snap-geometry.d.ts",
+          "import": "./dist/snap-geometry.js"
+        },
+        "./windows": {
+          "types": "./dist/windows.d.ts",
+          "import": "./dist/windows.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/shell",
+      "name": "@dev-os/shell",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/supervisor",
+      "name": "@dev-os/supervisor",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        }
+      }
+    },
+    {
+      "directory": "packages/updates",
+      "name": "@dev-os/updates",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "import": "./dist/index.js"
+        },
+        "./protocol": {
+          "types": "./dist/protocol.d.ts",
+          "import": "./dist/protocol.js"
+        },
+        "./service": {
+          "types": "./dist/service.d.ts",
+          "import": "./dist/service.js"
+        },
+        "./installed": {
+          "types": "./dist/installed.d.ts",
+          "import": "./dist/installed.js"
+        },
+        "./manifest": {
+          "types": "./dist/manifest.d.ts",
+          "import": "./dist/manifest.js"
+        },
+        "./package": {
+          "types": "./dist/package.d.ts",
+          "import": "./dist/package.js"
+        },
+        "./system": {
+          "types": "./dist/system.d.ts",
+          "import": "./dist/system.js"
+        },
+        "./system-bundle": {
+          "types": "./dist/system-bundle.d.ts",
+          "import": "./dist/system-bundle.js"
+        }
+      }
+    }
+  ]
+}

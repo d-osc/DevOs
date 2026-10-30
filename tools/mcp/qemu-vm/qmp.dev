@@ -1,5 +1,5 @@
 #!/usr/bin/env d
-# Linux-side bridge for the DevOs QEMU MCP server (server.ts).
+# Linux-side bridge for the DevOs QEMU MCP server (server.dev).
 #
 #   d qmp.dev -- qmp SOCKET     stdin: JSON list of steps, stdout: JSON list of replies
 #   d qmp.dev -- serial SOCKET  stdin: raw bytes written to the guest serial socket

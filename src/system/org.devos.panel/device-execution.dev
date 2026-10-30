@@ -1,0 +1,16 @@
+use "std/json"
+use "std/strings"
+use "std/encoding"
+use "std/child_process"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "./devices-model.dev" as devices
+use "./device-actions.dev" as actions
+fn snapshot(connected:bool,wsl:bool):json.Value {return devices.snapshot(hw.envOr("DEVOS_PANEL_SYS","/sys"),hw.envOr("DEVOS_PANEL_PROC","/proc"),connected,wsl,fn(args:Vec<str>):hw.Run {let argv=Vec<str>("env","LC_ALL=C");for arg in args {argv.push(arg)};return hw.run(argv,2500)},fn(name:str):bool {return !strings.equal(hw.which(name),"")})}
+fn execute(request:json.Value,state:json.Value) {
+    let command=actions.plan(request,state);if command.len()==0 {return}
+    let args=Vec<str>("LC_ALL=C");for arg in command {args.push(arg)}
+    let done=child_process.execFileSync("env",args,child_process.Options("",2500,1048576,Vec<u8>()))
+    if done.timedOut {result.raise("Device command timed out")}
+    if !done.success {let message=strings.trim(encoding.decode(done.stderr,"utf8"));result.raise(strings.equal(message,"") ? "Device command failed" : message)}
+}

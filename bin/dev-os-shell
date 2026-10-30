@@ -9,6 +9,28 @@ if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; e
 export DEV_OS_ROOT="$root"
 . "$base/bin/dev-os-runtime-env"
 export GDK_BACKEND=wayland
+# Metadata and commands to an existing desktop do not load GJS/GTK/React.
+# GUI startup remains on its current route until native surfaces have parity.
+native_client=no
+if [ -r "$root/src/system/command.dev" ]; then
+    case "${1:-shell}" in
+        shell) ;;
+        doctor|--version|--help|-h) native_client=yes ;;
+        *) if [ -r "$root/dist/native/libsupervisor.so" ]; then native_client=yes; fi ;;
+    esac
+fi
+if [ "$native_client" = yes ]; then
+    status=0
+    if [ -r "$root/dist/native/libsupervisor.so" ]; then
+        native_output=$(devrun "$root/src/system/command.dev" --ffi-lib "$root/dist/native/libsupervisor.so" -- "$@") || status=$?
+    else
+        native_output=$(devrun "$root/src/system/command.dev" -- "$@") || status=$?
+    fi
+    if [ "$status" -ne 75 ] || [ "$native_output" != DEVOS_NATIVE_CONTROL_NO_OWNER ]; then
+        if [ -n "$native_output" ]; then printf '%s\n' "$native_output"; fi
+        exit "$status"
+    fi
+fi
 if [ ! -f "$root/dist/main.js" ]; then
     printf '%s\n' 'TypeScript build missing. Run npm ci and npm run build.' >&2
     exit 1

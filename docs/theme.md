@@ -33,10 +33,10 @@ Auto schedule.
 
 ## Where the colors come from
 
-`extensions/org.devos.theme/vscode/` holds the copied VS Code 1.143.1 theme
+`src/apps/org.devos.theme/vscode/` holds the copied VS Code 1.143.1 theme
 files (`2026-dark.json`, `2026-light.json` and the `dark_modern.json` / `light_modern.json` they
 include) and `vscode/github/` the GitHub theme 6.3.5 files; `NOTICE.md` has the MIT notices.
-`node tools/theme/generate-palette.mjs` reads them and writes
+`d tools/theme/generate-palette.dev` reads them and writes
 `packages/core/theme-palette.ts`, which records for every token the VS Code key
 it was copied from (`paletteSources`) and the sixteen terminal ANSI colors and
 terminal foreground (VS Code workbench defaults, which the theme files do not
@@ -52,7 +52,7 @@ missing from either theme, compiles both stylesheets in GTK, and checks WCAG AA
 (≥ 4.5:1) in every family and variant for body, muted and accent text on the surfaces they are used on, for
 text on the accent fill, for the terminal foreground, and for the bold prompt
 colors (green, red, blue). Dark and Light are not hand-tuned per selector: the same
-CSS is used with a different token set. `tools/theme/tokenize-css.mjs` is the one-time
+CSS is used with a different token set. `tools/theme/tokenize-css.dev` is the one-time
 converter that rewrote the old literal colors into tokens.
 
 Code that draws with Cairo or VTE reads `activePalette()`, and subscribes with
@@ -86,3 +86,4 @@ Code that draws with Cairo or VTE reads `activePalette()`, and subscribes with
 `dist/terminal-settings-test.js` and `dist/lock-test.js`. Tests that load
 `style.css` use `tests/theme-helper.ts`; set `DEV_OS_TEST_THEME=light` to render
 them with the Light theme.
+

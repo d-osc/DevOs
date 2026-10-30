@@ -22,13 +22,15 @@ fn main(): i32 {
     for name in Vec<str>("main", "supervisor", "react-gtk", "panel-view", "launcher-view", "background-view") {
         tool.require(fs.is_file(root + "/dist/" + name + ".js"), "Run npm ci and npm run build before installing.")
     }
-    for directory in fs.readdirSync(root + "/extensions") {
-        let manifest = root + "/extensions/" + directory + "/extension.json"
-        if !fs.is_file(manifest) { continue }
-        let value = json.parse(tool.read(manifest))
-        if strings.equal(util.text(util.get(value, "kind")), "ui") {
-            let entry = util.text(util.get(value, "entry"))
-            tool.require(strings.equal(path.basename(entry), entry) && fs.is_file(root + "/dist/" + entry), "Missing UI bundle: " + entry)
+    for folder in Vec<str>("src/apps", "src/system") {
+        for directory in fs.readdirSync(root + "/" + folder) {
+            let manifest = root + "/" + folder + "/" + directory + "/extension.json"
+            if !fs.is_file(manifest) { continue }
+            let value = json.parse(tool.read(manifest))
+            if strings.equal(util.text(util.get(value, "kind")), "ui") {
+                let entry = util.text(util.get(value, "entry"))
+                tool.require(strings.equal(path.basename(entry), entry) && fs.is_file(root + "/dist/" + entry), "Missing UI bundle: " + entry)
+            }
         }
     }
     for name in Vec<str>("index.html", "app.js", "app.css", "editor.worker.js", "ts.worker.js", "json.worker.js", "css.worker.js", "html.worker.js") {
@@ -36,7 +38,7 @@ fn main(): i32 {
     }
     let destination = prefix + "/share/dev-os"
     fs.mkdirSync(destination, true)
-    for name in Vec<str>("src", "data", "config", "dist", "extensions", "lib") { tool.copy(root + "/" + name + "/.", destination + "/" + name) }
+    for name in Vec<str>("src", "data", "config", "dist", "lib") { tool.copy(root + "/" + name + "/.", destination + "/" + name) }
     fs.mkdirSync(destination + "/native", true)
     tool.copy(root + "/build/native/dev-os-window-tracker", destination + "/native/dev-os-window-tracker")
     tool.chmod(destination + "/native/dev-os-window-tracker", "755")

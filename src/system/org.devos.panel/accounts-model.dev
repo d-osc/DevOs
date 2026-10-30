@@ -1,0 +1,20 @@
+use "std/json"
+use "std/strings"
+use "std/fs"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/wire.dev" as wire
+fn githubId(value:json.Value):i64 {if !strings.equal(json.kind(value),"number") {return 0};let id=json.float(value);return id>0.0 && id<=9007199254740991.0 && id==(id as i64) as f64 ? id as i64 : 0}
+fn avatarPath(id:i64):str {return hw.envOr("XDG_CACHE_HOME",hw.home()+"/.cache")+"/dev-os/avatars/${id}.image"}
+fn avatar(value:json.Value):str {let id=githubId(value);return id>0 && fs.is_file(avatarPath(id)) ? avatarPath(id) : ""}
+fn users(system:json.Value):json.Value {let value=hw.jget(system,"users");return strings.equal(json.kind(value),"array") ? value : json.array()}
+fn frame(system:json.Value,fallback:str):str {
+    let current=hw.jstr(system,"currentUser",fallback);let binding=hw.jget(system,"binding");let login=hw.jstr(binding,"login","");let out="U\t"+wire.encoded(current)+"\t"+wire.encoded(strings.equal(login,"") ? "Local account" : "@"+login)+"\t"+wire.encoded(avatar(hw.jget(binding,"id")))
+    let items=users(system);for i in 0..(json.len(items) as i64) {let user=json.at(items,i);let name=hw.jstr(user,"username","");if strings.equal(name,"") || strings.equal(name,current) {continue};let github=hw.jstr(user,"github","");out=out+wire.separator()+"V\t"+wire.encoded(name)+"\t"+wire.encoded(hw.jstr(user,"name",name))+"\t"+wire.encoded(strings.equal(github,"") ? name : "@"+github)+"\t"+wire.encoded(avatar(hw.jget(user,"githubId")))};return out
+}
+fn choose(system:json.Value,value:json.Value):Vec<str> {
+    if !strings.equal(json.kind(value),"string") {result.raise("Invalid user selection")};let name=json.string(value);if strings.equal(name,"") {return Vec<str>("switch-user")}
+    let items=users(system);for i in 0..(json.len(items) as i64) {let user=json.at(items,i);if strings.equal(name,hw.jstr(user,"username","")) && !strings.equal(name,hw.jstr(system,"currentUser","")) {return Vec<str>("switch-user",name)}}
+    result.raise("This user is no longer available.");return Vec<str>()
+}
+fn avatarIds(system:json.Value):Vec<i64> {let ids=Vec<i64>();let current=githubId(hw.jget(hw.jget(system,"binding"),"id"));if current>0 {ids.push(current)};let items=users(system);for i in 0..(json.len(items) as i64) {let id=githubId(hw.jget(json.at(items,i),"githubId"));let exists=false;for previous in ids {if id==previous {exists=true}};if id>0 && !exists {ids.push(id)}};return ids}

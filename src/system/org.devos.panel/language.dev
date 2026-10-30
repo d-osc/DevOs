@@ -1,0 +1,14 @@
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../org.devos.background/wire.dev" as wire
+fn label(name:str):str {let lower=strings.toLowerCase(name);let patterns=Vec<str>("thai","english","german","french","spanish");let labels=Vec<str>("TH","EN","DE","FR","ES");for i in 0..5 {if strings.contains(lower,patterns[i]) {return labels[i]}};return strings.toUpperCase(strings.charLength(name)>2 ? strings.substring(name,0,2) : name)}
+fn valid(item:json.Value):bool {let value=hw.jget(item,"index");if !strings.equal(json.kind(value),"number") {return false};let index=json.float(value);return index>=0.0 && index<=4294967295.0 && index==(index as i64) as f64 && strings.equal(json.kind(hw.jget(item,"name")),"string") && strings.equal(json.kind(hw.jget(item,"active")),"bool")}
+fn choose(items:json.Value,value:json.Value):json.Value {if !strings.equal(json.kind(value),"number") {result.raise("Invalid keyboard layout")};let index=json.float(value);if index<0.0 || index>4294967295.0 || index!=(index as i64) as f64 {result.raise("Invalid keyboard layout")};for i in 0..(json.len(items) as i64) {if hw.jnum(json.at(items,i),"index",-1.0)==index {return {kind:"tracker",command:"layout ${index as i64}"}}};result.raise("This keyboard layout is no longer available.");return json.object()}
+fn frame(items:json.Value):str {
+    let current="—";let tooltip="Keyboard language"
+    for i in 0..(json.len(items) as i64) {let item=json.at(items,i);if hw.jbool(item,"active",false) {let name=hw.jstr(item,"name","");current=label(name);tooltip=name+" · Change keyboard language";break}}
+    let out="K\t"+wire.encoded(current)+"\t"+wire.encoded(tooltip)
+    for i in 0..(json.len(items) as i64) {let item=json.at(items,i);out=out+wire.separator()+"J\t${hw.jnum(item,"index",0.0) as i64}\t"+wire.encoded(hw.jstr(item,"name",""))+"\t"+wire.encoded(label(hw.jstr(item,"name","")))+"\t"+(hw.jbool(item,"active",false) ? "1" : "0")};return out
+}

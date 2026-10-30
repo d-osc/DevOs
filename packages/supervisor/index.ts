@@ -1,13 +1,9 @@
-import {
-    readJson, Gio, GLib
-} from '@dev-os/core/base';
-// Keep the compositor and managed services tied to the GJS shell's lifetime.
+import {Gio, GLib} from '@dev-os/core/base';
+import {ROOT} from '@dev-os/config';
 import {addUnixSignal} from '@dev-os/services/signals';
-
-import {loadConfig, expandHome} from '@dev-os/config';
-import {installedSessionRoot} from '@dev-os/runtime/session-version';
-
 export interface SupervisorOptions {
+    /** Tests/embedded hosts may explicitly disable the independent service host. */
+    services?: boolean;
     /** Delay before a crashed shell is started again. */
     restartDelaySeconds?: number;
     /** Crashes tolerated inside `restartWindowSeconds` before the session is ended instead of restarted. */
@@ -15,150 +11,26 @@ export interface SupervisorOptions {
     restartWindowSeconds?: number;
 }
 
+/** JS/TS binding to the same DevLang lifecycle implementation used by the session. */
 export function runSupervisor(options: SupervisorOptions = {}): number {
-    const restartDelay = options.restartDelaySeconds ?? 1;
-    const maxRestarts = options.maxRestarts ?? 5;
-    const restartWindow = options.restartWindowSeconds ?? 300;
-    const crashTimes: number[] = [];
-    let restartTimer = 0;
     const loop = new GLib.MainLoop(null, false);
-    interface ManagedChild {process: Gio.Subprocess; pid: string | null; done: boolean;}
-    const children: ManagedChild[] = [];
-    let closing = false;
-    let resultCode = 0;
-    let deadline = 0;
-    let restartRoot = '';
-    let finished = false;
-    const requestPath = `${GLib.get_user_runtime_dir()}/dev-os-version-${GLib.uuid_string_random()}.json`;
-    const previousRequest = GLib.getenv('DEV_OS_VERSION_REQUEST');
-    GLib.setenv('DEV_OS_VERSION_REQUEST', requestPath, true);
-
-    function signalGroup(child: ManagedChild, signal: 'TERM' | 'KILL') {
-        try {
-            const kill = Gio.Subprocess.new(['kill', `-${signal}`, '--', `-${child.pid}`],
-                Gio.SubprocessFlags.STDERR_SILENCE);
-            kill.wait(null);
-        } catch (error) { printerr(`Dev OS supervisor: ${(error instanceof Error ? error.message : String(error))}`); }
-    }
-
-    function finishIfReady() {
-        if (finished || !closing || children.some(child => !child.done)) return;
-        finished = true;
-        if (deadline) { GLib.source_remove(deadline); deadline = 0; }
-        try { if (GLib.file_test(requestPath, GLib.FileTest.EXISTS)) Gio.File.new_for_path(requestPath).delete(null); } catch (error) { printerr(String(error)); }
-        if (restartRoot) {
-            try {
-                const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
-                const oldRoot = GLib.getenv('DEV_OS_ROOT');
-                const path = (GLib.getenv('PATH') ?? '/usr/bin:/bin').split(':').filter(path => path !== `${oldRoot}/bin`).join(':');
-                const data = (GLib.getenv('XDG_DATA_DIRS') ?? '/usr/local/share:/usr/share').split(':').filter(path => path !== `${oldRoot}/data`).join(':');
-                launcher.setenv('PATH', `${restartRoot}/bin:${path}`, true);
-                launcher.setenv('XDG_DATA_DIRS', `${restartRoot}/data:${data}`, true);
-                launcher.setenv('DEV_OS_ROOT', restartRoot, true);
-                launcher.setenv('DEV_OS_SHELL', `${restartRoot}/bin/dev-os-shell`, true);
-                launcher.spawnv(['setsid', `${restartRoot}/bin/dev-os-start`]);
-                print(`Dev OS: switching session runtime to ${restartRoot}`);
-                loop.quit(); return;
-            } catch (error) { resultCode = 1; printerr(`Dev OS version switch failed: ${String(error)}`); }
-        }
-        const pid = GLib.getenv('LABWC_PID') ?? '';
-        if (/^[1-9][0-9]*$/.test(pid)) {
-            try { Gio.Subprocess.new(['kill', '-TERM', pid], Gio.SubprocessFlags.STDERR_SILENCE).wait(null); }
-            catch (error) { printerr(`Dev OS supervisor: ${(error instanceof Error ? error.message : String(error))}`); }
-        }
-        loop.quit();
-    }
-
-    function shutdown() {
-        if (closing) return;
-        closing = true;
-        if (restartTimer) { GLib.source_remove(restartTimer); restartTimer = 0; }
-        // Stop entire service groups, including children spawned by service scripts.
-        for (const child of children) signalGroup(child, 'TERM');
-        deadline = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
-            deadline = 0;
-            for (const child of children) if (!child.done) signalGroup(child, 'KILL');
-            finishIfReady();
-            return GLib.SOURCE_REMOVE;
-        });
-        finishIfReady();
-    }
-
-    function restartShell(reason: string): boolean {
-        const now = GLib.get_monotonic_time() / 1e6;
-        while (crashTimes.length > 0 && now - crashTimes[0] > restartWindow) crashTimes.shift();
-        crashTimes.push(now);
-        if (crashTimes.length > maxRestarts) {
-            printerr(`Dev OS supervisor: shell ${reason}; ${maxRestarts} restarts in ${restartWindow}s, ending the session`);
-            return false;
-        }
-        printerr(`Dev OS supervisor: shell ${reason}; restarting in ${restartDelay}s (${crashTimes.length}/${maxRestarts})`);
-        const start = () => {
-            restartTimer = 0;
-            if (closing) return GLib.SOURCE_REMOVE;
-            try { spawn([GLib.getenv('DEV_OS_SHELL')!], true); }
-            catch (error) { printerr(`Dev OS supervisor: shell restart failed: ${String(error)}`); resultCode = 1; shutdown(); }
-            return GLib.SOURCE_REMOVE;
-        };
-        restartTimer = restartDelay > 0 ? GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(restartDelay * 1000), start) : 0;
-        if (!restartDelay) start();
-        return true;
-    }
-
-    function spawn(command: readonly string[], isShell = false) {
-        const process = Gio.Subprocess.new(['setsid', ...command.map(expandHome)], Gio.SubprocessFlags.NONE);
-        const child = {process, pid: process.get_identifier(), done: false};
-        children.push(child);
-        process.wait_async(null, (_source, result) => {
-            try {
-                process.wait_finish(result); child.done = true;
-                if (isShell) {
-                    const exited = process.get_if_exited();
-                    resultCode = exited ? process.get_exit_status() : 1;
-                    // A signal or non-zero status is a crash (OOM kill, segfault, fatal error); exit 0 is logout, a
-                    // version switch or SIGTERM. Restart a crashed shell so labwc is never left with an empty desktop.
-                    if (!closing && resultCode !== 0 && restartShell(exited ? `exited with status ${resultCode}` :
-                        `was killed by signal ${process.get_term_sig()}`)) { finishIfReady(); return; }
-                    if (!closing && GLib.file_test(requestPath, GLib.FileTest.EXISTS)) {
-                        try {
-                            const request = readJson(requestPath) as {root: string};
-                            if (request.root !== installedSessionRoot()) throw new Error('Requested runtime is no longer the installed selection');
-                            restartRoot = request.root;
-                        } catch (error) { printerr(`Dev OS version request rejected: ${String(error)}`); }
-                    }
-                    shutdown();
-                }
-            } catch (error) { printerr((error instanceof Error ? error.message : String(error))); child.done = true; resultCode = 1; shutdown(); }
-            finishIfReady();
-        });
-    }
-
-    const signalSources = [15, 2].map(signal => addUnixSignal(GLib.PRIORITY_DEFAULT, signal, () => {
-        shutdown(); return GLib.SOURCE_CONTINUE;
+    const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
+    launcher.setenv('DEV_OS_ROOT', ROOT, true);
+    let child: Gio.Subprocess;
+    try {
+        child = launcher.spawnv(['devrun', `${ROOT}/src/system/supervisor.dev`, '--ffi-lib',
+            `${ROOT}/dist/native/libsupervisor.so`, '--', '--options', JSON.stringify(options)]);
+    } catch (error) {printerr(`Dev OS supervisor: ${String(error)}`); return 1;}
+    let finished = false, code = 1;
+    const signals = [15, 2].map(signal => addUnixSignal(GLib.PRIORITY_DEFAULT, signal, () => {
+        if (!finished) try {child.send_signal(signal);} catch (error) {printerr(String(error));}
+        return GLib.SOURCE_CONTINUE;
     }));
-    try {
-        const config = loadConfig();
-        const shell = GLib.getenv('DEV_OS_SHELL');
-        if (!shell) throw new Error('DEV_OS_SHELL is missing');
-        if (GLib.getenv('DEV_OS_POLKIT_AGENT_STARTED') !== '1' && GLib.getenv('WLR_BACKENDS') !== 'headless' && !GLib.getenv('WSL_DISTRO_NAME') && !GLib.getenv('WSL_INTEROP')) {
-            const agent = ['/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1',
-                '/usr/libexec/polkit-gnome-authentication-agent-1', 'polkit-gnome-authentication-agent-1']
-                .find(path => GLib.find_program_in_path(path));
-            if (agent) spawn([agent]);
-        }
-        spawn([shell], true);
-        for (const command of config.autostart) {
-            if (GLib.find_program_in_path(expandHome(command[0]))) spawn(command);
-            else printerr(`Dev OS: skipping missing autostart command ${command[0]}`);
-        }
-    } catch (error) { printerr(`Dev OS session: ${(error instanceof Error ? error.message : String(error))}`); resultCode = 1; shutdown(); }
-    try {
-        if (children.some(child => !child.done)) loop.run();
-        return resultCode;
-    } finally {
-        for (const source of signalSources) GLib.source_remove(source);
-        if (previousRequest === null) GLib.unsetenv('DEV_OS_VERSION_REQUEST');
-        else GLib.setenv('DEV_OS_VERSION_REQUEST', previousRequest, true);
-    }
-
+    child.wait_async(null, (_child, result) => {
+        try {child.wait_finish(result); code = child.get_if_exited() ? child.get_exit_status() : 1;}
+        catch (error) {printerr(String(error));}
+        finished = true; loop.quit();
+    });
+    try {if (!finished) loop.run(); return code;}
+    finally {signals.forEach(source => GLib.source_remove(source));}
 }

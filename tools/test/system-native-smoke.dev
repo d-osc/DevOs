@@ -1,0 +1,56 @@
+use "std/fs"
+use "std/time"
+use "std/strings"
+use "../lib/tool.dev" as tool
+use "../lib/smoke.dev" as smoke
+fn main():i32 {
+    tool.scope("devos-native-system-",fn(home:str) {
+        let extras=Map<str,str>(); extras.set("XDG_CONFIG_HOME",home+"/config"); extras.set("DEVOS_DISPLAY_SYS",home+"/sys"); extras.set("DEVOS_SYSTEM_TRACE","1")
+        extras.set("WLR_HEADLESS_OUTPUTS","2")
+        extras.set("DEVOS_NATIVE_SYSTEMS","1")
+        tool.write(home+"/config/devos/display-care.json","{\"targetMode\":true,\"edgeBrightness\":2,\"pixelRefresh\":true}")
+        tool.write(home+"/sys/class/power_supply/BAT0/type","Battery\n")
+        tool.write(home+"/sys/class/power_supply/AC/type","Mains\n"); tool.write(home+"/sys/class/power_supply/AC/online","0\n")
+        smoke.withSession("native-system",extras,fn(session:smoke.Session) {
+            let env=smoke.environment(session)
+            let pointer=smoke.input(smoke.compilePointer(session.base+"/pointer-build"),session.base,env)
+            pointer=smoke.send(pointer,"move 1 1")
+            tool.waitFor(fn():bool { return strings.contains(tool.read(session.log),"DevOs native display care ready") },10000,"Native display care did not start: "+tool.read(session.log))
+            let ui=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare")
+            tool.require(ui.len()==1,"Display care must own one native UI process")
+            tool.require(!strings.contains(tool.read("/proc/${ui[0]}/maps"),"mozjs"),"Native UI loaded GJS")
+            tool.waitFor(fn():bool { return smoke.processIds(session.runtime,session.root+"/src/system/org.devos.displaycare/service.dev").len()>0 },10000,"Display care data worker did not start")
+            # Trigger the complete screen saver and then verify dismiss by clearing
+            # its helper flag. This only affects this private compositor.
+            tool.write(session.runtime+"/devos-pixel-refresh","native-system-test-token")
+            time.sleep_ms(1900)
+            smoke.screenshot(env,session.root+"/build/screenshots/displaycare-native-refresh.png")
+            pointer=smoke.send(pointer,"move 20 10")
+            time.sleep_ms(2500)
+            tool.require(strings.contains(tool.read(session.log),"display-care input accepted"),tool.read(session.log))
+            smoke.screenshot(env,session.root+"/build/screenshots/displaycare-native-dismissed.png")
+            tool.exec(Vec<str>("rm","-f","--",session.runtime+"/devos-pixel-refresh"))
+            time.sleep_ms(1200)
+            smoke.screenshot(env,session.root+"/build/screenshots/displaycare-native-restored.png")
+            tool.require(fs.existsSync("/proc/${ui[0]}"),"Display care crashed during saver lifecycle")
+            let owned=strings.split(strings.trim(tool.read("/proc/${ui[0]}/task/${ui[0]}/children"))," ");let tracker=""
+            for pid in owned {
+                tool.require(!strings.contains(tool.read("/proc/"+pid+"/maps"),"mozjs"),"Display care child loaded MozJS")
+                if strings.contains(tool.read("/proc/"+pid+"/cmdline"),"dev-os-window-tracker") {tracker=pid}
+            }
+            tool.require(tracker!="","Display care still depends on the JS window bridge")
+            tool.checked(Vec<str>("kill","-KILL",tracker),env,"",5000)
+            tool.waitFor(fn():bool {let ids=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare");return ids.len()==1 && ids[0]!=ui[0]},15000,"Supervisor did not restart Display Care after tracker failure")
+            let recovered=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare")
+            for pid in owned {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid) || strings.contains(tool.read("/proc/"+pid+"/status"),"State:\tZ")},5000,"Old Display Care child survived restart")}
+            let shells=smoke.processIds(session.runtime,session.root+"/dist/main.js");tool.require(shells.len()==1,"Expected one shell")
+            tool.checked(Vec<str>("kill","-KILL","${shells[0]}"),env,"",5000)
+            tool.waitFor(fn():bool {let ids=smoke.processIds(session.runtime,session.root+"/dist/main.js");return ids.len()==1 && ids[0]!=shells[0]},15000,"Shell did not recover")
+            let retained=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare");tool.require(retained.len()==1 && retained[0]==recovered[0],"Shell restart replaced native Display Care")
+            smoke.closeInput(pointer)
+            print("PASS native display care, separate data worker, layer-shell saver, restore and cleanup")
+        })
+    })
+    return 0
+}
+return tool.main(main)

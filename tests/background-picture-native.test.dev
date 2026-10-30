@@ -1,0 +1,16 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+let executable=t.root()+"/build/react-devlang/background/background-picture"
+test.case("native picture pipeline builds",fn() {
+    tool.checked(Vec<str>("sh",t.root()+"/tools/build/native-background.sh"),Map<str,str>(),"",90000)
+    let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")));let layer=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libgtk-layer-shell.so.0")))
+    tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",t.root()+"/tests/react-devlang/background-picture.devx",executable,t.root()+"/build/react-devlang/background/host.o",math,layer),Map<str,str>(),"",90000)
+})
+fn scale(executable:str,value:str) {test.case("native async picture UI and cancellation at scale ${value}",fn() {
+    let env=Map<str,str>();env.set("DEV_OS_ROOT",t.root());env.set("G_DEBUG","fatal-warnings");env.set("NO_AT_BRIDGE","1");env.set("GTK_USE_PORTAL","0");env.set("GSETTINGS_BACKEND","memory");env.set("GDK_SCALE",value)
+    let done=tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a",executable),env,"",30000);test.expect(done.success,t.out(done)+t.err(done));t.contains(t.out(done),"PASS native Unicode picture")
+})}
+scale(executable,"1");scale(executable,"2")
+return t.finish()

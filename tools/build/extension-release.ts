@@ -15,9 +15,11 @@ const source = resolve(process.argv[2]), output = resolve(process.argv[3] ?? joi
 const manifest = validateManifest(JSON.parse(readFileSync(join(source, 'extension.json'), 'utf8')));
 if (manifest.system) throw new Error('Store packages cannot declare system UI');
 if (manifest.kind === 'ui' && reservedRuntimeEntry(manifest.entry!)) throw new Error('Shared package entry names are reserved for the shared desktop runtime');
-for (const directory of readdirSync(join(toolkit, 'extensions'))) {
-    const file = join(toolkit, 'extensions', directory, 'extension.json');
-    if (existsSync(file)) { const base = JSON.parse(readFileSync(file, 'utf8')); if (base.system && base.id === manifest.id) throw new Error('Store packages cannot replace base extensions'); }
+for (const folder of ['src/apps', 'src/system']) {
+    for (const directory of readdirSync(join(toolkit, folder))) {
+        const file = join(toolkit, folder, directory, 'extension.json');
+        if (existsSync(file)) { const base = JSON.parse(readFileSync(file, 'utf8')); if (base.system && base.id === manifest.id) throw new Error('Store packages cannot replace base extensions'); }
+    }
 }
 const releaseVersion = version(process.env.DEV_OS_RELEASE_VERSION ?? manifest.version);
 if (manifest.version !== releaseVersion) throw new Error('Manifest version must match DEV_OS_RELEASE_VERSION / the GitHub tag');

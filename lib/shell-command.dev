@@ -1,0 +1,33 @@
+# Command identity/validation shared by native clients. No GUI or JS imports.
+use "std/strings"
+use "std/crypto"
+extern fn sp_builder():*void
+extern fn sp_arg(builder:*void,value:str)
+extern fn sr_remote(name:str,path:str,interfaceName:str,method:str,arguments:*void,cwd:str):i32
+fn applicationId(runtime:str,display:str):str {
+    let value=crypto.hashText("sha256",runtime+"/"+display)
+    return "org.devos.Shell.s"+strings.substring(value,0,16)
+}
+fn commands():Vec<str> {
+    return Vec<str>("shell","accounts","switch-user","browser","camera","microphone","screenshot","screenshot-app","window-next","window-previous","window-restore","launcher","overlays-hide","snap-layouts","task-view","task-view-show","task-view-hide","task-manager","disk-manager","installer","app-store","app-store-extensions","extension-store","settings.store","package-install","terminal","files","editor","lock","logout","reload","settings","settings.background","settings.panel","language","time","system","display","sound","power","storage","about","network","wifi","touchpad","mouse","keyboard","bluetooth-add","printers","vpn","hotspot","airplane","proxy","advanced","doctor")
+}
+fn contains(values:Vec<str>,value:str):bool {for item in values {if strings.equal(item,value) {return true}};return false}
+fn username(value:str):bool {let count=strings.charLength(value);if count<1 || count>65 {return false};for i in 0..count {let ch=strings.charAt(value,i);if !strings.contains(i==0 ? "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_" : "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-$",ch) {return false}};return true}
+fn valid(args:Vec<str>):bool {
+    if args.len()==0 {return true}
+    let command=args[0];if !contains(commands(),command) {return false}
+    if strings.equal(command,"switch-user") {return args.len()==1 || args.len()==2 && username(args[1])}
+    if contains(args,"--json") && !strings.equal(command,"doctor") {return false}
+    if !strings.equal(command,"editor") && !strings.equal(command,"package-install") {
+        for i in 1..(args.len() as i64) {if !strings.equal(args[i],"--json") {return false}}
+    }
+    return true
+}
+fn remote(args:Vec<str>,runtime:str,display:str,cwd:str):i32 {
+    let name=applicationId(runtime,display);let path="/"+strings.replaceAll(name,".","/")+"/control"
+    let builder:*void=null;let status:i32=0
+    unsafe {builder=sp_builder()}
+    for arg in args {unsafe {sp_arg(builder,arg)}}
+    unsafe {status=sr_remote(name,path,"org.devos.Shell.Control","Execute",builder,cwd)}
+    return status
+}

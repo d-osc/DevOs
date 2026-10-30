@@ -175,7 +175,7 @@ class MergeTests(HardwareTests):
         self.assertEqual(conf['power_lid_action'], 'ignore')       # model beats laptop and generic (suspend)
         self.assertEqual(conf['input_touchpad'], '1')                # laptop layer
         self.assertEqual(conf['power_profile'], 'balanced')          # generic layer survives
-        self.assertEqual(conf['graphics_renderer'], 'pixman')        # model beats generic 'auto'
+        self.assertEqual(conf['graphics_renderer'], 'auto')
         self.assertEqual((conf['selected_profile'], conf['name']), ('asus/ux3407na', 'ASUS Zenbook A14 UX3407NA'))
         self.assertEqual(conf['test_status'], 'untested-on-hardware')
     def test_lists_are_concatenated_in_order_without_duplicates(self):

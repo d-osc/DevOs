@@ -12,7 +12,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-INTEGRATION = (ROOT / 'extensions/org.devos.terminal/shell-integration.ts').read_text()
+INTEGRATION = (ROOT / 'src/apps/org.devos.terminal/shell-integration.ts').read_text()
 PROFILE = (ROOT / 'distro/oe/meta-devos/recipes-devos/session/files/devos-profile.sh').read_text()
 GREEN, RED, BLUE, RESET = '\x1b[1;32m', '\x1b[1;31m', '\x1b[1;34m', '\x1b[0m'
 

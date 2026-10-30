@@ -1,0 +1,61 @@
+#!/usr/bin/env d
+# Inventory is evidence of remaining work, not a claim that renaming files ports them.
+use "std/fs"
+use "std/json"
+use "std/strings"
+
+use "./desktop.dev" as util
+fn excluded(name:str):bool {
+    for skip in Vec<str>(".git","node_modules","dist","build",".dev-cache",".venv","__pycache__","vendor") { if strings.equal(name,skip) { return true } };return false
+}
+fn javascript(file:str):bool {
+    for suffix in Vec<str>(".ts",".tsx",".js",".jsx",".mjs",".cjs") {if strings.endsWith(file,suffix) {return true}};return false
+}
+fn scan(root:str,prefix:str):Vec<str> {
+    let out=Vec<str>()
+    for name in fs.readdirSync(root+"/"+prefix) {
+        if excluded(name) {continue}
+        let relative=strings.equal(prefix,"") ? name : prefix+"/"+name
+        if fs.is_dir(root+"/"+relative) {for item in scan(root,relative) {out.push(item)}}
+        else if javascript(name) || strings.endsWith(name,".dev") || strings.endsWith(name,".devx") {out.push(relative)}
+    }
+    return out
+}
+fn checkCompatibility(root:str,contract:json.Value):json.Value {
+    util.require(util.number(util.get(contract,"format"))==1,"Unsupported npm compatibility contract")
+    let expected=json.get(contract,"packages");let packages=json.array()
+    for i in 0..(json.len(expected) as i64) {
+        let record=json.at(expected,i);let directory=json.string(json.get(record,"directory"));let name=json.string(json.get(record,"name"))
+        let path=root+"/"+directory+"/package.json"
+        util.require(fs.is_file(path),"Required npm package is missing: "+name)
+        let current=json.parse(fs.readFileSync(path,"utf8"))
+        util.require(strings.equal(util.text(util.get(current,"name")),name),"Npm package renamed: "+name)
+        let exports=json.get(record,"exports");let actual=util.get(current,"exports")
+        for key in json.keys(exports) {
+            util.require(strings.equal(json.stringify(util.get(actual,key)),json.stringify(json.get(exports,key))),"Npm export changed or removed: "+name+" "+key)
+        }
+        packages=json.push(packages,{name:name,directory:directory,exports:json.keys(exports)})
+    }
+    return packages
+}
+fn audit(root:str):json.Value {
+    let compatibility=checkCompatibility(root,json.parse(fs.readFileSync(root+"/data/compat/npm-api.json","utf8")))
+    let remaining=json.array();let nativeFiles=0;let npmFiles=0;let productionFiles=0;let pending=0
+    for file in scan(root,"") {
+        if !javascript(file) {nativeFiles+=1;continue}
+        let category="tooling"
+        if strings.startsWith(file,"src/") {category="system-and-apps";productionFiles+=1}
+        else if strings.startsWith(file,"tests/") {category="compatibility-tests"}
+        else if strings.startsWith(file,"examples/") {category="sdk-examples"}
+        else if strings.startsWith(file,"packages/") {
+            category="library-implementation"
+            for i in 0..(json.len(compatibility) as i64) {
+                if strings.startsWith(file,json.string(json.get(json.at(compatibility,i),"directory"))+"/") {category="npm-sdk-source";npmFiles+=1;break}
+            }
+        }
+        if !strings.equal(category,"npm-sdk-source") && !strings.equal(category,"compatibility-tests") && !strings.equal(category,"sdk-examples") {pending+=1}
+        remaining=json.push(remaining,{path:file,category:category})
+    }
+    return {format:1,complete:pending==0,summary:{remainingTsJs:json.len(remaining),pendingNative:pending,systemAndAppTsJs:productionFiles,npmSdkTsJs:npmFiles,devlangFiles:nativeFiles},npmPackages:compatibility,remaining:remaining}
+}
+

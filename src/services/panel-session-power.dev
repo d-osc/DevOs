@@ -1,0 +1,42 @@
+use "std/io"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/child_process"
+use "std/encoding"
+use "std/crypto"
+use "../../lib/hw.dev" as hw
+use "../../lib/dbus.dev" as bus
+use "../system/org.devos.panel/power-actions.dev" as power
+use "../system/org.devos.background/wire.dev" as wire
+fn login(method:str,parameters:str):json.Value {let connection=bus.open();let reply=result.attempt(fn():json.Value {return bus.callService(connection,"org.freedesktop.login1","/org/freedesktop/login1","org.freedesktop.login1.Manager",method,parameters,60000)});bus.close(connection);return result.unwrap(reply)}
+fn status(action:str):str {let reply=result.attempt(fn():str {return json.string(json.at(login("Can"+power.method(action),"()"),0))});return result.isOk(reply) ? result.unwrap(reply) : "no"}
+fn lockAvailable():bool {return !strings.equal(hw.which("dev-os-shell"),"") && !strings.equal(hw.which("swaylock"),"")}
+fn execute(action:str) {
+    hw.stderr("devos-power: "+action+" requested")
+    if strings.equal(action,"sleep") {let done=child_process.execFileSync("dev-os-shell",Vec<str>("lock"),child_process.Options("",60000,1048576,Vec<u8>()));if !done.success {let text=strings.trim(encoding.decode(done.stderr,"utf8"));result.raise(strings.equal(text,"") ? "Could not lock the screen" : text)}}
+    else {login(power.method(action),"(true,)")}
+    hw.stderr("devos-power: "+action+" accepted")
+}
+struct Reply {state:power.Pending,frame:str}
+let pending=power.empty(0);let generation=0
+let session:*void=null;unsafe {session=bus.g_bus_get_sync(2,null,null)}
+let identity=crypto.hashText("sha256",hw.env("XDG_RUNTIME_DIR")+"/"+hw.env("WAYLAND_DISPLAY"));let lease="org.devos.Panel.Power.s"+strings.substring(identity,0,16)
+fn claim(connection:*void,name:str) {unsafe {if !(connection as bool) {result.raise("Cannot coordinate power requests.")}};let reply=bus.callService(connection,"org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus","RequestName","("+json.stringify(name)+", uint32 4)",1000);let code=json.int(json.at(reply,0));if code!=1 && code!=4 {result.raise("A power request is already in progress.")}}
+fn release(connection:*void,name:str) {unsafe {if connection as bool {result.run(fn() {bus.callService(connection,"org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus","ReleaseName","("+json.stringify(name)+",)",1000)})}}}
+while true {let line=io.read_line();if strings.equal(line,"") {break};generation=generation+1
+    let response=result.attempt(fn():Reply {
+        let request=json.parse(line);let actions=(json.has(request,"action") ? 1 : 0)+(json.has(request,"ready") ? 1 : 0)+(json.has(request,"cancel") ? 1 : 0);if !strings.equal(json.kind(request),"object") || actions>1 {result.raise("Invalid power request")}
+        if json.has(request,"cancel") {power.ready(pending,json.value({ready:hw.jget(request,"cancel")}));release(session,lease);return Reply(power.empty(pending.token),"C")}
+        if json.has(request,"ready") {let executeNow=power.ready(pending,request);if executeNow {execute(pending.action)};release(session,lease);return Reply(power.empty(pending.token),"A")}
+        if json.has(request,"action") {let action=hw.jstr(request,"action","");let status=strings.equal(action,"sleep") ? "no" : status(action);let base=pending;if strings.equal(base.action,"") {base=power.empty(generation)};let next=power.begin(base,request,status,lockAvailable())
+            claim(session,lease)
+            if strings.equal(next.action,"sleep") {execute(next.action);release(session,lease);return Reply(power.empty(next.token),"A")}
+            if power.authorizeFirst(next,status) {execute(next.action);next.accepted=true}
+            return Reply(next,power.loading(next))
+        }
+        return Reply(pending,power.capabilities(status("restart"),status("shutdown"),lockAvailable()))
+    })
+    if result.isOk(response) {let value=result.unwrap(response);pending=value.state;print(value.frame)}else {release(session,lease);pending=power.empty(pending.token);let text=hw.errorText(result.message(response));hw.stderr("devos-power: "+text);print("E\t"+wire.encoded(text))}
+}
+release(session,lease);unsafe {if session as bool {bus.close(session)}}

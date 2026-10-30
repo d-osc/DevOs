@@ -1,10 +1,10 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, Box, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {SystemSettings} from '../extensions/org.devos.settings/system-view.js';
-import {SwapSettings} from '../extensions/org.devos.settings/swap-view.js';
-import {emptySwap, gigabytesToMiB, draftProblem, draftOf, formatSize, type SwapAction, type SwapControls, type SwapState} from '../extensions/org.devos.settings/swap.js';
-import type {SystemControls, SystemState} from '../extensions/org.devos.settings/system.js';
+import {SystemSettings} from '../src/apps/org.devos.settings/system-view.js';
+import {SwapSettings} from '../src/apps/org.devos.settings/swap-view.js';
+import {emptySwap, gigabytesToMiB, draftProblem, draftOf, formatSize, type SwapAction, type SwapControls, type SwapState} from '../src/apps/org.devos.settings/swap.js';
+import type {SystemControls, SystemState} from '../src/apps/org.devos.settings/system.js';
 Gtk.init(null);
 const wait = () => new Promise<void>(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 170, () => {resolve(); return GLib.SOURCE_REMOVE;}));
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
@@ -41,7 +41,7 @@ async function verify() {
     assert(draftProblem({...base, fileAllowed: false, fileReason: 'Live'}, {...draftOf(base), type: 'file'}) === 'Live', 'A disk file is refused where the helper refuses it');
 
     const window = new Gtk.OffscreenWindow(); window.name = 'swap'; window.set_size_request(900, 1100); const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     const text = (id: string) => find<Gtk.Label>(id)?.get_text() ?? '';

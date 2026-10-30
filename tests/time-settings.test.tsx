@@ -1,8 +1,8 @@
 import {testTheme} from './theme-helper.js';
 import {React, Gtk, Gdk, GLib, createRoot} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {TimeSettings} from '../extensions/org.devos.settings/time-view.js';
-import type {TimeControls, TimeState, TimeAction} from '../extensions/org.devos.settings/time.js';
+import {TimeSettings} from '../src/apps/org.devos.settings/time-view.js';
+import type {TimeControls, TimeState, TimeAction} from '../src/apps/org.devos.settings/time.js';
 Gtk.init(null);
 function assert(value: unknown, message: string): void {if (!value) throw new Error(message);}
 function widgets(widget: Gtk.Widget): Gtk.Widget[] {return [widget, ...(widget instanceof Gtk.Container ? widget.get_children().flatMap(widgets) : [])];}
@@ -13,7 +13,7 @@ async function verify() {
     const controls: TimeControls = {async load() {return state;}, async update(next) {if (fail) throw new Error('Authorization denied'); action = next; if (next.action === 'set-ntp') state = {...state, ntp: next.enabled}; if (next.action === 'set-timezone') state = {...state, timezone: next.timezone}; return state;}, async openHostSettings() {opened++;}, destroy() {released++;}};
     const window = new Gtk.OffscreenWindow(); window.name = 'settings'; window.set_size_request(850, 950);
     const root = createRoot(window);
-    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/extensions/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
+    const css = new Gtk.CssProvider(); css.load_from_data(new TextEncoder().encode(new TextDecoder().decode(GLib.file_get_contents(`${ROOT}/src/apps/org.devos.theme/style.css`)[1]).replace(/^/, testTheme())));
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default()!, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
     const find = <T extends Gtk.Widget>(id: string) => widgets(window).find(widget => widget.name === id) as T;
     try {

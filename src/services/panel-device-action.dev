@@ -1,0 +1,15 @@
+# One request, at most one mutation, then exit. Never replay an action.
+use "std/io"
+use "std/json"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../system/org.devos.panel/device-actions.dev" as actions
+use "../system/org.devos.panel/device-execution.dev" as execution
+fn main():i32 {
+    let request=json.parse(io.read_line());actions.validate(request)
+    execution.execute(request,execution.snapshot(hw.jbool(request,"connected",false),false))
+    print(json.stringify({ok:true}));return 0
+}
+let response=result.attempt(main)
+if result.isErr(response) {print(json.stringify({error:hw.errorText(result.message(response))}));return 1}
+return result.unwrap(response)
