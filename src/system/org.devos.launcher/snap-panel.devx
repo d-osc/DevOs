@@ -5,6 +5,7 @@ use "../../apps/org.devos.settings/native-extensions-page.devx" as ext
 use "../../apps/org.devos.settings/native-system-pages.devx" as sp
 use "./shell-link.devx" as shell
 extern fn rc_env(name:str):str
+extern fn setenv(name:str,value:str,overwrite:i32):i32
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
 extern fn rd_app_header(root:*void,title:str,icons:str)
@@ -145,11 +146,11 @@ fn SnapPanel(context:*ui.Context):ui.Node {
     }
     let scroller = ui.props(); scroller.expand = true
     nodes.push(ui.Scroll(scroller,ext.column(10,body)))
-    let outer = ui.props(); outer.spacing = 12; outer.margin = 20
+    let outer = ui.props(); outer.spacing = 12; outer.margin = 40; outer.expand = true; outer.halign = 3; outer.width = 960; outer.className = ui.text("rd-layer-panel")
     return ui.Box(outer,nodes)
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.snap.Native" }
-    unsafe { rd_identity(id) }
+    unsafe { rd_identity(id); setenv("RD_LAYER","1",0) }
     return ui.run("Snap",900,680,SnapPanel) ? 0 : 1
 }

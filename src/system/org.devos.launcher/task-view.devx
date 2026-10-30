@@ -5,6 +5,7 @@ use "../../apps/org.devos.settings/native-extensions-page.devx" as ext
 use "../../apps/org.devos.settings/native-system-pages.devx" as sp
 use "./shell-link.devx" as shell
 extern fn rc_env(name:str):str
+extern fn setenv(name:str,value:str,overwrite:i32):i32
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
 extern fn rd_app_header(root:*void,title:str,icons:str)
@@ -106,11 +107,11 @@ fn TaskView(context:*ui.Context):ui.Node {
         nodes.push(k.note("Your desktops","section-heading"))
         nodes.push(ext.row(8,chips))
     }
-    let body = ui.props(); body.spacing = 12; body.margin = 20
+    let body = ui.props(); body.spacing = 12; body.margin = 40; body.expand = true; body.halign = 3; body.width = 1040; body.className = ui.text("rd-layer-panel")
     return ui.Box(body,nodes)
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.taskview.Native" }
-    unsafe { rd_identity(id) }
+    unsafe { rd_identity(id); setenv("RD_LAYER","1",0) }
     return ui.run("Task View",980,720,TaskView) ? 0 : 1
 }

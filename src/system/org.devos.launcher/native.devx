@@ -4,6 +4,7 @@ use "../../apps/org.devos.settings/native-kit.devx" as k
 use "../../apps/org.devos.settings/native-extensions-page.devx" as ext
 use "../../apps/org.devos.settings/native-system-pages.devx" as sp
 extern fn rc_env(name:str):str
+extern fn setenv(name:str,value:str,overwrite:i32):i32
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
 extern fn rd_app_header(root:*void,title:str,icons:str)
@@ -201,11 +202,12 @@ fn App(context:*ui.Context):ui.Node {
         ext.expand(ext.row(8,Vec<ui.Node>())),
         ui.Button(restart,"Restart",fn() { confirm.set(plain("restart")) }),ui.Button(sleep,"Sleep",fn() { confirm.set(plain("sleep")) }),
         ui.Button(shutdown,"Shutdown",fn() { confirm.set(plain("shutdown")) }),ui.Button(logout,"Log out",fn() { confirm.set(plain("logout")) }))))
-    let body = ui.props(); body.spacing = 12; body.margin = 20
+    # The panel is centered on the full-screen overlay (RD_LAYER, see gtk.c); as an ordinary window it just fills it.
+    let body = ui.props(); body.spacing = 12; body.margin = 40; body.expand = true; body.halign = 3; body.width = (menuWidth + 120) as i32; body.className = ui.text("rd-layer-panel")
     return ui.Box(body,nodes)
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.launcher.Native" }
-    unsafe { rd_identity(id) }
+    unsafe { rd_identity(id); setenv("RD_LAYER","1",0) }
     return ui.run("Launcher",760,780,App) ? 0 : 1
 }

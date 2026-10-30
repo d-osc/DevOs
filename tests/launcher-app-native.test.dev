@@ -124,4 +124,13 @@ test.case("the manifest is a settings manifest: a native manifest would make the
     let manifest = fs.readFileSync(t.root() + "/src/system/org.devos.launcher/extension.json","utf8")
     test.expect(strings.contains(manifest,"\"kind\": \"settings\"") && !strings.contains(manifest,"\"native\"") && !strings.contains(manifest,"\"entry\""),"manifest: " + manifest)
 })
+test.case("on a real layer-shell compositor the Launcher is a full-screen overlay: all four edges, the overlay layer, the keyboard, and the compositor sizes it to the output",fn() {
+    let labwc = t.root() + "/build/wsl/bin/labwc"
+    if !fs.existsSync(labwc) { return }
+    let done = tool.run(Vec<str>("sh",t.root() + "/tests/lib/layer-check.sh",t.root() + "/build/react-devlang/tests/launcher-native",t.root(),labwc),Map<str,str>(),"",120000)
+    let out = t.out(done)
+    test.expect(strings.contains(out,"get_layer_surface(new id zwlr_layer_surface_v1") && strings.contains(out,", 3, \"devos-overlay\")"),"on the overlay layer: " + out)
+    test.expect(strings.contains(out,"set_anchor(15)") && strings.contains(out,"set_keyboard_interactivity(1)") && strings.contains(out,"set_exclusive_zone(-1)"),"anchored to every edge with the keyboard: " + out)
+    test.expect(strings.contains(out,".configure(") && strings.contains(out,"1280, 720"),"the compositor gave it the whole output: " + out)
+})
 return t.finish()

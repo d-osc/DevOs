@@ -1,6 +1,7 @@
 #include <gtk/gtk.h>
 #include <stdint.h>
 #include <string.h>
+#include <dlfcn.h>
 void *rd_find_name(void *data,const char *name);
 
 typedef void (*RdDispatch)(int32_t, void *, const unsigned char *, int64_t, void *);
@@ -56,6 +57,38 @@ int64_t rd_strlen(const char *text) { return (int64_t)strlen(text); }
 void *rd_buffer_new(int64_t length) { return g_malloc0((gsize)length + 1); }
 void rd_buffer_free(void *buffer) { g_free(buffer); }
 void rd_fail(const char *message) { g_error("react-devlang: %s", message); }
+void rd_close(void *data);
+/* RD_LAYER=1: a full-screen overlay (the Launcher, Task View and Snap). The layer-shell library is opened at run time, so apps need neither its headers nor
+   a link to it; without it, or on a compositor without the protocol (X11, Xvfb), the window stays an ordinary toplevel. A translucent scrim covers the
+   screen, the window takes the keyboard while it is open, and Escape closes it. */
+static gboolean rd_layer_key(GtkWidget *widget, GdkEventKey *event, void *data) {
+    (void)widget; if (event->keyval == GDK_KEY_Escape) { rd_close(data); return TRUE; } return FALSE;
+}
+static void rd_layer_overlay(RdRoot *root) {
+    const char *mode = g_getenv("RD_LAYER"); if (!mode || !*mode) return;
+    void *library = dlopen("libgtk-layer-shell.so.0", RTLD_LAZY | RTLD_GLOBAL); if (!library) return;
+    gboolean (*supported)(void) = (gboolean (*)(void))dlsym(library, "gtk_layer_is_supported");
+    void (*init)(GtkWindow *) = (void (*)(GtkWindow *))dlsym(library, "gtk_layer_init_for_window");
+    void (*name)(GtkWindow *, const char *) = (void (*)(GtkWindow *, const char *))dlsym(library, "gtk_layer_set_namespace");
+    void (*layer)(GtkWindow *, int) = (void (*)(GtkWindow *, int))dlsym(library, "gtk_layer_set_layer");
+    void (*anchor)(GtkWindow *, int, gboolean) = (void (*)(GtkWindow *, int, gboolean))dlsym(library, "gtk_layer_set_anchor");
+    void (*keyboard)(GtkWindow *, int) = (void (*)(GtkWindow *, int))dlsym(library, "gtk_layer_set_keyboard_mode");
+    void (*zone)(GtkWindow *, int) = (void (*)(GtkWindow *, int))dlsym(library, "gtk_layer_set_exclusive_zone");
+    if (!supported || !init || !name || !layer || !anchor || !keyboard || !zone || !supported()) return;
+    GtkWindow *window = GTK_WINDOW(root->window);
+    GdkVisual *visual = gdk_screen_get_rgba_visual(root->screen); if (visual) gtk_widget_set_visual(root->window, visual);
+    gtk_widget_set_app_paintable(root->window, TRUE);
+    init(window); name(window, "devos-overlay"); layer(window, 3 /* overlay */); keyboard(window, 1 /* exclusive */); zone(window, -1);
+    for (int edge = 0; edge < 4; edge++) anchor(window, edge, TRUE);
+    gtk_window_set_decorated(window, FALSE);
+    GtkCssProvider *css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css, ".rd-layer-scrim {background-color: rgba(8, 10, 14, 0.62);} .rd-layer-panel {background-color: @theme_bg_color; border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);}", -1, NULL);
+    gtk_style_context_add_provider_for_screen(root->screen, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+    g_object_unref(css);
+    gtk_style_context_add_class(gtk_widget_get_style_context(root->window), "rd-layer-scrim");
+    g_object_set_data(G_OBJECT(root->window), "rd-layer", GINT_TO_POINTER(1));
+    g_signal_connect(root->window, "key-press-event", G_CALLBACK(rd_layer_key), root);
+}
 void *rd_new(const char *title, int32_t width, int32_t height) {
     if (!gtk_init_check(NULL, NULL)) return NULL;
     RdRoot *root = g_new0(RdRoot, 1);
@@ -63,6 +96,7 @@ void *rd_new(const char *title, int32_t width, int32_t height) {
     root->screen = g_object_ref(gtk_widget_get_screen(root->window));
     gtk_window_set_title(GTK_WINDOW(root->window), title);
     gtk_window_set_default_size(GTK_WINDOW(root->window), width, height);
+    rd_layer_overlay(root);
     root->host = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(root->window), root->host);
     g_signal_connect(root->window, "destroy", G_CALLBACK(rd_closed), root);
