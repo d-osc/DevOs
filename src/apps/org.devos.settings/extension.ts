@@ -55,7 +55,8 @@ export default {id: 'org.devos.settings', activate(context) {
         if (!settings) settings = new Settings(context, username => switcher.show(username));
         settings.show(page);
     });
-    for (const page of ['panel', 'clock']) context.registerCommand(`settings.${page}`, () => {
+    // settings.panel is registered above (it opens the native panel settings), so only the clock page is left here.
+    for (const page of ['clock']) context.registerCommand(`settings.${page}`, () => {
         context.invoke('launcher.hide');
         if (!settings) settings = new Settings(context, username => switcher.show(username));
         settings.show(`org.devos.${page}`);
