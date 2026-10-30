@@ -1,0 +1,72 @@
+use "react_devlang/ui" as ui
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+# libvte is linked by path (tools/build/native-apps.sh), so no VTE header is needed: only the calls below are declared.
+extern fn vte_terminal_new():*void
+extern fn vte_terminal_spawn_async(terminal:*void, ptyFlags:i32, workingDirectory:str, argv:*u8, envv:*u8, spawnFlags:i32, childSetup:*void, childSetupData:*void, childSetupDestroy:*void, timeout:i32, cancellable:*void, callback:*void, userData:*void)
+extern fn vte_terminal_set_scrollback_lines(terminal:*void, lines:i64)
+extern fn gtk_container_add(container:*void, widget:*void)
+extern fn gtk_widget_show(widget:*void)
+extern fn gtk_widget_grab_focus(widget:*void)
+extern fn rd_terminal_keys(widget:*void)
+extern fn vte_terminal_get_type():u64
+extern fn g_signal_lookup(name:str, itype:u64):u32
+extern fn rd_close_on(widget:*void, signal:str, root:*void)
+extern fn rd_strv_new(count:i32):*u8
+extern fn rd_strv_set(vector:*u8, index:i32, text:str)
+
+# Native Terminal window: one VTE terminal running the user's shell (or DEVOS_TERMINAL_COMMAND with `sh -c`, which the tests use).
+# The terminal widget is created here and placed in an empty host box of the toolkit; the window closes when the shell exits.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn argvOf(items:Vec<str>):*u8 { unsafe {
+    let table = rd_strv_new(items.len() as i32)
+    for i in 0..(items.len() as i64) { rd_strv_set(table,i as i32,items[i]) }
+    return table
+} }
+
+fn App(context:*ui.Context):ui.Node {
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Terminal","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"terminal")
+        }
+        # `terminal.native <folder>` from the shell only brings this window to the front.
+        ui.onCommand(context,"terminal.",fn(line:ui.Text) {})
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        unsafe {
+            let host = ui.find(context,"terminal-host")
+            let terminal = vte_terminal_new()
+            vte_terminal_set_scrollback_lines(terminal,10000)
+            gtk_container_add(host,terminal)
+            gtk_widget_show(terminal)
+            rd_close_on(terminal,"child-exited",(*context).native)
+            rd_terminal_keys(terminal)
+            # DEVOS_TERMINAL_SMOKE=signals: the two action signals the shortcuts rely on exist on this VTE.
+            if ui.text(environment("DEVOS_TERMINAL_SMOKE")).bytes.len() > 0 && g_signal_lookup("copy-clipboard",vte_terminal_get_type()) != 0 && g_signal_lookup("paste-clipboard",vte_terminal_get_type()) != 0 { print("PASS native Terminal has copy-clipboard and paste-clipboard") }
+            let command = environment("DEVOS_TERMINAL_COMMAND")
+            let shell = environment("SHELL"); if ui.text(shell).bytes.len() == 0 { shell = "/bin/sh" }
+            let argv = ui.text(command).bytes.len() > 0 ? argvOf(Vec<str>("/bin/sh","-c",command)) : argvOf(Vec<str>(shell))
+            let directory = environment("DEVOS_TERMINAL_DIRECTORY")
+            vte_terminal_spawn_async(terminal,0,directory,argv,null,0x4,null,null,null,-1,null,null,null)
+            gtk_widget_grab_focus(terminal)
+        }
+        return ui.noop
+    },Vec<i64>())
+    let host = ui.props(); host.expand = true; host.id = ui.text("terminal-host")
+    return ui.Box(host,Vec<ui.Node>())
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.terminal.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Terminal",960,640,App) ? 0 : 1
+}

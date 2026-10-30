@@ -347,6 +347,24 @@ int32_t rd_change_name(void *data, const char *name, const char *text) { GtkWidg
 int32_t rd_activate_name(void *data,const char *name) {GtkWidget *widget=rd_find_name(data,name);if(!widget || !GTK_IS_ENTRY(widget) || !gtk_widget_get_sensitive(widget))return 0;g_signal_emit_by_name(widget,"activate");return 1;}
 const char *rd_text_name(void *data, const char *name) { GtkWidget *widget = rd_find_name(data, name); if (!widget) return ""; if (GTK_IS_LABEL(widget)) return gtk_label_get_text(GTK_LABEL(widget)); if (GTK_IS_ENTRY(widget)) return gtk_entry_get_text(GTK_ENTRY(widget));if(GTK_IS_TEXT_VIEW(widget)){GtkTextBuffer *buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));GtkTextIter start,end;gtk_text_buffer_get_bounds(buffer,&start,&end);char *text=gtk_text_buffer_get_text(buffer,&start,&end,FALSE);g_object_set_data_full(G_OBJECT(widget),"rd-read-text",text,g_free);return text;}return ""; }
 
+/* Closes the window when `widget` emits `signal` (for example a terminal's "child-exited", whose handler takes an int status). The close runs from
+ * an idle callback, after the signal has returned. The library that owns the widget needs no header here: the signal is connected by name. */
+static gboolean rd_close_idle(void *data) { rd_close(data); return G_SOURCE_REMOVE; }
+static void rd_signal_close(void *instance, int status, void *data) { (void)instance; (void)status; g_idle_add(rd_close_idle, data); }
+void rd_close_on(void *widget, const char *signal, void *root) { g_signal_connect(widget, signal, G_CALLBACK(rd_signal_close), root); }
+/* Ctrl+Shift+C and Ctrl+Shift+V on a VTE terminal run its "copy-clipboard" and "paste-clipboard" action signals (connected by name, no VTE header). */
+static gboolean rd_terminal_key(GtkWidget *widget, GdkEventKey *event, void *data) {
+    (void)data;
+    if ((event->state & gtk_accelerator_get_default_mod_mask()) != (GDK_CONTROL_MASK | GDK_SHIFT_MASK)) return FALSE;
+    if (event->keyval == GDK_KEY_C || event->keyval == GDK_KEY_c) { g_signal_emit_by_name(widget, "copy-clipboard"); return TRUE; }
+    if (event->keyval == GDK_KEY_V || event->keyval == GDK_KEY_v) { g_signal_emit_by_name(widget, "paste-clipboard"); return TRUE; }
+    return FALSE;
+}
+void rd_terminal_keys(void *widget) { g_signal_connect(widget, "key-press-event", G_CALLBACK(rd_terminal_key), NULL); }
+/* A NULL-terminated string array for C libraries that take char ** (for example VTE's spawn); the caller keeps it for the life of the process. */
+void *rd_strv_new(int32_t count){ return g_new0(char *,(gsize)(count<0?0:count)+1); }
+void rd_strv_set(void *vector,int32_t index,const char *text){ ((char **)vector)[index]=g_strdup(text); }
+
 /* Runs `dev-os-shell <command>` for a Settings entry that lives in another native process; only `settings.<name>` is accepted. */
 int32_t rd_launch_shell(const char *root,const char *command){
     if(!root||!*root||!command||strncmp(command,"settings.",9)||!command[9])return 0;

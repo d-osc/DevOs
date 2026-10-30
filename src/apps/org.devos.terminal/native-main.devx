@@ -1,0 +1,2 @@
+use "./native.devx" as terminal
+return terminal.run()

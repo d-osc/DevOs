@@ -26,7 +26,7 @@ Native but not yet the default: Settings (opt-in with `DEVOS_NATIVE_SETTINGS=1`)
    Launcher (overlay as a layer-shell window; `model.dev` exists), App Store (package rules in `package-rules.dev`; the `.deb`/`.rpm`/tar readers
    come from the update code), Icons, Theme, Updates, Camera settings page. ~4,800 lines.
 3. **Apps that need a toolkit bridge first** (each bridge is a C function plus a test in `packages/react-devlang`):
-   Terminal → VTE; Browser → WebKit; Editor → GtkSourceView or WebKit; Camera and Microphone capture → GStreamer; Screenshot → layer-shell overlay and Cairo
+   Terminal → VTE (a native window exists behind `DEVOS_NATIVE_TERMINAL=1`, linking libvte by path without headers); Browser → WebKit; Editor → GtkSourceView or WebKit; Camera and Microphone capture → GStreamer; Screenshot → layer-shell overlay and Cairo
    drawing. ~3,100 lines.
 4. **Native shell**: replace `src/main.ts` and `packages/shell` (command registry, `AppProcesses`, hotkeys, workspaces, tray) with a DevLang program
    that uses the D-Bus control interface the native apps already expose (`org.devos.Shell.Control`). The supervisor already restarts native parts independently.

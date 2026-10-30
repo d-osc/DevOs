@@ -1,0 +1,40 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The native Terminal window is built against the libvte that is installed (linked by path, no VTE header needed) and run under Xvfb.
+fn vte():str { return strings.trim(tool.exec(Vec<str>("sh","-c","cc -print-file-name=libvte-2.91.so.0"))) }
+fn build():str {
+    let executable = t.root() + "/build/react-devlang/tests/terminal-native"
+    tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.terminal/native-main.devx", executable, vte()), Map<str,str>(), "", 240000)
+    return executable
+}
+fn run(executable:str, command:str, smoke:str):child_process.Output {
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("DEVOS_TERMINAL_COMMAND",command)
+    if !strings.equal(smoke,"") { env.set("DEVOS_TERMINAL_SMOKE",smoke) }
+    return tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","terminal-native","xvfb-run","-a",executable),env,"",60000)
+}
+
+test.case("the native Terminal runs a command in a real pty and closes itself when the shell exits",fn() {
+    let executable = build()
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let done = run(executable,"echo from-vte > " + d + "/out; test -t 0 && echo tty > " + d + "/tty; exit 0","")
+    test.expect(done.success,"The window did not exit cleanly: " + t.out(done) + " / " + t.err(done))
+    test.expect(strings.equal(strings.trim(fs.readFileSync(d + "/out","utf8")),"from-vte"),"The command did not run")
+    test.expect(fs.existsSync(d + "/tty"),"The command did not see a terminal on stdin (no pty)")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the exit status of the shell does not matter: the window still closes",fn() {
+    let executable = build()
+    let done = run(executable,"exit 7","")
+    test.expect(done.success,"The window stayed or crashed after a failing command: " + t.out(done) + " / " + t.err(done))
+})
+test.case("the copy and paste shortcuts have the VTE action signals they trigger",fn() {
+    let executable = build()
+    let done = run(executable,"exit 0","signals")
+    test.expect(done.success && strings.contains(t.out(done),"PASS native Terminal has copy-clipboard and paste-clipboard"),"Signals missing: " + t.out(done) + " / " + t.err(done))
+})
+return t.finish()
