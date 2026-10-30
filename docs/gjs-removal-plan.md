@@ -62,3 +62,8 @@ So a native shell comes after, not before: the Launcher overlay (and snap, task 
 1. **User extensions.** Third-party JS UI extensions cannot run without GJS. Either the extension API is replaced by a native one (a DevLang program that speaks the control protocol, with a manifest like today's) and existing JS extensions stop working, or GJS stays for them as an optional component. Nothing in the repo decides this yet.
 2. **Editor.** The JS Editor is Monaco in a WebKit view (`dist/editor`, a 6 MB TypeScript worker). A native Editor is either a WebKit view with the same bundle (DevLang for the window, JS inside the page) or a text widget with its own highlighting (GtkSourceView is not installed here).
 3. **npm packages.** `@dev-os/runtime`, `services`, `shell`, `extensions`, `updates`, `config` and `supervisor` are published API contracts (`data/compat/npm-api.json`); they go when their last TS file goes, as `@dev-os/compat` did.
+
+## Decision 1 is made (the owner, 2026-10-30): JS user extensions are no longer supported
+
+GJS goes away completely. The JS extension API (`packages/extensions/user.ts`, `UIExtension`, `registerSettingsPage`) ends with it; a native extension API (a DevLang program that speaks the control protocol and declares itself in a manifest) is a separate, later design, and existing JS extensions stop working when the shell does. Consequence for the order: nothing has to be kept for them, so `packages/core`, `extensions`, `runtime`, `services`, `shell`, `supervisor`, `updates` and `config` are all deleted in stage 5, in that dependency order, with their entries removed from `data/compat/npm-api.json`.
+Decisions 2 (Editor) and 3 (the npm packages, now answered by this one) remain; the Editor is still open.
