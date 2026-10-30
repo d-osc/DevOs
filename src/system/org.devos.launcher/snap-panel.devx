@@ -146,7 +146,7 @@ fn SnapPanel(context:*ui.Context):ui.Node {
     }
     let scroller = ui.props(); scroller.expand = true
     nodes.push(ui.Scroll(scroller,ext.column(10,body)))
-    let outer = ui.props(); outer.spacing = 12; outer.margin = 40; outer.expand = true; outer.halign = 3; outer.width = 960; outer.className = ui.text("rd-layer-panel")
+    let outer = ui.props(); outer.spacing = 12; outer.margin = 0; outer.expand = true; outer.className = ui.text("rd-layer-panel")
     return ui.Box(outer,nodes)
 }
 fn run():i32 {

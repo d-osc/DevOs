@@ -133,7 +133,7 @@ fn App(context:*ui.Context):ui.Node {
     },Vec<i64>(shownApps.len() as i64))
     if frame.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
     let width = menuWidth as i32
-    let search = ui.named("launcher-search"); search.width = width; search.placeholder = plain("Search apps by name or keyword…")
+    let search = ui.named("launcher-search"); search.width = width; search.halign = 3; search.placeholder = plain("Search apps by name or keyword…")
     let close = ui.named("launcher-close")
     let mark = ui.props(); mark.iconSize = 20
     let header = ext.row(12,Vec<ui.Node>(ui.Icon(mark,"dev-os-symbolic"),ext.expand(ext.column(2,Vec<ui.Node>(k.note("DEV OS","settings-description"),k.note("Applications","section-heading")))),ui.Button(close,"Close",fn() { ui.close(context) })))
@@ -203,7 +203,7 @@ fn App(context:*ui.Context):ui.Node {
         ui.Button(restart,"Restart",fn() { confirm.set(plain("restart")) }),ui.Button(sleep,"Sleep",fn() { confirm.set(plain("sleep")) }),
         ui.Button(shutdown,"Shutdown",fn() { confirm.set(plain("shutdown")) }),ui.Button(logout,"Log out",fn() { confirm.set(plain("logout")) }))))
     # The panel is centered on the full-screen overlay (RD_LAYER, see gtk.c); as an ordinary window it just fills it.
-    let body = ui.props(); body.spacing = 12; body.margin = 40; body.expand = true; body.halign = 3; body.width = (menuWidth + 120) as i32; body.className = ui.text("rd-layer-panel")
+    let body = ui.props(); body.spacing = 12; body.margin = 0; body.expand = true; body.className = ui.text("rd-layer-panel")
     return ui.Box(body,nodes)
 }
 fn run():i32 {

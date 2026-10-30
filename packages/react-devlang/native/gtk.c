@@ -82,8 +82,8 @@ static void rd_layer_overlay(RdRoot *root) {
     for (int edge = 0; edge < 4; edge++) anchor(window, edge, TRUE);
     gtk_window_set_decorated(window, FALSE);
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css, ".rd-layer-scrim {background-color: rgba(8, 10, 14, 0.62);} .rd-layer-panel {background-color: @theme_bg_color; border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);}", -1, NULL);
-    gtk_style_context_add_provider_for_screen(root->screen, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+    gtk_css_provider_load_from_data(css, "window.background.rd-layer-scrim {background-color: rgba(10, 12, 16, 0.88); background-image: none;} .rd-layer-panel {background-color: transparent; padding: 36px 64px;}", -1, NULL);
+    gtk_style_context_add_provider_for_screen(root->screen, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
     g_object_unref(css);
     gtk_style_context_add_class(gtk_widget_get_style_context(root->window), "rd-layer-scrim");
     g_object_set_data(G_OBJECT(root->window), "rd-layer", GINT_TO_POINTER(1));
