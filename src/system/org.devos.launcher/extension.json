@@ -6,7 +6,7 @@
   "apiVersion": 1,
   "kind": "ui",
   "system": true,
-  "entry": "org.devos.launcher.js",
+  "native": "launcher",
   "order": 10,
   "settingsVersion": 1,
   "enabledByDefault": true,

@@ -5,7 +5,7 @@
 #   {"action":"save","appView":"list|grid","workspace":["builtin:terminal","app:x.desktop"]} -> the start frame after the preferences are written
 #   {"action":"launch","id":"x.desktop","file":"/usr/share/applications/x.desktop"} -> V<TAB>message
 #   {"action":"request","what":"sleep|restart|shutdown"} -> V<TAB>what (logind; sleep locks the session first)
-#   {"action":"shell","command":"terminal|files|editor|lock|logout|settings"} -> V<TAB>
+#   {"action":"shell","command":"terminal|files|editor|lock|session.quit|settings"} -> V<TAB>
 # Records of the start frame:
 #   S<TAB>menuWidth<TAB>iconSize<TAB>compactRows<TAB>showWorkspace<TAB>showDescriptions<TAB>rememberSearch<TAB>appView
 #   W<TAB>key                                   one per workspace entry
@@ -154,7 +154,7 @@ fn launch(id:str, file:str):str {
 }
 fn shellCommand(command:str):str {
     let ok = false
-    for a in Vec<str>("terminal","files","editor","lock","logout","settings") { if strings.equal(a,command) { ok = true } }
+    for a in Vec<str>("terminal","files","editor","lock","session.quit","settings") { if strings.equal(a,command) { ok = true } }
     if !ok { return kit.failure("Unsupported command") }
     if testing() { return "V\t" }
     let sent = shell.remote(Vec<str>(command),hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),"/")

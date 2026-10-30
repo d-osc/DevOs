@@ -5,7 +5,6 @@ import {sendCommand, processApplicationId, missingProcess} from '@dev-os/runtime
 import {UpdatesView} from './apps/org.devos.updates/view.js';
 import {FilesSettings} from './apps/org.devos.files/settings-view.js';
 import {TerminalSettings} from './apps/org.devos.terminal/settings-view.js';
-import {LauncherSettings} from './system/org.devos.launcher/settings-view.js';
 import {CameraSettings} from './apps/org.devos.camera/settings-view.js';
 import {MicrophoneSettings} from './apps/org.devos.microphone/settings-view.js';
 import {TaskManagerSettings} from './apps/org.devos.taskmanager/settings.js';
@@ -21,7 +20,6 @@ export function registerAppSettings(context: UIContext): () => void {
     const updater = new Updates();
     const pages = {
         files: () => <FilesSettings preferences={preferences}/>, terminal: () => <TerminalSettings preferences={preferences}/>,
-        launcher: () => <LauncherSettings preferences={preferences} applied={applied}/>,
         camera: () => <CameraSettings open={() => context.invoke('camera')}/>,
         microphone: () => <MicrophoneSettings open={() => context.invoke('microphone')}/>,
         taskmanager: () => <TaskManagerSettings openManager={() => context.invoke('task-manager')}/>,

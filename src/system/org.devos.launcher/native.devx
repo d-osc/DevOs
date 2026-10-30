@@ -134,7 +134,8 @@ fn App(context:*ui.Context):ui.Node {
     let width = menuWidth as i32
     let search = ui.named("launcher-search"); search.width = width; search.placeholder = plain("Search apps by name or keyword…")
     let close = ui.named("launcher-close")
-    let header = ext.row(12,Vec<ui.Node>(ext.expand(ext.column(2,Vec<ui.Node>(k.note("DEV OS","settings-description"),k.note("Applications","section-heading")))),ui.Button(close,"Close",fn() { ui.close(context) })))
+    let mark = ui.props(); mark.iconSize = 20
+    let header = ext.row(12,Vec<ui.Node>(ui.Icon(mark,"dev-os-symbolic"),ext.expand(ext.column(2,Vec<ui.Node>(k.note("DEV OS","settings-description"),k.note("Applications","section-heading")))),ui.Button(close,"Close",fn() { ui.close(context) })))
     let nodes = Vec<ui.Node>(header,ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value); message.set(ui.emptyText()) }))
     # --- workspace shortcuts ---
     if showWorkspace {
@@ -187,7 +188,7 @@ fn App(context:*ui.Context):ui.Node {
         nodes.push(ext.row(8,Vec<ui.Node>(ext.expand(k.caption(sentence,"launcher-message")),ui.Button(cancel,"Cancel",fn() { confirm.set(ui.emptyText()) }),
             ui.Button(yes,"Confirm",fn() {
                 let what = confirm.get(); confirm.set(ui.emptyText())
-                if k.isText(what,"logout") { command("logout") } else { asked.set(2); sp.send(l,request("request",Vec<ui.Text>(pair("what",what)))) }
+                if k.isText(what,"logout") { command("session.quit") } else { asked.set(2); sp.send(l,request("request",Vec<ui.Text>(pair("what",what)))) }
             }))))
     }
     nodes.push(k.caption(has(message.value) ? message.value : plain("Type to search · click an app to open it"),has(message.value) ? "launcher-message" : "launcher-hint"))

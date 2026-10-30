@@ -31,7 +31,7 @@ test('PNG sizes exist for the app icon', () => {
 test('the shell shows the mark where it used to show placeholders', () => {
     for (const file of ['src/apps/org.devos.settings/login-view.tsx', 'src/apps/org.devos.settings/os-login.tsx']) assert(read(file).includes('brandIcon') && !read(file).includes('login-brand">D<'), `${file} greeter mark`);
     assert(read('src/apps/org.devos.installer/native.devx').includes('"dev-os-symbolic"'), 'installer sidebar uses the transparent theme-aware mark');
-    assert(read('src/system/org.devos.launcher/view.tsx').includes('dev-os-symbolic'), 'launcher header mark');
+    assert(read('src/system/org.devos.launcher/native.devx').includes('dev-os-symbolic'), 'launcher header mark');
     assert(read('src/system/org.devos.panel/native.devx').includes('"dev-os-symbolic"'), 'native panel menu button mark');
     assert(read('src/apps/org.devos.settings/about-view.tsx').includes('iconName="dev-os"'), 'About mark');
     assert(read('distro/oe/meta-devos/recipes-devos/splash/files/devos-splash.c').includes('static void mark('), 'boot splash mark');

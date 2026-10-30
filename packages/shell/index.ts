@@ -11,6 +11,7 @@ import {SettingsPages} from '@dev-os/core';
 import {requestSessionVersion} from '@dev-os/runtime/session-version';
 import {shellApplicationId, controlInterface} from '@dev-os/runtime/remote';
 import {appForCommand, processApplicationId, sendCommand, type BaseApp} from '@dev-os/runtime/processes';
+import {nativeLauncher, nativeTaskView, nativeSnap} from '@dev-os/runtime/native-launcher';
 import {AppProcesses} from './app-processes.js';
 
 /** Report a boot milestone to devos-splash without waiting for it or failing when it is not installed. */
@@ -164,7 +165,15 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         case 'window-next': this.windows?.gesture('next'); break;
         case 'window-previous': this.windows?.gesture('previous'); break;
         case 'window-restore': this.windows?.gesture('restore'); break;
-        case 'browser': case 'camera': case 'microphone': case 'app-store': case 'disk-manager': case 'installer': case 'task-manager': case 'launcher': case 'overlays-hide': case 'logout': case 'settings': case 'snap-layouts': case 'task-view': case 'task-view-show': case 'task-view-hide': this.invoke(command); break;
+        case 'browser': case 'camera': case 'microphone': case 'app-store': case 'disk-manager': case 'installer': case 'task-manager': case 'settings': this.invoke(command); break;
+        // The launcher, Task View and Snap are native DevLang windows (dist/native/{launcher,task-view,snap-panel}); opening one closes the others.
+        case 'launcher': this.hideOverlays(['launcher']); nativeLauncher(['launcher'], true, message => this.showMessage(message)); break;
+        case 'logout': this.hideOverlays(['launcher']); nativeLauncher(['launcher', 'logout'], true, message => this.showMessage(message)); break;
+        case 'task-view': this.hideOverlays(['task-view']); nativeTaskView(['task-view'], true, message => this.showMessage(message)); break;
+        case 'task-view-show': this.hideOverlays(['task-view']); nativeTaskView(['task-view', 'show'], true, message => this.showMessage(message)); break;
+        case 'task-view-hide': nativeTaskView(['task-view', 'hide'], false, message => this.showMessage(message)); break;
+        case 'snap-layouts': this.hideOverlays(['snap']); nativeSnap(['snap-layouts'], true, message => this.showMessage(message)); break;
+        case 'overlays-hide': this.hideOverlays([]); break;
         case 'wifi': this.invoke('settings.wifi'); break;
         case 'network': this.invoke('settings.network'); break;
         case 'language': this.invoke('settings.language'); break;
@@ -308,6 +317,13 @@ export const DesktopShell = GObject.registerClass(class ShellApplication extends
         } catch (error) { this.showMessage(`Could not start ${args[0]}: ${(error instanceof Error ? error.message : String(error))}`); return false; }
     }
 
+    /** Closes the native overlays except the ones named; a window that is not running is left alone. */
+    hideOverlays(keep: ('launcher' | 'task-view' | 'snap')[]) {
+        const report = (message: string) => this.showMessage(message);
+        if (!keep.includes('launcher')) nativeLauncher(['launcher', 'hide'], false, report);
+        if (!keep.includes('task-view')) nativeTaskView(['task-view', 'hide'], false, report);
+        if (!keep.includes('snap')) nativeSnap(['snap-layouts', 'hide'], false, report);
+    }
     showMessage(message: string) {
         try {Gio.DBus.session.emit_signal(null, '/org/devos/Panel', 'org.devos.Panel', 'Message', new GLib.Variant('(s)', [message]));} catch (error) {printerr(String(error));}
         printerr(`Dev OS: ${message}`);
