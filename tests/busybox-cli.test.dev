@@ -495,6 +495,17 @@ test.case("blkid crontab inotifyd",fn() {
     test.expect(strings.contains(outcome(d, "mkdir w; (" + bb + " inotifyd 'echo' w:n > /dev/null & echo $! > p.pid); sleep 1; kill $(cat p.pid); echo done"), "done"), "inotifyd with a program")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("ed",fn() {
+    let d = sandbox()
+    let base = "printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > f.txt; "
+    let scripts = Vec<str>(",p\\nq\\n","1p\\n3p\\nq\\n","2,4p\\nq\\n","$p\\nq\\n","1,3n\\nq\\n","/thr/p\\nq\\n","2d\\n,p\\nq\\n","2,3d\\n,p\\nq\\n","$d\\n,p\\nq\\n","1d\\n,p\\nq\\n","2a\\nadded\\nlines\\n.\\n,p\\nq\\n","0a\\nfirst\\n.\\n,p\\nq\\n","$a\\nlast\\n.\\n,p\\nq\\n","3i\\ninserted\\n.\\n,p\\nq\\n","1i\\ntop\\n.\\n,p\\nq\\n","2c\\nchanged\\n.\\n,p\\nq\\n","2,3c\\nboth\\n.\\n,p\\nq\\n",
+        "s/o/0/\\n,p\\nq\\n","1,$s/o/0/\\n,p\\nq\\n","1,$s/o/0/g\\n,p\\nq\\n","2s/t\\\\(.\\\\)/\\\\1T/\\n,p\\nq\\n","s/e/E/p\\nq\\n","1,2j\\n,p\\nq\\n","2m4\\n,p\\nq\\n","1,2t$\\n,p\\nq\\n","1,2m0\\n,p\\nq\\n","g/o/p\\nq\\n","g/o/d\\n,p\\nq\\n","v/o/d\\n,p\\nq\\n","g/e/s/e/E/\\n,p\\nq\\n","2\\nq\\n","=\\nq\\n","1,3=\\nq\\n","2,3l\\nq\\n","3\\n-p\\n+p\\n.p\\nq\\n","$-1,$p\\nq\\n","/two/,/four/p\\nq\\n","2;+1p\\nq\\n","ka\\n3ka\\n'ap\\nq\\n","2d\\nu\\n,p\\nq\\n","w out.txt\\nq\\n","1,2w out.txt\\nq\\n","r f.txt\\n,p\\nq\\n","0r f.txt\\n,p\\nq\\n","$r f.txt\\n,n\\nq\\n","d\\n,p\\nq\\n","xyz\\nq\\n","9p\\nq\\n","/nomatch/p\\nq\\n","s/zzz/y/\\nq\\n")
+    let cmds = Vec<str>()
+    for s in scripts { cmds.push(base + "printf '" + s + "' | @ed -s f.txt; echo rc=$?; cat out.txt 2>/dev/null; cat f.txt") }
+    all_same(d, cmds)
+    all_same(d, Vec<str>(base + "printf '1p\\nq\\n' | @ed f.txt",base + "printf 'w\\nq\\n' | @ed f.txt",base + "printf 'a\\nx\\n.\\nq\\nq\\n' | @ed -s f.txt; echo rc=$?; cat f.txt",base + "printf 'a\\nx\\n.\\nwq\\n' | @ed -s f.txt; cat f.txt","printf 'a\\nnew\\n.\\nw made.txt\\nq\\n' | @ed -s; cat made.txt",base + "printf 'e f.txt\\n,n\\nq\\n' | @ed -s",base + "printf 'f\\nq\\n' | @ed -s f.txt"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

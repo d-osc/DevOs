@@ -1,0 +1,326 @@
+# ed [-s] [FILE]: the line editor (commands a i c d p n l = s g v j m t w W q Q e E r f k u H h with the usual addresses).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/regex.dev" as rx
+use "./gzip.dev" as gz
+use "./sed.dev" as sd
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn cells(n: i64): *i64 { unsafe { return sys.calloc(n as usize, 8) as *i64 } }
+fn cg(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cs(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn re_ptr(v: i64): *i64 { unsafe { return v as *i64 } }
+fn re_val(p: *i64): i64 { unsafe { return p as i64 } }
+fn buffer_of(s: str): *sys.Bytes { let b = sys.bytes_new(); for i in 0..sys.length(s) { sys.bytes_push(b, sys.at(s, i)) }; return b }
+
+// The editor state that commands change: lines, current line, and flags in cells (0 current, 1 modified, 2 warned, 3 verbose errors, 4 error, 5 quiet, 6 last regex, 7 mark a..z base)
+struct Ed { lines: Vec<str>, cur: i64, modified: bool }
+fn file_lines(path: str): Vec<str> {
+    let out = Vec<str>(); let input = sys.read_path(path)
+    if !input.ok { return out }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) { out.push(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])) }
+    return out
+}
+fn byte_count(items: Vec<str>, from: i64, to: i64): i64 { let n = 0; for k in from..to { n = n + sys.length(items[k]) + 1 }; return n }
+fn find_match(re: *i64, text: str): bool {
+    if rx.failed(re) { return false }
+    let b = buffer_of(text); let caps = rx.new_caps(re)
+    return rx.search(re, sys.bdata(b), sys.length(text), 0, caps)
+}
+struct Parsed { ok: bool, value: i64, pos: i64 }
+// One address starting at text[pos]: a number, '.', '$', /re/, ?re?, 'x, followed by +n / -n offsets.
+fn parse_address(items: Vec<str>, cur: i64, marks: *i64, last_re: *i64, text: str, pos0: i64): Parsed {
+    let n = sys.length(text); let pos = pos0; let total = items.len() as i64
+    while pos < n && (sys.at(text, pos) == 32 || sys.at(text, pos) == 9) { pos = pos + 1 }
+    let have = false; let value = cur
+    if pos < n {
+        let c = sys.at(text, pos)
+        if sys.is_digit(c) { value = 0; while pos < n && sys.is_digit(sys.at(text, pos)) { value = value * 10 + (sys.at(text, pos) - 48) as i64; pos = pos + 1 }; have = true }
+        else if c == 46 { value = cur; pos = pos + 1; have = true }
+        else if c == 36 { value = total; pos = pos + 1; have = true }
+        else if c == 39 && pos + 1 < n { let m = sys.at(text, pos + 1); value = cg(marks, (m - 97) as i64); pos = pos + 2; have = true; if value <= 0 { return Parsed(false, 0, pos) } }
+        else if c == 47 || c == 63 {
+            let delim = c; let end = pos + 1
+            while end < n && sys.at(text, end) != delim { if sys.at(text, end) == 92 { end = end + 1 }; end = end + 1 }
+            let pattern = sys.join2(sys.slice(text, pos + 1, end > n ? n : end), "")
+            pos = end < n ? end + 1 : n
+            let re = re_ptr(cg(last_re, 0))
+            if sys.length(pattern) > 0 { re = rx.compile(pattern, false, false); if rx.failed(re) { return Parsed(false, 0, pos) }; cs(last_re, 0, re_val(re)) }
+            if re_val(re) == 0 { return Parsed(false, 0, pos) }
+            let found = 0 - 1
+            if delim == 47 { for step in 1..(total + 1) { let idx = (cur - 1 + step) % total + 1; if find_match(re, items[idx - 1]) { found = idx; break } } }
+            else { for step in 1..(total + 1) { let idx = ((cur - 1 - step) % total + total) % total + 1; if find_match(re, items[idx - 1]) { found = idx; break } } }
+            if found < 0 { return Parsed(false, 0, pos) }
+            value = found; have = true
+        }
+    }
+    # offsets such as +2, -1, or a bare + / -
+    while pos < n {
+        let c = sys.at(text, pos)
+        while pos < n && (sys.at(text, pos) == 32 || sys.at(text, pos) == 9) { pos = pos + 1 }
+        c = pos < n ? sys.at(text, pos) : 0
+        if c != 43 && c != 45 && !(sys.is_digit(c) && have) { break }
+        let sign = 1
+        if c == 45 { sign = 0 - 1; pos = pos + 1 } else if c == 43 { pos = pos + 1 }
+        let amount = 1; let digits = false
+        if pos < n && sys.is_digit(sys.at(text, pos)) { amount = 0; while pos < n && sys.is_digit(sys.at(text, pos)) { amount = amount * 10 + (sys.at(text, pos) - 48) as i64; pos = pos + 1 }; digits = true }
+        value = value + sign * amount; have = true
+    }
+    if !have { return Parsed(true, 0 - 1, pos) }
+    return Parsed(true, value, pos)
+}
+fn out_of(c: *i64): *sys.Out { unsafe { return cg(c, 8) as *sys.Out } }
+fn out_val(o: *sys.Out): i64 { unsafe { return o as i64 } }
+fn say_error(quiet_cells: *i64, message: str) {
+    cs(quiet_cells, 4, 1)
+    let o = out_of(quiet_cells)
+    sys.out_str(o, "?\n")
+    if cg(quiet_cells, 3) != 0 { sys.put_fd(2, sys.join2(message, "\n")) }
+}
+fn read_text_lines(input_lines: Vec<str>, from: i64): Vec<str> {
+    let out = Vec<str>(); let k = from
+    while k < (input_lines.len() as i64) { if sys.same(input_lines[k], ".") { break }; out.push(input_lines[k]); k = k + 1 }
+    return out
+}
+fn splice(items: Vec<str>, at: i64, removed: i64, added: Vec<str>): Vec<str> {
+    let out = Vec<str>()
+    for k in 0..at { out.push(items[k]) }
+    for k in 0..(added.len() as i64) { out.push(added[k]) }
+    for k in (at + removed)..(items.len() as i64) { out.push(items[k]) }
+    return out
+}
+fn print_range(o: *sys.Out, items: Vec<str>, from: i64, to: i64, numbered: bool, listed: bool) {
+    for k in from..(to + 1) {
+        if numbered { sys.out_str(o, decimal(k)); sys.out_byte(o, 9) }
+        if listed { sd.print_unambiguous(o, buffer_of(items[k - 1]), 70) } else { sys.out_str(o, items[k - 1]); sys.out_byte(o, 10) }
+    }
+}
+fn run_ed(args: Vec<str>): i64 {
+    let quiet = false; let filename = ""; let a = 0
+    for k in 0..(args.len() as i64) { if sys.same(args[k], "-s") || sys.same(args[k], "-") || sys.same(args[k], "--quiet") { quiet = true } else if sys.starts(args[k], "-p") { } else { filename = args[k] } }
+    let st = cells(16); cs(st, 5, quiet ? 1 : 0)
+    let marks = cells(32); let last_re = cells(2)
+    let items = Vec<str>(); let cur = 0; let modified = false
+    let o = sys.out_new(1); cs(st, 8, out_val(o))
+    let undo_items = Vec<str>(); let undo_cur = 0; let have_undo = false; let undo_modified = false
+    if sys.length(filename) > 0 {
+        if sys.exists(filename) { items = file_lines(filename); cur = items.len() as i64; if !quiet { sys.out_str(o, decimal(byte_count(items, 0, items.len() as i64))); sys.out_byte(o, 10) } }
+        else { sys.put_fd(2, sys.join2(filename, ": No such file or directory\n")) }
+    }
+    let script = sys.read_path("-"); let input_lines = Vec<str>()
+    let ls = lines.split_lines(script.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) { input_lines.push(lines.text_of(script.bytes, ls.starts[k], ls.ends[k])) }
+    let k = 0; let total_in = input_lines.len() as i64; let default_name = filename
+    while k < total_in {
+        let line = input_lines[k]; k = k + 1
+        let parsed_first = parse_address(items, cur, marks, last_re, line, 0)
+        if !parsed_first.ok { say_error(st, "invalid address"); continue }
+        let pos = parsed_first.pos; let first = parsed_first.value; let second = parsed_first.value; let count = 0; let n = sys.length(line)
+        if parsed_first.value >= 0 { count = 1 }
+        while pos < n && (sys.at(line, pos) == 44 || sys.at(line, pos) == 59) {
+            let sep = sys.at(line, pos); pos = pos + 1
+            if sep == 59 && second >= 0 { cur = second }
+            let next = parse_address(items, cur, marks, last_re, line, pos)
+            if !next.ok { say_error(st, "invalid address"); count = 99; break }
+            first = count == 0 && first < 0 ? (sep == 44 ? 1 : cur) : second
+            if count == 0 { first = sep == 44 ? 1 : cur }
+            second = next.value >= 0 ? next.value : (sep == 44 ? (items.len() as i64) : cur)
+            if next.value < 0 && count == 0 { first = 1; second = items.len() as i64 }
+            count = 2; pos = next.pos
+        }
+        if count == 99 { continue }
+        if count == 1 { first = second }
+        while pos < n && (sys.at(line, pos) == 32 || sys.at(line, pos) == 9) { pos = pos + 1 }
+        let cmd = pos < n ? sys.at(line, pos) : 10
+        let rest = pos < n ? sys.join2(sys.slice(line, pos + 1, n), "") : ""
+        let total = items.len() as i64
+        let has_addr = count > 0
+        let lo = 0; let hi = 0
+        if count == 0 { lo = cur; hi = cur } else { lo = first; hi = second }
+        let whole = cmd == 103 || cmd == 118 || cmd == 119 || cmd == 87
+        if count == 0 && whole { lo = 1; hi = total }
+        if count == 0 && (cmd == 61) { lo = total; hi = total }
+        if count == 0 && cmd == 10 { lo = cur + 1; hi = cur + 1 }
+        if has_addr && lo > hi && !(cmd == 109 || cmd == 116) { say_error(st, "invalid address"); continue }
+        let needs_range = !(cmd == 97 || cmd == 105 || cmd == 119 || cmd == 87 || cmd == 113 || cmd == 81 || cmd == 101 || cmd == 69 || cmd == 114 || cmd == 102 || cmd == 72 || cmd == 104 || cmd == 117 || cmd == 61 || cmd == 103 || cmd == 118)
+        if needs_range && cmd != 10 && cmd != 107 && (lo < 1 || hi > total) { if !(total == 0 && false) { say_error(st, "invalid address"); continue } }
+        if cmd == 10 { if lo < 1 || lo > total { say_error(st, "invalid address"); continue }; cur = lo; print_range(o, items, lo, lo, false, false); continue }
+        if cmd == 112 || cmd == 110 || cmd == 108 { print_range(o, items, lo, hi, cmd == 110, cmd == 108); cur = hi; continue }
+        if cmd == 61 { sys.out_str(o, decimal(has_addr ? hi : total)); sys.out_byte(o, 10); continue }
+        if cmd == 97 || cmd == 105 || cmd == 99 {
+            let text = read_text_lines(input_lines, k); k = k + (text.len() as i64) + 1
+            undo_items = items; undo_cur = cur; have_undo = true; undo_modified = modified
+            if cmd == 97 { let at = has_addr ? hi : cur; if at < 0 || at > total { say_error(st, "invalid address"); continue }; items = splice(items, at, 0, text); cur = at + (text.len() as i64); if text.len() == 0 { cur = at } }
+            else if cmd == 105 { let at = has_addr ? hi : cur; if at < 1 && total > 0 { at = 1 }; items = splice(items, at > 0 ? at - 1 : 0, 0, text); cur = (at > 0 ? at - 1 : 0) + (text.len() as i64) }
+            else { items = splice(items, lo - 1, hi - lo + 1, text); cur = lo - 1 + (text.len() as i64); if text.len() == 0 { cur = lo - 1 > (items.len() as i64) ? (items.len() as i64) : (lo - 1) } }
+            modified = true; continue
+        }
+        if cmd == 100 { undo_items = items; undo_cur = cur; have_undo = true; undo_modified = modified; items = splice(items, lo - 1, hi - lo + 1, Vec<str>()); cur = lo > (items.len() as i64) ? (items.len() as i64) : lo; if cur == 0 && items.len() > 0 { cur = 1 }; modified = true; continue }
+        if cmd == 106 {
+            undo_items = items; undo_cur = cur; have_undo = true; undo_modified = modified
+            if !has_addr { lo = cur; hi = cur + 1 } else if lo == hi { hi = lo + 1 }
+            if hi > total { say_error(st, "invalid address"); continue }
+            let joined = ""; for q in lo..(hi + 1) { joined = sys.join2(joined, items[q - 1]) }
+            items = splice(items, lo - 1, hi - lo + 1, Vec<str>(joined)); cur = lo; modified = true; continue
+        }
+        if cmd == 109 || cmd == 116 {
+            let dest = parse_address(items, cur, marks, last_re, rest, 0)
+            if !dest.ok || dest.value < 0 || dest.value > total { say_error(st, "invalid address"); continue }
+            undo_items = items; undo_cur = cur; have_undo = true; undo_modified = modified
+            let moved = Vec<str>(); for q in lo..(hi + 1) { moved.push(items[q - 1]) }
+            if cmd == 116 { items = splice(items, dest.value, 0, moved); cur = dest.value + (moved.len() as i64) }
+            else {
+                if dest.value >= lo && dest.value < hi { say_error(st, "invalid destination"); continue }
+                let after = dest.value > hi ? dest.value - (hi - lo + 1) : dest.value
+                items = splice(items, lo - 1, hi - lo + 1, Vec<str>()); items = splice(items, after, 0, moved); cur = after + (moved.len() as i64)
+            }
+            modified = true; continue
+        }
+        if cmd == 107 { let m = rest; if sys.length(m) == 0 { say_error(st, "invalid mark"); continue }; cs(marks, (sys.at(m, 0) - 97) as i64, has_addr ? hi : cur); continue }
+        if cmd == 115 || cmd == 103 || cmd == 118 {
+            let delim = sys.length(rest) > 0 ? sys.at(rest, 0) : 47
+            if cmd == 115 {
+                let parts = split_substitution(rest)
+                if parts.len() < 2 { say_error(st, "invalid command suffix"); continue }
+                let flags = parts.len() > 2 ? parts[2] : ""
+                let re = re_ptr(cg(last_re, 0))
+                if sys.length(parts[0]) > 0 { re = rx.compile(parts[0], false, false); if rx.failed(re) { say_error(st, "invalid pattern"); continue }; cs(last_re, 0, re_val(re)) }
+                if re_val(re) == 0 { say_error(st, "no previous pattern"); continue }
+                let global = sys.find_char(flags, 103) >= 0; let print_after = sys.find_char(flags, 112) >= 0 || sys.find_char(flags, 110) >= 0 || sys.find_char(flags, 108) >= 0
+                let nth = 0; for q in 0..sys.length(flags) { if sys.is_digit(sys.at(flags, q)) { nth = nth * 10 + (sys.at(flags, q) - 48) as i64 } }
+                undo_items = items; undo_cur = cur; have_undo = true; undo_modified = modified
+                let changed = false; let last_changed = 0
+                for q in lo..(hi + 1) {
+                    let r = substitute_line(re, parts[1], items[q - 1], global, nth)
+                    if r.changed { items[q - 1] = r.text; changed = true; last_changed = q }
+                }
+                if !changed { say_error(st, "no match"); continue }
+                cur = last_changed; modified = true
+                if print_after { print_range(o, items, cur, cur, sys.find_char(flags, 110) >= 0, sys.find_char(flags, 108) >= 0) }
+                continue
+            }
+            let parts = split_global(rest)
+            if parts.len() < 2 { say_error(st, "invalid command suffix"); continue }
+            let re = rx.compile(parts[0], false, false); if rx.failed(re) { say_error(st, "invalid pattern"); continue }
+            cs(last_re, 0, re_val(re))
+            let selected = Vec<i64>()
+            for q in lo..(hi + 1) { let hit = find_match(re, items[q - 1]); if (cmd == 103) == hit { selected.push(q) } }
+            let action = sys.length(parts[1]) == 0 ? "p" : parts[1]
+            # run the command for each selected line; later targets move by the change in the line count
+            let targets = selected
+            for q in 0..(targets.len() as i64) {
+                let target = targets[q]
+                if target < 1 || target > (items.len() as i64) { continue }
+                let before = items.len() as i64
+                let sub = Ed(items, target, modified)
+                let result = run_one(sub, action, o, st, marks, last_re)
+                items = result.lines; cur = result.cur; modified = result.modified
+                let delta = (items.len() as i64) - before
+                if delta != 0 { for z in (q + 1)..(targets.len() as i64) { if targets[z] > target { targets[z] = targets[z] + delta } } }
+            }
+            continue
+        }
+        if cmd == 117 { if !have_undo { say_error(st, "nothing to undo"); continue }; let t = items; let tc = cur; let tm = modified; items = undo_items; cur = undo_cur; modified = undo_modified; undo_items = t; undo_cur = tc; undo_modified = tm; continue }
+        if cmd == 119 || cmd == 87 {
+            let name = rest; while sys.length(name) > 0 && sys.at(name, 0) == 32 { name = sys.join2(sys.slice(name, 1, sys.length(name)), "") }
+            let quit_after = false
+            if sys.starts(name, "q") { quit_after = true; name = sys.join2(sys.slice(name, 1, sys.length(name)), ""); while sys.length(name) > 0 && sys.at(name, 0) == 32 { name = sys.join2(sys.slice(name, 1, sys.length(name)), "") } }
+            if sys.length(name) == 0 { name = default_name }
+            if sys.length(name) == 0 { say_error(st, "no current filename"); continue }
+            let b = sys.bytes_new(); for q in lo..(hi + 1) { sys.bytes_str(b, items[q - 1]); sys.bytes_push(b, 10) }
+            let fd = sys.open_fd(name, cmd == 87 ? 1089 : 577, 420)
+            if fd < 0 { say_error(st, "cannot open output file"); continue }
+            sys.write_fd(fd, sys.bdata(b), sys.blen(b)); sys.close_fd(fd)
+            if sys.length(default_name) == 0 { default_name = name }
+            if !quiet { sys.out_str(o, decimal(sys.blen(b))); sys.out_byte(o, 10) }
+            modified = false
+            if quit_after { sys.out_flush(o); return cg(st, 4) }
+            continue
+        }
+        if cmd == 101 || cmd == 69 || cmd == 114 {
+            let name = rest; while sys.length(name) > 0 && sys.at(name, 0) == 32 { name = sys.join2(sys.slice(name, 1, sys.length(name)), "") }
+            if sys.length(name) == 0 { name = default_name }
+            if cmd == 101 && modified && cg(st, 2) == 0 { cs(st, 2, 1); say_error(st, "warning: buffer modified"); continue }
+            if !sys.exists(name) { say_error(st, "cannot open input file"); continue }
+            let loaded = file_lines(name)
+            if cmd == 114 { undo_items = items; undo_cur = cur; have_undo = true; undo_modified = modified; let at = has_addr ? hi : total; items = splice(items, at, 0, loaded); cur = at + (loaded.len() as i64); modified = true }
+            else { items = loaded; cur = loaded.len() as i64; modified = false; default_name = name }
+            if !quiet { sys.out_str(o, decimal(byte_count(loaded, 0, loaded.len() as i64))); sys.out_byte(o, 10) }
+            cs(st, 2, 0); continue
+        }
+        if cmd == 102 { let name = rest; while sys.length(name) > 0 && sys.at(name, 0) == 32 { name = sys.join2(sys.slice(name, 1, sys.length(name)), "") }; if sys.length(name) > 0 { default_name = name } else { sys.out_str(o, default_name); sys.out_byte(o, 10) }; continue }
+        if cmd == 72 { cs(st, 3, 1 - cg(st, 3)); continue }
+        if cmd == 104 { continue }
+        if cmd == 113 || cmd == 81 {
+            if cmd == 113 && modified && cg(st, 2) == 0 { cs(st, 2, 1); say_error(st, "warning: buffer modified"); continue }
+            sys.out_flush(o); return cg(st, 4)
+        }
+        say_error(st, "unknown command")
+    }
+    sys.out_flush(o)
+    return cg(st, 4)
+}
+// A single command inside g/re/command (the commands that make sense there: p n l d s a i c j m t u).
+fn run_one(ed: Ed, text: str, o: *sys.Out, st: *i64, marks: *i64, last_re: *i64): Ed {
+    let items = ed.lines; let cur = ed.cur; let modified = ed.modified
+    let cmd = sys.length(text) > 0 ? sys.at(text, 0) : 112; let rest = sys.length(text) > 0 ? sys.join2(sys.slice(text, 1, sys.length(text)), "") : ""
+    if cmd == 112 || cmd == 110 || cmd == 108 { print_range(o, items, cur, cur, cmd == 110, cmd == 108); return Ed(items, cur, modified) }
+    if cmd == 100 { items = splice(items, cur - 1, 1, Vec<str>()); cur = cur > (items.len() as i64) ? (items.len() as i64) : cur; return Ed(items, cur, true) }
+    if cmd == 115 {
+        let parts = split_substitution(rest)
+        if parts.len() < 2 { return Ed(items, cur, modified) }
+        let flags = parts.len() > 2 ? parts[2] : ""
+        let re = re_ptr(cg(last_re, 0)); if sys.length(parts[0]) > 0 { re = rx.compile(parts[0], false, false) }
+        if rx.failed(re) || re_val(re) == 0 { return Ed(items, cur, modified) }
+        let r = substitute_line(re, parts[1], items[cur - 1], sys.find_char(flags, 103) >= 0, 0)
+        if r.changed { items[cur - 1] = r.text; if sys.find_char(flags, 112) >= 0 { print_range(o, items, cur, cur, false, false) }; return Ed(items, cur, true) }
+        return Ed(items, cur, modified)
+    }
+    if cmd == 106 { if cur < (items.len() as i64) { let joined = sys.join2(items[cur - 1], items[cur]); items = splice(items, cur - 1, 2, Vec<str>(joined)) }; return Ed(items, cur, true) }
+    return Ed(items, cur, modified)
+}
+// "/re/repl/flags" -> [re, repl, flags]; the delimiter is the first character.
+fn split_substitution(text: str): Vec<str> {
+    let out = Vec<str>(); let n = sys.length(text)
+    if n == 0 { return out }
+    let delim = sys.at(text, 0); let i = 1; let start = 1
+    while i < n && out.len() < 2 {
+        if sys.at(text, i) == 92 && i + 1 < n { i = i + 2; continue }
+        if sys.at(text, i) == delim { out.push(sys.join2(sys.slice(text, start, i), "")); start = i + 1 }
+        i = i + 1
+    }
+    if out.len() == 1 { out.push(sys.join2(sys.slice(text, start, n), "")); out.push(""); return out }
+    out.push(sys.join2(sys.slice(text, start, n), ""))
+    return out
+}
+fn split_global(text: str): Vec<str> {
+    let out = Vec<str>(); let n = sys.length(text)
+    if n == 0 { return out }
+    let delim = sys.at(text, 0); let i = 1
+    while i < n { if sys.at(text, i) == 92 && i + 1 < n { i = i + 2; continue }; if sys.at(text, i) == delim { break }; i = i + 1 }
+    out.push(sys.join2(sys.slice(text, 1, i > n ? n : i), "")); out.push(i < n ? sys.join2(sys.slice(text, i + 1, n), "") : "")
+    return out
+}
+struct Replaced { changed: bool, text: str }
+fn substitute_line(re: *i64, repl: str, text: str, global: bool, nth: i64): Replaced {
+    let b = buffer_of(text); let len = sys.length(text); let caps = rx.new_caps(re); let out = sys.bytes_new()
+    let from = 0; let copied = 0; let count = 0; let replaced = false; let previous_end = 0 - 1
+    while from <= len {
+        if !rx.search(re, sys.bdata(b), len, from, caps) { break }
+        let s = cg(caps, 0); let e = cg(caps, 1)
+        if s == e && s == previous_end { from = s + 1; continue }
+        count = count + 1
+        if nth == 0 || count >= nth {
+            for q in copied..s { sys.bytes_push(out, sys.bat(b, q)) }
+            sd.expand_replacement(out, repl, sys.bdata(b), caps)
+            copied = e; replaced = true
+            if !global { break }
+        }
+        previous_end = e; from = e > s ? e : e + 1
+    }
+    if !replaced { return Replaced(false, text) }
+    for q in copied..len { sys.bytes_push(out, sys.bat(b, q)) }
+    return Replaced(true, sys.join2(sys.bytes_cstr(out), ""))
+}
