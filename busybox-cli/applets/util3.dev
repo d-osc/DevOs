@@ -1,0 +1,120 @@
+# rpm2cpio, fuser, lsattr: package payloads, open files and file attributes.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "./gzip.dev" as gz
+
+extern fn ioctl(fd: i32, request: u64, argument: *void): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn be32(b: *sys.Bytes, off: i64): i64 { return (sys.bat(b, off) as i64) * 16777216 + (sys.bat(b, off + 1) as i64) * 65536 + (sys.bat(b, off + 2) as i64) * 256 + (sys.bat(b, off + 3) as i64) }
+
+// ---- rpm2cpio [PACKAGE.rpm] -------------------------------------------------------------------------------------------------------------------------------------------
+// Skips the lead and the signature and metadata headers; the rest is the (usually compressed) cpio archive.
+fn skip_header(b: *sys.Bytes, pos: i64): i64 {
+    if pos + 16 > sys.blen(b) || sys.bat(b, pos) != 142 || sys.bat(b, pos + 1) != 173 || sys.bat(b, pos + 2) != 232 { return 0 - 1 }
+    let entries = be32(b, pos + 8); let size = be32(b, pos + 12)
+    return pos + 16 + entries * 16 + size
+}
+fn run_rpm2cpio(args: Vec<str>): i64 {
+    let source = args.len() > 0 ? args[0] : "-"
+    let input = sys.read_path(source)
+    if !input.ok { sys.warn_path("rpm2cpio", source); return 1 }
+    let b = input.bytes
+    if sys.blen(b) < 96 || sys.bat(b, 0) != 237 || sys.bat(b, 1) != 171 || sys.bat(b, 2) != 238 || sys.bat(b, 3) != 219 { sys.warn("rpm2cpio", "invalid RPM file"); return 1 }
+    let pos = skip_header(b, 96)
+    if pos < 0 { sys.warn("rpm2cpio", "invalid RPM signature header"); return 1 }
+    pos = (pos + 7) / 8 * 8
+    pos = skip_header(b, pos)
+    if pos < 0 || pos >= sys.blen(b) { sys.warn("rpm2cpio", "invalid RPM header"); return 1 }
+    let payload = sys.bytes_new(); sys.bytes_append(payload, sys.bptr(b, pos), sys.blen(b) - pos)
+    let out = sys.out_new(1)
+    if sys.blen(payload) >= 2 && sys.bat(payload, 0) == 31 && sys.bat(payload, 1) == 139 {
+        let r = gz.decompress(payload)
+        if !r.ok { sys.warn("rpm2cpio", r.message); return 1 }
+        sys.out_data(out, sys.bdata(r.bytes), sys.blen(r.bytes))
+    } else if sys.blen(payload) >= 6 && sys.bat(payload, 0) == 48 && sys.bat(payload, 1) == 55 {
+        sys.out_data(out, sys.bdata(payload), sys.blen(payload))
+    } else { sys.warn("rpm2cpio", "unsupported payload compression (only gzip and uncompressed are available)"); return 1 }
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- fuser [-m] [-s] [-k] [-SIGNAL] FILE... ------------------------------------------------------------------------------------------------------------------------
+fn same_file(a: sys.Info, b: sys.Info): bool { return a.ok && b.ok && a.dev == b.dev && a.inode == b.inode }
+fn uses_file(pid: str, target: sys.Info, mount_mode: bool): bool {
+    let base = sys.join2("/proc/", pid)
+    for link in Vec<str>("/cwd", "/root", "/exe") {
+        let info = sys.file_info(sys.join2(base, link), true)
+        if mount_mode ? (info.ok && info.dev == target.dev) : same_file(info, target) { return true }
+    }
+    let l = fsx.list_dir(sys.join2(base, "/fd"))
+    if l.ok { for k in 0..(l.names.len() as i64) { let info = sys.file_info(sys.join2(sys.join2(base, "/fd/"), l.names[k]), true); if mount_mode ? (info.ok && info.dev == target.dev) : same_file(info, target) { return true } } }
+    return false
+}
+fn run_fuser(args: Vec<str>): i64 {
+    let signal = 0 - 1; let quiet = false; let mount_mode = false; let files = Vec<str>()
+    for k in 0..(args.len() as i64) {
+        let a = args[k]
+        if sys.same(a, "-s") { quiet = true } else if sys.same(a, "-m") { mount_mode = true } else if sys.same(a, "-k") { signal = 9 }
+        else if sys.length(a) > 1 && sys.at(a, 0) == 45 { let s = proc.parse_signal(sys.join2(sys.slice(a, 1, sys.length(a)), "")); if s > 0 { signal = s } else { sys.warn("fuser", sys.join2("unknown option ", a)); return 1 } }
+        else { files.push(a) }
+    }
+    if files.len() == 0 { sys.warn("fuser", "invalid usage: fuser [-msk] [-SIGNAL] FILE..."); return 1 }
+    let procs = fsx.list_dir("/proc"); let out = sys.out_new(1); let found_any = false; let me = proc.my_pid()
+    for f in 0..(files.len() as i64) {
+        let target = sys.file_info(files[f], true)
+        if !target.ok { sys.warn_path("fuser", files[f]); continue }
+        let pids = Vec<str>()
+        for k in 0..(procs.names.len() as i64) {
+            let pid = sys.parse_number(procs.names[k]); if !pid.ok || pid.value == me { continue }
+            if uses_file(procs.names[k], target, mount_mode) { pids.push(procs.names[k]) }
+        }
+        if pids.len() > 0 { found_any = true }
+        if !quiet && pids.len() > 0 { sys.put_fd(2, sys.join2(files[f], ":")); for q in 0..(pids.len() as i64) { sys.out_byte(out, 32); sys.out_str(out, pids[q]) } ; sys.out_byte(out, 10) }
+        if signal > 0 { for q in 0..(pids.len() as i64) { proc.send_signal(sys.parse_number(pids[q]).value, signal) } }
+    }
+    sys.out_flush(out)
+    return found_any ? 0 : 1
+}
+
+// ---- lsattr [-a] [FILE]... ----------------------------------------------------------------------------------------------------------------------------------------------------
+fn attribute_flags(path: str): i64 { unsafe {
+    let fd = sys.open_fd(path, 0, 0); if fd < 0 { return 0 - 1 }
+    let buffer = sys.calloc(8, 1) as *u8
+    let r = ioctl(fd as i32, 2148034049 as u64, buffer as *void)
+    let flags = r == 0 ? sys.le(buffer, 0, 8) : 0 - 1
+    sys.free(buffer as *void); sys.close_fd(fd)
+    return flags
+} }
+fn attribute_text(flags: i64): str {
+    let letters = Vec<u8>(115, 117, 83, 68, 105, 97, 100, 65, 99, 69, 106, 73, 116, 84, 101, 67, 120, 70, 78, 80, 86, 109)
+    let bits = Vec<i64>(1, 2, 8, 65536, 16, 32, 64, 128, 4, 2048, 16384, 4096, 32768, 131072, 524288, 8388608, 33554432, 1073741824, 268435456, 536870912, 1048576, 0)
+    let b = sys.bytes_new()
+    for k in 0..(letters.len() as i64) { sys.bytes_push(b, bits[k] > 0 && (flags / bits[k]) % 2 == 1 ? letters[k] : (45 as u8)) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_lsattr(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "Radvl")
+    if o.bad != 0 { sys.warn("lsattr", "invalid usage: lsattr [-Radv] [FILE]..."); return 1 }
+    let targets = o.rest; if targets.len() == 0 { targets.push(".") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(targets.len() as i64) {
+        let t = targets[k]
+        if sys.is_dir(t) && !sys.has(o, 100) {
+            let l = fsx.list_dir(t)
+            for q in 0..(l.names.len() as i64) {
+                if sys.at(l.names[q], 0) == 46 && !sys.has(o, 97) { continue }
+                let p = fsx.join_path(t, l.names[q]); let f = attribute_flags(p)
+                if f < 0 { sys.warn("lsattr", sys.join2(p, ": Operation not supported")); status = 1; continue }
+                sys.out_str(out, attribute_text(f)); sys.out_byte(out, 32); sys.out_str(out, p); sys.out_byte(out, 10)
+            }
+            continue
+        }
+        let f = attribute_flags(t)
+        if f < 0 { sys.warn("lsattr", sys.join2(t, ": Operation not supported")); status = 1; continue }
+        sys.out_str(out, attribute_text(f)); sys.out_byte(out, 32); sys.out_str(out, t); sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return status
+}

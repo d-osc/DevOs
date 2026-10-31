@@ -455,6 +455,20 @@ test.case("httpd telnet ftpget ftpput (against local peers)",fn() {
     test.expect(strings.contains(outcome(d, prep + "python3 " + ftpd + " 18814 srv & sleep 1; " + bb + " ftpget -P 18814 127.0.0.1 x.txt nosuch.txt; echo rc=$?; wait"), "rc=1"), "ftpget accepted a missing file")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("rpm2cpio fuser lsattr",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let make = "mkdir -p tree/usr/bin && printf 'payload\\n' > tree/usr/bin/tool && sh " + t.root() + "/tests/lib/make-rpm.sh pkg.rpm tree demo 1.0 gzip; "
+    test.expect(strings.contains(outcome(d, make + bb + " rpm2cpio pkg.rpm | cpio -t 2>/dev/null"), "usr/bin/tool"), "rpm2cpio did not produce the payload:\n" + outcome(d, make + bb + " rpm2cpio pkg.rpm | cpio -t"))
+    test.expect(strings.contains(outcome(d, make + bb + " rpm2cpio pkg.rpm | cpio -i --to-stdout usr/bin/tool 2>/dev/null"), "payload"), "rpm2cpio payload content differs")
+    test.expect(strings.contains(outcome(d, make + "sh " + t.root() + "/tests/lib/make-rpm.sh none.rpm tree demo 1.0 none; " + bb + " rpm2cpio none.rpm | cpio -t 2>/dev/null"), "usr/bin/tool"), "rpm2cpio of an uncompressed payload")
+    test.expect(strings.contains(outcome(d, bb + " rpm2cpio a.txt; echo rc=$?"), "rc=1"), "rpm2cpio accepted a text file")
+    test.expect(strings.contains(outcome(d, "sleep 20 < a.txt & sleep 1; " + bb + " fuser a.txt; echo rc=$?; kill %1"), "rc=0"), "fuser found no user of an open file")
+    test.expect(strings.contains(outcome(d, bb + " fuser b.txt; echo rc=$?"), "rc=1"), "fuser reported a user of an unused file")
+    test.expect(strings.equal(outcome(d, bb + " fuser -s b.txt; echo rc=$?"), "rc=1\nrc=0\n"), "fuser -s output")
+    all_same(d, Vec<str>("@lsattr a.txt","@lsattr -d dir","@lsattr nosuch 2>/dev/null; echo rc=$?"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
