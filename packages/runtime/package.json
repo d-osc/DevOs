@@ -11,14 +11,6 @@
       "types": "./dist/native-launcher.d.ts",
       "import": "./dist/native-launcher.js"
     },
-    "./lid": {
-      "types": "./dist/lid.d.ts",
-      "import": "./dist/lid.js"
-    },
-    "./lock": {
-      "types": "./dist/lock.d.ts",
-      "import": "./dist/lock.js"
-    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -34,10 +26,6 @@
     "./session-version": {
       "types": "./dist/session-version.d.ts",
       "import": "./dist/session-version.js"
-    },
-    "./sleep": {
-      "types": "./dist/sleep.d.ts",
-      "import": "./dist/sleep.js"
     }
   },
   "files": [

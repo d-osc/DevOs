@@ -61,12 +61,6 @@
       "@dev-os/config/*": [
         "./packages/config/*"
       ],
-      "@dev-os/shell": [
-        "./packages/shell/index.ts"
-      ],
-      "@dev-os/shell/*": [
-        "./packages/shell/*"
-      ],
       "@dev-os/supervisor": [
         "./packages/supervisor/index.ts"
       ],

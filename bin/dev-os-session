@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; else root="$base/share/dev-os"; fi
+if [ -f "$base/src/system/command.dev" ]; then root=$base; else root="$base/share/dev-os"; fi
 mode=native
 check=no
 for argument in "$@"; do

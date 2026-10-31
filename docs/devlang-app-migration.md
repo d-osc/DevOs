@@ -569,16 +569,16 @@ Differences from the JS Files, on purpose: no right-click menu or drag and drop 
 Verified: `tests/files-native.test.dev` (10/10): the start folder and the settings flags, the search ranking and exclusions, the install checks and the shell commands that reach the shell, custom action argument splitting, plus the window under Xvfb browsing into a folder and creating one, and searching, opening a result and the opener getting its path. A screenshot of the grid view under a headless labwc was checked by eye. Not verified: a real session, the real installer and terminal hand-off, and the GJS tests that were edited (they cannot run here; `tsc` and the build pass).
 
 
-## Shell (native, opt-in)
+## Shell (native)
 
 `src/system/org.devos.shell/` is the DevLang shell that will replace `packages/shell` (GJS). `native.devx` is a program with no window (`RD_HIDDEN=1` in `gtk.c`: the window is never shown and the control call carries the caller's folder first) that owns the shell's D-Bus name (`org.devos.Shell.s<hash>`) and answers `org.devos.Shell.Control.Execute`, so `dev-os-shell <command>`, the native apps and the JS apps keep talking to it unchanged. `router.dev` holds the command rules (`handleArguments` and `appForCommand` of the old shell), and `service.dev` carries them out: a running app is asked over D-Bus, a missing one is started (`dist/native/<app>`, else the JS app host), the Launcher, Task View and Snap are opened or closed, `terminal`, `files` and `lock` follow the config, messages go out as the `org.devos.Panel` signal, and `session.quit` ends the program. Tests: `tests/shell-native.test.dev` (router, worker log, and the program on a private D-Bus under Xvfb).
 
 
 Also fixed on the way: the Launcher worker did not load `libsupervisor.so`, so its Settings, Files, Terminal, Lock and Log out buttons failed with a missing native symbol on a real system; `sp.linkWith` passes the library and a test covers it.
 
-Opt in with `DEVOS_NATIVE_SHELL=1` or `mkdir -p ~/.config/devos && touch ~/.config/devos/native-shell`; `bin/dev-os-shell` then starts `dist/native/shell` instead of GJS (without the binary nothing changes). It now also does what the GJS shell did besides routing: the window gestures (`gestures.dev`: the tracker is asked for the windows and sent `activate <id>`), the Theme choice (`theme.dev`: the Theme extension's saved mode, family and Auto schedule pick `dist/native/theme.<family>.<name>.css`, copied to `$XDG_RUNTIME_DIR/devos-native-theme.css` at start, every 5 seconds and on `reload`, so native windows switch dark/light by themselves), and `reload` (re-applies the theme). `screenshot` and `screenshot-app` launch the Screenshot app exactly as before, and the Icons extension is loaded by each JS app host, not by the shell, so neither needs anything here. Not carried over: user extensions (dropped by decision), the restore-order memory of minimized windows (`window-restore` brings back the highest-id minimized window instead of the most recently minimized), and the unused `devos-memory-policy.json` the GJS shell wrote (nothing reads it).
+The opt-in switch described here was removed: see "Shell: the default, and packages/shell removed" below.
 
-**Why `packages/shell` is still there.** `src/app-host.ts` creates a `DesktopShell` for every JS app process (Screenshot, Camera, Microphone, the JS Settings, App Store, Terminal, Browser and Editor roles that have no native default, and the app settings pages), so the class is the base of every JS app that still runs. It can be deleted only together with `app-host.ts`, `src/main.ts` and the last JS app (stage 5 of `docs/gjs-removal-plan.md`); the native shell above only replaces it as the desktop's shell process. Not verified on a real session.
+**Why `packages/shell` was still there.** (Resolved below.)
 
 ## Terminal: no TypeScript left
 
@@ -597,3 +597,18 @@ Decision (the owner, 2026-10-31): go through the JS apps one by one and make the
 ## Editor: the native window is the default
 
 `src/apps/org.devos.editor` keeps DevLang, `extension.json` (`"native": "editor"`), `protocol.ts` and `browser/index.tsx`: the last two are the page that runs *inside* the native window's WebKit view (the Monaco bundle `dist/editor`, built by `tools/build/build.ts`), not GJS code. Deleted: `extension.tsx`, `surface.ts`, `document.*`, `assets.*`, `associations.ts`, `file-icons.ts`, the two `editor/*` service entries, `tests/live-editor.test.ts`, `tests/app-service-client.test.ts` (it only exercised the Editor document and Media services) and the file-association test of `extensions.test.ts`. The shell now always starts `dist/native/editor`; only Browser and App Store are still opt-in. editor-native 1, extensions-native 4, settings-native 8, shell-native 7, supervisor-native 15, taskmanager-native 11 pass; `tsc` (also the tools and editor projects) and `npm run build` pass. Not verified on a real session.
+
+
+## Browser, App Store, Screenshot: native by default; the JS shell is gone
+
+Decision (the owner, 2026-10-31, "ยอม ทำเลย"): the native Browser has no tabs, downloads or inspector, and the native App Store has no package preview or Extensions tab; the JS versions are deleted. Screenshot is new in DevLang: `src/apps/org.devos.screenshot/service.dev` (grim, slurp, wl-copy; saves to a private `~/Pictures/Screenshots`) and a small window (`native.devx`) with a delay and "Capture an area / the screen / Open screenshots". There is no freeform mode, no frozen-frame overlay, no pen/highlighter editor and no toast. Win+Shift+S (`screenshot`) is run by the shell worker without a window; `screenshot-app` opens the window. Tests: `tests/screenshot-native.test.dev`.
+
+## Shell: the default, and packages/shell removed
+
+`bin/dev-os-shell` now starts `dist/native/shell` (no opt-in, no GJS fallback; the client commands to a running shell are unchanged). Removed: `packages/shell`, `src/main.ts`, `src/app-host.ts`, `src/services/services-host.ts` and the app service host, `packages/runtime/{lock,lock-background,sleep,lid,app-service,app-channel}.ts` and their tests, and the `@dev-os/shell` path and compat entry. What `services-host` did is now DevLang (`src/system/org.devos.shell/`):
+
+- `lock.dev`: `dev-os-shell lock` starts swaylock with the theme colors (same arguments as before) and answers once the lock surface is ready. **Differences:** a plain background color instead of the generated wallpaper image.
+- `guard.dev` + `services.dev`: the supervisor starts `services.dev`, which runs three guards in its own process group (flock keeps one copy of each): `sleep` (a logind delay lock through `systemd-inhibit`, `gdbus monitor` for PrepareForSleep, `dev-os-shell lock`, release), `lid` (polls LidClosed with busctl each second; lock, then `wlopm` off for eDP/LVDS/DSI outputs; never suspends) and `updates` (hourly `checkDue` of the Updates worker: only when "check periodically" is on and the last check is older than a day). Tests with stand-in tools: `tests/shell-native.test.dev`.
+- `DEV_OS_SERVICES_HOST` still replaces the services command for the supervisor tests.
+
+Not verified on a real session: logind (the sleep and lid guards need systemd-inhibit, gdbus and busctl), swaylock readiness, the supervisor starting `services.dev`, and the native shell as the only shell. The theme and icons JS extensions (`src/apps/org.devos.theme/extension.ts`, `org.devos.icons`), `packages/{core,extensions,services,updates,supervisor}` and `src/legacy` are still compiled but no longer have a host; removing them is the next step.

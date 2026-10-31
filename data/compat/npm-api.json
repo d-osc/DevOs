@@ -103,14 +103,6 @@
           "types": "./dist/processes.d.ts",
           "import": "./dist/processes.js"
         },
-        "./lid": {
-          "types": "./dist/lid.d.ts",
-          "import": "./dist/lid.js"
-        },
-        "./lock": {
-          "types": "./dist/lock.d.ts",
-          "import": "./dist/lock.js"
-        },
         ".": {
           "types": "./dist/index.d.ts",
           "import": "./dist/index.js"
@@ -126,18 +118,6 @@
         "./session-version": {
           "types": "./dist/session-version.d.ts",
           "import": "./dist/session-version.js"
-        },
-        "./sleep": {
-          "types": "./dist/sleep.d.ts",
-          "import": "./dist/sleep.js"
-        },
-        "./app-service": {
-          "types": "./dist/app-service.d.ts",
-          "import": "./dist/app-service.js"
-        },
-        "./app-channel": {
-          "types": "./dist/app-channel.d.ts",
-          "import": "./dist/app-channel.js"
         }
       }
     },
@@ -172,16 +152,6 @@
         "./windows": {
           "types": "./dist/windows.d.ts",
           "import": "./dist/windows.js"
-        }
-      }
-    },
-    {
-      "directory": "packages/shell",
-      "name": "@dev-os/shell",
-      "exports": {
-        ".": {
-          "types": "./dist/index.d.ts",
-          "import": "./dist/index.js"
         }
       }
     },

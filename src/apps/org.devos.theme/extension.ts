@@ -2,7 +2,6 @@ import {
     React, Gtk, GLib, type UIExtension, readText, resolveTheme, msUntilSwitch, setActiveTheme, themeStyle, type ThemeName, type ThemeFamily
 } from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {logindSleep} from '@dev-os/runtime/sleep';
 import {themeOptions} from './options.js';
 import {ThemeSettingsPage} from './settings-view.js';
 
@@ -46,12 +45,10 @@ export default {id: 'org.devos.theme', activate(context) {
     readStyle(); update();
     context.onReload(() => { readStyle(); update(); });
     const unsubscribe = context.preferences.subscribe(update);
-    let stopSleep = () => {};
-    try { stopSleep = logindSleep.watch(sleeping => { if (!sleeping) update(); }); } catch { /* No system bus (WSL, containers): the poll still covers resume. */ }
     context.registerSettingsPage?.('org.devos.theme', () => React.createElement(ThemeSettingsPage, {preferences: context.preferences}));
     return () => {
         disposed = true; if (timer) GLib.source_remove(timer);
-        unsubscribe(); stopSleep();
+        unsubscribe();
         gtkSettings.gtk_application_prefer_dark_theme = previousDark;
         if (provider) Gtk.StyleContext.remove_provider_for_screen(screen, provider);
     };

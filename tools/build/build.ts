@@ -67,8 +67,8 @@ function uiEntries(): Record<string, string> {
             if (manifest.kind !== 'ui' || manifest.native) continue;
             if (manifest.id !== directory.name) throw new Error('UI package folder must match manifest ID');
             const key = manifest.entry!.slice(0, -3);
-            if (reservedRuntimeEntry(manifest.entry!) || ['app-host', 'app-service-host', 'services-host', 'react-gtk', 'core', 'extensions', 'updates', 'panel-view', 'launcher-view', 'background-view', 'react-demo', 'renderer-test',
-                'desktop-ui-test', 'supervisor-test', 'view-test', 'core-test', 'lock-test', 'performance-test', 'main', 'supervisor', 'config-test', 'extensions-test', 'updates-test', 'updates-live-test', 'store-test', 'version-request-test'].includes(key))
+            if (reservedRuntimeEntry(manifest.entry!) || ['app-host', 'app-service-host', 'react-gtk', 'core', 'extensions', 'updates', 'panel-view', 'launcher-view', 'background-view', 'react-demo', 'renderer-test',
+                'desktop-ui-test', 'view-test', 'core-test', 'performance-test', 'supervisor', 'extensions-test', 'updates-test', 'updates-live-test', 'store-test', 'version-request-test'].includes(key))
                 throw new Error(`UI entry conflicts with base output ${manifest.entry}`);
             if (entries[key]) throw new Error(`Duplicate UI entry ${manifest.entry}`);
             const source = `${folder}/${manifest.id}/extension`;
@@ -100,17 +100,16 @@ const options: BuildOptions = {
     absWorkingDir: root,
     entryPoints: {...libraryEntries(), ...uiEntries(), 'react-gtk': 'packages/core/compat.ts',
         
-        'services-host': 'src/services/services-host.ts',
 
         'window-shape-test': 'tests/window-shape.test.ts', 'window-buffer-test': 'tests/window-buffer.test.tsx',
         'power-loading-test': 'tests/power-loading.test.ts',
         'native-action-test': 'tests/native-action.test.ts',
-        'process-isolation-test': 'tests/process-isolation.test.ts',
+       
         
         
-        'lid-test': 'tests/lid.test.ts', 'react-demo': 'examples/Counter.tsx', 'desktop-animation-native-test': 'tests/desktop-animation-native.test.ts',
-        'touchpad-live-test': 'tests/touchpad-live.test.ts', 'task-view-native-test': 'tests/task-view-native.test.ts', 'icons-settings-test': 'tests/icons-settings.test.tsx', 'devos-icon-test': 'tests/devos-icon.test.ts', 'fa-icons-test': 'tests/fa-icons.test.tsx', 'theme-settings-test': 'tests/theme-settings.test.tsx', 'theme-test': 'tests/theme.test.ts', 'theme-css-test': 'tests/theme-css.test.ts', 'clock-settings-test': 'tests/clock-settings.test.tsx', 'lock-test': 'tests/lock.test.ts', 'sleep-test': 'tests/sleep.test.ts', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'performance-test': 'tests/performance.test.tsx',
-        main: 'src/main.ts', supervisor: 'packages/supervisor/entry.ts', 'config-test': 'tests/config.test.ts',
+        'react-demo': 'examples/Counter.tsx', 'desktop-animation-native-test': 'tests/desktop-animation-native.test.ts',
+        'touchpad-live-test': 'tests/touchpad-live.test.ts', 'task-view-native-test': 'tests/task-view-native.test.ts', 'icons-settings-test': 'tests/icons-settings.test.tsx', 'devos-icon-test': 'tests/devos-icon.test.ts', 'fa-icons-test': 'tests/fa-icons.test.tsx', 'theme-settings-test': 'tests/theme-settings.test.tsx', 'theme-test': 'tests/theme.test.ts', 'theme-css-test': 'tests/theme-css.test.ts', 'clock-settings-test': 'tests/clock-settings.test.tsx', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'performance-test': 'tests/performance.test.tsx',
+        supervisor: 'packages/supervisor/entry.ts',
         'extensions-test': 'tests/extensions.test.ts', 'updates-test': 'tests/updates.test.ts', 'updates-live-test': 'tests/updates-live.test.ts', 'store-test': 'tests/store.test.ts', 'version-request-test': 'tests/version-request.test.ts', 'updates-patch-test': 'tests/updates-patch.test.ts', 'update-package-test': 'tests/update-package.test.ts', 'make-patch': 'packages/updates/make-patch.ts', 'make-system-bundle': 'packages/updates/make-system-bundle.ts', 'system-update-test': 'tests/system-update.test.ts', },
     // Desktop UI tests use the same external React runtime as every view.
     outdir: resolve(root, 'dist'), bundle: true, splitting: true, format: 'esm', platform: 'neutral',

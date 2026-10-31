@@ -131,7 +131,7 @@ async function main() {
                 await actual.check(); await actual.install();
                 assert(actual.state.status === 'ready', actual.state.error || 'Packaged release installed');
                 const doctor = run(['sh', `${ROOT}/bin/dev-os-updated-session`, '--check'], {XDG_DATA_HOME: packagedData, XDG_CONFIG_HOME: `${base}/packaged-config`});
-                assert(doctor.includes('OK: react_bundle') && doctor.includes('OK: window_tracker') && doctor.includes('OK: editor_assets'), doctor);
+                assert(doctor.includes('OK: native_apps') && doctor.includes('OK: window_tracker') && doctor.includes('OK: editor_assets'), doctor);
                 print('PASS: release packager artifact installs and its real updated session passes the dependency doctor');
             } finally { actual.dispose(); }
         }

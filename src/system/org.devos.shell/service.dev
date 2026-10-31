@@ -15,6 +15,7 @@ use "../../../lib/shell-command.dev" as shell
 use "./router.dev" as router
 use "./gestures.dev" as gestures
 use "./theme.dev" as theme
+use "./lock.dev" as locker
 use "../../../lib/ext-prefs.dev" as prefs
 use "../../services/window-state.dev" as tracking
 
@@ -46,8 +47,8 @@ fn launch(role:str, command:str, path:str) {
     if !strings.equal(path,"") { args.push(path) }
     let background = strings.equal(command,"settings.background")
     let panel = strings.equal(command,"settings.panel")
-    let name = background ? "backgroundsettings" : panel ? "panelsettings" : strings.equal(role,"services") ? "services" : role
-    let id = strings.equal(role,"services") ? strings.replaceAll(shellId(),"org.devos.Shell.","org.devos.Services.") : identity(name)
+    let name = background ? "backgroundsettings" : panel ? "panelsettings" : role
+    let id = identity(name)
     note("launch " + role + " " + strings.join(args," "))
     if testing() { return }
     let status = shell.remoteTo(id,args,"/")
@@ -57,18 +58,16 @@ fn launch(role:str, command:str, path:str) {
     if background { executable = "background-settings" }
     else if panel { executable = "panel-settings" }
     else if shellRoleIs(nativeRoles(),role) { executable = role }
+    if strings.equal(executable,"") { say(command + ": there is no app for " + role); return }
     let extra = Vec<str>()
     let argv = Vec<str>()
-    if !strings.equal(executable,"") {
-        let native = root() + "/dist/native/" + executable
-        if !isExecutable(native) { say("Native " + executable + " is missing. Run sh tools/build/native-apps.sh."); return }
-        extra.push("DEV_OS_NATIVE_ID=" + id); extra.push("DEV_OS_SHELL_ID=" + shellId())
-        if background { extra.push("DEVOS_BACKGROUND_ROLE=settings") }
-        if panel { extra.push("DEVOS_PANEL_ROLE=settings") }
-        for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
-        argv.push(native)
-    } else if strings.equal(role,"services") { argv.push("gjs"); argv.push("-m"); argv.push(root() + "/dist/services-host.js") }
-    else { argv.push("gjs"); argv.push("-m"); argv.push(root() + "/dist/app-host.js"); argv.push(role) }
+    let native = root() + "/dist/native/" + executable
+    if !isExecutable(native) { say("Native " + executable + " is missing. Run sh tools/build/native-apps.sh."); return }
+    extra.push("DEV_OS_NATIVE_ID=" + id); extra.push("DEV_OS_SHELL_ID=" + shellId())
+    if background { extra.push("DEVOS_BACKGROUND_ROLE=settings") }
+    if panel { extra.push("DEVOS_PANEL_ROLE=settings") }
+    for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
+    argv.push(native)
     for item in args { argv.push(item) }
     spawn(argv,extra)
 }
@@ -114,10 +113,14 @@ fn runCommand(command:str, folder:str):bool {
     }
     let args = configured(command)
     if args.len() == 0 { return false }
-    if strings.equal(command,"lock") {
-        let program = args.len() == 1 && strings.equal(args[0],"dev-os-lock") ? "swaylock" : args[0]
-        if !testing() && strings.equal(hw.which(program),"") { say("Install " + program + " or change 'lock' in config.json."); return false }
-        launch("services","lock",""); return true
+    if strings.equal(command,"lock") && args.len() == 1 && strings.equal(args[0],"dev-os-lock") {
+        # The answer comes once the lock surface is up, so `dev-os-shell lock` is a safe step before sleeping or switching the screen off.
+        note("lock")
+        if testing() { return true }
+        let choice = theme.choice(themeValues())
+        let problem = locker.lock(hw.which(hw.envOr("DEVOS_SHELL_SWAYLOCK","swaylock")),root(),choice.family,theme.resolve(choice,clock()))
+        if !strings.equal(problem,"") { say(problem); return false }
+        return true
     }
     if args.len() == 1 && (strings.equal(args[0],"dev-os-terminal") || strings.equal(args[0],"foot")) { launch("terminal","terminal.native",folder); return true }
     if !testing() && strings.equal(hw.which(args[0]),"") { say("Install " + args[0] + " or change '" + command + "' in config.json."); return false }

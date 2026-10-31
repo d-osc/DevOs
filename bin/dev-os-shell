@@ -5,12 +5,11 @@ if [ "${1:-}" = drivers ]; then
     exec d "$(dirname -- "$0")/dev-os-drivers" -- "$@"
 fi
 base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; else root="$base/share/dev-os"; fi
+if [ -f "$base/src/system/command.dev" ]; then root=$base; else root="$base/share/dev-os"; fi
 export DEV_OS_ROOT="$root"
 . "$base/bin/dev-os-runtime-env"
 export GDK_BACKEND=wayland
-# Metadata and commands to an existing desktop do not load GJS/GTK/React.
-# GUI startup remains on its current route until native surfaces have parity.
+# Metadata and commands to an existing desktop go through the DevLang client; only starting the shell itself reaches the native shell below.
 native_client=no
 if [ -r "$root/src/system/command.dev" ]; then
     case "${1:-shell}" in
@@ -31,15 +30,14 @@ if [ "$native_client" = yes ]; then
         exit "$status"
     fi
 fi
-# The native shell (DevLang, dist/native/shell) is opt-in until it has been tried on a real session: DEVOS_NATIVE_SHELL=1 or a file at ~/.config/devos/native-shell.
-if [ "${1:-shell}" = shell ] && [ -x "$root/dist/native/shell" ] && { [ "${DEVOS_NATIVE_SHELL:-}" = 1 ] || [ -e "${XDG_CONFIG_HOME:-$HOME/.config}/devos/native-shell" ]; }; then
-    id=$(printf "%s" "${XDG_RUNTIME_DIR:-}/${WAYLAND_DISPLAY:-default}" | sha256sum | cut -c1-16)
-    DEV_OS_NATIVE_ID="org.devos.Shell.s$id"
-    export DEV_OS_NATIVE_ID
-    exec "$root/dist/native/shell"
-fi
-if [ ! -f "$root/dist/main.js" ]; then
-    printf '%s\n' 'TypeScript build missing. Run npm ci and npm run build.' >&2
+# Hiding an absent overview, or a window gesture with no desktop running, must not start one.
+case "${1:-shell}" in task-view-hide|overlays-hide|window-next|window-previous|window-restore) exit 0 ;; esac
+# The shell is the DevLang program dist/native/shell: it owns the shell's D-Bus name without a window and starts the native apps.
+if [ ! -x "$root/dist/native/shell" ]; then
+    printf '%s\n' 'Native shell missing. Run sh tools/build/native-apps.sh.' >&2
     exit 1
 fi
-exec gjs -m "$root/dist/main.js" "$@"
+id=$(printf "%s" "${XDG_RUNTIME_DIR:-}/${WAYLAND_DISPLAY:-default}" | sha256sum | cut -c1-16)
+DEV_OS_NATIVE_ID="org.devos.Shell.s$id"
+export DEV_OS_NATIVE_ID
+exec "$root/dist/native/shell"

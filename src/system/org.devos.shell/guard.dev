@@ -1,0 +1,113 @@
+#!/usr/bin/env d
+# The background guards of the native shell, one process per job (DEVOS_GUARD), started by the shell and kept apart so a busy or restarted shell never
+# disables them. They stand in for services-host of the GJS shell:
+#   sleep    locks the screen before the system sleeps: a logind delay lock is held, and when PrepareForSleep(true) arrives `dev-os-shell lock` runs
+#            (it answers once the lock surface is up) and the delay lock is released. Without logind (WSL, minimal systems) it ends quietly.
+#   lid      polls LidClosed: closing locks the session, then switches the internal outputs off (wlopm); opening switches them on. Never suspends.
+#   updates  once an hour, when "check periodically" is on in the Updates settings, checks for a release if the last check is older than a day.
+# Test hooks (only with DEVOS_GUARD_TEST=1): DEVOS_GUARD_LOG, DEVOS_GUARD_SHELL (the command that stands in for dev-os-shell), DEVOS_GUARD_LID (a file with
+# "true" or "false"), DEVOS_GUARD_WLOPM, DEVOS_GUARD_PASSES (stop after this many passes).
+use "std/fs"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/posix.dev" as posix
+
+fn testing():bool { return !strings.equal(hw.env("DEVOS_GUARD_TEST"),"") }
+fn hook(name:str):str { return testing() ? hw.env(name) : "" }
+fn root():str { return hw.envOr("DEV_OS_ROOT",".") }
+fn note(line:str) { if !strings.equal(hook("DEVOS_GUARD_LOG"),"") { fs.appendFileSync(hook("DEVOS_GUARD_LOG"),line + "\n") } }
+fn passes():i64 { return hw.toInt(hook("DEVOS_GUARD_PASSES"),0) }
+fn shellCommand():str {
+    if !strings.equal(hook("DEVOS_GUARD_SHELL"),"") { return hook("DEVOS_GUARD_SHELL") }
+    let found = hw.which("dev-os-shell")
+    return strings.equal(found,"") ? root() + "/bin/dev-os-shell" : found
+}
+# `dev-os-shell lock`: true once the session is locked.
+fn lock():bool {
+    note("lock")
+    return hw.run(Vec<str>("sh","-c","exec \"$1\" lock","sh",shellCommand()),15000).code == 0
+}
+
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
+# One pass of the sleep watcher: waits for PrepareForSleep(<state>) on logind, then runs <command> lock and stops watching. Blocks as long as it takes.
+fn watchScript(state:str, command:str):str {
+    return "f=$(mktemp -u); mkfifo \"$f\" || exit 0; gdbus monitor --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 > \"$f\" & g=$!; while IFS= read -r line; do case \"$line\" in *PrepareForSleep*" + state + "*) " + command + "; break;; esac; done < \"$f\"; kill $g 2>/dev/null; rm -f \"$f\""
+}
+fn sleepGuard() {
+    if strings.equal(hw.which("systemd-inhibit"),"") || strings.equal(hw.which("gdbus"),"") { note("sleep: no logind tools"); return }
+    # Phase 1 holds a logind delay lock until the sleep announcement, locks, and ends (which releases the lock); phase 2 waits for the wake-up.
+    let count = 0
+    while true {
+        let held = posix.shell("systemd-inhibit --what=sleep --mode=delay --who='Dev OS' --why='Lock the screen before the system sleeps' sh -c " + quote(watchScript("true",quote(shellCommand()) + " lock")))
+        if held != 0 && count == 0 { note("sleep: could not take the delay lock"); return }
+        posix.shell("sh -c " + quote(watchScript("false",":")))
+        count = count + 1
+        if passes() > 0 && count >= passes() { return }
+    }
+}
+
+fn internalOutputs(listing:str):Vec<str> {
+    let out = Vec<str>()
+    for line in strings.split(listing,"\n") {
+        let name = strings.split(strings.split(strings.trim(line)," ")[0],":")[0]
+        if strings.startsWith(name,"eDP-") || strings.startsWith(name,"LVDS-") || strings.startsWith(name,"DSI-") { out.push(name) }
+    }
+    return out
+}
+fn lidClosed():str {
+    if !strings.equal(hook("DEVOS_GUARD_LID"),"") { return fs.existsSync(hook("DEVOS_GUARD_LID")) ? strings.trim(fs.readFileSync(hook("DEVOS_GUARD_LID"),"utf8")) : "false" }
+    if strings.equal(hw.which("busctl"),"") { return "" }
+    let ran = hw.run(Vec<str>("busctl","--system","get-property","org.freedesktop.login1","/org/freedesktop/login1","org.freedesktop.login1.Manager","LidClosed"),3000)
+    if ran.code != 0 { return "" }
+    return strings.contains(ran.out,"true") ? "true" : "false"
+}
+fn power(on:bool) {
+    let wlopm = strings.equal(hook("DEVOS_GUARD_WLOPM"),"") ? "wlopm" : hook("DEVOS_GUARD_WLOPM")
+    if strings.equal(hook("DEVOS_GUARD_WLOPM"),"") && strings.equal(hw.which("wlopm"),"") { return }
+    let outputs = internalOutputs(hw.run(Vec<str>(wlopm),5000).out)
+    if outputs.len() == 0 { return }
+    let argv = Vec<str>(wlopm)
+    for name in outputs { argv.push(on ? "--on" : "--off"); argv.push(name) }
+    hw.run(argv,5000)
+    note("power " + (on ? "on" : "off") + " " + strings.join(outputs," "))
+}
+fn lidGuard() {
+    let previous = ""
+    let count = 0
+    while true {
+        let now = lidClosed()
+        if !strings.equal(now,"") && !strings.equal(now,previous) {
+            let first = strings.equal(previous,"")
+            previous = now
+            if !(first && strings.equal(now,"false")) {
+                # Secure first, then the panel power; if the session could not be locked the screen stays on.
+                if strings.equal(now,"true") { if lock() { power(false) } else { hw.stderr("Dev OS: lid display control: could not secure the screen") } }
+                else { power(true) }
+            }
+        }
+        count = count + 1
+        if passes() > 0 && count >= passes() { return }
+        hw.sleepSeconds(1.0)
+    }
+}
+
+fn updateGuard() {
+    let count = 0
+    while true {
+        let request = "{\"action\":\"checkDue\"}\n"
+        note("updates check")
+        if !testing() { hw.runInput(Vec<str>("d",root() + "/src/apps/org.devos.updates/service.dev","--",root()),request,600000) }
+        count = count + 1
+        if passes() > 0 && count >= passes() { return }
+        hw.sleepSeconds(3600.0)
+    }
+}
+fn main():i32 {
+    let job = hw.env("DEVOS_GUARD")
+    if strings.equal(job,"sleep") { sleepGuard() }
+    else if strings.equal(job,"lid") { lidGuard() }
+    else if strings.equal(job,"updates") { updateGuard() }
+    else { hw.stderr("DEVOS_GUARD must be sleep, lid or updates"); return 2 }
+    return 0
+}
+return main()

@@ -240,6 +240,14 @@ fn handle(root:str, manifest:json.Value, line:str):str {
     let action = text(request,"action","")
     if strings.equal(action,"state") { return frame(root,manifest,idle()) }
     if strings.equal(action,"check") { return frame(root,manifest,check(root,manifest)) }
+    if strings.equal(action,"checkDue") {
+        # The optional background check: only when "check periodically" is on and the last check is older than a day.
+        let values = json.get(prefs.read(prefsDirectory(),"org.devos.updates",manifest),"values")
+        let stamp = updateRoot() + "/last-check.json"
+        let recent = fs.existsSync(stamp) && strings.equal(strings.trim(hw.run(Vec<str>("find",stamp,"-mmin","-1440"),5000).out),stamp)
+        if !flag(values,"periodicCheck",false) || recent { return frame(root,manifest,idle()) }
+        return frame(root,manifest,check(root,manifest))
+    }
     if strings.equal(action,"source") {
         let repo = text(request,"repository","")
         if !proto.validRepository(repo) { return failure("Use a GitHub repository in owner/repo format.") }

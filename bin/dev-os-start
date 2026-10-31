@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-if [ -f "$base/src/main.ts" ] || [ -f "$base/dist/main.js" ]; then root=$base; else root="$base/share/dev-os"; fi
+if [ -f "$base/src/system/command.dev" ]; then root=$base; else root="$base/share/dev-os"; fi
 export DEV_OS_ROOT="$root"
 export DEV_OS_SHELL="$base/bin/dev-os-shell"
 . "$base/bin/dev-os-runtime-env"
@@ -20,7 +20,7 @@ if [ -x "$splash_window" ] && command -v devos-splash >/dev/null 2>&1; then
     esac
 fi
 if [ "${DEV_OS_LOGIN:-0}" = 1 ]; then
-    gjs -m "$root/dist/login.js"
+    if [ -x "$root/dist/native/login-preview" ]; then "$root/dist/native/login-preview" || true; fi
 fi
 # Run the DevLang supervisor directly in the same systemd app scope.
 uid=$(id -u)

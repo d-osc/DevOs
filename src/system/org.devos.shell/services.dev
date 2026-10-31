@@ -1,0 +1,28 @@
+#!/usr/bin/env d
+# The background services of a session, started by the supervisor next to the shell (it replaces services-host of the GJS shell). It runs the guards of
+# guard.dev (lock before sleep, lock and screen-off on a closed lid, the optional update check) in its own process group, so the supervisor's signal ends
+# them with it, and never exits by itself: a services process that ended would be restarted, and a crash loop ends the session.
+# flock keeps a restarted services process from starting a second copy of a guard that is still running.
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/posix.dev" as posix
+
+fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\''") + "'" }
+fn guards(root:str, runtime:str, lockOnSleep:bool, haveFlock:bool):str {
+    let jobs = Vec<str>()
+    for job in Vec<str>("sleep","lid","updates") {
+        if strings.equal(job,"sleep") && !lockOnSleep { continue }
+        let prefix = haveFlock ? "flock -n " + quote(runtime + "/devos-guard-" + job + ".lock") + " " : ""
+        jobs.push(prefix + "env DEV_OS_ROOT=" + quote(root) + " DEVOS_GUARD=" + job + " d " + quote(root + "/src/system/org.devos.shell/guard.dev") + " &")
+    }
+    return strings.join(jobs," ") + " wait"
+}
+fn main():i32 {
+    let root = hw.envOr("DEV_OS_ROOT",".")
+    let command = guards(root,hw.envOr("XDG_RUNTIME_DIR","/tmp"),!strings.equal(hw.env("DEV_OS_LOCK_ON_SLEEP"),"0"),!strings.equal(hw.which("flock"),""))
+    if !strings.equal(hw.env("DEVOS_SERVICES_PRINT"),"") { print(command); return 0 }
+    posix.shell(command)
+    while true { hw.sleepSeconds(3600.0) }
+    return 0
+}
+return main()

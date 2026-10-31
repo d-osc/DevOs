@@ -1,0 +1,53 @@
+# The lock screen of the native shell: swaylock with the colors of the active theme, started apart from the shell (only PAM and the compositor unlock the
+# session). Same arguments as lockArguments in the GJS shell it replaces, but with a plain background color: the generated wallpaper is gone.
+# `lock(program, family, mode, wait)` returns "" when the session is locked (or a locker already runs) and the reason when it could not be.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+
+fn palette(root:str, family:str, mode:str):json.Value {
+    let file = root + "/data/themes/palettes.json"
+    if !fs.existsSync(file) { return json.object() }
+    let all = json.parse(fs.readFileSync(file,"utf8"))
+    return hw.jget(hw.jget(hw.jget(all,"familyPalettes"),family),mode)
+}
+fn color(values:json.Value, key:str, fallback:str):str {
+    let value = hw.jstr(values,key,"#" + fallback)
+    return strings.startsWith(value,"#") ? strings.substring(value,1,strings.charLength(value)) : fallback
+}
+# swaylock's arguments, without the program name.
+fn arguments(values:json.Value, mode:str):Vec<str> {
+    let accent = color(values,"accentFg","48a0c7")
+    let background = color(values,strings.equal(mode,"dark") ? "s0" : "s1",strings.equal(mode,"dark") ? "121314" : "f3f3f3")
+    let text = color(values,"fgStrong","ededed"); let error = color(values,"error","f48771"); let warning = color(values,"warning","e5ba7d")
+    let none = "00000000"
+    return Vec<str>("--config","/dev/null","--color",background,"--ignore-empty-password","--show-failed-attempts","--indicator-idle-visible",
+        "--indicator-caps-lock","--show-keyboard-layout","--indicator-radius","58","--indicator-thickness","3","--font","Sans","--font-size","16",
+        "--inside-color",background + "ee","--ring-color",accent + "99","--line-color",none,"--separator-color",none,"--text-color",text,"--key-hl-color",accent,
+        "--bs-hl-color",warning,"--inside-ver-color",background,"--ring-ver-color",accent,"--text-ver-color",text,"--line-ver-color",none,
+        "--inside-wrong-color",background,"--ring-wrong-color",error,"--text-wrong-color",error,"--line-wrong-color",none,
+        "--inside-clear-color",background,"--ring-clear-color",accent,"--text-clear-color",text,"--line-clear-color",none)
+}
+fn running():bool { return hw.run(Vec<str>("pgrep","-u",strings.trim(hw.run(Vec<str>("id","-u"),5000).out),"-x","swaylock"),5000).code == 0 }
+fn supports(program:str, option:str):bool {
+    return strings.contains(hw.run(Vec<str>("sh","-c","\"$1\" --help 2>&1","sh",program),10000).out,option)
+}
+# Holds the answer until the lock surface is up (at most 3 s), so a caller that powers the screen off or lets the system sleep does so locked.
+# A running locker is asked to show its clock cover again (SIGUSR2 never unlocks).
+fn lock(program:str, root:str, family:str, mode:str):str {
+    if strings.equal(program,"") { return "Lock screen requires swaylock. Install it with: sudo apt install swaylock" }
+    let cover = supports(program,"DEV_OS_LOCK_COVER")
+    if running() { if cover { hw.run(Vec<str>("pkill","-USR2","-x","swaylock"),5000) }; return "" }
+    let values = palette(root,family,mode)
+    let ready = supports(program,"--ready-fd")
+    let launch = Vec<str>("env","DEV_OS_LOCK_CLOCK=1","DEV_OS_LOCK_CLOCK_COLOR=" + color(values,"fgStrong","ededed"),"DEV_OS_LOCK_CLOCK_MUTED=" + color(values,"fgMuted","8c8c8c"),"DEV_OS_LOCK_COVER=" + (cover ? "1" : "0"),program)
+    for item in arguments(values,mode) { launch.push(item) }
+    if !ready { return hw.spawnDetached(launch) > 0 ? "" : "Could not lock the session." }
+    launch.push("--ready-fd"); launch.push("1")
+    # The locker keeps running after the first line (its readiness) reached head; the group returns at once, head waits for that line.
+    let argv = Vec<str>("sh","-c","{ setsid \"$@\" 2>/dev/null </dev/null & } | timeout 3 head -n 1 >/dev/null","sh")
+    for item in launch { argv.push(item) }
+    hw.run(argv,10000)
+    return running() ? "" : "Lock screen failed. Check swaylock and compositor support."
+}

@@ -7,6 +7,7 @@ use "./lib/react-devlang.dev" as t
 use "std/json"
 use "../src/system/org.devos.shell/router.dev" as router
 use "../src/system/org.devos.shell/theme.dev" as theme
+use "../src/system/org.devos.shell/lock.dev" as lockscreen
 
 # The native shell: the command router (what each command asks for), the worker that carries the steps out, and the program that owns the shell's D-Bus
 # name without a window. Nothing is started: DEVOS_SHELL_TEST makes the worker log what it would do.
@@ -103,5 +104,65 @@ test.case("the worker writes the chosen theme to the shared file the native wind
     t.out(tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.shell/service.dev"),env,line,120000))
     test.expect(strings.startsWith(fs.readFileSync(d + "/run/devos-native-theme.css","utf8"),"/* devos-theme:light */") && strings.contains(fs.readFileSync(d + "/log","utf8"),"theme github light"),"the saved choice is followed")
     tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the lock screen is swaylock in the theme's colors, started apart, and it answers once the surface is ready",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    tool.exec(Vec<str>("cp",t.root() + "/tests/lib/fake-swaylock.sh",d + "/swaylock"))
+    tool.exec(Vec<str>("chmod","755",d + "/swaylock"))
+    let first = lockscreen.lock(d + "/swaylock",t.root(),"vscode","dark")
+    test.expect(strings.equal(first,""),"lock: " + first)
+    let seen = fs.readFileSync(d + "/swaylock.log","utf8")
+    test.expect(strings.contains(seen,"--color 121314") && strings.contains(seen,"--ready-fd 1") && strings.contains(seen,"|1|1"),"arguments: " + seen)
+    test.expect(strings.equal(lockscreen.lock(d + "/swaylock",t.root(),"vscode","dark"),""),"a running locker is not started twice")
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","wc -l < " + d + "/swaylock.log"))),"1"),"one start")
+    test.expect(strings.contains(lockscreen.lock("",t.root(),"vscode","dark"),"requires swaylock"),"a missing locker is named")
+    tool.exec(Vec<str>("sh","-c","pkill -x swaylock; rm -rf " + d))
+})
+fn guard(job:str, extra:Map<str,str>):str {
+    let env = extra; env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_GUARD",job); env.set("DEVOS_GUARD_TEST","1"); env.set("DEVOS_GUARD_PASSES","1")
+    let done = tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.shell/guard.dev"),env,"",60000)
+    return t.out(done) + t.err(done)
+}
+test.case("closing the lid locks first and then switches only the internal outputs off; a lid open at start does nothing; a failed lock keeps the screen on",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    fs.writeFileSync(d + "/shell","#!/bin/sh\nexit 0\n")
+    tool.exec(Vec<str>("cp",t.root() + "/tests/lib/fake-wlopm.sh",d + "/wlopm"))
+    tool.exec(Vec<str>("chmod","755",d + "/shell",d + "/wlopm"))
+    let env = Map<str,str>(); env.set("DEVOS_GUARD_LOG",d + "/log"); env.set("DEVOS_GUARD_SHELL",d + "/shell"); env.set("DEVOS_GUARD_WLOPM",d + "/wlopm"); env.set("DEVOS_GUARD_LID",d + "/lid")
+    fs.writeFileSync(d + "/lid","true"); guard("lid",env)
+    test.expect(strings.equal(fs.readFileSync(d + "/log","utf8"),"lock\npower off eDP-1\n"),"closed: " + fs.readFileSync(d + "/log","utf8"))
+    fs.writeFileSync(d + "/lid","false"); fs.writeFileSync(d + "/log",""); guard("lid",env)
+    test.expect(strings.equal(fs.readFileSync(d + "/log","utf8"),""),"open at start does nothing: " + fs.readFileSync(d + "/log","utf8"))
+    fs.writeFileSync(d + "/shell","#!/bin/sh\nexit 1\n"); fs.writeFileSync(d + "/lid","true"); guard("lid",env)
+    test.expect(strings.equal(fs.readFileSync(d + "/log","utf8"),"lock\n"),"a failed lock keeps the screen on: " + fs.readFileSync(d + "/log","utf8"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the sleep guard locks when logind announces the sleep, then waits for the wake-up",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    fs.mkdirSync(d + "/bin",false)
+    tool.exec(Vec<str>("cp",t.root() + "/tests/lib/fake-gdbus.sh",d + "/bin/gdbus")); tool.exec(Vec<str>("cp",t.root() + "/tests/lib/fake-inhibit.sh",d + "/bin/systemd-inhibit"))
+    fs.writeFileSync(d + "/shell","#!/bin/sh\necho \"$1\" >> \"$0.log\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/bin/gdbus",d + "/bin/systemd-inhibit",d + "/shell"))
+    let env = Map<str,str>(); env.set("DEVOS_GUARD_LOG",d + "/log"); env.set("DEVOS_GUARD_SHELL",d + "/shell"); env.set("PATH",d + "/bin:/usr/bin:/bin")
+    guard("sleep",env)
+    test.expect(strings.equal(fs.readFileSync(d + "/shell.log","utf8"),"lock\n"),"the shell was asked to lock once: " + fs.readFileSync(d + "/shell.log","utf8"))
+    test.expect(strings.equal(strings.trim(fs.readFileSync(d + "/bin/gdbus.count","utf8")),"2"),"watched the sleep and the wake-up")
+    tool.exec(Vec<str>("sh","-c","pkill -f '[b]in/gdbus'; rm -rf " + d))
+})
+test.case("the update guard asks the Updates worker, and an unknown guard is refused",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let env = Map<str,str>(); env.set("DEVOS_GUARD_LOG",d + "/log")
+    guard("updates",env)
+    test.expect(strings.equal(fs.readFileSync(d + "/log","utf8"),"updates check\n"),"log: " + fs.readFileSync(d + "/log","utf8"))
+    test.expect(strings.contains(guard("nothing",Map<str,str>()),"must be sleep, lid or updates"),"unknown guard")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the services process runs the three guards in one group, skips the sleep guard when locking on sleep is off, and does not use flock when it is missing",fn() {
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT","/opt/x"); env.set("DEVOS_SERVICES_PRINT","1"); env.set("XDG_RUNTIME_DIR","/run/u"); env.set("PATH","/usr/bin:/bin")
+    let all = t.out(tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.shell/services.dev"),env,"",60000))
+    test.expect(strings.contains(all,"DEVOS_GUARD=sleep") && strings.contains(all,"DEVOS_GUARD=lid") && strings.contains(all,"DEVOS_GUARD=updates") && strings.endsWith(strings.trim(all)," wait"),"all three: " + all)
+    env.set("DEV_OS_LOCK_ON_SLEEP","0")
+    let without = t.out(tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.shell/services.dev"),env,"",60000))
+    test.expect(!strings.contains(without,"DEVOS_GUARD=sleep") && strings.contains(without,"DEVOS_GUARD=lid"),"no sleep guard: " + without)
 })
 return t.finish()

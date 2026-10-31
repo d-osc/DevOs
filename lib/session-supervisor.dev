@@ -62,7 +62,7 @@ fn alive(children:Vec<Child>):bool { for child in children { if !done(child) || 
 fn settled(children:Vec<Child>):bool { for child in children { if !done(child) { return false } }; return true }
 fn services(root:str):Command {
     let override=hw.env("DEV_OS_SERVICES_HOST")
-    return strings.equal(override,"") ? Command(Vec<str>("gjs","-m",root+"/dist/services-host.js"),"services") : Command(Vec<str>(override),"services")
+    return strings.equal(override,"") ? Command(Vec<str>("env","DEV_OS_ROOT="+root,"d",root+"/src/system/org.devos.shell/services.dev"),"services") : Command(Vec<str>(override),"services")
 }
 fn plan(root:str,options:json.Value):Vec<Command> {
     let data=config.load(config.configPath()); let shell=hw.env("DEV_OS_SHELL")
