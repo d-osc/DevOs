@@ -365,6 +365,25 @@ test.case("awk",fn() {
         data + "@awk -f /dev/null p.txt; echo rc=$?",data + "@awk 'BEGIN{exit 3} END{print \"end\"}'; echo rc=$?",data + "@awk 'BEGIN{print length()}' < /dev/null",data + "@awk '{print length}' p.txt",data + "@awk 'BEGIN{print substr(\"abc\",2)}'",data + "@awk 'BEGIN{a=\"x\"; a = a a; print a}'",data + "@awk 'BEGIN{print 1==1.0, \"a\"==\"a\", \"a\"<\"b\"}'",data + "@awk 'BEGIN{print !0, !1, !\"\", !\"a\"}'",data + "@awk 'BEGIN{x = 5; x += 2; x *= 3; x -= 1; x /= 4; x %= 3; x ^= 2; print x}'",data + "@awk 'BEGIN{print i++ + ++i, i--, --i}'",data + "@awk 'BEGIN{print 1,2 > \"/dev/stdout\"}'",data + "@awk 'BEGIN {print -3 % 2, 3 % -2}'"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("catv getopt run-parts ipcalc dc rdev",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let data = "mkdir -p parts && printf '#!/bin/sh\\necho one\\n' > parts/10one && printf '#!/bin/sh\\necho two \"$*\"\\n' > parts/20two && printf 'x' > parts/30noexec && chmod +x parts/10one parts/20two && printf 'a\\001b\\tc\\200\\377\\177\\n' > ctl.dat; "
+    test.expect(strings.equal(outcome(d, data + "cat -v ctl.dat"), outcome(d, data + bb + " catv ctl.dat")), "catv differs from cat -v")
+    test.expect(strings.equal(outcome(d, data + "cat -vE ctl.dat"), outcome(d, data + bb + " catv -e ctl.dat")), "catv -e differs from cat -vE")
+    test.expect(strings.equal(outcome(d, data + "cat -vT ctl.dat"), outcome(d, data + bb + " catv -t ctl.dat")), "catv -t differs from cat -vT")
+    all_same(d, Vec<str>("@getopt -o ab:c -- -a -b val -c rest1 rest2","@getopt -o ab:c -- -abval -c","@getopt -o a -l long,with-arg: -- --long --with-arg=5 file","@getopt -o a -l long,with-arg: -- --with-arg 7 x","@getopt -u -o ab: -- -b 'two words' x","@getopt -o a -- -z; echo rc=$?","@getopt -o 'b:' -- -b; echo rc=$?","@getopt ab: -a -b x y","@getopt -o ab -- a b -a","@getopt -o 'a::' -- -afoo -a","@getopt -o 'q' -- \"it's\"","@getopt -o '+ab' -- -a x -b",
+        data + "@run-parts --list parts",data + "@run-parts --test parts",data + "@run-parts parts; echo rc=$?",data + "@run-parts -a X -a Y parts"))
+    test.expect(strings.equal(outcome(d, bb + " ipcalc 192.168.1.5/24"), "NETMASK=255.255.255.0\nBROADCAST=192.168.1.255\nNETWORK=192.168.1.0\nPREFIX=24\nrc=0\n"), "ipcalc output is wrong:\n" + outcome(d, bb + " ipcalc 192.168.1.5/24"))
+    test.expect(strings.contains(outcome(d, bb + " ipcalc -n -p 10.1.2.3 255.0.0.0"), "NETWORK=10.0.0.0\nPREFIX=8\n"), "ipcalc -n -p is wrong")
+    test.expect(strings.contains(outcome(d, bb + " ipcalc -b 10.9.8.7/30"), "BROADCAST=10.9.8.7"), "ipcalc broadcast is wrong")
+    test.expect(strings.equal(outcome(d, bb + " dc 2 3 + p"), "5\nrc=0\n"), "dc addition")
+    test.expect(strings.equal(outcome(d, bb + " dc -e '10 3 / p 10 3 % p 2 10 ^ p 16 v p'"), "3\n1\n1024\n4\nrc=0\n"), "dc arithmetic")
+    test.expect(strings.equal(outcome(d, bb + " dc 3 4 5 f"), "5\n4\n3\nrc=0\n"), "dc stack print")
+    test.expect(strings.equal(outcome(d, bb + " dc '1 2 r p p'"), "1\n1\nrc=0\n"), "dc swap")
+    test.expect(strings.contains(outcome(d, bb + " rdev"), " /"), "rdev prints no root")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

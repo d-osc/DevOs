@@ -1,0 +1,296 @@
+# catv, ipcalc, dc, getopt, run-parts, rdev, killall5, ttysize: more small utilities.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/awkval.dev" as av
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+
+// ---- catv [-etv] [FILE]... --------------------------------------------------------------------------------------------------------------------------------------------
+fn run_catv(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "etv")
+    if o.bad != 0 { sys.warn("catv", "invalid usage: catv [-etv] [FILE]..."); return 1 }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0; let raw = sys.has(o, 118)
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("catv", files[k]); status = 1; continue }
+        let b = input.bytes
+        for i in 0..sys.blen(b) {
+            let c = sys.bat(b, i) as i64
+            if c == 10 { if sys.has(o, 101) { sys.out_byte(out, 36) }; sys.out_byte(out, 10); continue }
+            if c == 9 && sys.has(o, 116) { sys.out_str(out, "^I"); continue }
+            if c == 9 || raw { sys.out_byte(out, c as u8); continue }
+            let v = c
+            if v >= 128 { sys.out_str(out, "M-"); v = v - 128 }
+            if v < 32 { sys.out_byte(out, 94); sys.out_byte(out, (v + 64) as u8) } else if v == 127 { sys.out_str(out, "^?") } else { sys.out_byte(out, v as u8) }
+        }
+    }
+    sys.out_flush(out)
+    return status
+}
+
+// ---- ipcalc [-bnmphs] ADDRESS[/PREFIX] [NETMASK] -----------------------------------------------------------------------------------------------------------------
+fn parse_ip(text: str): i64 {
+    let value = 0; let part = 0; let parts = 0; let digits = 0
+    for i in 0..(sys.length(text) + 1) {
+        let c = i < sys.length(text) ? sys.at(text, i) : 46
+        if c == 46 {
+            if digits == 0 || part > 255 { return 0 - 1 }
+            value = value * 256 + part; part = 0; digits = 0; parts = parts + 1
+        } else if sys.is_digit(c) { part = part * 10 + (c - 48) as i64; digits = digits + 1 } else { return 0 - 1 }
+    }
+    return parts == 4 ? value : 0 - 1
+}
+fn ip_text(v: i64): str { return sys.join2(sys.join2(sys.join2(decimal((v / 16777216) % 256), "."), sys.join2(decimal((v / 65536) % 256), ".")), sys.join2(sys.join2(decimal((v / 256) % 256), "."), decimal(v % 256))) }
+fn prefix_mask(prefix: i64): i64 {
+    let mask = 0
+    for i in 0..32 { mask = mask * 2 + (i < prefix ? 1 : 0) }
+    return mask
+}
+fn mask_prefix(mask: i64): i64 { let n = 0; for i in 0..32 { if (mask / pow2(31 - i)) % 2 == 1 { n = n + 1 } else { break } }; return n }
+fn pow2(n: i64): i64 { let r = 1; for i in 0..n { r = r * 2 }; return r }
+fn run_ipcalc(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "bnmphs")
+    if o.bad != 0 || o.rest.len() == 0 { sys.warn("ipcalc", "invalid usage: ipcalc [-bnmphs] ADDRESS[[/]NETMASK] [NETMASK]"); return 1 }
+    let spec = o.rest[0]; let slash = sys.find_char(spec, 47)
+    let address = parse_ip(slash < 0 ? spec : sys.join2(sys.slice(spec, 0, slash), ""))
+    if address < 0 { sys.warn("ipcalc", sys.join2("invalid address: ", spec)); return 1 }
+    let mask = 0 - 1
+    if slash >= 0 {
+        let tail = sys.join2(sys.slice(spec, slash + 1, sys.length(spec)), "")
+        if sys.find_char(tail, 46) >= 0 { mask = parse_ip(tail) } else { let p = sys.parse_number(tail); if p.ok && p.value >= 0 && p.value <= 32 { mask = prefix_mask(p.value) } }
+    } else if o.rest.len() > 1 { mask = parse_ip(o.rest[1]) }
+    else {
+        let first = address / 16777216
+        mask = first < 128 ? prefix_mask(8) : (first < 192 ? prefix_mask(16) : prefix_mask(24))
+    }
+    if mask < 0 { sys.warn("ipcalc", "invalid netmask"); return 1 }
+    let network = 0; for i in 0..32 { let bit = pow2(31 - i); if (address / bit) % 2 == 1 && (mask / bit) % 2 == 1 { network = network + bit } }
+    let broadcast = network + (4294967295 - mask)
+    let all = !(sys.has(o, 98) || sys.has(o, 110) || sys.has(o, 109) || sys.has(o, 112))
+    let out = sys.out_new(1)
+    if all || sys.has(o, 109) { sys.out_str(out, "NETMASK="); sys.out_str(out, ip_text(mask)); sys.out_byte(out, 10) }
+    if all || sys.has(o, 98) { sys.out_str(out, "BROADCAST="); sys.out_str(out, ip_text(broadcast)); sys.out_byte(out, 10) }
+    if all || sys.has(o, 110) { sys.out_str(out, "NETWORK="); sys.out_str(out, ip_text(network)); sys.out_byte(out, 10) }
+    if all || sys.has(o, 112) { sys.out_str(out, "PREFIX="); sys.out_str(out, decimal(mask_prefix(mask))); sys.out_byte(out, 10) }
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- dc EXPRESSION... (reverse Polish desk calculator on doubles) ---------------------------------------------------------------------------------------------------------
+fn dc_number_text(x: f64, scale: i64): str {
+    if x == av.trunc_f(x) && av.abs_f(x) < 1.0e15 { return decimal(x as i64) }
+    let t = av.fmt_f(x, scale > 0 ? scale : 6)
+    return av.strip_zeros(t)
+}
+fn run_dc(args: Vec<str>): i64 {
+    let program = ""
+    for k in 0..(args.len() as i64) { if sys.same(args[k], "-e") { continue }; program = sys.join2(sys.join2(program, " "), args[k]) }
+    if args.len() == 0 { let input = sys.read_path("-"); program = lines.text_of(input.bytes, 0, sys.blen(input.bytes)) }
+    let stack = Vec<f64>(); let out = sys.out_new(1); let scale = 0; let n = sys.length(program); let i = 0; let status = 0
+    while i < n {
+        let c = sys.at(program, i)
+        if c == 32 || c == 10 || c == 9 { i = i + 1; continue }
+        if sys.is_digit(c) || c == 46 || (c == 95 && i + 1 < n && (sys.is_digit(sys.at(program, i + 1)) || sys.at(program, i + 1) == 46)) {
+            let neg = c == 95; if neg { i = i + 1 }
+            let start = i
+            while i < n && (sys.is_digit(sys.at(program, i)) || sys.at(program, i) == 46) { i = i + 1 }
+            let v = av.str_to_num(sys.join2(sys.slice(program, start, i), ""))
+            stack.push(neg ? 0.0 - v : v); continue
+        }
+        i = i + 1
+        let size = stack.len() as i64
+        if c == 112 { if size == 0 { sys.warn("dc", "stack empty"); status = 1 } else { sys.out_str(out, dc_number_text(stack[size - 1], scale)); sys.out_byte(out, 10) }; continue }
+        if c == 110 { if size > 0 { sys.out_str(out, dc_number_text(stack[size - 1], scale)); stack = drop_last(stack, 1) }; continue }
+        if c == 102 { let k = size - 1; while k >= 0 { sys.out_str(out, dc_number_text(stack[k], scale)); sys.out_byte(out, 10); k = k - 1 }; continue }
+        if c == 99 { stack = Vec<f64>(); continue }
+        if c == 100 { if size > 0 { stack.push(stack[size - 1]) }; continue }
+        if c == 114 { if size > 1 { let a = stack[size - 1]; let b = stack[size - 2]; stack = drop_last(stack, 2); stack.push(a); stack.push(b) }; continue }
+        if c == 107 { if size > 0 { scale = stack[size - 1] as i64; stack = drop_last(stack, 1) }; continue }
+        if c == 118 { if size > 0 { let v = stack[size - 1]; stack = drop_last(stack, 1); stack.push(av.sqrt_f(v)) }; continue }
+        if c == 122 { stack.push(size as f64); continue }
+        if c == 113 { break }
+        if c == 43 || c == 45 || c == 42 || c == 47 || c == 37 || c == 94 {
+            if size < 2 { sys.warn("dc", "stack empty"); status = 1; continue }
+            let b = stack[size - 1]; let a = stack[size - 2]; stack = drop_last(stack, 2)
+            let r = 0.0
+            if c == 43 { r = a + b } else if c == 45 { r = a - b } else if c == 42 { r = a * b }
+            else if c == 47 { if b == 0.0 { sys.warn("dc", "divide by zero"); status = 1; stack.push(a); stack.push(b); continue }; r = a / b; if scale == 0 { r = av.trunc_f(r) } }
+            else if c == 37 { if b == 0.0 { sys.warn("dc", "remainder by zero"); status = 1; stack.push(a); stack.push(b); continue }; r = a - av.trunc_f(a / b) * b }
+            else { r = av.pow_f(a, b) }
+            stack.push(r); continue
+        }
+        sys.warn("dc", sys.join2("unknown command ", sys.join2(sys.slice(program, i - 1, i), ""))); status = 1
+    }
+    sys.out_flush(out)
+    return status
+}
+fn drop_last(v: Vec<f64>, count: i64): Vec<f64> { let out = Vec<f64>(); for k in 0..((v.len() as i64) - count) { out.push(v[k]) }; return out }
+
+// ---- getopt ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn quote_arg(s: str): str {
+    let b = sys.bytes_new(); sys.bytes_push(b, 39)
+    for i in 0..sys.length(s) { let c = sys.at(s, i); if c == 39 { sys.bytes_str(b, "'\\''") } else { sys.bytes_push(b, c) } }
+    sys.bytes_push(b, 39)
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn short_kind(spec: str, c: u8): i64 {
+    # 0 unknown, 1 plain, 2 takes an argument, 3 optional argument
+    let n = sys.length(spec); let i = sys.starts(spec, "+") || sys.starts(spec, "-") ? 1 : 0
+    while i < n {
+        if sys.at(spec, i) == c && c != 58 {
+            if i + 2 < n && sys.at(spec, i + 1) == 58 && sys.at(spec, i + 2) == 58 { return 3 }
+            if i + 1 < n && sys.at(spec, i + 1) == 58 { return 2 }
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+fn long_kind(longs: str, name: str): i64 {
+    let n = sys.length(longs); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(longs, i) == 44 {
+            let item = sys.join2(sys.slice(longs, start, i), ""); start = i + 1
+            let kind = 1; let base = item
+            if sys.ends(item, "::") { kind = 3; base = sys.join2(sys.slice(item, 0, sys.length(item) - 2), "") } else if sys.ends(item, ":") { kind = 2; base = sys.join2(sys.slice(item, 0, sys.length(item) - 1), "") }
+            if sys.same(base, name) { return kind }
+        }
+    }
+    return 0
+}
+fn run_getopt(args: Vec<str>): i64 {
+    let spec = ""; let longs = ""; let prog = "getopt"; let unquoted = false; let quiet = false; let rest = Vec<str>(); let i = 0; let n = args.len() as i64; let have_spec = false
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "--") { i = i + 1; break }
+        if sys.same(a, "-o") && i + 1 < n { spec = args[i + 1]; have_spec = true; i = i + 2; continue }
+        if sys.starts(a, "-o") && sys.length(a) > 2 { spec = sys.join2(sys.slice(a, 2, sys.length(a)), ""); have_spec = true; i = i + 1; continue }
+        if (sys.same(a, "-l") || sys.same(a, "--longoptions")) && i + 1 < n { longs = sys.join2(sys.join2(longs, sys.length(longs) > 0 ? "," : ""), args[i + 1]); i = i + 2; continue }
+        if sys.same(a, "-n") && i + 1 < n { prog = args[i + 1]; i = i + 2; continue }
+        if sys.same(a, "-u") { unquoted = true; i = i + 1; continue }
+        if sys.same(a, "-q") { quiet = true; i = i + 1; continue }
+        if sys.same(a, "-s") || sys.same(a, "-a") || sys.same(a, "-T") { i = i + (sys.same(a, "-s") ? 2 : 1); continue }
+        if !have_spec && sys.length(a) > 0 && sys.at(a, 0) != 45 { break }
+        break
+    }
+    if !have_spec {
+        if i >= n { sys.warn("getopt", "missing optstring argument"); return 1 }
+        spec = args[i]; i = i + 1; unquoted = true
+    }
+    let out = sys.out_new(1); let options = sys.bytes_new(); let operands = Vec<str>(); let status = 0
+    let posix = sys.starts(spec, "+")
+    let items = Vec<str>(); for k in i..n { items.push(args[k]) }
+    let k = 0; let total = items.len() as i64
+    while k < total {
+        let a = items[k]; k = k + 1
+        if sys.same(a, "--") { while k < total { operands.push(items[k]); k = k + 1 }; break }
+        if sys.starts(a, "--") && sys.length(a) > 2 {
+            let eq = sys.find_char(a, 61); let name = eq < 0 ? sys.join2(sys.slice(a, 2, sys.length(a)), "") : sys.join2(sys.slice(a, 2, eq), "")
+            let kind = long_kind(longs, name)
+            if kind == 0 { if !quiet { sys.warn(prog, sys.join2(sys.join2("unrecognized option '--", name), "'")) }; status = 1; continue }
+            sys.bytes_str(options, " --"); sys.bytes_str(options, name)
+            if kind == 2 {
+                let value = ""
+                if eq >= 0 { value = sys.join2(sys.slice(a, eq + 1, sys.length(a)), "") } else if k < total { value = items[k]; k = k + 1 } else { if !quiet { sys.warn(prog, sys.join2(sys.join2("option '--", name), "' requires an argument")) }; status = 1; continue }
+                sys.bytes_push(options, 32); sys.bytes_str(options, unquoted ? value : quote_arg(value))
+            } else if kind == 3 { sys.bytes_push(options, 32); sys.bytes_str(options, unquoted ? (eq >= 0 ? sys.join2(sys.slice(a, eq + 1, sys.length(a)), "") : "") : quote_arg(eq >= 0 ? sys.join2(sys.slice(a, eq + 1, sys.length(a)), "") : "")) }
+            continue
+        }
+        if sys.length(a) > 1 && sys.at(a, 0) == 45 {
+            let j = 1
+            while j < sys.length(a) {
+                let c = sys.at(a, j); let kind = short_kind(spec, c)
+                if kind == 0 { if !quiet { sys.warn(prog, sys.join2("invalid option -- '", sys.join2(sys.join2(sys.slice(a, j, j + 1), ""), "'"))) }; status = 1; j = j + 1; continue }
+                if kind == 2 {
+                    let value = ""
+                    if j + 1 < sys.length(a) { value = sys.join2(sys.slice(a, j + 1, sys.length(a)), "") } else if k < total { value = items[k]; k = k + 1 } else { if !quiet { sys.warn(prog, sys.join2("option requires an argument -- '", sys.join2(sys.join2(sys.slice(a, j, j + 1), ""), "'"))) }; status = 1; break }
+                    sys.bytes_str(options, " -"); sys.bytes_push(options, c)
+                    sys.bytes_push(options, 32); sys.bytes_str(options, unquoted ? value : quote_arg(value)); break
+                }
+                sys.bytes_str(options, " -"); sys.bytes_push(options, c)
+                if kind == 3 {
+                    let value = j + 1 < sys.length(a) ? sys.join2(sys.slice(a, j + 1, sys.length(a)), "") : ""
+                    sys.bytes_push(options, 32); sys.bytes_str(options, unquoted ? value : quote_arg(value)); break
+                }
+                j = j + 1
+            }
+            continue
+        }
+        if posix { operands.push(a); while k < total { operands.push(items[k]); k = k + 1 }; break }
+        operands.push(a)
+    }
+    sys.out_str(out, sys.join2(sys.bytes_cstr(options), " --"))
+    for q in 0..(operands.len() as i64) { sys.out_byte(out, 32); sys.out_str(out, unquoted ? operands[q] : quote_arg(operands[q])) }
+    sys.out_byte(out, 10); sys.out_flush(out)
+    return status
+}
+
+// ---- run-parts [--test] [--list] [-a ARG] DIRECTORY ----------------------------------------------------------------------------------------------------------------------------
+fn valid_part_name(name: str): bool {
+    if sys.length(name) == 0 { return false }
+    for i in 0..sys.length(name) { let c = sys.at(name, i); if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45) { return false } }
+    return true
+}
+fn run_run_parts(args: Vec<str>): i64 {
+    let test = false; let list = false; let extra = Vec<str>(); let dir = ""; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "--test") { test = true } else if sys.same(a, "--list") { list = true }
+        else if (sys.same(a, "-a") || sys.same(a, "--arg")) && i + 1 < n { i = i + 1; extra.push(args[i]) }
+        else if sys.starts(a, "--arg=") { extra.push(sys.join2(sys.slice(a, 6, sys.length(a)), "")) }
+        else if sys.starts(a, "-") && sys.length(a) > 1 && sys.length(dir) == 0 { if sys.same(a, "-u") && i + 1 < n { i = i + 1 } }
+        else if sys.length(dir) == 0 { dir = a } else { sys.warn("run-parts", "only one directory is accepted"); return 1 }
+        i = i + 1
+    }
+    if sys.length(dir) == 0 { sys.warn("run-parts", "missing directory"); return 1 }
+    let l = fsx.list_dir(dir)
+    if !l.ok { sys.warn("run-parts", sys.join2(sys.join2("failed to open directory ", dir), ": No such file or directory")); return 1 }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(l.names.len() as i64) {
+        let name = l.names[k]; let path = fsx.join_path(dir, name)
+        if !valid_part_name(name) { continue }
+        let info = sys.file_info(path, true)
+        if !info.ok || !sys.is_reg_mode(info.mode) { continue }
+        if list { sys.out_str(out, path); sys.out_byte(out, 10); continue }
+        unsafe { if sys.access(path, 1) != 0 { continue } }
+        if test { sys.out_str(out, path); sys.out_byte(out, 10); continue }
+        sys.out_flush(out)
+        let argv = Vec<str>(path); for q in 0..(extra.len() as i64) { argv.push(extra[q]) }
+        let r = proc.run_wait(argv, proc.environment())
+        if r != 0 { sys.warn("run-parts", sys.join2(sys.join2(path, " exited with return code "), decimal(r))); status = 1 }
+    }
+    sys.out_flush(out)
+    return status
+}
+
+// ---- rdev, killall5, ttysize ---------------------------------------------------------------------------------------------------------------------------------------------------
+fn run_rdev(args: Vec<str>): i64 {
+    let input = sys.read_path("/proc/mounts")
+    if !input.ok { sys.warn_path("rdev", "/proc/mounts"); return 1 }
+    let ls = lines.split_lines(input.bytes, 10); let out = sys.out_new(1)
+    for k in 0..(ls.starts.len() as i64) {
+        let line = lines.text_of(input.bytes, ls.starts[k], ls.ends[k]); let sp1 = sys.find_char(line, 32)
+        if sp1 < 0 { continue }
+        let rest = sys.join2(sys.slice(line, sp1 + 1, sys.length(line)), ""); let sp2 = sys.find_char(rest, 32)
+        if sp2 < 0 { continue }
+        if sys.same(sys.join2(sys.slice(rest, 0, sp2), ""), "/") && sys.starts(line, "/dev/") { sys.out_str(out, sys.join2(sys.slice(line, 0, sp1), "")); sys.out_str(out, " /\n"); sys.out_flush(out); return 0 }
+    }
+    sys.out_str(out, "rootfs /\n"); sys.out_flush(out)
+    return 0
+}
+fn run_killall5(args: Vec<str>): i64 {
+    let sig = 15; if args.len() > 0 && sys.starts(args[0], "-") { sig = proc.parse_signal(sys.join2(sys.slice(args[0], 1, sys.length(args[0])), "")); if sig < 0 { sys.warn("killall5", "bad signal"); return 1 } }
+    let l = fsx.list_dir("/proc"); let me = proc.my_pid(); let session = proc.my_session()
+    for k in 0..(l.names.len() as i64) {
+        let pid = sys.parse_number(l.names[k]); if !pid.ok || pid.value <= 1 || pid.value == me { continue }
+        proc.send_signal(pid.value, sig)
+    }
+    return 0
+}
+fn run_ttysize(args: Vec<str>): i64 {
+    let out = sys.out_new(1); sys.out_str(out, "80 24\n"); sys.out_flush(out)
+    return 0
+}
