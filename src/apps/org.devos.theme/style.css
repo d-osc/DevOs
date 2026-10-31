@@ -841,6 +841,8 @@ button.task-process.selected { background: @dv_accent_t3; border-color: @dv_acce
 #app-store button.app-store-primary:hover { background: @dv_accent; }
 #app-store button.app-store-primary:disabled { background: @dv_accent_t2; border-color: @dv_accent_t3; color: @dv_accent_t4; }
 .app-store-confirm, .app-store-notice { padding: 16px 18px; background: @dv_accent_t2; border: 1px solid @dv_accent_t4; border-radius: 12px; font-size: 12px; }
+.app-store-progress trough { min-height: 5px; border-radius: 3px; background: @dv_s3; border: none; }
+.app-store-progress progress { min-height: 5px; border-radius: 3px; background: @dv_accent; border: none; }
 #app-store #app-store-error { padding: 12px 15px; border-radius: 10px; background: @dv_error_t2; border: 1px solid alpha(@dv_error, 0.2); font-size: 12px; }
 .app-store-success { color: @dv_accent_fg; }
 .app-store-empty { padding: 48px 16px; color: @dv_fg_muted; }

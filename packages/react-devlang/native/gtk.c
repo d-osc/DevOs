@@ -397,7 +397,26 @@ void rd_alignment(void *data,int32_t horizontal,int32_t vertical,int32_t margin)
     gtk_widget_set_margin_start(widget,margin);gtk_widget_set_margin_end(widget,margin);gtk_widget_set_margin_top(widget,margin);gtk_widget_set_margin_bottom(widget,margin);
 }
 void rd_icon_size(void *widget,int32_t size) {if(size<1)rd_fail("Icon size must be positive");gtk_image_set_pixel_size(GTK_IMAGE(widget),size);}
-void rd_fraction(void *widget, double value) { gtk_progress_bar_set_fraction(widget, CLAMP(value, 0, 1)); }
+/* A negative fraction means "busy, no known end": the bar pulses until a fraction of 0 or more arrives or the bar leaves its window. */
+static gboolean rd_pulse_tick(gpointer data) {
+    GtkWidget *bar = data;
+    if (!g_object_get_data(G_OBJECT(bar), "rd-pulse") || !gtk_widget_get_parent(bar)) { g_object_set_data(G_OBJECT(bar), "rd-pulse-timer", NULL); return G_SOURCE_REMOVE; }
+    gtk_progress_bar_pulse(GTK_PROGRESS_BAR(bar));
+    return G_SOURCE_CONTINUE;
+}
+void rd_fraction(void *widget, double value) {
+    if (value < 0) {
+        g_object_set_data(G_OBJECT(widget), "rd-pulse", GINT_TO_POINTER(1));
+        gtk_progress_bar_set_pulse_step(GTK_PROGRESS_BAR(widget), 0.12);
+        if (!g_object_get_data(G_OBJECT(widget), "rd-pulse-timer")) {
+            g_object_set_data(G_OBJECT(widget), "rd-pulse-timer", GINT_TO_POINTER(1));
+            g_timeout_add_full(G_PRIORITY_DEFAULT, 80, rd_pulse_tick, g_object_ref(widget), g_object_unref);
+        }
+        return;
+    }
+    g_object_set_data(G_OBJECT(widget), "rd-pulse", NULL);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(widget), CLAMP(value, 0, 1));
+}
 /* Shows the stack page at `index`; pages are named by position, so call after attaching children. */
 void rd_stack_select(void *widget,int32_t index){
     char name[24]; g_snprintf(name,sizeof name,"%d",index);

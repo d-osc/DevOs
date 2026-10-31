@@ -112,7 +112,10 @@ fn App(context:*ui.Context):ui.Node {
     let subtitles = Vec<ui.Text>(plain("Apps for DevOs, installed and checked by DevOsPM."),plain("Remove an app or go back to the version before."),plain("Install a package you downloaded yourself."))
     content.push(label(titles[current],"app-store-page-title")); content.push(label(subtitles[current],"subtle"))
     if has(l.failure.value) { content.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"store-error")) }
-    else if busy { content.push(ext.named(k.note(asked.get() == 2 ? "Downloading and installing… this can take a few minutes." : "Working…","app-store-notice"),"store-working")) }
+    else if busy {
+        let bar = ui.named("store-progress"); bar.className = ui.text("app-store-progress")
+        content.push(ext.named(boxed("app-store-notice",true,10,Vec<ui.Node>(k.note(asked.get() == 2 ? "Downloading and installing… this can take a few minutes." : "Working…","app-store-working-text"),ui.Progress(bar,0.0 - 1.0))),"store-working"))
+    }
     else if has(message.value) { content.push(ext.named(k.caption(message.value,"app-store-notice"),"store-message")) }
     let search = ui.named("store-search"); search.expand = true; search.placeholder = plain("Search apps")
     if current == 0 {
