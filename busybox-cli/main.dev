@@ -3,10 +3,11 @@ use "./lib/sys.dev" as sys
 use "./applets/basic.dev" as basic
 use "./applets/text.dev" as text
 use "./applets/files.dev" as files
+use "./applets/sort.dev" as sorts
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "basename", "cat", "chgrp", "chmod", "chown", "cp", "dirname", "echo", "false", "head", "install", "ln", "mkdir", "mkfifo", "mktemp", "mv", "pwd", "readlink", "realpath", "rm", "rmdir", "seq", "sleep", "sync", "tail", "tee", "touch", "true", "wc", "yes")
+    return Vec<str>("basename", "cat", "chgrp", "chmod", "chown", "cp", "cut", "dirname", "echo", "false", "head", "install", "ln", "mkdir", "mkfifo", "mktemp", "mv", "pwd", "readlink", "realpath", "rm", "rmdir", "seq", "sleep", "sort", "sync", "tac", "tail", "tee", "touch", "tr", "true", "uniq", "wc", "yes")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -40,6 +41,11 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "mktemp") { return files.run_mktemp(args) }
     if sys.same(name, "mkfifo") { return files.run_mkfifo(args) }
     if sys.same(name, "sync") { return files.run_sync(args) }
+    if sys.same(name, "sort") { return sorts.run_sort(args) }
+    if sys.same(name, "uniq") { return sorts.run_uniq(args) }
+    if sys.same(name, "cut") { return sorts.run_cut(args) }
+    if sys.same(name, "tac") { return sorts.run_tac(args) }
+    if sys.same(name, "tr") { return sorts.run_tr(args) }
     sys.warn(name, "applet not found")
     return 127
 }

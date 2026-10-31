@@ -161,7 +161,7 @@ fn run_touch(args: Vec<str>): i64 {
         let path = o.rest[i]
         if !exists_or_link(path) {
             if sys.has(o, 99) { continue }
-            unsafe { let fd = sys.open(path, 65, 438); if fd < 0 { sys.warn_write("touch", path); status = 1; continue }; sys.close(fd) }
+            unsafe { let fd = sys.open_fd(path, 65, 438); if fd < 0 { sys.warn_write("touch", path); status = 1; continue }; sys.close_fd(fd) }
         }
         if !set_times(path, seconds, use_now) { sys.warn_write("touch", path); status = 1 }
     }
@@ -423,8 +423,8 @@ fn random_name(template: str): str { unsafe {
     let count = n - x
     let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     let seed = sys.calloc(64, 1) as *u8
-    let fd = sys.open("/dev/urandom", 0, 0)
-    if fd >= 0 { sys.read(fd, seed as *void, count as usize); sys.close(fd) }
+    let fd = sys.open_fd("/dev/urandom", 0, 0)
+    if fd >= 0 { sys.read(fd as i32, seed as *void, count as usize); sys.close_fd(fd) }
     let out = sys.calloc((n + 1) as usize, 1) as *u8
     for i in 0..x { out[i] = sys.at(template, i) }
     for i in 0..count { out[x + i] = sys.at(letters, (seed[i] as i64) % 62) }
@@ -446,7 +446,7 @@ fn run_mktemp(args: Vec<str>): i64 { unsafe {
         let name = random_name(template)
         let path = sys.length(dir) > 0 ? fsx.join_path(dir, name) : name
         if sys.has(o, 100) { if fsx.make_dir(path, 448) { result = path; status = 0; break } }
-        else { let fd = sys.open(path, 193, 384); if fd >= 0 { sys.close(fd); result = path; status = 0; break } }
+        else { let fd = sys.open_fd(path, 193, 384); if fd >= 0 { sys.close_fd(fd); result = path; status = 0; break } }
     }
     if status != 0 { cant("mktemp", sys.has(o, 100) ? "create directory" : "create file", sys.length(dir) > 0 ? dir : template, "No such file or directory"); return 1 }
     let out = sys.out_new(1); sys.out_str(out, result); sys.out_byte(out, 10); sys.out_flush(out)

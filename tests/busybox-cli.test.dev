@@ -16,12 +16,13 @@ fn build() {
 fn sandbox(): str {
     let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
     let script = "cd " + d + " && printf 'one\\ntwo words here\\n\\nfour\\tx\\nlast no newline' > a.txt && printf 'alpha\\nbeta\\n' > b.txt && printf 'z\\ny\\nx\\ny\\n' > c.txt && printf '' > empty.txt && mkdir -p dir/sub && printf 'in sub\\n' > dir/sub/f.txt && printf 'abc\\n' > dir/g.txt"
+    script = script + " && printf '10\\n9\\n100\\n-5\\n3.5\\n007\\n' > n.txt && printf 'b 2\\na 10\\nc 1\\na 2\\n' > kv.txt && printf 'x,3\\ny,1\\nz,20\\n' > csv.txt && printf 'banana\\nApple\\ncherry\\napple\\n' > mixed.txt && printf 'Mar\\nJan\\nFeb\\nDec\\n' > months.txt && printf '1e3\\n5\\n2.5e1\\n-1\\n' > g.txt && printf 'a\\na\\nb\\nb\\nb\\nc\\n' > u.txt && printf 'a\\tb\\tc\\nd\\te\\tf\\nplain\\n' > tabs.txt"
     tool.exec(Vec<str>("sh","-c",script))
     return d
 }
 fn outcome(d: str, command: str): str {
     # every run gets its own copy of the sandbox, so a case that changes files cannot affect the one run after it
-    let script = "w=$(mktemp -d) && o=$(mktemp) && cp -a " + d + "/. $w && cd $w && { " + command + "\n} > $o 2>/dev/null; rc=$?; cd /; sed \"s#$w#W#g\" $o; rm -rf $w $o; echo \"rc=$rc\""
+    let script = "export LC_ALL=C TZ=UTC; w=$(mktemp -d) && o=$(mktemp) && cp -a " + d + "/. $w && cd $w && { " + command + "\n} > $o 2>/dev/null; rc=$?; cd /; sed \"s#$w#W#g\" $o; rm -rf $w $o; echo \"rc=$rc\""
     let run = tool.run(Vec<str>("sh","-c",script), Map<str,str>(), "", 60000)
     return t.out(run)
 }
@@ -84,6 +85,16 @@ test.case("realpath readlink cp mv install chmod mktemp mkfifo",fn() {
         "@chmod 600 a.txt; stat -c %a a.txt","@chmod u+x,g-r a.txt; stat -c %a a.txt","@chmod -R a=rX dir; find dir -printf '%m %p\\n' | sort","@chmod 999 a.txt; echo rc","@chmod 600 nosuch","@chmod a+x,o-r b.txt; stat -c %a b.txt","@chmod g=u a.txt; stat -c %a a.txt","@chmod +t dir; stat -c %a dir","@chmod -c 644 a.txt","@chmod -v 644 a.txt",
         "f=$(@mktemp); test -f $f && echo ok; rm -f $f","d=$(@mktemp -d); test -d $d && echo ok; rmdir $d","f=$(@mktemp -p dir tXXXXXX); test -f $f && echo ok; rm -f $f","@mktemp bad","f=$(@mktemp -t fooXXXXXX); echo $f | grep -c '^/tmp/foo'; rm -f $f",
         "@mkfifo ff; test -p ff && echo fifo","@mkfifo -m 600 ff2; stat -c %a ff2","@mkfifo dir","@sync; echo rc"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("sort uniq cut tac tr",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("@sort c.txt","@sort -r c.txt","@sort -u c.txt","@sort -n n.txt","@sort -nr n.txt","@sort -k2 kv.txt","@sort -k2,2n kv.txt","@sort -k1,1 -k2n kv.txt","@sort -t, -k2,2n csv.txt","@sort -f mixed.txt","@sort -c c.txt; echo rc","@sort -c b.txt; echo rc",
+        "@sort -M months.txt","@sort -o out c.txt; cat out","@sort a.txt b.txt","@sort -s -k1,1 kv.txt","@sort -g g.txt","@sort -d mixed.txt","@sort -nu n.txt","@sort -b kv.txt","@sort nosuch","@sort -k2.1 kv.txt","@sort -rn kv.txt","@sort < kv.txt","@sort -u -k1,1 kv.txt",
+        "@uniq u.txt","@uniq -c u.txt","@uniq -d u.txt","@uniq -u u.txt","@uniq -f1 kv.txt","@uniq -s1 u.txt","@uniq -w1 kv.txt","@uniq u.txt out; cat out","@uniq < u.txt",
+        "@cut -d, -f2 csv.txt","@cut -f1,3 tabs.txt","@cut -c2-4 a.txt","@cut -b1-3,5 a.txt","@cut -d' ' -f2- kv.txt","@cut -s -d, -f1 a.txt","@cut -f2 -s tabs.txt","@cut -f2 tabs.txt","@cut -c-3 b.txt","@cut -c3- b.txt","@cut -d: -f1 /etc/passwd | head -2",
+        "@tac a.txt b.txt","@tac c.txt","@tac < b.txt",
+        "echo hello | @tr a-z A-Z","echo hello | @tr -d l","echo aabbcc | @tr -s ab","echo hello | @tr -c 'a-z\\n' X","echo 'a b' | @tr -cd 'a-z'","echo abc | @tr abc xy","echo 'Hello World' | @tr '[:lower:]' '[:upper:]'","printf 'a\\tb\\n' | @tr '\\t' ' '","echo hello | @tr a-y b-z","echo hello | @tr -d '[:alpha:]'","echo 'a  b   c' | @tr -s ' '","echo abc | @tr 'a-c' '\\n'"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
 test.case("cat passes binary data through untouched and yes stops when its reader does",fn() {

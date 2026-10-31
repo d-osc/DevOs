@@ -4,11 +4,11 @@ extern fn usleep(microseconds: u32): i32
 extern fn signal(number: i32, handler: i64): i64
 
 # ---- cat [-u] [FILE]... -----------------------------------------------------------------------------------------------------------------
-fn copy_fd(fd: i32): bool { unsafe {
+fn copy_fd(fd: i64): bool { unsafe {
     let chunk = sys.calloc(65536, 1) as *u8
     let ok = true
     while true {
-        let n = sys.read(fd, chunk as *void, 65536)
+        let n = sys.read(fd as i32, chunk as *void, 65536)
         if n < 0 { ok = false; break }
         if n == 0 { break }
         let done = 0
@@ -30,11 +30,11 @@ fn run_cat(args: Vec<str>): i64 { unsafe {
     for i in 0..(o.rest.len() as i64) {
         let path = o.rest[i]
         if sys.same(path, "-") { if !copy_fd(0) { status = 1 }; continue }
-        let fd = sys.open(path, 0, 0)
+        let fd = sys.open_fd(path, 0, 0)
         if fd < 0 { sys.warn_path("cat", path); status = 1; continue }
-        if sys.is_dir(path) { sys.warn("cat", sys.join2(sys.join2(path, ": "), "Is a directory")); sys.close(fd); status = 1; continue }
+        if sys.is_dir(path) { sys.warn("cat", sys.join2(sys.join2(path, ": "), "Is a directory")); sys.close_fd(fd); status = 1; continue }
         if !copy_fd(fd) { sys.warn_path("cat", path); status = 1 }
-        sys.close(fd)
+        sys.close_fd(fd)
     }
     return status
 } }
@@ -44,10 +44,10 @@ fn run_tee(args: Vec<str>): i64 { unsafe {
     let o = sys.parse_opts(args, "ai")
     if o.bad != 0 { sys.warn("tee", "invalid option"); return 1 }
     if sys.has(o, 105) { signal(2, 1) }
-    let fds = Vec<i32>(); let status = 0
+    let fds = Vec<i64>(); let status = 0
     for i in 0..(o.rest.len() as i64) {
         let flags = 65 + (sys.has(o, 97) ? 1024 : 512)   # O_WRONLY|O_CREAT plus O_APPEND or O_TRUNC
-        let fd = sys.open(o.rest[i], flags, 438)
+        let fd = sys.open_fd(o.rest[i], flags, 438)
         if fd < 0 { sys.warn_path("tee", o.rest[i]); status = 1 } else { fds.push(fd) }
     }
     let chunk = sys.calloc(65536, 1) as *u8
@@ -55,9 +55,9 @@ fn run_tee(args: Vec<str>): i64 { unsafe {
         let n = sys.read(0, chunk as *void, 65536)
         if n <= 0 { break }
         sys.write(1, chunk as str, n as usize)
-        for k in 0..(fds.len() as i64) { sys.write(fds[k], chunk as str, n as usize) }
+        for k in 0..(fds.len() as i64) { sys.write(fds[k] as i32, chunk as str, n as usize) }
     }
-    for k in 0..(fds.len() as i64) { sys.close(fds[k]) }
+    for k in 0..(fds.len() as i64) { sys.close_fd(fds[k]) }
     return status
 } }
 

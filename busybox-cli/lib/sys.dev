@@ -139,7 +139,7 @@ fn warn_write(prog: str, path: str) { put_fd(2, prog); put_fd(2, ": can't open '
 
 # ---- buffered output ----------------------------------------------------------------------------------------------------------------------------
 struct Out { fd: i32, buf: *Bytes }
-fn out_new(fd: i32): *Out { unsafe { let o = calloc(1, 16) as *Out; (*o).fd = fd; (*o).buf = bytes_new(); return o } }
+fn out_new(fd: i64): *Out { unsafe { let o = calloc(1, 16) as *Out; (*o).fd = fd as i32; (*o).buf = bytes_new(); return o } }
 fn out_flush(o: *Out) { unsafe {
     let done = 0
     while done < blen((*o).buf) {
@@ -306,5 +306,8 @@ fn is_dir_mode(mode: i64): bool { return (mode / 4096) % 16 == 4 }
 fn is_reg_mode(mode: i64): bool { return (mode / 4096) % 16 == 8 }
 fn is_link_mode(mode: i64): bool { return (mode / 4096) % 16 == 10 }
 fn permission_bits(mode: i64): i64 { return mode % 4096 }
+# Safe forms of open / close for applets (a negative descriptor means failure).
+fn open_fd(path: str, flags: i64, mode: i64): i64 { unsafe { return open(path, flags, mode) as i64 } }
+fn close_fd(fd: i64) { unsafe { close(fd as i32) } }
 fn is_dir(path: str): bool { let i = file_info(path, true); return i.ok && is_dir_mode(i.mode) }
 fn exists(path: str): bool { return file_info(path, false).ok }
