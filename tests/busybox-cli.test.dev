@@ -578,6 +578,21 @@ test.case("uncompress (files made by a compress-compatible encoder, checked with
     test.expect(strings.contains(outcome(d, "printf plain > p.Z; " + bb + " uncompress -c p.Z; echo rc=$?"), "rc=1"), "uncompress accepted garbage")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("tcpsvd inetd telnetd tftp tftpd (against local peers)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let tftpd = t.root() + "/tests/lib/mini-tftpd.py"
+    let stop = "; kill $(cat s.pid) 2>/dev/null; sleep 1"
+    test.expect(strings.contains(outcome(d, bb + " tcpsvd 127.0.0.1 18840 sh -c 'echo hello $TCPREMOTEIP' & echo $! > s.pid; sleep 1; " + bb + " nc 127.0.0.1 18840 < /dev/null" + stop), "hello 127.0.0.1"), "tcpsvd did not run the program with the connection")
+    test.expect(strings.contains(outcome(d, bb + " tcpsvd 127.0.0.1 18841 cat & echo $! > s.pid; sleep 1; printf 'echoed text\\n' | " + bb + " nc 127.0.0.1 18841" + stop), "echoed text"), "tcpsvd with cat")
+    test.expect(strings.contains(outcome(d, "printf '18842 stream tcp nowait root internal echo\\n18843 stream tcp nowait root /bin/sh sh -c from-inetd-line\\n' > inetd.conf; " + bb + " inetd -f inetd.conf & echo $! > s.pid; sleep 1; printf 'abc\\n' | " + bb + " nc 127.0.0.1 18842" + stop), "abc"), "inetd internal echo")
+    test.expect(strings.contains(outcome(d, "printf '18844 stream tcp nowait root /bin/echo echo served-by-inetd\\n' > inetd.conf; " + bb + " inetd -f inetd.conf & echo $! > s.pid; sleep 1; " + bb + " nc 127.0.0.1 18844 < /dev/null" + stop), "served-by-inetd"), "inetd program service")
+    test.expect(strings.contains(outcome(d, "printf '#!/bin/sh\\necho welcome-banner\\n' > login.sh; chmod +x login.sh; " + bb + " telnetd -F -p 18845 -l $PWD/login.sh & echo $! > s.pid; sleep 1; " + bb + " telnet 127.0.0.1 18845 < /dev/null" + stop), "welcome-banner"), "telnetd")
+    test.expect(strings.contains(outcome(d, "mkdir srv; head -c 1300 /dev/urandom > srv/blob.bin; python3 " + tftpd + " 18846 srv & sleep 1; " + bb + " tftp -g -r blob.bin -l got.bin 127.0.0.1 18846; wait; cmp got.bin srv/blob.bin; echo cmp=$?"), "cmp=0"), "tftp -g")
+    test.expect(strings.contains(outcome(d, "mkdir srv; head -c 1537 /dev/urandom > up.bin; python3 " + tftpd + " 18847 srv & sleep 1; " + bb + " tftp -p -r up.bin -l up.bin 127.0.0.1 18847; wait; cmp up.bin srv/up.bin; echo cmp=$?"), "cmp=0"), "tftp -p")
+    test.expect(strings.contains(outcome(d, "mkdir srv; head -c 900 /dev/urandom > srv/f.bin; " + bb + " tftpd -p 18848 srv & echo $! > s.pid; sleep 1; python3 -c \"import socket,struct; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(5); s.sendto(b'\\x00\\x01f.bin\\x00octet\\x00',('127.0.0.1',18848)); d=b''\nwhile True:\n  p,a=s.recvfrom(1024); d+=p[4:]; s.sendto(b'\\x00\\x04'+p[2:4],a)\n  if len(p)<516: break\nopen('py.out','wb').write(d)\"; cmp py.out srv/f.bin; echo cmp=$?" + stop), "cmp=0"), "tftpd serving a python client")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

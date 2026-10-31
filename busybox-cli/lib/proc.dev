@@ -156,3 +156,19 @@ fn my_pid(): i64 { unsafe { return getpid() as i64 } }
 fn my_session(): i64 { unsafe { return getsid(0) as i64 } }
 fn parent_pid(): i64 { unsafe { return getppid() as i64 } }
 fn pause_us(microseconds: i64) { unsafe { usleep(microseconds as u32) } }
+
+// Like launch, but the child's standard input and output are the given descriptors (for servers that hand a connection to a program).
+fn launch_fds(argv: Vec<str>, env: Vec<str>, in_fd: i64, out_fd: i64): i64 { unsafe {
+    if argv.len() == 0 { return 0 - 1 }
+    let program = find_program(argv[0], env)
+    if sys.length(program) == 0 { return 0 - 2 }
+    let args = pointer_array(argv); let vars = pointer_array(env)
+    let pid = fork()
+    if pid < 0 { return 0 - 1 }
+    if pid == 0 {
+        dup2(in_fd as i32, 0); dup2(out_fd as i32, 1)
+        execve(program, args, vars)
+        exit(126)
+    }
+    return pid as i64
+} }
