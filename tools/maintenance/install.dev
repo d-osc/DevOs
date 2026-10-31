@@ -19,8 +19,8 @@ fn main(): i32 {
     tool.require(!strings.contains(prefix, "\n") && !strings.contains(prefix, "\r"), "The prefix cannot contain newlines.")
     tool.exec(Vec<str>("sh", root + "/tools/setup/bootstrap-lock.sh"))
     tool.exec(Vec<str>("sh", root + "/tools/setup/bootstrap-window-tracker.sh"))
-    for name in Vec<str>("main", "supervisor", "react-gtk", "panel-view", "launcher-view", "background-view") {
-        tool.require(fs.is_file(root + "/dist/" + name + ".js"), "Run npm ci and npm run build before installing.")
+    for name in Vec<str>("shell", "libsupervisor.so") {
+        tool.require(fs.is_file(root + "/dist/native/" + name), "Run npm ci and npm run build before installing.")
     }
     for folder in Vec<str>("src/apps", "src/system") {
         for directory in fs.readdirSync(root + "/" + folder) {

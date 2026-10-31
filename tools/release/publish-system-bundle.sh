@@ -1,6 +1,6 @@
 #!/bin/sh
 # Attach a system update bundle (kernel, boot image, firmware, system files) to an existing GitHub release and re-sign SHA256SUMS.
-# The bundle comes from a local OpenEmbedded build (gjs -m dist/make-system-bundle.js ...); GitHub Actions cannot build it.
+# The bundle comes from a local OpenEmbedded build (d tools/release/release.dev -- system ...); GitHub Actions cannot build it.
 # Usage: tools/release/publish-system-bundle.sh --tag v0.3.7 --dir build/release --key /path/to/private.pem [--repo d-osc/DevOs] [--dry-run]
 #   --dir   directory with dev-os-system-<platform>.tar.gz and dev-os-system-<platform>.json (one or both platforms)
 #   --key   Ed25519 private key (never committed); required when data/update-keys/*.pub exists, optional otherwise

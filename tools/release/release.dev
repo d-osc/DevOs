@@ -1,0 +1,82 @@
+#!/usr/bin/env d
+# Release tooling (build host, Linux). It replaces tools/build/release.ts, packages/updates/make-patch.ts and make-system-bundle.ts:
+#   d tools/release/release.dev -- package                       -> build/release/dev-os-<platform>.tar.gz + SHA256SUMS (run from the source tree after `npm run build`)
+#   d tools/release/release.dev -- patch --from OLD.tar.gz --to NEW.tar.gz --output build/release
+#   d tools/release/release.dev -- system --version 0.3.7 --platform linux-arm64 --kernel 6.17.0-devos --uki INSTALLED.EFI \
+#       --rootfs /path/to/rootfs --root-path usr/lib/modules/6.17.0-devos --root-path usr/lib/firmware --dereference --output build/release
+# DEV_OS_RELEASE_VERSION and DEV_OS_MIN_COMPATIBLE are read as before. See docs/updates.md.
+use "std/fs"
+use "std/json"
+use "std/process"
+use "std/args"
+use "std/strings"
+use "std/result"
+use "../lib/tool.dev" as tool
+use "../../lib/hw.dev" as hw
+use "../../src/apps/org.devos.updates/protocol.dev" as proto
+use "./pack.dev" as pack
+
+fn machine():str { return strings.trim(hw.run(Vec<str>("uname","-m"),5000).out) }
+fn platform():str { return proto.platform(machine()) }
+fn requirePath(value:str, flag:str):str { hw.require(!strings.equal(value,""),"Missing " + flag); return value }
+fn packageRelease() {
+    let root = process.cwd(); let output = root + "/build/release"
+    let target = platform(); hw.require(!strings.equal(target,""),"Unsupported platform " + machine())
+    let requested = hw.envOr("DEV_OS_RELEASE_VERSION",json.string(json.get(json.parse(fs.readFileSync(root + "/package.json","utf8")),"version")))
+    let name = proto.version(requested); hw.require(!strings.equal(name,""),"Invalid release version " + requested)
+    let built = json.string(json.get(json.parse(fs.readFileSync(root + "/dist/build-info.json","utf8")),"version"))
+    hw.require(strings.equal(built,name),"Build version differs from release version. Rebuild with DEV_OS_RELEASE_VERSION.")
+    let work = pack.temporary("dev-os-release"); let destination = work + "/dev-os"
+    let done = result.attempt(fn():i64 {
+        fs.mkdirSync(destination,true)
+        for directory in Vec<str>("bin","lib","dist","data","config","src/apps","src/system","src/extensions") {
+            if !fs.existsSync(root + "/" + directory) { continue }
+            pack.run(Vec<str>("sh","-c","mkdir -p \"$2/$(dirname \"$3\")\" && cp -R --no-dereference \"$1/$3\" \"$2/$3\" && find \"$2/$3\" \\( -name '*.pyc' -o -name '__pycache__' -o -name '*-test.js' -o -path '*/dist/types' \\) -prune -exec rm -rf {} +","sh",root,destination,directory))
+        }
+        fs.mkdirSync(destination + "/native",true)
+        pack.run(Vec<str>("sh","-c","cp \"$1\"/native/*.dev \"$2/native/\"","sh",root,destination))
+        pack.run(Vec<str>("install","-m0755",root + "/build/native/dev-os-window-tracker",destination + "/native/dev-os-window-tracker"))
+        pack.run(Vec<str>("chmod","-R","a+rX",destination + "/bin"))
+        pack.run(Vec<str>("sh","-c","chmod 755 \"$1\"/bin/*","sh",destination))
+        pack.write(destination + "/release.json",{format:1,version:name,platform:target})
+        pack.writeManifest(destination,name,target,hw.envOr("DEV_OS_MIN_COMPATIBLE","0.0.0"))
+        fs.mkdirSync(output,true)
+        let asset = "dev-os-" + target + ".tar.gz"
+        pack.run(Vec<str>("tar","--format=gnu","-czf",output + "/" + asset,"-C",work,"dev-os"))
+        fs.writeFileSync(output + "/SHA256SUMS",pack.run(Vec<str>("sh","-c","cd \"$1\" && sha256sum \"$2\"","sh",output,asset)))
+        print("Release " + name + ": " + output + "/" + asset)
+        return 0
+    })
+    pkg_remove(work)
+    if result.isErr(done) { hw.failure(result.message(done)) }
+}
+fn pkg_remove(path:str) { hw.run(Vec<str>("rm","-rf","--",path),300000) }
+fn patch() {
+    let from = requirePath(tool.option("--from",""),"--from"); let to = requirePath(tool.option("--to",""),"--to"); let output = requirePath(tool.option("--output",""),"--output")
+    fs.mkdirSync(output,true)
+    let work = pack.temporary("dev-os-patch-name")
+    let target = ""
+    let first = pack.manifestOf(from,work,"from"); let second = pack.manifestOf(to,work,"to")
+    pkg_remove(work)
+    target = output + "/dev-os-patch-" + first.version + "-to-" + second.version + "-" + second.platform + ".tar.gz"
+    let delta = pack.createPatch(from,to,target)
+    print(target + ": ${delta.add.len()} added, ${delta.replace.len()} replaced, ${delta.remove.len()} removed")
+}
+fn system() {
+    let kernel = tool.option("--kernel","")
+    let found = pack.buildSystemBundle(requirePath(tool.option("--version",""),"--version"),tool.option("--platform",platform()),kernel,tool.option("--min","0.0.0"),tool.option("--uki",""),tool.option("--rootfs",""),tool.values("--root-path"),tool.values("--remove"),tool.has("--dereference"),requirePath(tool.option("--output",""),"--output"))
+    print("System update " + found.version + " (" + found.platform + "): " + strings.join(found.components,", ") + "; ${found.esp.len()} boot image file(s), ${found.root.len()} system file(s), ${found.remove.len()} removal(s)")
+}
+fn main():i32 {
+    let command = args.len() > 0 ? args.get(0) : ""
+    let outcome = result.attempt(fn():i64 {
+        if strings.equal(command,"package") { packageRelease() }
+        else if strings.equal(command,"patch") { patch() }
+        else if strings.equal(command,"system") { system() }
+        else { hw.failure("Usage: release.dev -- package | patch --from A --to B --output DIR | system --version V ... --output DIR") }
+        return 0
+    })
+    if result.isErr(outcome) { hw.stderr(result.message(outcome)); return 1 }
+    return 0
+}
+return main()

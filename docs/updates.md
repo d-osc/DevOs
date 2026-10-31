@@ -122,7 +122,7 @@ runtime เก่าเก็บไว้เพื่อย้อนกลับ
 (sha256 ของ manifest ฐานและปลายทาง + รายการ add/replace/remove พร้อม sha256 ของแต่ละไฟล์). สร้างด้วย:
 
 ```sh
-gjs -m dist/make-patch.js --from build/previous/dev-os-linux-arm64.tar.gz --to build/release/dev-os-linux-arm64.tar.gz --output build/release
+d tools/release/release.dev -- patch --from build/previous/dev-os-linux-arm64.tar.gz --to build/release/dev-os-linux-arm64.tar.gz --output build/release
 ```
 
 ตัวติดตั้ง **คัดลอกรุ่นที่ติดตั้งไว้** (ไม่แก้ของเดิม) แล้วลบ/ทับตาม patch และตรวจผลทั้งต้นไม้กับ manifest ปลายทาง; ปฏิเสธเมื่อ manifest ฐานไม่ตรงกับ
@@ -139,7 +139,7 @@ bootloader stub ไว้ในไฟล์เดียว (`distro/usb/prepare.
 `system.list` (รูปแบบบรรทัดที่ helper อ่าน), `esp/EFI/DEVOS/*.EFI` และ `root/usr/...` พร้อม sha256/ขนาด/โหมดของทุกไฟล์. สร้างจากผลของ OE build บนเครื่อง build:
 
 ```sh
-gjs -m dist/make-system-bundle.js --version 0.3.7 --platform linux-arm64 --kernel 6.17.0-devos --uki INSTALLED.EFI \
+d tools/release/release.dev -- system --version 0.3.7 --platform linux-arm64 --kernel 6.17.0-devos --uki INSTALLED.EFI \
     --rootfs /path/to/extracted/rootfs --root-path usr/lib/modules/6.17.0-devos --root-path usr/lib/firmware --dereference --output build/release
 sh tools/release/publish-system-bundle.sh --tag v0.3.7 --dir build/release --key /secure/private.pem   # แนบ asset + ลงนาม SHA256SUMS ใหม่
 ```
@@ -244,13 +244,8 @@ extension เรียก `context.registerSettingsPage(id, Component)` เพ�
 
 ```sh
 npm run build
-gjs -m dist/updates-test.js
-gjs -m dist/extensions-test.js
 d tools/test/smoke.dev --
-gjs -m dist/update-package-test.js   # manifest, ตรวจต้นไม้, patch, ลายเซ็น Ed25519, make-patch (ต้องมี openssl)
-gjs -m dist/system-update-test.js    # helper สิทธิ์ root: boot image A/B, BootNext, commit/rollback, allow-list, ลายเซ็น, ตัวติดตั้งใน UI (ต้องมี openssl)
-gjs -m dist/updates-patch-test.js    # ติดตั้ง/patch/ย้อนกลับ/ไฟล์ในเครื่อง/ล้มเหลวกลางทาง/Live USB/offline/rate limit ด้วย GitHub จำลอง
-gjs -m dist/updates-ui-test.js       # หน้า Settings → Updates
+d tests/release-tools.test.dev     # สร้าง package/patch/system bundle แล้วติดตั้งกลับ
 ```
 
 integration test ใช้ tar จริงใน temporary directories และ mock เฉพาะ network:

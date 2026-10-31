@@ -91,14 +91,14 @@ fn environment(session: Session): Map<str,str> {
     # Startup command clients can briefly share main.js, then exit. Wait for the
     # persistent shell, and tolerate /proc entries disappearing during the scan.
     for attempt in 0..100 {
-        let candidates = processIds(session.runtime, session.root + "/dist/main.js")
+        let candidates = processIds(session.runtime, session.root + "/dist/native/shell")
         let ids = Vec<i64>()
         for pid in candidates {
             let selected = result.attempt(fn():bool {
                 let args = fields("/proc/${pid}/cmdline")
                 for i in 0..(args.len() as i64) {
                     if strings.endsWith(args[i],".js") {
-                        return strings.equal(args[i],session.root+"/dist/main.js") && (i+1 == args.len() as i64 || i+2 == args.len() as i64 && strings.equal(args[i+1],"shell"))
+                        return strings.equal(args[i],session.root+"/dist/native/shell") && (i+1 == args.len() as i64 || i+2 == args.len() as i64 && strings.equal(args[i+1],"shell"))
                     }
                 }
                 return false

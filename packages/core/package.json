@@ -2,41 +2,6 @@
   "name": "@dev-os/core",
   "version": "0.3.7-ux3407na-dev",
   "type": "module",
-  "description": "GLib and Gio helpers for the release tools",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    "./base": {
-      "types": "./dist/base.d.ts",
-      "import": "./dist/base.js"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "THIRD_PARTY_NOTICES.md"
-  ],
-  "dependencies": {
-    "@types/react": "19.2.14",
-    "@girs/gjs": "5.5.0",
-    "@girs/gtk-3.0": "5.5.0",
-    "@girs/gtklayershell-0.1": "5.5.0",
-    "@girs/gio-2.0": "5.5.0",
-    "@girs/glib-2.0": "5.5.0",
-    "@girs/pango-1.0": "5.5.0",
-    "@girs/gdk-3.0": "5.5.0",
-    "@girs/gobject-2.0": "5.5.0",
-    "@girs/glibunix-2.0": "5.5.0",
-    "@girs/soup-3.0": "5.5.0",
-    "@girs/vte-2.91": "5.5.0",
-    "@girs/webkit2-4.1": "5.5.0",
-    "@girs/atk-1.0": "5.5.0",
-    "@girs/cairo-1.0": "5.5.0",
-    "@girs/freetype2-2.0": "5.5.0",
-    "@girs/gdkpixbuf-2.0": "5.5.0",
-    "@girs/gmodule-2.0": "5.5.0",
-    "@girs/harfbuzz-0.0": "5.5.0",
-    "@girs/javascriptcore-4.1": "5.5.0",
-    "@girs/xlib-2.0": "5.5.0"
-  }
+  "private": true,
+  "description": "Theme palette used by the Monaco editor page"
 }

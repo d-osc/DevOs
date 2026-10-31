@@ -1,0 +1,89 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/json"
+use "std/result"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+use "../tools/release/pack.dev" as pack
+use "../src/apps/org.devos.updates/package.dev" as pkg
+use "../src/apps/org.devos.updates/manifest.dev" as manifest
+use "../src/apps/org.devos.updates/system.dev" as sys
+
+# The release tools build packages, patches and system bundles that the DevLang updater reads back: a patch made here must apply to the old tree
+# and give exactly the new one.
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+# <base>/dev-os with a manifest, and <base>.tar.gz of it.
+fn tree(base:str, version:str, text:str, extra:bool) {
+    fs.mkdirSync(base + "/dev-os/bin",true); fs.mkdirSync(base + "/dev-os/data",true)
+    fs.writeFileSync(base + "/dev-os/data/a.txt",text); fs.writeFileSync(base + "/dev-os/bin/run","#!/bin/sh\n")
+    tool.exec(Vec<str>("chmod","755",base + "/dev-os/bin/run"))
+    if extra { fs.writeFileSync(base + "/dev-os/data/new.txt","new") } else { fs.writeFileSync(base + "/dev-os/data/gone.txt","gone") }
+    # The files a package must contain (manifest.dev validateArchive).
+    fs.mkdirSync(base + "/dev-os/dist/native",true); fs.mkdirSync(base + "/dev-os/native",true)
+    fs.writeFileSync(base + "/dev-os/dist/native/shell","shell"); fs.writeFileSync(base + "/dev-os/dist/native/libsupervisor.so","lib"); fs.writeFileSync(base + "/dev-os/dist/build-info.json","{}")
+    fs.writeFileSync(base + "/dev-os/native/dev-os-window-tracker","tracker")
+    for name in Vec<str>("dev-os-session","dev-os-shell","dev-os-start") { fs.writeFileSync(base + "/dev-os/bin/" + name,"#!/bin/sh\n") }
+    pack.write(base + "/dev-os/release.json",{format:1,version:version,platform:"linux-x64"})
+    pack.writeManifest(base + "/dev-os",version,"linux-x64","0.0.0")
+    pack.archive(base + ".tar.gz",base,"dev-os")
+}
+test.case("a manifest lists every file with its checksum and executable bit, the updater's parser accepts it, and links are refused",fn() {
+    let d = temporary()
+    fs.mkdirSync(d + "/pkg/dev-os/bin",true); fs.writeFileSync(d + "/pkg/dev-os/bin/run","x"); fs.writeFileSync(d + "/pkg/dev-os/a.txt","hello")
+    tool.exec(Vec<str>("chmod","755",d + "/pkg/dev-os/bin/run"))
+    let made = pack.writeManifest(d + "/pkg/dev-os","1.2.3","linux-x64","1.0.0")
+    test.expect(made.files.len() == 2 && strings.equal(made.files[0].path,"a.txt") && strings.equal(made.files[0].mode,"644") && strings.equal(made.files[1].path,"bin/run") && strings.equal(made.files[1].mode,"755"),"files")
+    let again = manifest.parseManifest(json.parse(fs.readFileSync(d + "/pkg/dev-os/manifest.json","utf8")),"1.2.3","linux-x64")
+    test.expect(strings.equal(again.error,"") && strings.equal(again.minCompatible,"1.0.0") && strings.equal(again.files[0].sha256,pkg.sha256(d + "/pkg/dev-os/a.txt")),"parsed: " + again.error)
+    tool.exec(Vec<str>("ln","-s","a.txt",d + "/pkg/dev-os/link"))
+    let refused = result.attempt(fn():manifest.Manifest { return pack.writeManifest(d + "/pkg/dev-os","1.2.3","linux-x64","1.0.0") })
+    test.expect(result.isErr(refused) && strings.contains(result.message(refused),"Links and special files"),"links are refused")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a patch between two packages applies to the old tree and gives exactly the new tree",fn() {
+    let d = temporary()
+    tree(d + "/old","0.1.0","one",false); tree(d + "/new","0.2.0","two",true)
+    let delta = pack.createPatch(d + "/old.tar.gz",d + "/new.tar.gz",d + "/patch.tar.gz")
+    test.expect(delta.add.len() == 1 && delta.replace.len() == 2 && delta.remove.len() == 1,"added " + "${delta.add.len()}" + " replaced " + "${delta.replace.len()}" + " removed " + "${delta.remove.len()}")
+    let applied = pkg.applyPatch(d + "/patch.tar.gz",d + "/old/dev-os",d + "/applied")
+    test.expect(strings.equal(applied,""),"apply: " + applied)
+    let same = tool.run(Vec<str>("diff","-r",d + "/applied",d + "/new/dev-os"),Map<str,str>(),"",60000)
+    test.expect(same.success,"the applied tree differs: " + t.out(same))
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("stat","-c","%a",d + "/applied/bin/run"))),"755"),"the executable bit survived")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the command line makes the patch and the system bundle and names what it did",fn() {
+    let d = temporary()
+    tree(d + "/old","0.1.0","one",false); tree(d + "/new","0.2.0","two",true)
+    let env = Map<str,str>()
+    let made = tool.run(Vec<str>("d",t.root() + "/tools/release/release.dev","--","patch","--from",d + "/old.tar.gz","--to",d + "/new.tar.gz","--output",d + "/out"),env,"",120000)
+    test.expect(made.success && strings.contains(t.out(made),"dev-os-patch-0.1.0-to-0.2.0-linux-x64.tar.gz: 1 added, 2 replaced, 1 removed"),"patch: " + t.out(made) + t.err(made))
+    test.expect(fs.existsSync(d + "/out/dev-os-patch-0.1.0-to-0.2.0-linux-x64.tar.gz"),"patch written")
+    let nothing = tool.run(Vec<str>("d",t.root() + "/tools/release/release.dev","--","system","--version","0.3.7","--output",d + "/sys"),env,"",120000)
+    test.expect(!nothing.success && strings.contains(t.err(nothing),"Nothing to ship"),"system without content: " + t.err(nothing))
+    let unknown = tool.run(Vec<str>("d",t.root() + "/tools/release/release.dev","--","bogus"),env,"",120000)
+    test.expect(!unknown.success && strings.contains(t.err(unknown),"Usage"),"usage")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("packages for different platforms and archives without a manifest are refused",fn() {
+    let d = temporary()
+    tree(d + "/old","0.1.0","one",false)
+    fs.mkdirSync(d + "/bare/dev-os",true); fs.writeFileSync(d + "/bare/dev-os/a","x"); pack.archive(d + "/bare.tar.gz",d + "/bare","dev-os")
+    let refused = result.attempt(fn():manifest.Diff { return pack.createPatch(d + "/old.tar.gz",d + "/bare.tar.gz",d + "/p.tar.gz") })
+    test.expect(result.isErr(refused),"an archive without a manifest was accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a system bundle carries the boot image and the chosen directories, with the right components, and nothing outside the allow-list",fn() {
+    let d = temporary()
+    fs.mkdirSync(d + "/rootfs/usr/lib/modules/6.17.0-devos",true); fs.writeFileSync(d + "/rootfs/usr/lib/modules/6.17.0-devos/a.ko","module"); fs.writeFileSync(d + "/uki.efi","image")
+    let meta = pack.buildSystemBundle("0.3.7","linux-arm64","6.17.0-devos","0.0.0",d + "/uki.efi",d + "/rootfs",Vec<str>("usr/lib/modules/6.17.0-devos"),Vec<str>(),false,d + "/out")
+    test.expect(meta.esp.len() == 1 && strings.equal(meta.esp[0].path,"EFI/DEVOS/DEVOS.EFI") && meta.root.len() == 1 && strings.equal(strings.join(meta.components,","),"kernel,initramfs,bootloader"),"meta: " + strings.join(meta.components,","))
+    test.expect(fs.existsSync(d + "/out/dev-os-system-linux-arm64.tar.gz") && fs.existsSync(d + "/out/dev-os-system-linux-arm64.json"),"assets written")
+    let listed = tool.exec(Vec<str>("tar","-tzf",d + "/out/dev-os-system-linux-arm64.tar.gz"))
+    test.expect(strings.contains(listed,"dev-os-system/system.json") && strings.contains(listed,"dev-os-system/system.list") && strings.contains(listed,"esp/EFI/DEVOS/DEVOS.EFI"),"archive: " + listed)
+    let refused = result.attempt(fn():sys.Meta { return pack.buildSystemBundle("0.3.7","linux-arm64","","0.0.0","",d + "/rootfs",Vec<str>("etc"),Vec<str>(),false,d + "/out2") })
+    test.expect(result.isErr(refused),"a path outside the allow-list was accepted")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

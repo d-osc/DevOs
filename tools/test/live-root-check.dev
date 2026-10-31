@@ -32,10 +32,10 @@ fn checks(): i32 {
     report("DEVOS_LIVE_ROOT_CHECK_STARTED")
     let session: str = "/usr/share/dev-os"
     tool.waitFor(fn(): bool {
-        let shells = smoke.processIds("/run/user/0", session + "/dist/main.js")
+        let shells = smoke.processIds("/run/user/0", session + "/dist/native/shell")
         return shells.len() == 1 && strings.contains(util.read("/run/devos-live/root-session.log"), "Dev OS shell ready")
     }, 150000, "Live root shell/compositor did not start.")
-    let shells = smoke.processIds("/run/user/0", session + "/dist/main.js")
+    let shells = smoke.processIds("/run/user/0", session + "/dist/native/shell")
     let pid = json.stringify(shells[0])
     tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("stat", "-c", "%u", "/proc/" + pid))), "0"), "Live desktop must run as UID 0.")
     let environment = Map<str,str>()
@@ -70,15 +70,15 @@ fn checks(): i32 {
     tool.checked(Vec<str>("wlopm", "--help"), environment, "", 10000)
     report("DEVOS_LIVE_CLOCK_COVER_PASS: native cover, lid controller and output-power client installed")
     tool.checked(Vec<str>("d", session + "/bin/dev-os-app-launch", "--", "dev-os-installer.desktop", session + "/data/applications/dev-os-installer.desktop"), environment, "", 20000)
-    tool.waitFor(fn(): bool { return smoke.processIds("/run/user/0", session + "/dist/main.js").len() == 1 }, 5000, "Opening Installer started a duplicate desktop shell.")
+    tool.waitFor(fn(): bool { return smoke.processIds("/run/user/0", session + "/dist/native/shell").len() == 1 }, 5000, "Opening Installer started a duplicate desktop shell.")
     tool.checked(Vec<str>("d", session + "/bin/dev-os-app-launch", "--", "dev-os-installer.desktop", session + "/data/applications/dev-os-installer.desktop"), environment, "", 20000)
     # gio launch returns before its remote CLI exits. Under QEMU that short-lived
     # main.js client can still be alive after five seconds; it is not a desktop.
     # Require the original shell PID, and the isolated Installer singleton, after
     # both remote clients have completed rather than counting a fixed-time snapshot.
-    report("DEVOS_LIVE_INSTALLER_CLIENT_PIDS=" + json.stringify(smoke.processIds("/run/user/0", session + "/dist/main.js")))
+    report("DEVOS_LIVE_INSTALLER_CLIENT_PIDS=" + json.stringify(smoke.processIds("/run/user/0", session + "/dist/native/shell")))
     tool.waitFor(fn(): bool {
-        let current = smoke.processIds("/run/user/0", session + "/dist/main.js")
+        let current = smoke.processIds("/run/user/0", session + "/dist/native/shell")
         return current.len() == 1 && current[0] == shells[0] && installerHosts() == 1
     }, 30000, "Reopening Installer did not settle to the original shell and one isolated Installer.")
     report("DEVOS_LIVE_INSTALLER_SINGLE_SHELL_PASS; SWAYLOCK_ROOT_PAM_PASS")

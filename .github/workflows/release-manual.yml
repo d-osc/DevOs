@@ -125,7 +125,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Package the update archive
-        run: node tools/build/release.ts
+        run: d tools/release/release.dev -- package
       - name: Build a patch from the previous release
         # Optional: users on the previous version download a few MB instead of the full package. No previous release, or
         # one from before manifests existed, simply means no patch; the full package is always published.
@@ -139,7 +139,7 @@ jobs:
           if [ -z "$previous" ]; then echo "::notice::No previous release, so no patch for $PLATFORM"; else
             mkdir -p build/previous
             if gh release download "$previous" --pattern "dev-os-$PLATFORM.tar.gz" --dir build/previous                && tar -tzf "build/previous/dev-os-$PLATFORM.tar.gz" dev-os/manifest.json >/dev/null 2>&1; then
-              gjs -m dist/make-patch.js --from "build/previous/dev-os-$PLATFORM.tar.gz" --to "$package" --output build/release
+              d tools/release/release.dev -- patch --from "build/previous/dev-os-$PLATFORM.tar.gz" --to "$package" --output build/release
             else
               echo "::notice::$previous has no $PLATFORM package with a manifest, so no patch"
             fi

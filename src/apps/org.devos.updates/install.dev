@@ -470,7 +470,7 @@ fn useInstalled(ctx:Ctx, request:str, runtimeDir:str, shellCommand:Vec<str>):Out
     if result.isErr(parsed) { return failed("Installed release metadata is missing") }
     let version = text(result.unwrap(parsed),"version")
     let native = fs.is_file(selected + "/bin/dev-os-supervisor") && fs.is_file(selected + "/src/system/supervisor.dev") && fs.is_file(selected + "/dist/native/libsupervisor.so")
-    if run(Vec<str>("test","-x",selected + "/bin/dev-os-start")).code != 0 || !(native || fs.is_file(selected + "/dist/supervisor.js")) { return failed("Installed session manager is missing") }
+    if run(Vec<str>("test","-x",selected + "/bin/dev-os-start")).code != 0 || !native { return failed("Installed session manager is missing") }
     let reported = strings.trim(run(Vec<str>(selected + "/bin/dev-os-shell","--version")).out)
     if !strings.equal(reported,version) { return failed("Installed runtime version does not match its package metadata") }
     if run(Vec<str>(selected + "/bin/dev-os-shell","doctor")).code != 0 { return failed("The installed version is missing dependencies (dev-os-shell doctor failed). Nothing was changed.") }

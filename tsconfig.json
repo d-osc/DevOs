@@ -24,36 +24,12 @@
       "@girs/webkit2-4.1",
       "@girs/soup-3.0"
     ],
-    "paths": {
-      "@dev-os/core/*": [
-        "./packages/core/*.ts"
-      ],
-      "@dev-os/extensions/*": [
-        "./packages/extensions/*.ts"
-      ],
-      "@dev-os/updates/*": [
-        "./packages/updates/*.ts"
-      ],
-      "@dev-os/config": [
-        "./packages/config/index.ts"
-      ],
-      "@dev-os/config/*": [
-        "./packages/config/*"
-      ]
-    }
+    "paths": {}
   },
   "include": [
-    "src/apps/**/*.ts",
-    "src/apps/**/*.tsx",
-    "src/extensions/**/*.ts",
-    "src/extensions/**/*.tsx",
-    "packages/**/*.ts",
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "examples/**/*.tsx",
-    "tests/**/*.ts",
-    "tests/**/*.tsx",
-    "packages/**/*.tsx"
+    "packages/core/*.ts",
+    "src/apps/org.devos.editor/**/*.ts",
+    "src/apps/org.devos.editor/**/*.tsx"
   ],
   "exclude": [
     "src/apps/org.devos.editor/browser"

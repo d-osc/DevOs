@@ -9,7 +9,6 @@ test.case("wallpaper renderer builds as a native executable",fn() {
     let math=strings.trim(tool.exec(Vec<str>("cc","-print-file-name=libm.so.6")))
     tool.checked(Vec<str>("sh",t.library()+"/tools/build.sh",t.root()+"/tests/react-devlang/background-render.dev",t.root()+"/build/background-native-parity/paint","",math),Map<str,str>(),"",90000)
     tool.checked(Vec<str>(t.root()+"/build/background-native-parity/paint"),Map<str,str>(),"",30000)
-    tool.checked(Vec<str>("gjs","-m",t.root()+"/dist/background-render-reference-test.js"),Map<str,str>(),"",30000)
 })
 fn parity(mode:i64,style:i64,phase:i64) {
     test.case("native style ${style}, theme ${mode}, phase ${phase} keeps every pixel",fn() {

@@ -8,16 +8,16 @@
     "migration:audit": "d tools/maintenance/migration-audit.dev",
     "migration:check": "d tools/maintenance/migration-audit.dev -- --require-complete",
     "migration:no-gjs": "d tools/maintenance/no-gjs-audit.dev",
-    "theme:generate": "d tools/theme/generate-palette.dev",
     "dev": "npm run build && sh bin/dev-os-session --nested",
     "check": "npm run build",
     "doctor": "sh bin/dev-os-shell doctor",
     "smoke": "npm run build && d tools/test/smoke.dev --",
     "build": "node tools/build/build.ts",
     "watch": "node tools/build/build.ts --watch",
-    "release:package": "node tools/build/release.ts",
+    "release:package": "d tools/release/release.dev -- package",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.tools.json && tsc --project tsconfig.editor.json",
-    "typecheck:watch": "tsc --noEmit --watch"
+    "typecheck:watch": "tsc --noEmit --watch",
+    "theme:generate": "d tools/theme/generate-palette.dev"
   },
   "dependencies": {
     "monaco-editor": "0.57.0",

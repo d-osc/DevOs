@@ -53,9 +53,9 @@ fn main():i32 {
         let recovered=result.run(fn() {tool.waitFor(fn():bool {let current=children(manager);if current.len()!=2 {return false};return current[0]!=outputs[0] && current[1]!=outputs[0]},10000,"Disconnected data service did not recover its UI")})
         tool.write(root+"/build/react-devlang/panel/production-session.log",tool.read(session.log));result.unwrap(recovered)
         for pid in interpreters {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid) || strings.contains(tool.read("/proc/"+pid+"/status"),"State:\tZ")},5000,"Data interpreter survived UI recovery")}
-        let shells=smoke.processIds(session.runtime,root+"/dist/main.js");tool.require(shells.len()==1,"Expected one shell before crash")
+        let shells=smoke.processIds(session.runtime,root+"/dist/native/shell");tool.require(shells.len()==1,"Expected one shell before crash")
         tool.checked(Vec<str>("kill","-KILL","${shells[0]}"),env,"",5000)
-        tool.waitFor(fn():bool {let current=smoke.processIds(session.runtime,root+"/dist/main.js");return current.len()==1 && current[0]!=shells[0]},15000,"Shell did not recover")
+        tool.waitFor(fn():bool {let current=smoke.processIds(session.runtime,root+"/dist/native/shell");return current.len()==1 && current[0]!=shells[0]},15000,"Shell did not recover")
         let retained=smoke.processIds(session.runtime,root+"/dist/native/system-panel");tool.require(retained.len()==1 && retained[0]==manager,"Shell restart duplicated or restarted panel manager")
         for pid in children(manager) {tool.waitFor(fn():bool {return strings.contains(tool.read(session.log),"PANEL FRAME "+pid+"\n")},15000,"Recovered native panel did not render its data frame")}
         smoke.screenshot(env,root+"/build/screenshots/panel-production-native.png")

@@ -43,9 +43,9 @@ fn main():i32 {
             tool.waitFor(fn():bool {let ids=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare");return ids.len()==1 && ids[0]!=ui[0]},15000,"Supervisor did not restart Display Care after tracker failure")
             let recovered=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare")
             for pid in owned {tool.waitFor(fn():bool {return !fs.existsSync("/proc/"+pid) || strings.contains(tool.read("/proc/"+pid+"/status"),"State:\tZ")},5000,"Old Display Care child survived restart")}
-            let shells=smoke.processIds(session.runtime,session.root+"/dist/main.js");tool.require(shells.len()==1,"Expected one shell")
+            let shells=smoke.processIds(session.runtime,session.root+"/dist/native/shell");tool.require(shells.len()==1,"Expected one shell")
             tool.checked(Vec<str>("kill","-KILL","${shells[0]}"),env,"",5000)
-            tool.waitFor(fn():bool {let ids=smoke.processIds(session.runtime,session.root+"/dist/main.js");return ids.len()==1 && ids[0]!=shells[0]},15000,"Shell did not recover")
+            tool.waitFor(fn():bool {let ids=smoke.processIds(session.runtime,session.root+"/dist/native/shell");return ids.len()==1 && ids[0]!=shells[0]},15000,"Shell did not recover")
             let retained=smoke.processIds(session.runtime,session.root+"/dist/native/system-displaycare");tool.require(retained.len()==1 && retained[0]==recovered[0],"Shell restart replaced native Display Care")
             smoke.closeInput(pointer)
             print("PASS native display care, separate data worker, layer-shell saver, restore and cleanup")

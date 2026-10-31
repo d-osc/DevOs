@@ -48,7 +48,7 @@ fn main(): i32 {
             smoke.waitReady(session); keyboard.waitFile(base + "/service.pid")
             tool.require(strings.contains(util.read(session.log), "(" + outputs + " output(s))"), "Incorrect headless output count.")
             let env: Map<str,str> = smoke.environment(session)
-            let shellPid = smoke.processIds(session.runtime, root + "/dist/main.js")[0]
+            let shellPid = smoke.processIds(session.runtime, root + "/dist/native/shell")[0]
             let servicePid: i64 = json.int(json.parse(strings.trim(tool.read(base + "/service.pid"))))
             print("PASS: compositor, layer surfaces and managed autostart started")
             let strict = env; strict.set("G_DEBUG", "fatal-criticals")

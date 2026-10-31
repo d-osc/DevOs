@@ -29,7 +29,7 @@ done
 [[ $version =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-ux3407na-dev)?$ ]] || { echo '--version must be vMAJOR.MINOR.PATCH, optionally followed by -ux3407na-dev' >&2; exit 2; }
 [ -n "$output" ] || { echo '--output is required' >&2; exit 2; }
 [ "$(uname -m)" = aarch64 ] || { echo 'The UX3407NA image is built on an ARM64 Linux host.' >&2; exit 2; }
-for tool in d sfdisk mcopy debugfs zstd split sha256sum gjs; do command -v "$tool" >/dev/null || { echo "Missing build-host tool: $tool" >&2; exit 2; }; done
+for tool in d sfdisk mcopy debugfs zstd split sha256sum; do command -v "$tool" >/dev/null || { echo "Missing build-host tool: $tool" >&2; exit 2; }; done
 # Use the staging tool shipped by the checked-out branch.
 prepare=(python3 "$root/distro/usb/prepare.py")
 if [ -f "$root/distro/usb/prepare.dev" ]; then prepare=(d "$root/distro/usb/prepare.dev" --); fi
@@ -84,7 +84,7 @@ if [ "$firmware" = 1 ] && debugfs -R "rdump /usr/lib/firmware $work/rootfs/usr/l
 fi
 args=()
 for path in "${paths[@]}"; do args+=(--root-path "$path"); done
-gjs -m "$root/dist/make-system-bundle.js" --version "$build_version" --platform linux-arm64 --kernel "$kernel" --uki "$work/DEVOS.EFI" \
+d "$root/tools/release/release.dev" -- system --version "$build_version" --platform linux-arm64 --kernel "$kernel" --uki "$work/DEVOS.EFI" \
     --rootfs "$work/rootfs" "${args[@]}" --dereference --output "$output"
 
 fi

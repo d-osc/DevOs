@@ -45,7 +45,7 @@ fn main(): i32 {
         let outcome = result.run(fn() {
             smoke.waitReady(session)
             let environment = smoke.environment(session)
-            let ids = smoke.processIds(session.runtime, initial + "/dist/main.js")
+            let ids = smoke.processIds(session.runtime, initial + "/dist/native/shell")
             tool.require(ids.len() == 1, "Expected one updated shell.")
             let shellPid = ids[0]
             if tool.has("--switch") {
@@ -59,7 +59,7 @@ fn main(): i32 {
                 tool.waitFor(fn(): bool { return tool.count(util.read(log), "Dev OS shell ready") >= 2 }, 30000, "Updated shell did not start.")
                 let updated = smoke.Session(installed, base, session.runtime, log, env, child)
                 environment = smoke.environment(updated)
-                let current = smoke.processIds(session.runtime, installed + "/dist/main.js")
+                let current = smoke.processIds(session.runtime, installed + "/dist/native/shell")
                 tool.require(current.len() == 1, "Version switch started duplicate shells.")
                 shellPid = current[0]
                 tool.require(strings.equal(environment.get("LABWC_PID"), compositor), "Version switch restarted the compositor.")

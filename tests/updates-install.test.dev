@@ -17,7 +17,7 @@ fn put(file:str, content:str, executable:bool) {
     fs.writeFileSync(file,content)
     if executable { tool.exec(Vec<str>("chmod","755",file)) }
 }
-fn names():Vec<str> { return Vec<str>("dist/main.js","dist/supervisor.js","dist/react-gtk.js","bin/dev-os-session","bin/dev-os-shell","bin/dev-os-start","native/dev-os-window-tracker","release.json","data/keep.txt","data/old-only.txt") }
+fn names():Vec<str> { return Vec<str>("dist/native/shell","dist/native/libsupervisor.so","dist/build-info.json","bin/dev-os-session","bin/dev-os-supervisor","src/system/supervisor.dev","bin/dev-os-shell","bin/dev-os-start","native/dev-os-window-tracker","release.json","data/keep.txt","data/old-only.txt") }
 fn isExecutable(name:str):bool { return strings.startsWith(name,"bin/") || strings.startsWith(name,"native/") }
 fn contentOf(version:str, name:str):str {
     if strings.equal(name,"release.json") { return "{\"format\":1,\"version\":\"" + version + "\",\"platform\":\"" + machine() + "\"}" }
@@ -91,7 +91,7 @@ test.case("a tampered package is refused and leaves the system untouched",fn() {
     let base = temporary(); let root = base + "/root"
     # The manifest says one thing and the file another.
     tree(base + "/bad/dev-os","0.3.0","0.0.0","","")
-    fs.writeFileSync(base + "/bad/dev-os/dist/main.js","tampered\n")
+    fs.writeFileSync(base + "/bad/dev-os/dist/native/shell","tampered\n")
     sh("tar -czf '" + base + "/bad.tar.gz' -C '" + base + "/bad' dev-os")
     let out = inst.installFile(ctx(root,"","0.2.0"),base + "/bad.tar.gz")
     test.expect(strings.contains(out.error,"manifest checksum") && !fs.existsSync(root + "/history.json") && strings.equal(leftovers(root),"0"),"Tampered package installed: " + out.error)
@@ -224,9 +224,9 @@ test.case("the session is switched to the installed version only after its own c
     tool.exec(Vec<str>("touch",selected + "/bin/dev-os-shell.fail"))
     test.expect(strings.contains(inst.useInstalled(c,request,runtime,shell).error,"missing dependencies") && !fs.existsSync(request) && !fs.existsSync(mark),"A failing doctor did not stop the switch")
     tool.exec(Vec<str>("rm","-f",selected + "/bin/dev-os-shell.fail"))
-    tool.exec(Vec<str>("mv",selected + "/dist/supervisor.js",selected + "/dist/supervisor.js.off"))
+    tool.exec(Vec<str>("mv",selected + "/dist/native/libsupervisor.so",selected + "/dist/native/libsupervisor.so.off"))
     test.expect(strings.contains(inst.useInstalled(c,request,runtime,shell).error,"session manager is missing") && !fs.existsSync(request),"A missing session manager did not stop the switch")
-    tool.exec(Vec<str>("mv",selected + "/dist/supervisor.js.off",selected + "/dist/supervisor.js"))
+    tool.exec(Vec<str>("mv",selected + "/dist/native/libsupervisor.so.off",selected + "/dist/native/libsupervisor.so"))
     test.expect(strings.contains(inst.useInstalled(c,request,runtime,Vec<str>("false")).error,"could not be restarted"),"A failing restart was not reported")
     tool.exec(Vec<str>("rm","-f",request))
     let ok = inst.useInstalled(c,request,runtime,shell)

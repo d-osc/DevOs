@@ -15,7 +15,7 @@ fn put(file:str, content:str, executable:bool) {
     fs.writeFileSync(file,content)
     if executable { tool.exec(Vec<str>("chmod","755",file)) }
 }
-fn names():Vec<str> { return Vec<str>("dist/main.js","dist/supervisor.js","dist/react-gtk.js","bin/dev-os-session","bin/dev-os-shell","bin/dev-os-start","native/dev-os-window-tracker","release.json","data/same.txt") }
+fn names():Vec<str> { return Vec<str>("dist/native/shell","dist/native/libsupervisor.so","dist/build-info.json","bin/dev-os-session","bin/dev-os-shell","bin/dev-os-start","native/dev-os-window-tracker","release.json","data/same.txt") }
 fn isExecutable(name:str):bool { return strings.startsWith(name,"bin/") || strings.startsWith(name,"native/") }
 fn contentOf(version:str, name:str):str { return strings.equal(name,"data/same.txt") ? "same\n" : strings.equal(name,"release.json") ? "{\"v\":\"" + version + "\"}" : "// " + version + " " + name + "\n" }
 # A release tree whose manifest.json is built from the real file contents; `extra` adds a file, `without` drops one.
@@ -67,14 +67,14 @@ test.case("SHA256SUMS, asset names and release extras",fn() {
     test.expect(!m.releaseExtras({tag_name:"v0.4.0",assets:json.array()},"o/r","linux-x64","0.3.0").patch.found,"No patch asset, no patch")
 })
 test.case("archive listings are checked before anything is unpacked",fn() {
-    let required = Vec<str>("dev-os/","dev-os/release.json","dev-os/dist/main.js","dev-os/dist/supervisor.js","dev-os/dist/react-gtk.js","dev-os/bin/dev-os-session","dev-os/bin/dev-os-shell","dev-os/bin/dev-os-start","dev-os/native/dev-os-window-tracker")
+    let required = Vec<str>("dev-os/","dev-os/release.json","dev-os/dist/native/shell","dev-os/dist/native/libsupervisor.so","dev-os/dist/build-info.json","dev-os/bin/dev-os-session","dev-os/bin/dev-os-shell","dev-os/bin/dev-os-start","dev-os/native/dev-os-window-tracker")
     let namesText = strings.join(required,"\n"); let rows = Vec<str>(); for name in required { rows.push((strings.endsWith(name,"/") ? "drwxr-xr-x" : "-rw-r--r--") + " 0/0 12 2026-01-01 00:00 " + name) }
     let details = strings.join(rows,"\n")
     test.expect(strings.equal(m.validateArchive(namesText,details),""),"Valid archive refused")
     test.expect(!strings.equal(m.validateArchive(strings.replaceAll(namesText,"dev-os/release.json","dev-os/../outside"),details),""),"Path traversal accepted")
     test.expect(!strings.equal(m.validateArchive(strings.replaceAll(namesText,"dev-os/release.json","other/release.json"),details),""),"Foreign root accepted")
     test.expect(!strings.equal(m.validateArchive(namesText,strings.replaceAll(details,"-rw-r--r--","lrwxrwxrwx")),""),"Symlink accepted")
-    test.expect(strings.contains(m.validateArchive(strings.replaceAll(namesText,"dev-os/dist/main.js","dev-os/dist/other.js"),details),"missing dev-os/dist/main.js"),"Missing required file accepted")
+    test.expect(strings.contains(m.validateArchive(strings.replaceAll(namesText,"dev-os/dist/native/shell","dev-os/dist/other.js"),details),"missing dev-os/dist/native/shell"),"Missing required file accepted")
     test.expect(!strings.equal(m.validateArchive(namesText,strings.replaceAll(details," 12 "," 2000000000 ")),""),"Oversized expansion accepted")
     test.expect(!strings.equal(m.validateArchive(namesText,details + "\n-rw-r--r-- 0/0 1 x y"),""),"Mismatched listing accepted")
     test.expect(strings.equal(m.validatePatchArchive("dev-os-patch/\ndev-os-patch/patch.json\ndev-os-patch/manifest.json\ndev-os-patch/tree/a","drwxr-xr-x 0/0 0 d\n-rw-r--r-- 0/0 1 p\n-rw-r--r-- 0/0 1 m\n-rw-r--r-- 0/0 1 a"),""),"Valid patch listing refused")
@@ -86,7 +86,7 @@ test.case("verifyTree accepts exactly the manifest and nothing else",fn() {
     let good = pkg.readManifest(base + "/ok")
     test.expect(strings.equal(good.error,"") && strings.equal(good.version,"0.3.0") && strings.equal(pkg.verifyTree(base + "/ok",good.files),""),"A correct tree was refused")
     test.expect(strings.equal(pkg.readManifest(base + "/nothing").version,""),"A missing manifest must report no version")
-    sh("cp -a '" + base + "/ok' '" + base + "/changed'"); fs.writeFileSync(base + "/changed/dist/main.js","tampered\n")
+    sh("cp -a '" + base + "/ok' '" + base + "/changed'"); fs.writeFileSync(base + "/changed/dist/native/shell","tampered\n")
     test.expect(strings.contains(pkg.verifyTree(base + "/changed",good.files),"does not match"),"A modified file passed")
     sh("cp -a '" + base + "/ok' '" + base + "/extra'"); put(base + "/extra/bin/evil","x",true)
     test.expect(strings.contains(pkg.verifyTree(base + "/extra",good.files),"Unexpected file bin/evil"),"An extra file passed")

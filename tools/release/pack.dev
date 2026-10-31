@@ -1,0 +1,131 @@
+# Building update packages, patches and system bundles (release tooling, build host only). The reading side lives in src/apps/org.devos.updates; the
+# formats are the same. Programs run with separate arguments (tar, find, sha256sum); every failure raises with a message.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../lib/hw.dev" as hw
+use "../../src/apps/org.devos.updates/manifest.dev" as manifest
+use "../../src/apps/org.devos.updates/package.dev" as pkg
+use "../../src/apps/org.devos.updates/system.dev" as sys
+
+fn run(argv:Vec<str>):str {
+    let done = hw.run(argv,300000)
+    hw.require(done.code == 0,argv[0] + " failed: " + strings.trim(done.out))
+    return done.out
+}
+fn executable(mode:str):bool {
+    for i in 0..(strings.charLength(mode) as i64) { if strings.contains("1357",strings.substring(mode,i,i+1)) { return true } }
+    return false
+}
+# Every file under `directory` (links and special files are refused), sorted by path.
+fn listTree(directory:str):Vec<manifest.File> {
+    let odd = strings.trim(run(Vec<str>("find",directory,"-mindepth","1","-not","-type","f","-not","-type","d")))
+    hw.require(strings.equal(odd,""),"Links and special files are not allowed: " + strings.split(odd,"\n")[0])
+    let listing = run(Vec<str>("sh","-c","cd \"$1\" && find . -type f -printf '%m\\t%s\\t%P\\n' | LC_ALL=C sort -t '\t' -k3","sh",directory))
+    let hashes = Map<str,str>()
+    for line in strings.split(run(Vec<str>("sh","-c","cd \"$1\" && find . -type f -print0 | xargs -0 -r sha256sum","sh",directory)),"\n") {
+        if strings.charLength(line) > 68 { hashes.set(strings.substring(line,68,strings.charLength(line)),strings.substring(line,0,64)) }
+    }
+    let out = Vec<manifest.File>()
+    for line in strings.split(listing,"\n") {
+        if strings.equal(line,"") { continue }
+        let cells = strings.split(line,"\t")
+        out.push(manifest.File(cells[2],hashes.get(cells[2]),hw.toInt(cells[1],0),executable(cells[0]) ? "755" : "644"))
+    }
+    return out
+}
+fn fileJson(item:manifest.File):json.Value { return {path:item.path,sha256:item.sha256,size:item.size,mode:item.mode} }
+fn filesJson(items:Vec<manifest.File>):json.Value { let out = json.array(); for item in items { out = json.push(out,fileJson(item)) }; return out }
+fn stringsJson(items:Vec<str>):json.Value { let out = json.array(); for item in items { out = json.push(out,item) }; return out }
+fn write(path:str, value:json.Value) { fs.writeFileSync(path,json.pretty(value) + "\n") }
+
+# manifest.json for the tree at `directory` (written into it), checked with the same parser the updater uses.
+fn writeManifest(directory:str, version:str, platform:str, minCompatible:str):manifest.Manifest {
+    let files = listTree(directory)
+    let value = {format:1,version:version,platform:platform,minCompatible:minCompatible,postInstall:stringsJson(Vec<str>("restart-shell")),rollback:{strategy:"keep-previous"},files:filesJson(files)}
+    let checked = manifest.parseManifest(value,"","")
+    hw.require(strings.equal(checked.error,""),checked.error)
+    write(directory + "/manifest.json",value)
+    return checked
+}
+fn archive(output:str, parent:str, name:str) {
+    run(Vec<str>("tar","--sort=name","--mtime=@0","--owner=0","--group=0","--numeric-owner","-czf",output,"-C",parent,name))
+}
+fn manifestOf(archivePath:str, temporary:str, name:str):manifest.Manifest {
+    let target = temporary + "/" + name + ".json"
+    hw.require(pkg.extractText(archivePath,"dev-os/manifest.json",target),"Both packages need a manifest.json")
+    let parsed = manifest.parseManifest(json.parse(fs.readFileSync(target,"utf8")),"","")
+    hw.require(strings.equal(parsed.error,""),parsed.error)
+    return parsed
+}
+fn temporary(prefix:str):str { return strings.trim(run(Vec<str>("mktemp","-d","-t",prefix + "-XXXXXX"))) }
+
+# A file-level patch between two update packages: the changed files and the target manifest; applied by package.dev applyPatch.
+fn createPatch(fromArchive:str, toArchive:str, output:str):manifest.Diff {
+    let work = temporary("dev-os-patch")
+    let done = result.attempt(fn():manifest.Diff {
+        let from = manifestOf(fromArchive,work,"from"); let to = manifestOf(toArchive,work,"to")
+        hw.require(strings.equal(from.platform,to.platform),"Packages are for different platforms")
+        for each in Vec<str>(fromArchive,toArchive) {
+            let listing = pkg.tarList(each)
+            hw.require(strings.equal(listing.error,""),listing.error)
+            let refused = manifest.validateArchive(listing.names,listing.details)
+            hw.require(strings.equal(refused,""),refused)
+        }
+        let target = work + "/target"; let patchRoot = work + "/dev-os-patch"; let tree = patchRoot + "/tree"
+        fs.mkdirSync(target,true); fs.mkdirSync(tree,true)
+        run(Vec<str>("tar","-xzf",toArchive,"-C",target,"--strip-components=1","--no-same-owner"))
+        let delta = manifest.diff(from,to)
+        let changed = Vec<str>()
+        for item in delta.add { changed.push(item.path) }
+        for item in delta.replace { changed.push(item.path) }
+        if changed.len() > 0 {
+            fs.writeFileSync(work + "/changed.list",strings.join(changed,"\n") + "\n")
+            run(Vec<str>("sh","-c","tar -cf - -C \"$1\" -T \"$3\" | tar -xf - -C \"$2\" --no-same-owner","sh",target,tree,work + "/changed.list"))
+        }
+        let meta = {format:1,kind:"patch",from:from.version,to:to.version,platform:to.platform,baseManifestSha256:pkg.sha256(work + "/from.json"),targetManifestSha256:pkg.sha256(work + "/to.json"),add:filesJson(delta.add),replace:filesJson(delta.replace),remove:stringsJson(delta.remove)}
+        write(patchRoot + "/patch.json",meta)
+        run(Vec<str>("cp","--",work + "/to.json",patchRoot + "/manifest.json"))
+        archive(output,work,"dev-os-patch")
+        let checked = manifest.parsePatch(json.parse(fs.readFileSync(patchRoot + "/patch.json","utf8")))
+        hw.require(strings.equal(checked.error,""),checked.error)
+        return delta
+    })
+    pkg.remove(work)
+    if result.isErr(done) { hw.failure(result.message(done)) }
+    return result.unwrap(done)
+}
+
+# dev-os-system-<platform>.tar.gz (+ .json): the unified kernel image and directories of the root file system.
+fn buildSystemBundle(version:str, platform:str, kernel:str, minCompatible:str, uki:str, rootfs:str, rootPaths:Vec<str>, removals:Vec<str>, dereference:bool, output:str):sys.Meta {
+    hw.require(!strings.equal(uki,"") || rootPaths.len() > 0 || removals.len() > 0,"Nothing to ship: give --uki, --root-path or --remove")
+    hw.require(strings.equal(uki,"") || !strings.equal(kernel,""),"--kernel (the uname -r of the bundled kernel) is required with --uki")
+    let work = temporary("dev-os-system-bundle"); let stage = work + "/dev-os-system"
+    let made = result.attempt(fn():sys.Meta {
+        fs.mkdirSync(stage + "/esp/EFI/DEVOS",true); fs.mkdirSync(stage + "/root",true)
+        if !strings.equal(uki,"") { run(Vec<str>("cp","--",uki,stage + "/esp/EFI/DEVOS/DEVOS.EFI")) }
+        for path in rootPaths {
+            hw.require(!strings.equal(rootfs,""),"--rootfs is required with --root-path")
+            let plain = strings.endsWith(path,"/") ? strings.substring(path,0,strings.charLength(path) - 1) : path
+            hw.require(sys.okRootPath(plain + "/x") || sys.okRootPath(path),"Path " + path + " is not allowed in a system update")
+            run(Vec<str>("sh","-c","cd \"$1\" && tar -c" + (dereference ? "h" : "") + "f - \"$2\" | tar -xf - -C \"$3\" --no-same-owner","sh",rootfs,path,stage + "/root"))
+        }
+        if strings.equal(uki,"") { pkg.remove(stage + "/esp") }
+        let esp = Vec<manifest.File>(); let root = Vec<manifest.File>()
+        if !strings.equal(uki,"") { for item in listTree(stage + "/esp") { esp.push(item) } }
+        for item in listTree(stage + "/root") { root.push(item) }
+        let value = {format:1,kind:"system",version:version,platform:platform,kernel:strings.equal(uki,"") ? "" : kernel,minCompatible:minCompatible,components:stringsJson(sys.deriveComponents(esp,root)),esp:filesJson(esp),root:filesJson(root),remove:stringsJson(removals)}
+        let meta = sys.parseMeta(value,"")
+        hw.require(strings.equal(meta.error,""),meta.error)
+        write(stage + "/system.json",value)
+        fs.writeFileSync(stage + "/system.list",sys.systemList(meta))
+        fs.mkdirSync(output,true)
+        archive(output + "/" + sys.assetName(platform),work,"dev-os-system")
+        write(output + "/" + sys.metaName(platform),value)
+        return meta
+    })
+    pkg.remove(work)
+    if result.isErr(made) { hw.failure(result.message(made)) }
+    return result.unwrap(made)
+}

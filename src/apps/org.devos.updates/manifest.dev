@@ -225,7 +225,7 @@ fn validateArchive(names:str, details:str):str {
     let reason = listing(names,details,"dev-os",20000,"Unsafe path in update package","Update packages cannot contain links or special files","Invalid package member size","Update package expands beyond 1 GiB","Invalid package file list")
     if !strings.equal(reason,"") { return reason }
     let paths = strings.split(strings.trimEnd(names),"\n")
-    for required in Vec<str>("dev-os/release.json","dev-os/dist/main.js","dev-os/dist/supervisor.js","dev-os/dist/react-gtk.js","dev-os/bin/dev-os-session","dev-os/bin/dev-os-shell","dev-os/bin/dev-os-start","dev-os/native/dev-os-window-tracker") {
+    for required in Vec<str>("dev-os/release.json","dev-os/dist/native/shell","dev-os/dist/native/libsupervisor.so","dev-os/dist/build-info.json","dev-os/bin/dev-os-session","dev-os/bin/dev-os-shell","dev-os/bin/dev-os-start","dev-os/native/dev-os-window-tracker") {
         if !has(paths,required) { return "Update package is missing " + required }
     }
     return ""
