@@ -109,7 +109,9 @@ fn runCommand(command:str, folder:str):bool {
         note("run screenshot region")
         if testing() { return true }
         let runner = strings.equal(hw.which("d"),"") ? "d" : hw.which("d")
-        hw.spawnDetached(Vec<str>("sh","-c","printf '%s\\n' '{\"action\":\"region\",\"delay\":0}' | exec \"$1\" \"$2\" >/dev/null 2>&1","sh",runner,root() + "/src/apps/org.devos.screenshot/service.dev"))
+        # An error answer ("E<TAB>message": grim or slurp missing, ...) goes to the panel; a saved picture is announced by the worker itself.
+        let script = "out=$(printf '%s\\n' '{\"action\":\"region\",\"delay\":0}' | \"$1\" \"$2\" 2>&1); case \"$out\" in E*) gdbus emit --session --object-path /org/devos/Panel --signal org.devos.Panel.Message \"Screenshot: $(printf '%s' \"$out\" | cut -f2-)\" >/dev/null 2>&1;; esac"
+        hw.spawnDetached(Vec<str>("sh","-c",script,"sh",runner,root() + "/src/apps/org.devos.screenshot/service.dev"))
         return true
     }
     let args = configured(command)
