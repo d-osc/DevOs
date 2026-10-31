@@ -1,0 +1,298 @@
+# The system layer of the DevLang BusyBox: libc, byte buffers, buffered output, whole-file input, option parsing and error messages.
+# A native DevLang program (no std/*): every OS service is a libc call, as in the real BusyBox. A Vec is a value (a function that pushes to its
+# parameter changes a copy), so the mutable state lives in structs passed by pointer (*Bytes, *Out).
+
+extern fn calloc(count: usize, size: usize): *void
+extern fn realloc(pointer: *void, size: usize): *void
+extern fn free(pointer: *void)
+extern fn read(fd: i32, buffer: *void, count: usize): isize
+extern fn write(fd: i32, buffer: str, count: usize): isize
+extern fn open(path: str, flags: i64, mode: i64): i32
+extern fn close(fd: i32): i32
+extern fn lseek(fd: i32, offset: i64, whence: i32): i64
+extern fn strlen(text: str): usize
+extern fn strcmp(a: str, b: str): i32
+extern fn access(path: str, mode: i32): i32
+extern fn getcwd(buffer: *void, size: usize): *void
+extern fn stat(path: str, buffer: *void): i32
+extern fn lstat(path: str, buffer: *void): i32
+extern fn uname(buffer: *void): i32
+extern fn isatty(fd: i32): i32
+
+# ---- bytes ------------------------------------------------------------------------------------------------------------------------------
+# A growable buffer, always handled through a pointer so that functions can change it; its fields are reached through the accessors below.
+struct Bytes { data: *u8, len: i64, cap: i64 }
+fn bytes_new(): *Bytes { unsafe {
+    let b = calloc(1, 32) as *Bytes
+    (*b).data = calloc(64, 1) as *u8; (*b).len = 0; (*b).cap = 64
+    return b
+} }
+fn blen(b: *Bytes): i64 { unsafe { return (*b).len } }
+fn bdata(b: *Bytes): *u8 { unsafe { return (*b).data } }
+fn bat(b: *Bytes, i: i64): u8 { unsafe { return (*b).data[i] } }
+# A pointer to byte i of the buffer.
+fn bptr(b: *Bytes, i: i64): *u8 { unsafe { return &(*b).data[i] } }
+fn bclear(b: *Bytes) { unsafe { (*b).len = 0 } }
+fn bytes_reserve(b: *Bytes, extra: i64) { unsafe {
+    let need = (*b).len + extra + 1
+    if need <= (*b).cap { return }
+    let cap = (*b).cap * 2
+    if cap < need { cap = need }
+    let data = realloc((*b).data as *void, cap as usize) as *u8
+    for i in (*b).cap..cap { data[i] = 0 }
+    (*b).data = data; (*b).cap = cap
+} }
+fn bytes_push(b: *Bytes, c: u8) { unsafe { bytes_reserve(b, 1); (*b).data[(*b).len] = c; (*b).len = (*b).len + 1 } }
+fn bytes_append(b: *Bytes, data: *u8, count: i64) { unsafe {
+    if count <= 0 { return }
+    bytes_reserve(b, count)
+    let target = (*b).data; let at = (*b).len
+    for i in 0..count { target[at + i] = data[i] }
+    (*b).len = (*b).len + count
+} }
+fn bytes_str(b: *Bytes, text: str) { unsafe {
+    let count = strlen(text) as i64
+    if count <= 0 { return }
+    bytes_reserve(b, count)
+    let target = (*b).data; let at = (*b).len
+    for i in 0..count { target[at + i] = text[i] }
+    (*b).len = (*b).len + count
+} }
+fn bytes_num(b: *Bytes, n: i64) {
+    if n < 0 { bytes_push(b, 45); bytes_num(b, 0 - n); return }
+    if n >= 10 { bytes_num(b, n / 10) }
+    bytes_push(b, (48 + n % 10) as u8)
+}
+# The bytes as a NUL-terminated str (valid until the next change).
+fn bytes_cstr(b: *Bytes): str { unsafe { bytes_reserve(b, 1); (*b).data[(*b).len] = 0; return (*b).data as str } }
+
+# ---- text helpers over C strings -------------------------------------------------------------------------------------------------------------------
+fn same(a: str, b: str): bool { unsafe { return strcmp(a, b) == 0 } }
+fn length(text: str): i64 { unsafe { return strlen(text) as i64 } }
+fn at(text: str, i: i64): u8 { unsafe { return text[i] } }
+fn starts(text: str, prefix: str): bool {
+    let n = length(prefix)
+    if length(text) < n { return false }
+    for i in 0..n { if at(text, i) != at(prefix, i) { return false } }
+    return true
+}
+fn ends(text: str, suffix: str): bool {
+    let n = length(suffix); let m = length(text)
+    if m < n { return false }
+    for i in 0..n { if at(text, m - n + i) != at(suffix, i) { return false } }
+    return true
+}
+# A copy of text[from, to) as a new str (never freed: applets are short-lived).
+fn slice(text: str, from: i64, to: i64): str { unsafe {
+    let n = to - from; if n < 0 { n = 0 }
+    let out = calloc((n + 1) as usize, 1) as *u8
+    for i in 0..n { out[i] = at(text, from + i) }
+    return out as str
+} }
+fn join2(a: str, b: str): str { unsafe {
+    let n = length(a); let m = length(b)
+    let out = calloc((n + m + 1) as usize, 1) as *u8
+    for i in 0..n { out[i] = at(a, i) }
+    for i in 0..m { out[n + i] = at(b, i) }
+    return out as str
+} }
+fn find_char(text: str, c: u8): i64 { let n = length(text); for i in 0..n { if at(text, i) == c { return i } }; return 0 - 1 }
+fn last_char(text: str, c: u8): i64 { let n = length(text); let k = n - 1; while k >= 0 { if at(text, k) == c { return k }; k = k - 1 }; return 0 - 1 }
+fn is_digit(c: u8): bool { return c >= 48 && c <= 57 }
+# Decimal (or 0x / leading-0 octal when `base` is 0) text to a number; `ok` false when the whole text is not a number.
+struct Number { ok: bool, value: i64 }
+fn parse_number(text: str): Number {
+    let n = length(text); let i = 0; let sign = 1
+    if n == 0 { return Number(false, 0) }
+    if at(text, 0) == 45 { sign = 0 - 1; i = 1 } else if at(text, 0) == 43 { i = 1 }
+    if i >= n { return Number(false, 0) }
+    let value = 0
+    while i < n {
+        let c = at(text, i)
+        if !is_digit(c) { return Number(false, 0) }
+        value = value * 10 + (c - 48) as i64; i = i + 1
+    }
+    return Number(true, sign * value)
+}
+
+# ---- messages -----------------------------------------------------------------------------------------------------------------------------------
+fn put_fd(fd: i32, text: str) { unsafe { write(fd, text, strlen(text)) } }
+# Why an operation on `path` failed, in strerror words. errno itself is out of reach (its C symbol is reserved), so the reason is derived from
+# the path: missing, a directory, unreadable, or (for `writing`) an unwritable place.
+fn path_error(path: str, writing: bool): str {
+    let info = file_info(path, true)
+    if !info.ok {
+        let cut = last_char(path, 47)
+        if writing && cut > 0 && !file_info(slice(path, 0, cut), true).ok { return "No such file or directory" }
+        if writing { return "Permission denied" }
+        return exists(path) ? "Too many levels of symbolic links" : "No such file or directory"
+    }
+    if is_dir_mode(info.mode) { return "Is a directory" }
+    unsafe { if access(path, writing ? 2 : 4) != 0 { return "Permission denied" } }
+    return "Input/output error"
+}
+# "applet: message" on stderr.
+fn warn(prog: str, message: str) { put_fd(2, prog); put_fd(2, ": "); put_fd(2, message); put_fd(2, "\n") }
+# "applet: path: reason" on stderr (reading / writing).
+fn warn_path(prog: str, path: str) { put_fd(2, prog); put_fd(2, ": can't open '"); put_fd(2, path); put_fd(2, "': "); put_fd(2, path_error(path, false)); put_fd(2, "\n") }
+fn warn_write(prog: str, path: str) { put_fd(2, prog); put_fd(2, ": can't open '"); put_fd(2, path); put_fd(2, "': "); put_fd(2, path_error(path, true)); put_fd(2, "\n") }
+
+# ---- buffered output ----------------------------------------------------------------------------------------------------------------------------
+struct Out { fd: i32, buf: *Bytes }
+fn out_new(fd: i32): *Out { unsafe { let o = calloc(1, 16) as *Out; (*o).fd = fd; (*o).buf = bytes_new(); return o } }
+fn out_flush(o: *Out) { unsafe {
+    let done = 0
+    while done < blen((*o).buf) {
+        let n = write((*o).fd, bptr((*o).buf, done) as str, (blen((*o).buf) - done) as usize)
+        if n <= 0 { break }
+        done = done + (n as i64)
+    }
+    bclear((*o).buf)
+} }
+fn out_check(o: *Out) { unsafe { if blen((*o).buf) >= 65536 { out_flush(o) } } }
+fn out_byte(o: *Out, c: u8) { unsafe { bytes_push((*o).buf, c); out_check(o) } }
+fn out_str(o: *Out, text: str) { unsafe { bytes_str((*o).buf, text); out_check(o) } }
+fn out_num(o: *Out, n: i64) { unsafe { bytes_num((*o).buf, n); out_check(o) } }
+fn out_data(o: *Out, data: *u8, count: i64) { unsafe { bytes_append((*o).buf, data, count); out_check(o) } }
+
+# ---- input --------------------------------------------------------------------------------------------------------------------------------------
+# The whole content of a descriptor; ok is false on a read error.
+struct Input { ok: bool, bytes: *Bytes }
+fn read_fd(fd: i32): Input { unsafe {
+    let b = bytes_new()
+    let chunk = calloc(65536, 1) as *u8
+    let ok = true
+    while true {
+        let n = read(fd, chunk as *void, 65536)
+        if n < 0 { ok = false; break }
+        if n == 0 { break }
+        bytes_append(b, chunk, n as i64)
+    }
+    free(chunk as *void)
+    return Input(ok, b)
+} }
+# A file's content, or standard input for "-".
+fn read_path(path: str): Input { unsafe {
+    if same(path, "-") { return read_fd(0) }
+    let fd = open(path, 0, 0)
+    if fd < 0 { return Input(false, bytes_new()) }
+    let input = read_fd(fd)
+    close(fd)
+    return input
+} }
+
+# ---- the command line -----------------------------------------------------------------------------------------------------------------------------
+fn argv(): Vec<str> { unsafe {
+    let out = Vec<str>()
+    let fd = open("/proc/self/cmdline", 0, 0)
+    let b = bytes_new()
+    if fd >= 0 {
+        let chunk = calloc(65536, 1) as *u8
+        let n = read(fd, chunk as *void, 65536)
+        while n > 0 { bytes_append(b, chunk, n as i64); n = read(fd, chunk as *void, 65536) }
+        close(fd); free(chunk as *void)
+    }
+    let start = 0
+    for i in 0..blen(b) {
+        if bat(b, i) == 0 {
+            let copy = calloc((i - start + 1) as usize, 1) as *u8     # the buffer holds NULs, so each argument is copied byte by byte (a str stops at its first NUL)
+            for k in start..i { copy[k - start] = bat(b, k) }
+            out.push(copy as str); start = i + 1
+        }
+    }
+    return out
+} }
+# The last path component: "/usr/bin/cat" -> "cat".
+fn base_name(path: str): str {
+    let n = length(path)
+    while n > 1 && at(path, n - 1) == 47 { n = n - 1 }
+    let cut = 0 - 1
+    for i in 0..n { if at(path, i) == 47 { cut = i } }
+    return slice(path, cut + 1, n)
+}
+fn current_dir(): str { unsafe {
+    let buffer = calloc(4096, 1)
+    if getcwd(buffer, 4096) == null { return "." }
+    return buffer as str
+} }
+fn is_tty(fd: i32): bool { unsafe { return isatty(fd) != 0 } }
+
+# ---- options (getopt style) ----------------------------------------------------------------------------------------------------------------------
+# spec: one letter per option, a ':' after a letter when it takes an argument ("ab:c"). Options may be combined (-ab), the argument may be glued
+# (-n5) or separate (-n 5); "--" ends the options and a lone "-" is an operand. `bad` is the first unknown option letter (0 when all are known),
+# `missing` the letter of an option that lacked its argument.
+struct Opts { flag: Vec<i64>, value: Vec<str>, rest: Vec<str>, bad: u8, missing: u8 }
+fn opts_new(): Opts {
+    let flag = Vec<i64>(); let value = Vec<str>()
+    for i in 0..128 { flag.push(0); value.push("") }
+    return Opts(flag, value, Vec<str>(), 0, 0)
+}
+fn takes_argument(spec: str, c: u8): i32 {
+    let n = length(spec)
+    for i in 0..n { if at(spec, i) == c { return i + 1 < n && at(spec, i + 1) == 58 ? 1 : 0 } }
+    return 0 - 1
+}
+fn parse_opts(args: Vec<str>, spec: str): Opts {
+    let o = opts_new()
+    let i = 0; let n = args.len() as i64; let done = false
+    while i < n {
+        let a = args[i]
+        if done || length(a) < 2 || at(a, 0) != 45 { o.rest.push(a); i = i + 1; continue }
+        if same(a, "--") { done = true; i = i + 1; continue }
+        let k = 1; let len = length(a)
+        while k < len {
+            let c = at(a, k)
+            let kind = takes_argument(spec, c)
+            if kind < 0 { if o.bad == 0 { o.bad = c }; k = k + 1; continue }
+            o.flag[c as i64] = o.flag[c as i64] + 1
+            if kind == 1 {
+                if k + 1 < len { o.value[c as i64] = slice(a, k + 1, len) }
+                else if i + 1 < n { i = i + 1; o.value[c as i64] = args[i] }
+                else { o.missing = c }
+                k = len
+            } else { k = k + 1 }
+        }
+        i = i + 1
+    }
+    return o
+}
+fn has(o: Opts, c: u8): bool { return o.flag[c as i64] > 0 }
+fn val(o: Opts, c: u8): str { return o.value[c as i64] }
+
+# ---- stat -----------------------------------------------------------------------------------------------------------------------------------------
+struct Info { ok: bool, mode: i64, size: i64, mtime: i64, atime: i64, ctime: i64, uid: i64, gid: i64, nlink: i64, inode: i64, blocks: i64 }
+fn le(p: *u8, off: i64, width: i64): i64 {
+    unsafe {
+        let v = 0
+        let k = width - 1
+        while k >= 0 { v = v * 256 + (p[off + k] as i64); k = k - 1 }
+        return v
+    }
+}
+fn is_arm64(): bool { unsafe {
+    let buffer = calloc(512, 1) as *u8
+    uname(buffer as *void)
+    let machine = buffer as str
+    let m = &buffer[260] as str
+    let arm = starts(m, "aarch64") || starts(m, "arm64")
+    free(buffer as *void)
+    return arm
+} }
+fn file_info(path: str, follow: bool): Info { unsafe {
+    let p = calloc(512, 1) as *u8
+    let failed = false
+    if follow { failed = stat(path, p as *void) != 0 } else { failed = lstat(path, p as *void) != 0 }
+    if failed { free(p as *void); return Info(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) }
+    let info = Info(true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    if is_arm64() { info.mode = le(p, 16, 4); info.nlink = le(p, 20, 4); info.uid = le(p, 24, 4); info.gid = le(p, 28, 4) }
+    else { info.nlink = le(p, 16, 8); info.mode = le(p, 24, 4); info.uid = le(p, 28, 4); info.gid = le(p, 32, 4) }
+    info.inode = le(p, 8, 8); info.size = le(p, 48, 8); info.blocks = le(p, 64, 8)
+    info.atime = le(p, 72, 8); info.mtime = le(p, 88, 8); info.ctime = le(p, 104, 8)
+    free(p as *void)
+    return info
+} }
+fn is_dir_mode(mode: i64): bool { return (mode / 4096) % 16 == 4 }
+fn is_reg_mode(mode: i64): bool { return (mode / 4096) % 16 == 8 }
+fn is_link_mode(mode: i64): bool { return (mode / 4096) % 16 == 10 }
+fn is_dir(path: str): bool { let i = file_info(path, true); return i.ok && is_dir_mode(i.mode) }
+fn exists(path: str): bool { return file_info(path, false).ok }

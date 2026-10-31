@@ -1,0 +1,287 @@
+# cat, tee, head, tail, wc, seq: reading files and standard input, whole-file at a time.
+use "../lib/sys.dev" as sys
+extern fn usleep(microseconds: u32): i32
+extern fn signal(number: i32, handler: i64): i64
+
+# ---- cat [-u] [FILE]... -----------------------------------------------------------------------------------------------------------------
+fn copy_fd(fd: i32): bool { unsafe {
+    let chunk = sys.calloc(65536, 1) as *u8
+    let ok = true
+    while true {
+        let n = sys.read(fd, chunk as *void, 65536)
+        if n < 0 { ok = false; break }
+        if n == 0 { break }
+        let done = 0
+        while done < (n as i64) {
+            let w = sys.write(1, &chunk[done] as str, ((n as i64) - done) as usize)
+            if w <= 0 { ok = false; done = n as i64; break }
+            done = done + (w as i64)
+        }
+        if !ok { break }
+    }
+    sys.free(chunk as *void)
+    return ok
+} }
+fn run_cat(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "u")
+    if o.bad != 0 { sys.warn("cat", "invalid option"); return 1 }
+    let status = 0
+    if o.rest.len() == 0 { if !copy_fd(0) { status = 1 }; return status }
+    for i in 0..(o.rest.len() as i64) {
+        let path = o.rest[i]
+        if sys.same(path, "-") { if !copy_fd(0) { status = 1 }; continue }
+        let fd = sys.open(path, 0, 0)
+        if fd < 0 { sys.warn_path("cat", path); status = 1; continue }
+        if sys.is_dir(path) { sys.warn("cat", sys.join2(sys.join2(path, ": "), "Is a directory")); sys.close(fd); status = 1; continue }
+        if !copy_fd(fd) { sys.warn_path("cat", path); status = 1 }
+        sys.close(fd)
+    }
+    return status
+} }
+
+# ---- tee [-ai] [FILE]... --------------------------------------------------------------------------------------------------------------
+fn run_tee(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "ai")
+    if o.bad != 0 { sys.warn("tee", "invalid option"); return 1 }
+    if sys.has(o, 105) { signal(2, 1) }
+    let fds = Vec<i32>(); let status = 0
+    for i in 0..(o.rest.len() as i64) {
+        let flags = 65 + (sys.has(o, 97) ? 1024 : 512)   # O_WRONLY|O_CREAT plus O_APPEND or O_TRUNC
+        let fd = sys.open(o.rest[i], flags, 438)
+        if fd < 0 { sys.warn_path("tee", o.rest[i]); status = 1 } else { fds.push(fd) }
+    }
+    let chunk = sys.calloc(65536, 1) as *u8
+    while true {
+        let n = sys.read(0, chunk as *void, 65536)
+        if n <= 0 { break }
+        sys.write(1, chunk as str, n as usize)
+        for k in 0..(fds.len() as i64) { sys.write(fds[k], chunk as str, n as usize) }
+    }
+    for k in 0..(fds.len() as i64) { sys.close(fds[k]) }
+    return status
+} }
+
+# ---- head [OPTIONS] [FILE]... ---------------------------------------------------------------------------------------------------------
+# A count with an optional b / k / m suffix (BusyBox: 512 / 1024 / 1048576); -1 when invalid.
+fn size_count(text: str): i64 {
+    let n = sys.length(text)
+    if n == 0 { return 0 - 1 }
+    let unit = 1; let digits = n
+    let last = sys.at(text, n - 1)
+    if last == 98 { unit = 512; digits = n - 1 } else if last == 107 { unit = 1024; digits = n - 1 } else if last == 109 { unit = 1048576; digits = n - 1 }
+    let number = sys.parse_number(sys.slice(text, 0, digits))
+    if !number.ok { return 0 - 1 }
+    return number.value * unit
+}
+fn show_header(o: *sys.Out, name: str, first: bool) { if !first { sys.out_byte(o, 10) }; sys.out_str(o, "==> "); sys.out_str(o, name); sys.out_str(o, " <==\n") }
+# The byte index just after the `lines`-th newline (all of the data when it has fewer lines).
+fn head_end(data: *u8, len: i64, lines: i64): i64 {
+    if lines <= 0 { return 0 }
+    let seen = 0
+    unsafe { for i in 0..len { if data[i] == 10 { seen = seen + 1; if seen == lines { return i + 1 } } } }
+    return len
+}
+fn run_head(args: Vec<str>): i64 {
+    # -NUM is the old spelling of -n NUM
+    let fixed = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        let after_option = i > 0 && (sys.same(args[i - 1], "-n") || sys.same(args[i - 1], "-c"))
+        if !after_option && sys.length(a) > 1 && sys.at(a, 0) == 45 && sys.is_digit(sys.at(a, 1)) { fixed.push("-n"); fixed.push(sys.slice(a, 1, sys.length(a))) } else { fixed.push(a) }
+    }
+    let o = sys.parse_opts(fixed, "n:c:qv")
+    if o.bad != 0 || o.missing != 0 { sys.warn("head", "invalid option"); return 1 }
+    let lines = 10; let bytes = 0 - 1
+    if sys.has(o, 110) { lines = size_count(sys.val(o, 110)); if lines < 0 { sys.warn("head", sys.join2("invalid number ", sys.val(o, 110))); return 1 } }
+    if sys.has(o, 99) { bytes = size_count(sys.val(o, 99)); if bytes < 0 { sys.warn("head", sys.join2("invalid number ", sys.val(o, 99))); return 1 } }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let headers = (files.len() > 1 || sys.has(o, 118)) && !sys.has(o, 113)
+    let out = sys.out_new(1); let status = 0; let first = true
+    for i in 0..(files.len() as i64) {
+        let input = sys.read_path(files[i])
+        if !input.ok { sys.warn_path("head", files[i]); status = 1; continue }
+        if headers { show_header(out, sys.same(files[i], "-") ? "standard input" : files[i], first) }
+        first = false
+        let b = input.bytes
+        let blen = sys.blen(b)
+        let end = bytes >= 0 ? (bytes < blen ? bytes : blen) : head_end(sys.bdata(b), blen, lines)
+        sys.out_data(out, sys.bdata(b), end)
+    }
+    sys.out_flush(out)
+    return status
+}
+
+# ---- tail [OPTIONS] [FILE]... ---------------------------------------------------------------------------------------------------------
+# Where the tail of `len` bytes starts: the last `n` lines, or from line `n` when `from_start` ("+N").
+fn tail_start_lines(data: *u8, len: i64, n: i64, from_start: bool): i64 { unsafe {
+    if from_start {
+        if n <= 1 { return 0 }
+        let seen = 1
+        for i in 0..len { if data[i] == 10 { seen = seen + 1; if seen == n { return i + 1 } } }
+        return len
+    }
+    if n <= 0 { return len }
+    let seen = 0; let k = len - 1
+    if k >= 0 && data[k] == 10 { k = k - 1 }       # a final newline ends the last line, it does not start another
+    while k >= 0 {
+        if data[k] == 10 { seen = seen + 1; if seen == n { return k + 1 } }
+        k = k - 1
+    }
+    return 0
+} }
+fn run_tail(args: Vec<str>): i64 {
+    let fixed = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        let after_option = i > 0 && (sys.same(args[i - 1], "-n") || sys.same(args[i - 1], "-c") || sys.same(args[i - 1], "-s"))
+        if !after_option && sys.length(a) > 1 && (sys.at(a, 0) == 45 || sys.at(a, 0) == 43) && sys.is_digit(sys.at(a, 1)) { fixed.push("-n"); fixed.push(sys.at(a, 0) == 43 ? sys.join2("+", sys.slice(a, 1, sys.length(a))) : sys.slice(a, 1, sys.length(a))) } else { fixed.push(a) }
+    }
+    let o = sys.parse_opts(fixed, "n:c:fqs:v")
+    if o.bad != 0 || o.missing != 0 { sys.warn("tail", "invalid option"); return 1 }
+    let count = 10; let by_bytes = false; let from_start = false
+    let spec = ""
+    if sys.has(o, 99) { by_bytes = true; spec = sys.val(o, 99) } else if sys.has(o, 110) { spec = sys.val(o, 110) }
+    if sys.length(spec) > 0 {
+        if sys.at(spec, 0) == 43 { from_start = true; spec = sys.slice(spec, 1, sys.length(spec)) } else if sys.at(spec, 0) == 45 { spec = sys.slice(spec, 1, sys.length(spec)) }
+        count = size_count(spec)
+        if count < 0 { sys.warn("tail", sys.join2("invalid number ", spec)); return 1 }
+    }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let headers = (files.len() > 1 || sys.has(o, 118)) && !sys.has(o, 113)
+    let out = sys.out_new(1); let status = 0; let first = true
+    for i in 0..(files.len() as i64) {
+        let input = sys.read_path(files[i])
+        if !input.ok { sys.warn_path("tail", files[i]); status = 1; continue }
+        if headers { show_header(out, sys.same(files[i], "-") ? "standard input" : files[i], first) }
+        first = false
+        let b = input.bytes
+        let start = 0
+        let blen = sys.blen(b)
+        if by_bytes { start = from_start ? (count <= 1 ? 0 : (count - 1 > blen ? blen : count - 1)) : (count > blen ? 0 : blen - count) }
+        else { start = tail_start_lines(sys.bdata(b), blen, count, from_start) }
+        sys.out_data(out, sys.bptr(b, start), blen - start)
+    }
+    sys.out_flush(out)
+    if sys.has(o, 102) && files.len() == 1 && !sys.same(files[0], "-") {
+        # -f: poll the file and print what is appended
+        let seconds = 1
+        if sys.has(o, 115) { let n = sys.parse_number(sys.val(o, 115)); if n.ok && n.value > 0 { seconds = n.value } }
+        let seen = sys.blen(sys.read_path(files[0]).bytes)
+        unsafe {
+            while true {
+                usleep((seconds * 1000000) as u32)
+                let now = sys.read_path(files[0])
+                if now.ok && sys.blen(now.bytes) > seen { sys.out_data(out, sys.bptr(now.bytes, seen), sys.blen(now.bytes) - seen); sys.out_flush(out); seen = sys.blen(now.bytes) }
+                else if now.ok && sys.blen(now.bytes) < seen { seen = sys.blen(now.bytes) }
+            }
+        }
+    }
+    return status
+}
+
+# ---- wc [OPTIONS] [FILE]... -----------------------------------------------------------------------------------------------------------
+struct Counts { lines: i64, words: i64, bytes: i64, longest: i64 }
+fn count_data(data: *u8, len: i64): Counts { unsafe {
+    let c = Counts(0, 0, len, 0)
+    let in_word = false; let col = 0
+    for i in 0..len {
+        let b = data[i]
+        if b == 10 { c.lines = c.lines + 1; if col > c.longest { c.longest = col }; col = 0 }
+        else if b == 9 { col = col + 8 - col % 8 }
+        else if b != 13 && (b < 128 || b >= 192) && b >= 32 { col = col + 1 }
+        let space = b == 32 || (b >= 9 && b <= 13)
+        if space { in_word = false } else if !in_word { in_word = true; c.words = c.words + 1 }
+    }
+    if col > c.longest { c.longest = col }
+    return c
+} }
+fn pad_number(o: *sys.Out, n: i64, width: i64) {
+    let digits = 1; let m = n
+    while m >= 10 { m = m / 10; digits = digits + 1 }
+    for i in digits..width { sys.out_byte(o, 32) }
+    sys.out_num(o, n)
+}
+fn run_wc(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "clLw")
+    if o.bad != 0 { sys.warn("wc", "invalid option"); return 1 }
+    let want_l = sys.has(o, 108); let want_w = sys.has(o, 119); let want_c = sys.has(o, 99); let want_L = sys.has(o, 76)
+    if !want_l && !want_w && !want_c && !want_L { want_l = true; want_w = true; want_c = true }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let results = Vec<Counts>(); let ok = Vec<bool>(); let status = 0
+    let total = Counts(0, 0, 0, 0); let biggest = 0
+    for i in 0..(files.len() as i64) {
+        let input = sys.read_path(files[i])
+        if !input.ok { sys.warn_path("wc", files[i]); status = 1; results.push(total); ok.push(false); continue }
+        let c = count_data(sys.bdata(input.bytes), sys.blen(input.bytes))
+        results.push(c); ok.push(true)
+        total.lines = total.lines + c.lines; total.words = total.words + c.words; total.bytes = total.bytes + c.bytes
+        if c.longest > total.longest { total.longest = c.longest }
+        biggest = biggest + c.bytes
+    }
+    let columns = (want_l ? 1 : 0) + (want_w ? 1 : 0) + (want_c ? 1 : 0) + (want_L ? 1 : 0)
+    let width = 1
+    if columns > 1 || files.len() > 1 { let m = biggest; width = 1; while m >= 10 { m = m / 10; width = width + 1 }; if files.len() == 1 && sys.same(files[0], "-") { width = 7 } }
+    let out = sys.out_new(1)
+    for i in 0..(files.len() as i64) {
+        if !ok[i] { continue }
+        let c = results[i]; let first = true
+        if want_l { pad_number(out, c.lines, width); first = false }
+        if want_w { if !first { sys.out_byte(out, 32) }; pad_number(out, c.words, width); first = false }
+        if want_c { if !first { sys.out_byte(out, 32) }; pad_number(out, c.bytes, width); first = false }
+        if want_L { if !first { sys.out_byte(out, 32) }; pad_number(out, c.longest, width) }
+        if !sys.same(files[i], "-") { sys.out_byte(out, 32); sys.out_str(out, files[i]) }
+        sys.out_byte(out, 10)
+    }
+    if files.len() > 1 {
+        let first = true
+        if want_l { pad_number(out, total.lines, width); first = false }
+        if want_w { if !first { sys.out_byte(out, 32) }; pad_number(out, total.words, width); first = false }
+        if want_c { if !first { sys.out_byte(out, 32) }; pad_number(out, total.bytes, width); first = false }
+        if want_L { if !first { sys.out_byte(out, 32) }; pad_number(out, total.longest, width) }
+        sys.out_str(out, " total\n")
+    }
+    sys.out_flush(out)
+    return status
+}
+
+# ---- seq [-w] [-s SEP] [FIRST [INC]] LAST --------------------------------------------------------------------------------------------------
+fn run_seq(args: Vec<str>): i64 {
+    # only -w and -s SEP are options; a '-' before a digit starts a negative number
+    let operands = Vec<str>(); let pad = false; let sep = "\n"; let k = 0; let count = args.len() as i64
+    while k < count {
+        let a = args[k]
+        if sys.same(a, "-w") { pad = true }
+        else if sys.same(a, "-s") && k + 1 < count { k = k + 1; sep = args[k] }
+        else if sys.length(a) > 2 && sys.starts(a, "-s") { sep = sys.slice(a, 2, sys.length(a)) }
+        else { operands.push(a) }
+        k = k + 1
+    }
+    if operands.len() < 1 || operands.len() > 3 { sys.warn("seq", "usage: seq [-w] [-s SEP] [FIRST [INC]] LAST"); return 1 }
+    let numbers = Vec<i64>()
+    for i in 0..(operands.len() as i64) {
+        let n = sys.parse_number(operands[i])
+        if !n.ok { sys.warn("seq", sys.join2("invalid number ", operands[i])); return 1 }
+        numbers.push(n.value)
+    }
+    let first = 1; let step = 1; let last = numbers[0]
+    if numbers.len() == 2 { first = numbers[0]; last = numbers[1] }
+    if numbers.len() == 3 { first = numbers[0]; step = numbers[1]; last = numbers[2] }
+    if step == 0 { sys.warn("seq", "invalid zero increment"); return 1 }
+    let width = 1
+    if pad { let m = last > first ? last : first; if m < 0 { m = 0 - m }; width = 1; while m >= 10 { m = m / 10; width = width + 1 } }
+    let out = sys.out_new(1); let n = first; let any = false
+    while (step > 0 && n <= last) || (step < 0 && n >= last) {
+        if any { sys.out_str(out, sep) }
+        if pad && n >= 0 { pad_zero(out, n, width) } else { sys.out_num(out, n) }
+        any = true; n = n + step
+    }
+    if any { sys.out_byte(out, 10) }
+    sys.out_flush(out)
+    return 0
+}
+fn pad_zero(o: *sys.Out, n: i64, width: i64) {
+    let digits = 1; let m = n
+    while m >= 10 { m = m / 10; digits = digits + 1 }
+    for i in digits..width { sys.out_byte(o, 48) }
+    sys.out_num(o, n)
+}

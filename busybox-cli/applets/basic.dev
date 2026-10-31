@@ -1,0 +1,139 @@
+# true, false, echo, pwd, yes, basename, dirname, sleep, seq, cat: the applets that need little more than output.
+use "../lib/sys.dev" as sys
+extern fn usleep(microseconds: u32): i32
+
+fn run_true(args: Vec<str>): i64 { return 0 }
+fn run_false(args: Vec<str>): i64 { return 1 }
+
+# ---- echo [-neE] [ARG...] ---------------------------------------------------------------------------------------------------------------
+fn hex_value(c: u8): i64 {
+    if c >= 48 && c <= 57 { return (c - 48) as i64 }
+    if c >= 97 && c <= 102 { return (c - 87) as i64 }
+    if c >= 65 && c <= 70 { return (c - 55) as i64 }
+    return 0 - 1
+}
+# One argument with backslash escapes interpreted (\a \b \c \e \f \n \r \t \v \\ \0NNN \xHH); returns false after \c (stop all output).
+fn echo_escapes(o: *sys.Out, text: str): bool {
+    let n = sys.length(text); let i = 0
+    while i < n {
+        let c = sys.at(text, i)
+        if c != 92 || i + 1 >= n { sys.out_byte(o, c); i = i + 1; continue }
+        let e = sys.at(text, i + 1); i = i + 2
+        if e == 97 { sys.out_byte(o, 7) } else if e == 98 { sys.out_byte(o, 8) } else if e == 99 { return false }
+        else if e == 101 { sys.out_byte(o, 27) } else if e == 102 { sys.out_byte(o, 12) } else if e == 110 { sys.out_byte(o, 10) }
+        else if e == 114 { sys.out_byte(o, 13) } else if e == 116 { sys.out_byte(o, 9) } else if e == 118 { sys.out_byte(o, 11) }
+        else if e == 92 { sys.out_byte(o, 92) }
+        else if e == 48 {
+            let v = 0; let k = 0
+            while k < 3 && i < n && sys.at(text, i) >= 48 && sys.at(text, i) <= 55 { v = v * 8 + (sys.at(text, i) - 48) as i64; i = i + 1; k = k + 1 }
+            sys.out_byte(o, (v % 256) as u8)
+        } else if e == 120 {
+            let v = 0; let k = 0
+            while k < 2 && i < n && hex_value(sys.at(text, i)) >= 0 { v = v * 16 + hex_value(sys.at(text, i)); i = i + 1; k = k + 1 }
+            if k == 0 { sys.out_byte(o, 92); sys.out_byte(o, 120) } else { sys.out_byte(o, v as u8) }
+        } else { sys.out_byte(o, 92); sys.out_byte(o, e) }
+    }
+    return true
+}
+fn run_echo(args: Vec<str>): i64 {
+    let newline = true; let escapes = false; let first = 0; let n = args.len() as i64
+    # leading option words made only of n, e, E (as in BusyBox / bash)
+    while first < n {
+        let a = args[first]; let len = sys.length(a)
+        if len < 2 || sys.at(a, 0) != 45 { break }
+        let valid = true
+        for k in 1..len { let c = sys.at(a, k); if c != 110 && c != 101 && c != 69 { valid = false } }
+        if !valid { break }
+        for k in 1..len { let c = sys.at(a, k); if c == 110 { newline = false } else if c == 101 { escapes = true } else { escapes = false } }
+        first = first + 1
+    }
+    let o = sys.out_new(1)
+    let stop = false
+    for i in first..n {
+        if i > first { sys.out_byte(o, 32) }
+        if escapes { if !echo_escapes(o, args[i]) { stop = true; break } } else { sys.out_str(o, args[i]) }
+    }
+    if newline && !stop { sys.out_byte(o, 10) }
+    sys.out_flush(o)
+    return 0
+}
+
+# ---- pwd ----------------------------------------------------------------------------------------------------------------------------------
+fn run_pwd(args: Vec<str>): i64 {
+    let o = sys.out_new(1); sys.out_str(o, sys.current_dir()); sys.out_byte(o, 10); sys.out_flush(o); return 0
+}
+
+# ---- yes [STRING] ---------------------------------------------------------------------------------------------------------------------
+fn run_yes(args: Vec<str>): i64 { unsafe {
+    let line = sys.bytes_new()
+    if args.len() == 0 { sys.bytes_str(line, "y") }
+    for i in 0..(args.len() as i64) { if i > 0 { sys.bytes_push(line, 32) }; sys.bytes_str(line, args[i]) }
+    sys.bytes_push(line, 10)
+    let block = sys.bytes_new()
+    while sys.blen(block) + sys.blen(line) <= 65536 { sys.bytes_append(block, sys.bdata(line), sys.blen(line)) }
+    if sys.blen(block) == 0 { sys.bytes_append(block, sys.bdata(line), sys.blen(line)) }
+    while true { if sys.write(1, sys.bdata(block) as str, sys.blen(block) as usize) <= 0 { break } }
+    return 0
+} }
+
+# ---- basename FILE [SUFFIX], dirname FILENAME ---------------------------------------------------------------------------------------
+fn run_basename(args: Vec<str>): i64 {
+    if args.len() < 1 || args.len() > 2 { sys.warn("basename", "usage: basename FILE [SUFFIX]"); return 1 }
+    let name = sys.base_name(args[0])
+    if sys.length(args[0]) > 0 && sys.same(name, "") { name = "/" }
+    if args.len() == 2 && sys.ends(name, args[1]) && sys.length(name) > sys.length(args[1]) { name = sys.slice(name, 0, sys.length(name) - sys.length(args[1])) }
+    let o = sys.out_new(1); sys.out_str(o, name); sys.out_byte(o, 10); sys.out_flush(o)
+    return 0
+}
+fn dir_name(path: str): str {
+    let n = sys.length(path)
+    if n == 0 { return "." }
+    while n > 1 && sys.at(path, n - 1) == 47 { n = n - 1 }
+    let cut = sys.last_char(sys.slice(path, 0, n), 47)
+    if cut < 0 { return "." }
+    while cut > 0 && sys.at(path, cut - 1) == 47 { cut = cut - 1 }
+    if cut == 0 { return "/" }
+    return sys.slice(path, 0, cut)
+}
+fn run_dirname(args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn("dirname", "usage: dirname FILENAME"); return 1 }
+    let o = sys.out_new(1); sys.out_str(o, dir_name(args[0])); sys.out_byte(o, 10); sys.out_flush(o)
+    return 0
+}
+
+# ---- sleep [N[smhd]]... ---------------------------------------------------------------------------------------------------------------------
+# A duration with an optional fraction and suffix, in milliseconds (-1 when it is not one).
+fn duration_ms(text: str): i64 {
+    let n = sys.length(text); let i = 0; let whole = 0; let frac = 0; let scale = 1; let digits = 0
+    while i < n && sys.is_digit(sys.at(text, i)) { whole = whole * 10 + (sys.at(text, i) - 48) as i64; i = i + 1; digits = digits + 1 }
+    if i < n && sys.at(text, i) == 46 {
+        i = i + 1
+        while i < n && sys.is_digit(sys.at(text, i)) { if scale < 1000 { frac = frac * 10 + (sys.at(text, i) - 48) as i64; scale = scale * 10 }; i = i + 1; digits = digits + 1 }
+    }
+    if digits == 0 { return 0 - 1 }
+    while scale < 1000 { frac = frac * 10; scale = scale * 10 }
+    let unit = 1
+    if i < n {
+        let s = sys.at(text, i)
+        if s == 115 { unit = 1 } else if s == 109 { unit = 60 } else if s == 104 { unit = 3600 } else if s == 100 { unit = 86400 } else { return 0 - 1 }
+        if i + 1 != n { return 0 - 1 }
+    }
+    return (whole * 1000 + frac) * unit
+}
+fn run_sleep(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("sleep", "usage: sleep [N]..."); return 1 }
+    let total = 0
+    for i in 0..(args.len() as i64) {
+        let ms = duration_ms(args[i])
+        if ms < 0 { sys.warn("sleep", sys.join2("invalid number ", args[i])); return 1 }
+        total = total + ms
+    }
+    unsafe {
+        while total > 0 {
+            let step = total > 500 ? 500 : total
+            usleep((step * 1000) as u32)
+            total = total - step
+        }
+    }
+    return 0
+}

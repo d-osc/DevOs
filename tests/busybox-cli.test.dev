@@ -1,0 +1,75 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/child_process"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# busybox-cli (the native DevLang busybox) against the real tools: each case is a shell command line run once with the system program (`env CMD`)
+# and once with `busybox CMD`; standard output, standard error and the exit status must be identical. The oracle is whatever coreutils / util-linux
+# the machine has, so cases stay to behavior that does not vary between implementations.
+fn busybox(): str { return t.root() + "/build/busybox-cli/busybox" }
+fn build() {
+    tool.checked(Vec<str>("sh", t.root() + "/busybox-cli/build.sh"), Map<str,str>(), "", 300000)
+    test.expect(fs.existsSync(busybox()), "busybox was not built")
+}
+fn sandbox(): str {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    let script = "cd " + d + " && printf 'one\\ntwo words here\\n\\nfour\\tx\\nlast no newline' > a.txt && printf 'alpha\\nbeta\\n' > b.txt && printf 'z\\ny\\nx\\ny\\n' > c.txt && printf '' > empty.txt && mkdir -p dir/sub && printf 'in sub\\n' > dir/sub/f.txt && printf 'abc\\n' > dir/g.txt"
+    tool.exec(Vec<str>("sh","-c",script))
+    return d
+}
+fn outcome(d: str, command: str): str {
+    let run = tool.run(Vec<str>("sh","-c","cd " + d + " && " + command + " 2>/dev/null; echo \"rc=$?\""), Map<str,str>(), "", 60000)
+    return t.out(run)
+}
+# "@" in a case stands for the program prefix: the system tool (`env`) on one side, busybox on the other ("echo hi | @tee f"). A case without "@" gets
+# the prefix put in front of it.
+fn same_as_system(d: str, command: str) {
+    let line = strings.contains(command, "@") ? command : "@" + command
+    let expected = outcome(d, strings.replaceAll(line, "@", "env "))
+    let got = outcome(d, strings.replaceAll(line, "@", busybox() + " "))
+    test.expect(strings.equal(expected, got), "busybox " + command + "\n--- system\n" + expected + "\n--- busybox\n" + got)
+}
+fn all_same(d: str, commands: Vec<str>) { for c in commands { same_as_system(d, c) } }
+
+test.case("the program builds and lists its applets; an unknown applet is refused",fn() {
+    build()
+    let d = sandbox()
+    let listed = outcome(d, busybox() + " --list")
+    for name in Vec<str>("cat","echo","head","tail","wc","seq","tee","yes","basename","dirname","pwd","sleep","true","false") {
+        test.expect(strings.contains(listed, name + "\n"), name + " is missing from --list: " + listed)
+    }
+    test.expect(strings.contains(outcome(d, "{ " + busybox() + " nosuchapplet 2>&1; }"), "applet not found"), "an unknown applet was not refused")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("true false echo pwd basename dirname sleep",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("true","false","echo hello world","echo -n hi","echo -e 'a\\tb\\\\n'","echo -e 'x\\cy'","echo -e '\\x41\\0102'","echo -- -n","echo -ne 'q\\n'","echo","pwd",
+        "basename /usr/bin/cat","basename /usr/bin/cat.txt .txt","basename /","basename a/b/","basename cat cat","dirname /usr/bin/cat","dirname cat","dirname /","dirname /usr/","dirname a//b","dirname ''",
+        "sleep 0","sleep 0.1","sleep x"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("cat head tail tee",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("cat a.txt b.txt","cat nosuch","cat dir","cat < a.txt","cat - < b.txt","cat empty.txt",
+        "head a.txt","head -n 2 a.txt","head -c 7 a.txt","head -2 a.txt b.txt","head -n 0 a.txt","head -q a.txt b.txt","head -v a.txt","head nosuch a.txt","head -n 100 b.txt","head < a.txt","head -c 3k a.txt",
+        "tail a.txt","tail -n 2 a.txt","tail -n +3 a.txt","tail -c 7 a.txt","tail a.txt b.txt","tail -2 a.txt","tail -n 0 a.txt","tail -n 100 b.txt","tail -c +5 b.txt","tail < b.txt","tail nosuch",
+        "echo hi | @tee t1 t2 >/dev/null; cat t1 t2","echo one > t1; echo two | @tee -a t1; cat t1"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("wc and seq",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("wc a.txt","wc -l a.txt","wc -w a.txt","wc -c a.txt","wc a.txt b.txt","wc -lw a.txt","wc < a.txt","wc -L a.txt","wc -l a.txt b.txt c.txt","wc nosuch a.txt","wc empty.txt",
+        "seq 5","seq 2 5","seq 1 2 9","seq 5 -1 1","seq -w 8 11","seq -s , 4","seq 3 1","seq 0","seq -1 1","seq 1 0 5","seq a"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("cat passes binary data through untouched and yes stops when its reader does",fn() {
+    let d = sandbox()
+    tool.exec(Vec<str>("sh","-c","head -c 3000000 /dev/urandom > " + d + "/r.bin"))
+    let same = outcome(d, busybox() + " cat r.bin | cmp - r.bin && echo identical")
+    test.expect(strings.contains(same, "identical"), "binary data changed: " + same)
+    test.expect(strings.contains(outcome(d, busybox() + " yes ab | head -2"), "ab\nab\n"), "yes did not repeat its line")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()
