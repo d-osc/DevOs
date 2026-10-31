@@ -8,7 +8,7 @@ extern fn rc_env(name:str):str
 extern fn setenv(name:str,value:str,overwrite:i32):i32
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
-extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
 extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
 extern fn rd_default_theme():str
 
@@ -39,7 +39,7 @@ fn TaskView(context:*ui.Context):ui.Node {
         if ui.text(family).bytes.len() == 0 { family = "vscode" }
         unsafe {
             rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
-            rd_app_header((*context).native,"Task View","${root}/data/icons")
+            rd_app_header_for((*context).native,"Task View","${root}/data/icons","task-view","dev-os")
             rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"task-view")
         }
         # `task-view` (a toggle: the window is open, so it closes) and `task-view hide`; `task-view show` keeps an open window open (it is already showing).
