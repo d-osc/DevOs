@@ -1,0 +1,296 @@
+# Syntax highlighting of the native Editor: a text (UTF-8 bytes) and a language name in, the spans to color out. A span is the line
+# "syn.<scope> <start byte> <end byte>"; the code view applies them as text tags (rd_code_apply) and the window colors the tags from the theme's
+# syntax rules. The scanner is hand-written and data-driven: comments, strings, numbers, keywords, types, functions and constants for the
+# programming languages (one scanner, one table of words per language), and small dedicated scanners for JSON, HTML/XML, CSS, Markdown and the
+# key/value formats (YAML, INI, TOML). It is a highlighter, not a parser: it never fails and never needs the whole file to be valid.
+# It uses no standard-library module (the native window cannot import one): texts are bytes, words are looked up by a hash of their bytes.
+
+struct Lang { line: Vec<Vec<u8>>, open: Vec<u8>, close: Vec<u8>, quotes: Vec<u8>, words: Map<i64,i64>, nocase: bool, pascal: bool, triple: bool, lifetimes: bool }
+struct Span { scope: str, from: i64, to: i64 }
+
+fn fold(c:u8):u8 { return c >= 65 && c <= 90 ? c + 32 : c }
+# Two polynomial hashes of the bytes in [from, to) packed into one number: a word's identity (a collision is not a realistic concern here).
+fn hashBytes(b:Vec<u8>, from:i64, to:i64, lower:bool):i64 {
+    let h1 = 5381; let h2 = 7
+    for i in from..to { let c = (lower ? fold(b[i]) : b[i]) as i64; h1 = (h1 * 33 + c) % 1000000007; h2 = (h2 * 131 + c) % 998244353 }
+    return h1 * 998244353 + h2
+}
+fn isDigit(c:u8):bool { return c >= 48 && c <= 57 }
+fn isIdentStart(c:u8):bool { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 36 || c >= 128 }
+fn isIdent(c:u8):bool { return isIdentStart(c) || isDigit(c) }
+fn isSpace(c:u8):bool { return c == 32 || c == 9 || c == 13 || c == 10 }
+fn span(scope:str, from:i64, to:i64):Span { return Span(scope,from,to) }
+fn matches(b:Vec<u8>, at:i64, needle:Vec<u8>):bool {
+    let n = needle.len() as i64
+    if n == 0 || at + n > (b.len() as i64) { return false }
+    for k in 0..n { if b[at + k] != needle[k] { return false } }
+    return true
+}
+fn lineEnd(b:Vec<u8>, at:i64):i64 { let n = b.len() as i64; let i = at; while i < n && b[i] != 10 { i = i + 1 }; return i }
+# The index after the first `needle` at or after `at`, or the end of the text.
+fn after(b:Vec<u8>, at:i64, needle:Vec<u8>):i64 {
+    let n = b.len() as i64; let i = at
+    while i < n { if matches(b,i,needle) { return i + (needle.len() as i64) }; i = i + 1 }
+    return n
+}
+fn nextSignificant(b:Vec<u8>, at:i64):i64 { let n = b.len() as i64; let i = at; while i < n && (b[i] == 32 || b[i] == 9) { i = i + 1 }; return i }
+# The end of the string that starts at `at` with the quote `q` (escapes with a backslash; only a backtick string runs over lines).
+fn stringEnd(b:Vec<u8>, at:i64, q:u8):i64 {
+    let n = b.len() as i64; let j = at + 1
+    while j < n {
+        if b[j] == 92 { j = j + 2; continue }
+        if b[j] == q { return j + 1 }
+        if q != 96 && b[j] == 10 { return j }
+        j = j + 1
+    }
+    return n
+}
+# Space-separated words into the table: 1 keyword, 2 type, 3 constant. `lower` folds case (SQL, Dockerfile).
+fn addWords(conv:fn(str):Vec<u8>, m:Map<i64,i64>, list:str, scope:i64, lower:bool):Map<i64,i64> {
+    let b = conv(list); let n = b.len() as i64; let start = 0
+    for i in 0..(n + 1) {
+        if i == n || b[i] == 32 { if i > start { m.set(hashBytes(b,start,i,lower),scope) }; start = i + 1 }
+    }
+    return m
+}
+fn words(conv:fn(str):Vec<u8>, keywords:str, types:str, constants:str, lower:bool):Map<i64,i64> {
+    let m = Map<i64,i64>(); m = addWords(conv,m,keywords,1,lower); m = addWords(conv,m,types,2,lower); m = addWords(conv,m,constants,3,lower); return m
+}
+fn scopeName(code:i64):str { return code == 1 ? "keyword" : (code == 2 ? "type" : "constant") }
+fn lang(conv:fn(str):Vec<u8>, lineComments:str, block:bool, quotes:str, keywords:str, types:str, constants:str):Lang {
+    let lines = Vec<Vec<u8>>(); let all = conv(lineComments); let start = 0; let n = all.len() as i64
+    for i in 0..(n + 1) { if i == n || all[i] == 32 { if i > start { let one = Vec<u8>(); for k in start..i { one.push(all[k]) }; lines.push(one) }; start = i + 1 } }
+    return Lang(lines,conv(block ? "/*" : ""),conv(block ? "*/" : ""),conv(quotes),words(conv,keywords,types,constants,false),false,true,false,false)
+}
+fn withCase(l:Lang, nocase:bool, pascal:bool, triple:bool, lifetimes:bool):Lang { l.nocase = nocase; l.pascal = pascal; l.triple = triple; l.lifetimes = lifetimes; return l }
+# A language whose words match in any case (SQL, Dockerfile): its table is keyed by the folded words.
+fn langLower(conv:fn(str):Vec<u8>, lineComments:str, block:bool, quotes:str, keywords:str, types:str, constants:str):Lang {
+    let l = lang(conv,lineComments,block,quotes,"","",""); l.words = words(conv,keywords,types,constants,true); l.nocase = true; l.pascal = false; return l
+}
+
+# Whether the language id (bytes) is `name`.
+fn is(conv:fn(str):Vec<u8>, id:Vec<u8>, name:str):bool { let n = conv(name); if id.len() != n.len() { return false }; for i in 0..(n.len() as i64) { if id[i] != n[i] { return false } }; return true }
+fn language(conv:fn(str):Vec<u8>, id:Vec<u8>):Lang {
+    let q3 = "\"'`"; let q2 = "\"'"
+    if is(conv,id,"typescript") || is(conv,id,"javascript") {
+        return lang(conv,"//",true,q3,"break case catch class const continue debugger default delete do else enum export extends finally for from function if implements import in instanceof interface let new of package private protected public return static super switch this throw try typeof var void while with yield async await as readonly declare namespace abstract get set satisfies keyof","string number boolean any unknown never object symbol bigint Array Map Set Promise Record Partial Readonly Date Error RegExp","true false null undefined NaN Infinity")
+    }
+    if is(conv,id,"c") || is(conv,id,"cpp") {
+        return lang(conv,"//",true,q2,"auto break case const continue default do else enum extern for goto if inline register restrict return sizeof static struct switch typedef union volatile while class namespace template typename public private protected virtual override new delete using try catch throw constexpr noexcept operator this nullptr","int char short long float double void unsigned signed bool size_t uint8_t uint16_t uint32_t uint64_t int8_t int16_t int32_t int64_t string vector","NULL true false")
+    }
+    if is(conv,id,"rust") {
+        return withCase(lang(conv,"//",true,q2,"as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type unsafe use where while","i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str String Vec Option Result Box","true false None Some Ok Err"),false,true,false,true)
+    }
+    if is(conv,id,"go") {
+        return lang(conv,"//",true,q3,"break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var","int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 float32 float64 string bool byte rune error any","true false nil iota")
+    }
+    if is(conv,id,"java") || is(conv,id,"csharp") {
+        return lang(conv,"//",true,q2,"abstract assert break case catch class const continue default do else enum extends final finally for if implements import instanceof interface native new package private protected public return static super switch synchronized this throw throws try void volatile while var namespace using override virtual readonly async await","int long short byte char float double boolean String Object List Map Set Integer bool string","true false null")
+    }
+    if is(conv,id,"python") {
+        return withCase(lang(conv,"#",false,q2,"and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case","int str float bool list dict set tuple bytes object type","True False None self cls"),false,true,true,false)
+    }
+    if is(conv,id,"shell") {
+        return withCase(lang(conv,"#",false,"\"'`","if then else elif fi for while until do done case esac in function select time return exit break continue local export readonly declare unset source alias set shift trap","","true false"),false,false,false,false)
+    }
+    if is(conv,id,"lua") {
+        return lang(conv,"--",false,q2,"and break do else elseif end for function goto if in local not or repeat return then until while","","true false nil")
+    }
+    if is(conv,id,"sql") {
+        return langLower(conv,"--",true,q2,"select from where and or not insert into values update set delete create table drop alter add index primary key foreign references join left right inner outer on group by order having limit offset as distinct union all case when then else end null is in like between exists default unique","int integer varchar text boolean date timestamp serial bigint float double decimal","true false")
+    }
+    if is(conv,id,"dockerfile") {
+        return langLower(conv,"#",false,q2,"from run cmd label maintainer expose env add copy entrypoint volume user workdir arg onbuild stopsignal healthcheck shell as","","")
+    }
+    if is(conv,id,"makefile") {
+        return withCase(lang(conv,"#",false,q2,"include ifeq ifneq ifdef ifndef else endif define endef export override",".PHONY",""),false,false,false,false)
+    }
+    if is(conv,id,"yaml") || is(conv,id,"ini") {
+        return withCase(lang(conv,"#",false,q2,"","","true false null yes no on off"),false,false,false,false)
+    }
+    return withCase(lang(conv,"",false,"","","",""),false,false,false,false)
+}
+
+# --- the generic scanner ----------------------------------------------------------------------------------------------------------
+fn scan(b:Vec<u8>, l:Lang, json:bool):Vec<Span> {
+    let out = Vec<Span>(); let n = b.len() as i64; let i = 0
+    while i < n {
+        let c = b[i]
+        let hit = false; for k in 0..(l.line.len() as i64) { if matches(b,i,l.line[k]) { hit = true; break } }
+        if hit { let e = lineEnd(b,i); out.push(span("comment",i,e)); i = e; continue }
+        if l.open.len() > 0 && matches(b,i,l.open) { let e = after(b,i + (l.open.len() as i64),l.close); out.push(span("comment",i,e)); i = e; continue }
+        let quote = false; for q in l.quotes { if q == c { quote = true } }
+        if quote && l.lifetimes && c == 39 {
+            # a Rust character literal is 'x' or '\x...'; anything else is a lifetime
+            if !(i + 2 < n && (b[i + 2] == 39 || b[i + 1] == 92)) { i = i + 1; continue }
+        }
+        if quote {
+            let e = stringEnd(b,i,c)
+            if l.triple && i + 2 < n && b[i + 1] == c && b[i + 2] == c { e = after(b,i + 3,Vec<u8>(c,c,c)) }
+            let scope = "string"
+            if json { let p = nextSignificant(b,e); if p < n && b[p] == 58 { scope = "property" } }
+            out.push(span(scope,i,e)); i = e; continue
+        }
+        if (isDigit(c) || (c == 46 && i + 1 < n && isDigit(b[i + 1]))) && !(i > 0 && isIdent(b[i - 1])) {
+            let j = i; while j < n && (isIdent(b[j]) || (b[j] == 46 && j + 1 < n && isDigit(b[j + 1]))) { j = j + 1 }
+            out.push(span("number",i,j)); i = j; continue
+        }
+        if isIdentStart(c) {
+            let j = i; while j < n && isIdent(b[j]) { j = j + 1 }
+            let key = hashBytes(b,i,j,l.nocase)
+            if l.words.contains(key) { out.push(span(scopeName(l.words.get(key)),i,j)) }
+            else {
+                let p = nextSignificant(b,j)
+                if p < n && b[p] == 40 { out.push(span("function",i,j)) }
+                else if l.pascal && c >= 65 && c <= 90 { out.push(span("type",i,j)) }
+            }
+            i = j; continue
+        }
+        i = i + 1
+    }
+    return out
+}
+
+# --- JSON ---------------------------------------------------------------------------------------------------------------------------
+fn json(conv:fn(str):Vec<u8>, b:Vec<u8>):Vec<Span> { return scan(b,withCase(lang(conv,"//",true,"\"","","","true false null"),false,false,false,false),true) }
+
+# --- HTML and XML: comments, tags, attributes and their quoted values ---------------------------------------------------------------
+fn markup(conv:fn(str):Vec<u8>, b:Vec<u8>):Vec<Span> {
+    let out = Vec<Span>(); let n = b.len() as i64; let i = 0; let comment = conv("<!--"); let commentEnd = conv("-->")
+    while i < n {
+        if matches(b,i,comment) { let e = after(b,i + 4,commentEnd); out.push(span("comment",i,e)); i = e; continue }
+        if b[i] != 60 { i = i + 1; continue }
+        let j = i + 1; if j < n && (b[j] == 47 || b[j] == 33 || b[j] == 63) { j = j + 1 }
+        let nameStart = j; while j < n && (isIdent(b[j]) || b[j] == 45 || b[j] == 58 || b[j] == 46) { j = j + 1 }
+        if j == nameStart { i = i + 1; continue }
+        out.push(span("tag",nameStart,j))
+        # attributes up to the closing '>'
+        while j < n && b[j] != 62 {
+            if b[j] == 34 || b[j] == 39 { let e = stringEnd(b,j,b[j]); out.push(span("string",j,e)); j = e; continue }
+            if isIdentStart(b[j]) {
+                let s = j; while j < n && (isIdent(b[j]) || b[j] == 45 || b[j] == 58 || b[j] == 46 || b[j] == 64) { j = j + 1 }
+                out.push(span("attribute",s,j)); continue
+            }
+            j = j + 1
+        }
+        i = j
+    }
+    return out
+}
+
+# --- CSS and SCSS -------------------------------------------------------------------------------------------------------------------
+# Inside a declaration block an identifier before ':' is a property; at the top level and inside @media-like blocks it is a selector.
+fn container(conv:fn(str):Vec<u8>, b:Vec<u8>, from:i64, to:i64):bool {
+    let known = words(conv,"media supports layer container document keyframes -webkit-keyframes -moz-keyframes scope starting-style","","",false)
+    return known.contains(hashBytes(b,from,to,false))
+}
+fn css(conv:fn(str):Vec<u8>, b:Vec<u8>):Vec<Span> {
+    let out = Vec<Span>(); let n = b.len() as i64; let i = 0; let close = conv("*/")
+    let stack = Vec<bool>(); let pending = false; let parens = 0
+    while i < n {
+        let c = b[i]
+        let selectors = stack.len() == 0 || stack[(stack.len() as i64) - 1]
+        if c == 47 && i + 1 < n && b[i + 1] == 42 { let e = after(b,i + 2,close); out.push(span("comment",i,e)); i = e; continue }
+        if c == 47 && i + 1 < n && b[i + 1] == 47 { let e = lineEnd(b,i); out.push(span("comment",i,e)); i = e; continue }
+        if c == 34 || c == 39 { let e = stringEnd(b,i,c); out.push(span("string",i,e)); i = e; continue }
+        if c == 123 { stack.push(pending); pending = false; i = i + 1; continue }
+        if c == 125 { if stack.len() > 0 { stack.pop() }; i = i + 1; continue }
+        if c == 59 { pending = false; i = i + 1; continue }
+        if c == 40 { parens = parens + 1; i = i + 1; continue }
+        if c == 41 { if parens > 0 { parens = parens - 1 }; i = i + 1; continue }
+        if c == 64 {
+            let j = i + 1; while j < n && (isIdent(b[j]) || b[j] == 45) { j = j + 1 }
+            if container(conv,b,i + 1,j) { pending = true }
+            out.push(span("keyword",i,j)); i = j; continue
+        }
+        if c == 35 && !selectors { let j = i + 1; while j < n && isIdent(b[j]) { j = j + 1 }; out.push(span("number",i,j)); i = j; continue }
+        if isDigit(c) || (c == 46 && i + 1 < n && isDigit(b[i + 1]) && !selectors) {
+            let j = i; while j < n && (isIdent(b[j]) || b[j] == 46 || b[j] == 37) { j = j + 1 }; out.push(span("number",i,j)); i = j; continue
+        }
+        if (c == 46 || c == 35) && selectors && parens == 0 { let j = i + 1; while j < n && (isIdent(b[j]) || b[j] == 45) { j = j + 1 }; out.push(span("type",i,j)); i = j; continue }
+        if isIdentStart(c) || c == 45 {
+            let j = i; while j < n && (isIdent(b[j]) || b[j] == 45) { j = j + 1 }
+            if j == i { i = i + 1; continue }
+            let p = nextSignificant(b,j)
+            if parens > 0 { if p < n && b[p] == 58 { out.push(span("property",i,j)) } }
+            else if selectors { if i > 0 && b[i - 1] == 58 { out.push(span("keyword",i,j)) } else { out.push(span("tag",i,j)) } }
+            else if p < n && b[p] == 58 { out.push(span("property",i,j)) }
+            else if p < n && b[p] == 40 { out.push(span("function",i,j)) }
+            i = j; continue
+        }
+        i = i + 1
+    }
+    return out
+}
+
+# --- Markdown -----------------------------------------------------------------------------------------------------------------------
+fn markdown(conv:fn(str):Vec<u8>, b:Vec<u8>):Vec<Span> {
+    let out = Vec<Span>(); let n = b.len() as i64; let at = 0; let fenced = false; let fence = conv("```")
+    while at < n {
+        let e = lineEnd(b,at); let next = e < n ? e + 1 : e
+        if matches(b,at,fence) { out.push(span("code",at,e)); fenced = !fenced; at = next; continue }
+        if fenced { out.push(span("code",at,e)); at = next; continue }
+        let p = at; while p < e && (b[p] == 32 || b[p] == 9) { p = p + 1 }
+        if p < e && b[p] == 35 { out.push(span("heading",at,e)); at = next; continue }
+        if p < e && b[p] == 62 { out.push(span("quote",at,e)); at = next; continue }
+        if p + 1 < e && (b[p] == 45 || b[p] == 42 || b[p] == 43) && b[p + 1] == 32 { out.push(span("keyword",p,p + 1)) }
+        let i = at
+        while i < e {
+            let c = b[i]
+            if c == 96 { let j = i + 1; while j < e && b[j] != 96 { j = j + 1 }; if j < e { out.push(span("code",i,j + 1)); i = j + 1; continue } }
+            if (c == 42 || c == 95) && i + 1 < e && b[i + 1] == c { let j = i + 2; while j + 1 < e && !(b[j] == c && b[j + 1] == c) { j = j + 1 }; if j + 1 < e { out.push(span("bold",i,j + 2)); i = j + 2; continue } }
+            if (c == 42 || c == 95) && i + 1 < e && b[i + 1] != 32 { let j = i + 1; while j < e && b[j] != c { j = j + 1 }; if j < e { out.push(span("italic",i,j + 1)); i = j + 1; continue } }
+            if c == 91 { let j = i + 1; while j < e && b[j] != 93 { j = j + 1 }; if j + 1 < e && b[j + 1] == 40 { let k = j + 2; while k < e && b[k] != 41 { k = k + 1 }; if k < e { out.push(span("link",i,k + 1)); i = k + 1; continue } } }
+            i = i + 1
+        }
+        at = next
+    }
+    return out
+}
+
+# --- key/value formats: YAML, INI, TOML ---------------------------------------------------------------------------------------------
+fn keyValues(conv:fn(str):Vec<u8>, b:Vec<u8>, l:Lang):Vec<Span> {
+    let out = Vec<Span>(); let n = b.len() as i64; let at = 0
+    while at < n {
+        let e = lineEnd(b,at); let next = e < n ? e + 1 : e; let p = at; while p < e && (b[p] == 32 || b[p] == 9 || b[p] == 45) { p = p + 1 }
+        if p < e && b[p] == 91 && b[e - 1 > p ? e - 1 : p] == 93 { out.push(span("heading",p,e)) }
+        else if p < e && b[p] != 35 {
+            let j = p; while j < e && b[j] != 58 && b[j] != 61 && b[j] != 35 { j = j + 1 }
+            if j < e && b[j] != 35 && (b[j] == 61 || j + 1 >= e || b[j + 1] == 32) { let k = j; while k > p && b[k - 1] == 32 { k = k - 1 }; out.push(span("property",p,k)) }
+        }
+        at = next
+    }
+    # strings, numbers, comments and constants over the same text
+    for s in scan(b,l,false) { out.push(s) }
+    return out
+}
+
+fn tokens(conv:fn(str):Vec<u8>, b:Vec<u8>, id:Vec<u8>):Vec<Span> {
+    if is(conv,id,"plaintext") || is(conv,id,"") { return Vec<Span>() }
+    if is(conv,id,"json") { return json(conv,b) }
+    if is(conv,id,"html") || is(conv,id,"xml") { return markup(conv,b) }
+    if is(conv,id,"css") || is(conv,id,"scss") || is(conv,id,"less") { return css(conv,b) }
+    if is(conv,id,"markdown") { return markdown(conv,b) }
+    if is(conv,id,"yaml") || is(conv,id,"ini") { return keyValues(conv,b,language(conv,id)) }
+    return scan(b,language(conv,id),false)
+}
+# The spans as the lines the code view applies, as UTF-8 bytes: "syn.<scope> <start> <end>" per span. The view takes them in any order (an out-of-order
+# span only makes it rescan from the start), and the key/value scanner's two passes are the only place they are not ascending.
+# A Vec passed to a function is a copy, so the helpers that append return the longer Vec.
+fn pushText(conv:fn(str):Vec<u8>, out:Vec<u8>, s:str):Vec<u8> { for byte in conv(s) { out.push(byte) }; return out }
+fn pushNumber(out:Vec<u8>, n:i64):Vec<u8> {
+    if n <= 0 { out.push(48); return out }
+    let digits = Vec<u8>(); let m = n
+    while m > 0 { digits.push((48 + m % 10) as u8); m = m / 10 }
+    let k = (digits.len() as i64) - 1
+    while k >= 0 { out.push(digits[k]); k = k - 1 }
+    return out
+}
+fn highlight(conv:fn(str):Vec<u8>, b:Vec<u8>, id:str):Vec<u8> { return highlightBytes(conv,b,conv(id)) }
+fn highlightBytes(conv:fn(str):Vec<u8>, b:Vec<u8>, id:Vec<u8>):Vec<u8> {
+    let out = Vec<u8>()
+    for s in tokens(conv,b,id) {
+        out = pushText(conv,out,"syn."); out = pushText(conv,out,s.scope); out.push(32); out = pushNumber(out,s.from); out.push(32); out = pushNumber(out,s.to); out.push(10)
+    }
+    return out
+}

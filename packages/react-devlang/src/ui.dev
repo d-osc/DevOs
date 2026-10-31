@@ -142,6 +142,8 @@ fn Scroll(options: Props, child: Node): Node { return element(5, options, emptyT
 fn ScrollX(options: Props, child: Node): Node { return element(20, options, emptyText(), Vec<Node>(child)) }
 fn Progress(options: Props, fraction: f64): Node { let node = element(6, options, emptyText(), Vec<Node>()); node.fraction = fraction; return node }
 fn Separator(): Node { return element(7, props(), emptyText(), Vec<Node>()) }
+# The editor's code view (kind 21): text, colors and tags are set through the rd_code_* calls of native/code.inc; what happens in it arrives as onPointer events ("change", "cursor:LINE:COL", "save", "find", ...).
+fn CodeView(options: Props): Node { return element(21, options, emptyText(), Vec<Node>()) }
 fn Fragment(options: Props, children: Vec<Node>): Node { return Box(options, children) }
 fn component(tag: i64, options: Props, render: fn(*Context): Node): Node { let node = element(9, options, emptyText(), Vec<Node>()); node.tag = tag; node.render = fn(raw: *void): Ref<Node> { unsafe { return ref(render(raw as *Context)) } }; return node }
 

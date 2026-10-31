@@ -117,7 +117,7 @@ fn main(): i32 {
     }
     let here = path.dirname(module.entry())
     let root = path.dirname(path.dirname(here))
-    let required = Vec<str>("native/shell", "native/libsupervisor.so", "editor/index.html", "build-info.json")
+    let required = Vec<str>("native/shell", "native/libsupervisor.so", "native/editor", "build-info.json")
     for i in 0..(required.len() as i64) {
         if !fs.existsSync(root + "/dist/" + required[i]) {
             print("Build the current desktop first: npm ci && npm run build")

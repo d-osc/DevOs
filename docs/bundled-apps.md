@@ -36,8 +36,7 @@ services. See [Desktop process boundaries](process-isolation.md) for lifecycle,
 IPC, preference synchronization and crash-isolation tests.
 
 The `devos-image` desktop ships only Dev OS's own apps (Terminal, Editor, Files,
-Settings, Camera, Screenshot (Super+Shift+S, see `docs/screenshot.md`), Task Manager and so on). The Editor is a Monaco editor hosted in
-WebKitGTK (`dist/editor`), not VS Code. The native Dev OS Browser uses WebKitGTK with tabs, web search and navigation. Open it from the Launcher or run `dev-os-shell browser`. The small console recovery image does not
+Settings, Camera, Screenshot (Super+Shift+S, see `docs/screenshot.md`), Task Manager and so on). The Editor is a native DevLang window (a GTK code view colored by DevLang from the theme), not VS Code and not WebKit. The native Dev OS Browser uses WebKitGTK with tabs, web search and navigation. Open it from the Launcher or run `dev-os-shell browser`. The small console recovery image does not
 include graphical applications.
 
 Build the desktop image normally:

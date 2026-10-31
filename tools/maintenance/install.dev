@@ -33,9 +33,6 @@ fn main(): i32 {
             }
         }
     }
-    for name in Vec<str>("index.html", "app.js", "app.css", "editor.worker.js", "ts.worker.js", "json.worker.js", "css.worker.js", "html.worker.js") {
-        tool.require(fs.is_file(root + "/dist/editor/" + name), "Monaco assets missing. Run npm run build.")
-    }
     let destination = prefix + "/share/dev-os"
     fs.mkdirSync(destination, true)
     for name in Vec<str>("src", "data", "config", "dist", "lib") { tool.copy(root + "/" + name + "/.", destination + "/" + name) }

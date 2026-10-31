@@ -3,187 +3,247 @@ use "react_devlang/channel" as channel
 use "../org.devos.settings/native-kit.devx" as k
 use "../org.devos.settings/native-extensions-page.devx" as ext
 use "../org.devos.settings/native-system-pages.devx" as sp
+use "./highlight.dev" as hl
+use "./find.dev" as fnd
+use "./literal.dev" as lit
 extern fn rc_env(name:str):str
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
 extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
 extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
 extern fn rd_default_theme():str
-extern fn setenv(name:str,value:str,overwrite:i32):i32
-extern fn getpid():i32
-# libwebkit2gtk is linked by path (tools/build/native-apps.sh), so no WebKit header is needed: only the calls below are declared.
-extern fn webkit_web_view_new():*void
-extern fn webkit_web_view_load_uri(view:*void, uri:*u8)
-extern fn webkit_web_view_get_title(view:*void):*u8
-extern fn webkit_web_view_get_user_content_manager(view:*void):*void
-extern fn webkit_user_script_new(source:*u8, frames:i32, time:i32, allow:*void, block:*void):*void
-extern fn webkit_user_content_manager_add_script(manager:*void, script:*void)
-extern fn webkit_web_view_evaluate_javascript(view:*void, script:*u8, length:i64, world:*u8, uri:*u8, cancellable:*void, callback:*void, data:*void)
-extern fn gtk_box_pack_start(box:*void, child:*void, expand:i32, fill:i32, padding:u32)
-extern fn gtk_widget_show(widget:*void)
+extern fn rd_code_set(widget:*void,text:*u8,tab:i32)
+extern fn rd_code_get(widget:*void):*u8
+extern fn rd_code_replace_all(widget:*void,text:*u8)
+extern fn rd_code_palette(widget:*void,spec:*u8)
+extern fn rd_code_apply(widget:*void,prefix:*u8,spec:*u8)
+extern fn rd_code_select(widget:*void,start:i64,end:i64)
+extern fn rd_code_cursor(widget:*void,end:i32):i64
+extern fn rd_code_selection(widget:*void):*u8
+extern fn rd_code_focus(widget:*void)
+extern fn rd_code_undo(widget:*void)
+extern fn rd_code_redo(widget:*void)
+extern fn gtk_widget_grab_focus(widget:*void)
 
-# Native Editor window: Monaco (the bundle in dist/editor, the same one the JS Editor uses) inside a WebKit view. server.dev serves the bundle on a
-# loopback port (Monaco's workers need an HTTP origin), service.dev reads and writes the file. WebKit's signals cannot be handed DevLang callbacks,
-# so the page talks to the window through document.title: a user script defines window.webkit.messageHandlers.editor.postMessage (what the page
-# already calls) and keeps a queue of events, shown one at a time as the title "DOE<seq>|<kind>|<payload>". The window reads the title every 100 ms
-# (ui.onTick), handles the event and acknowledges it with __devosAck(seq). The window talks to the page with evaluate_javascript (no callback).
-# kinds: ready, change, cursor (line|column), action (save, saveAs, open, new, close, next, previous), error, content (the text, as a JSON string).
-fn shim():str { return "(function(){var q=[],seq=0,shown=0,show=function(){if(q.length){shown=++seq;document.title='DOE'+shown+'|'+q[0][0]+'|'+q[0][1]}else{shown=0;document.title='DOE0'}},push=function(t,p,merge){if(merge)for(var i=q.length-1;i>=0;i--)if(q[i][0]==t){q[i]=[t,p];if(i==0)show();return}q.push([t,p]);if(q.length==1)show()};window.webkit={messageHandlers:{editor:{postMessage:function(m){var o=JSON.parse(m);if(o.type=='ready')push('ready','',0);else if(o.type=='change')push('change','',1);else if(o.type=='cursor')push('cursor',o.line+'|'+o.column,1);else if(o.type=='action')push('action',o.action,0);else if(o.type=='error')push('error',String(o.message).replace(/\\s+/g,' '),0)}}}};window.__devosAck=function(n){if(q.length&&shown==n){q.shift();show()}};window.__devosDump=function(){push('content',JSON.stringify(window.devOsEditor.getValue()),0)}})();" }
-
+# Native Editor window: a code view (the toolkit's GtkTextView with line numbers, undo, auto-indent) colored by highlight.dev from the theme's syntax
+# rules, with find and replace from find.dev. service.dev reads and writes the file. Shortcuts: Ctrl+S save, Ctrl+F find, Ctrl+H replace, F3 / Ctrl+G next
+# match, Shift+F3 previous, Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Tab / Shift+Tab indent / unindent, Esc closes the find bar.
+# Events of the code view arrive as pointer events: "change", "cursor:LINE:COL", "save", "find", "replace", "new", "open", "next", "previous", "escape".
 fn environment(name:str):str { unsafe { return rc_env(name) } }
 fn plain(value:str):ui.Text { return ui.text(value) }
 fn has(value:ui.Text):bool { return value.bytes.len() > 0 }
 fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
 fn field(frame:ui.Text, index:i64):ui.Text { return sp.cell(sp.head(frame),index) }
-# A C string that may be NULL, copied into text.
-fn owned(pointer:*u8):ui.Text { unsafe {
+fn conv(text:str):Vec<u8> { return ui.text(text).bytes }
+fn multiline(value:ui.Text):bool { for b in value.bytes { if b == 10 { return true } }; return false }
+fn smoke():bool { return has(plain(environment("DEVOS_EDITOR_SMOKE"))) }
+# A C string that may be NULL, copied into text and freed.
+fn taken(pointer:*u8):ui.Text { unsafe {
     let present = false
     present = pointer as bool
     if !present { return ui.emptyText() }
     let bytes = Vec<u8>(); let at = 0
     while pointer[at] != 0 { bytes.push(pointer[at]); at = at + 1 }
+    ui.rd_buffer_free(pointer as *void)
     return ui.Text(bytes)
 } }
-fn slice(text:ui.Text, from:i64, to:i64):ui.Text { let out = Vec<u8>(); for i in from..to { out.push(text.bytes[i]) }; return ui.Text(out) }
-# The index of the next '|' at or after `from`, or -1.
-fn bar(text:ui.Text, from:i64):i64 { let n = text.bytes.len() as i64; for i in from..n { if text.bytes[i] == 124 { return i } }; return -1 }
-# Run JavaScript in the page; the answer is not needed, so there is no callback.
-fn script(view:i64, code:ui.Text) { unsafe {
-    let native = ui.nativeText(code)
-    webkit_web_view_evaluate_javascript(view as *void,native,-1,null,null,null,null,null)
-    ui.rd_buffer_free(native as *void)
+fn codeText(code:i64):ui.Text { unsafe { return taken(rd_code_get(code as *void)) } }
+fn setCode(code:i64, text:ui.Text) { unsafe { let native = ui.nativeText(text); rd_code_set(code as *void,native,4); ui.rd_buffer_free(native as *void) } }
+fn replaceCode(code:i64, text:ui.Text) { unsafe { let native = ui.nativeText(text); rd_code_replace_all(code as *void,native); ui.rd_buffer_free(native as *void) } }
+fn applyTags(code:i64, prefix:str, spec:ui.Text) { unsafe {
+    let name = ui.nativeText(plain(prefix)); let body = ui.nativeText(spec)
+    rd_code_apply(code as *void,name,body); ui.rd_buffer_free(name as *void); ui.rd_buffer_free(body as *void)
 } }
-fn digits(text:ui.Text):bool { if text.bytes.len() == 0 { return false }; for b in text.bytes { if b < 48 || b > 57 { return false } }; return true }
+fn paintCode(code:i64, spec:ui.Text) { unsafe { let native = ui.nativeText(spec); rd_code_palette(code as *void,native); ui.rd_buffer_free(native as *void) } }
 fn request(action:str, path:ui.Text, content:ui.Text):ui.Text {
     if has(content) { return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"path\":"),channel.quote(path),plain(",\"content\":"),content,plain("}"))) }
     return join(Vec<ui.Text>(plain("{\"action\":\"" + action + "\",\"path\":"),channel.quote(path),plain("}")))
 }
-fn smoke():bool { return has(plain(environment("DEVOS_EDITOR_SMOKE"))) }
+
 
 fn App(context:*ui.Context):ui.Node {
-    let server = sp.link(context,"../org.devos.editor/server.dev","{\"action\":\"ping\"}")
-    let l = sp.link(context,"../org.devos.editor/service.dev","{\"action\":\"ping\"}")
-    # asked: the kind of the last file request (0 ping, 1 read, 2 write); purpose: why the page was asked for its text (1 verify, 2 save)
-    let asked = ui.useRef(context,0); let purpose = ui.useRef(context,0); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0)
-    let view = ui.useRef(context,0); let ready = ui.useRef(context,0); let handled = ui.useText(context,ui.emptyText()); let lastQueued = ui.useText(context,ui.emptyText())
-    let path = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let status = ui.useText(context,plain("Starting the editor…"))
-    let dirty = ui.useState(context,0); let position = ui.useText(context,ui.emptyText()); let loaded = ui.useText(context,ui.emptyText()); let pending = ui.useText(context,ui.emptyText())
-    let mode = ui.useText(context,plain("dark")); let family = ui.useText(context,plain("vscode"))
-    let open = fn(target:ui.Text) { asked.set(1); lastQueued.set(target); status.set(plain("Opening…")); sp.send(l,request("read",target,ui.emptyText())) }
-    # The page applies a file (its text arrives as a JSON string literal).
-    let configure = fn(target:ui.Text, language:ui.Text, literal:ui.Text) { if view.get() == 0 { return }; unsafe {
-        let code = join(Vec<ui.Text>(plain("window.devOsEditor.configure({content:"),literal,plain(",language:"),channel.quote(language),plain(has(target) ? ",path:" : ""),has(target) ? channel.quote(target) : ui.emptyText(),plain(",fontSize:14,tabSize:4,minimap:true,readOnly:false})")))
-        script(view.get(),code)
-    } }
+    # The worker's first answer is the theme's colors for the code view (asked starts at 3); the window opens its file only after they are applied.
+    let theme0 = environment("DEV_OS_THEME"); let family0 = environment("DEV_OS_THEME_FAMILY")
+    if ui.text(theme0).bytes.len() == 0 { unsafe { theme0 = rd_default_theme() } }
+    if ui.text(family0).bytes.len() == 0 { family0 = "vscode" }
+    let l = sp.link(context,"../org.devos.editor/service.dev","{\"action\":\"palette\",\"family\":\"" + family0 + "\",\"mode\":\"" + theme0 + "\"}")
+    # asked: the kind of the last file request (0 ping, 1 read, 2 write); step: the smoke test's progress
+    let asked = ui.useRef(context,3); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let code = ui.useRef(context,0)
+    let path = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let status = ui.useText(context,plain("Open a file to start"))
+    let dirty = ui.useState(context,0); let position = ui.useText(context,plain("Ln 1, Col 1")); let language = ui.useText(context,plain("plaintext")); let loaded = ui.useText(context,ui.emptyText())
+    let target = ui.useText(context,ui.emptyText()); let pending = ui.useText(context,ui.emptyText())
+    let findOpen = ui.useState(context,0); let replaceOpen = ui.useState(context,0); let query = ui.useText(context,ui.emptyText()); let replacement = ui.useText(context,ui.emptyText())
+    let exact = ui.useState(context,0); let whole = ui.useState(context,0); let summary = ui.useText(context,ui.emptyText())
+    let paletteReady = ui.useRef(context,0); let changedAt = ui.useRef(context,0); let rehighlightDue = ui.useRef(context,0); let refindDue = ui.useRef(context,0); let focusFind = ui.useRef(context,0)
+
+    let open = fn(file:ui.Text) { if paletteReady.get() == 0 { pending.set(file); return }; asked.set(1); target.set(file); status.set(plain("Opening…")); sp.send(l,request("read",file,ui.emptyText())) }
+    let rehighlight = fn() {
+        if code.get() == 0 { return }
+        let spans = hl.highlightBytes(conv,codeText(code.get()).bytes,language.get().bytes)
+        if has(plain(environment("DEVOS_EDITOR_DEBUG"))) { print("editor: ${spans.len()} bytes of spans for a ${language.get().bytes.len()}-byte language id") }
+        applyTags(code.get(),"syn.",ui.Text(spans))
+    }
+    # Marks every match of the query; `move` 1 selects the next match after the selection, -1 the previous one before it, 0 only refreshes the marks.
+    let refind = fn(move:i64) {
+        if code.get() == 0 { return }
+        let w = code.get()
+        let needle = query.get().bytes
+        if needle.len() == 0 { applyTags(w,"find.",ui.emptyText()); summary.set(ui.emptyText()); return }
+        let text = codeText(w).bytes
+        let starts = fnd.findAll(text,needle,exact.value == 1,whole.value == 1)
+        if starts.len() == 0 { applyTags(w,"find.",ui.emptyText()); summary.set(plain("No results")); return }
+        let at = 0 - 1
+        unsafe {
+            let begin = rd_code_cursor(w as *void,0); let end = rd_code_cursor(w as *void,1)
+            if move > 0 { at = fnd.nextIndex(starts,end) } else if move < 0 { at = fnd.previousIndex(starts,begin) }
+            else { for k in 0..(starts.len() as i64) { if starts[k] == begin && starts[k] + (needle.len() as i64) == end { at = k } } }
+            if move != 0 && at >= 0 { rd_code_select(w as *void,starts[at],starts[at] + (needle.len() as i64)) }
+        }
+        applyTags(w,"find.",ui.Text(fnd.marks(conv,starts,needle.len() as i64,at)))
+        summary.set(plain((at >= 0 ? "${at + 1}" : "?") + " of ${starts.len()}"))
+    }
+    let showFind = fn(withReplace:bool) {
+        findOpen.set(1); if withReplace { replaceOpen.set(1) }
+        unsafe {
+            let selected = taken(rd_code_selection(code.get() as *void))
+            if has(selected) && !multiline(selected) { query.set(selected) }
+        }
+        focusFind.set(1); refind(0)
+    }
+    let closeFind = fn() { findOpen.set(0); replaceOpen.set(0); if code.get() != 0 { applyTags(code.get(),"find.",ui.emptyText()); unsafe { rd_code_focus(code.get() as *void) } } }
+    let replaceCurrent = fn() {
+        if code.get() == 0 || !has(query.get()) { return }
+        let w = code.get(); let text = codeText(w).bytes; let needle = query.get().bytes; let begin = 0; let end = 0
+        unsafe { begin = rd_code_cursor(w as *void,0); end = rd_code_cursor(w as *void,1) }
+        let selectionMatches = end - begin == (needle.len() as i64) && fnd.sameAt(text,begin,needle,exact.value == 1)
+        if !selectionMatches { refind(1); return }
+        let out = Vec<u8>(); for i in 0..begin { out.push(text[i]) }; for b in replacement.get().bytes { out.push(b) }; for i in end..(text.len() as i64) { out.push(text[i]) }
+        replaceCode(w,ui.Text(out)); unsafe { rd_code_select(w as *void,begin + (replacement.get().bytes.len() as i64),begin + (replacement.get().bytes.len() as i64)) }
+        rehighlightDue.set(1); changedAt.set(ticks.get()); refind(1)
+    }
+    let replaceEverything = fn() {
+        if code.get() == 0 || !has(query.get()) { return }
+        let text = codeText(code.get()).bytes
+        let count = fnd.findAll(text,query.get().bytes,exact.value == 1,whole.value == 1).len() as i64
+        if count == 0 { return }
+        replaceCode(code.get(),ui.Text(fnd.replaceAll(text,query.get().bytes,replacement.get().bytes,exact.value == 1,whole.value == 1)))
+        rehighlight(); refind(0); status.set(plain("Replaced ${count}"))
+    }
     let save = fn() {
         if !has(path.get()) && !has(draft.get()) { status.set(plain("Enter a path to save.")); return }
-        purpose.set(2); script(view.get(),plain("window.__devosDump()"))
+        let file = has(draft.get()) ? draft.get() : path.get()
+        asked.set(2); status.set(plain("Saving…")); sp.send(l,request("write",file,channel.quote(codeText(code.get()))))
     }
-    let event = fn(title:ui.Text) {
-        let first = bar(title,0); if first < 0 { return }
-        let second = bar(title,first + 1); if second < 0 { return }
-        let number = slice(title,3,first); if !digits(number) { return }
-        let kind = slice(title,first + 1,second); let payload = slice(title,second + 1,title.bytes.len() as i64)
-        script(view.get(),join(Vec<ui.Text>(plain("window.__devosAck("),number,plain(")"))))
-        if k.isText(kind,"ready") {
-            ready.set(1)
-            script(view.get(),join(Vec<ui.Text>(plain("window.devOsEditor.setTheme("),channel.quote(mode.get()),plain(","),channel.quote(family.get()),plain(")"))))
-            if has(pending.get()) { open(pending.get()); pending.set(ui.emptyText()) } else { status.set(plain("Open a file to start")) }
-        } else if k.isText(kind,"change") { dirty.set(1)
-            if smoke() && step.get() == 2 && purpose.get() == 0 { purpose.set(2); script(view.get(),plain("window.__devosDump()")) }
-        } else if k.isText(kind,"cursor") { let parts = channel.split(payload,124); if parts.len() > 1 { position.set(join(Vec<ui.Text>(plain("Ln "),parts[0],plain(", Col "),parts[1]))) } }
-        else if k.isText(kind,"error") { status.set(payload) }
-        else if k.isText(kind,"action") {
-            if k.isText(payload,"save") || k.isText(payload,"saveAs") { save() }
-            else if k.isText(payload,"new") { path.set(ui.emptyText()); draft.set(ui.emptyText()); dirty.set(0); configure(ui.emptyText(),plain("plaintext"),plain("\"\"")); status.set(plain("New file")) }
-        } else if k.isText(kind,"content") {
-            if purpose.get() == 1 {
-                purpose.set(0)
-                # DEVOS_EDITOR_SMOKE: the text Monaco holds must be exactly the text read from the file.
-                if ui.equalText(payload,loaded.get()) { step.set(2); script(view.get(),plain("window.devOsEditor.replace(\"EDITED BY THE TEST\")")) }
-                else { print("FAIL native Editor shows different text than the file"); ui.close(context) }
-            } else if purpose.get() == 2 {
-                purpose.set(0); let target = has(draft.get()) ? draft.get() : path.get()
-                asked.set(2); status.set(plain("Saving…")); sp.send(l,request("write",target,payload))
-            }
+    let event = fn(text:ui.Text) {
+        if k.isText(text,"change") { dirty.set(1); changedAt.set(ticks.get()); rehighlightDue.set(1); if findOpen.value == 1 { refindDue.set(1) } }
+        else if k.isText(text,"save") { save() }
+        else if k.isText(text,"find") { showFind(false) }
+        else if k.isText(text,"replace") { showFind(true) }
+        else if k.isText(text,"next") { if !has(query.get()) { showFind(false) } else { refind(1) } }
+        else if k.isText(text,"previous") { refind(0 - 1) }
+        else if k.isText(text,"escape") { if findOpen.value == 1 { closeFind() } }
+        else if k.isText(text,"new") { path.set(ui.emptyText()); draft.set(ui.emptyText()); dirty.set(0); language.set(plain("plaintext")); setCode(code.get(),ui.emptyText()); applyTags(code.get(),"syn.",ui.emptyText()); status.set(plain("New file")) }
+        else if k.isText(text,"open") { unsafe { gtk_widget_grab_focus(ui.find(context,"editor-path")) } }
+        else if text.bytes.len() > 7 && text.bytes[0] == 99 && text.bytes[1] == 117 && text.bytes[2] == 114 && text.bytes[3] == 115 && text.bytes[4] == 111 && text.bytes[5] == 114 && text.bytes[6] == 58 {
+            let parts = channel.split(text,58); if parts.len() > 2 { position.set(join(Vec<ui.Text>(plain("Ln "),parts[1],plain(", Col "),parts[2]))) }
         }
     }
     ui.useEffect(context,fn():fn():void {
         let root = environment("DEV_OS_ROOT"); let theme = environment("DEV_OS_THEME"); let themeFamily = environment("DEV_OS_THEME_FAMILY")
         if ui.text(theme).bytes.len() == 0 { unsafe { theme = rd_default_theme() } }
         if ui.text(themeFamily).bytes.len() == 0 { themeFamily = "vscode" }
-        mode.set(plain(theme)); family.set(plain(themeFamily))
         unsafe {
             rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${themeFamily}.${theme}.css")
             rd_app_header_for((*context).native,"Editor","${root}/data/icons","editor","dev-os-editor")
             rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"editor")
+            let widget = ui.find(context,"editor-code"); code.set(widget as i64)
         }
         # `editor <file>` from the shell opens that file in the running window.
         ui.onCommand(context,"editor.",fn(line:ui.Text) {
             let parts = channel.split(line,31)
-            if parts.len() > 1 && has(parts[1]) { draft.set(parts[1]); if ready.get() != 0 { open(parts[1]) } else { pending.set(parts[1]) } }
+            if parts.len() > 1 && has(parts[1]) { draft.set(parts[1]); open(parts[1]) }
         })
-        return ui.noop
-    },Vec<i64>())
-    ui.useEffect(context,fn():fn():void {
-        unsafe {
-            let host = ui.find(context,"editor-host")
-            let web = webkit_web_view_new()
-            let injected = ui.nativeText(plain(shim()))
-            webkit_user_content_manager_add_script(webkit_web_view_get_user_content_manager(web),webkit_user_script_new(injected,0,0,null,null))
-            ui.rd_buffer_free(injected as *void)
-            gtk_box_pack_start(host,web,1,1,0)
-            gtk_widget_show(web)
-            view.set(web as i64)
-            let startup = environment("DEVOS_EDITOR_FILE"); if ui.text(startup).bytes.len() > 0 { pending.set(plain(startup)); draft.set(plain(startup)) }
-            ui.onTick(context,100,fn() { unsafe {
-                let w = view.get() as *void
-                ticks.set(ticks.get() + 1)
-                # The server needs a moment to listen; load again until the page reports ready.
-                if ready.get() == 0 && (ticks.get() == 5 || ticks.get() % 30 == 0) {
-                    let address = ui.nativeText(join(Vec<ui.Text>(plain("http://127.0.0.1:"),plain(environment("DEVOS_EDITOR_PORT")),plain("/"),plain(environment("DEVOS_EDITOR_TOKEN")),plain("/"))))
-                    webkit_web_view_load_uri(w,address)
-                    ui.rd_buffer_free(address as *void)
-                }
-                let title = owned(webkit_web_view_get_title(w))
-                if !ui.equalText(title,handled.get()) { handled.set(title); event(title) }
-                if smoke() && ticks.get() > 900 { print("FAIL native Editor timed out at step ${step.get()}"); ui.close(context) }
-            } })
-        }
+        ui.onTick(context,100,fn() {
+            ticks.set(ticks.get() + 1)
+            if rehighlightDue.get() == 1 && ticks.get() - changedAt.get() >= 3 { rehighlightDue.set(0); rehighlight() }
+            if refindDue.get() == 1 && ticks.get() - changedAt.get() >= 3 { refindDue.set(0); refind(0) }
+            if focusFind.get() == 1 { focusFind.set(0); unsafe { gtk_widget_grab_focus(ui.find(context,"editor-find")) } }
+            if smoke() && ticks.get() > 600 { print("FAIL native Editor timed out at step ${step.get()}"); ui.close(context) }
+        })
+        let startup = environment("DEVOS_EDITOR_FILE"); if ui.text(startup).bytes.len() > 0 { draft.set(plain(startup)); pending.set(plain(startup)) }
         return ui.noop
     },Vec<i64>())
     ui.useEffect(context,fn():fn():void {
         if l.failure.value.bytes.len() > 0 { status.set(l.failure.value); if smoke() { print("FAIL native Editor: the file worker reported an error"); ui.close(context) }; return ui.noop }
         let f = l.frame.value
         if f.bytes.len() == 0 { return ui.noop }
-        if asked.get() == 1 && has(field(f,2)) {
-            let target = lastQueued.get(); path.set(target); draft.set(target); dirty.set(0); loaded.set(field(f,2))
-            configure(target,field(f,1),field(f,2)); status.set(plain("Opened"))
-            if smoke() && step.get() == 0 { step.set(1); purpose.set(1); script(view.get(),plain("window.__devosDump()")) }
+        if asked.get() == 3 {
+            paintCode(code.get(),ui.Text(lit.unescape(field(f,1).bytes))); asked.set(0); paletteReady.set(1)
+            if has(pending.get()) { let file = pending.get(); pending.set(ui.emptyText()); open(file) } else { unsafe { rd_code_focus(code.get() as *void) } }
+        } else if asked.get() == 1 && has(field(f,2)) {
+            let content = ui.Text(lit.unescape(field(f,2).bytes))
+            path.set(target.get()); draft.set(target.get()); dirty.set(0); loaded.set(content); language.set(field(f,1))
+            setCode(code.get(),content); rehighlight(); if findOpen.value == 1 { refind(0) }
+            status.set(plain("Opened")); asked.set(0)
+            if smoke() && step.get() == 0 {
+                # DEVOS_EDITOR_SMOKE: the view must hold exactly the file's text, an edit must undo, and the edited text must reach the file.
+                if !ui.equalText(codeText(code.get()),content) { print("FAIL native Editor shows different text than the file"); ui.close(context); return ui.noop }
+                # find: the first "const" is selected and both matches are counted; replace all changes both and one undo restores them
+                query.set(plain("const")); replacement.set(plain("let")); findOpen.set(1); replaceOpen.set(1); refind(1)
+                unsafe { if !ui.equalText(taken(rd_code_selection(code.get() as *void)),plain("const")) { print("FAIL native Editor find did not select the match"); ui.close(context); return ui.noop } }
+                if !ui.equalText(summary.get(),plain("1 of 2")) { print("FAIL native Editor find counted wrongly"); ui.close(context); return ui.noop }
+                replaceEverything()
+                if !ui.equalText(codeText(code.get()),plain("let a = 1\n\tlet \"b\" = 'ü'\n")) { print("FAIL native Editor replace all gave a wrong text"); ui.close(context); return ui.noop }
+                unsafe { rd_code_undo(code.get() as *void) }
+                if !ui.equalText(codeText(code.get()),content) { print("FAIL native Editor could not undo replace all in one step"); ui.close(context); return ui.noop }
+                closeFind()
+                replaceCode(code.get(),plain("EDITED BY THE TEST"))
+                unsafe { rd_code_undo(code.get() as *void) }
+                if !ui.equalText(codeText(code.get()),content) { print("FAIL native Editor could not undo an edit"); ui.close(context); return ui.noop }
+                unsafe { rd_code_redo(code.get() as *void) }
+                if !ui.equalText(codeText(code.get()),plain("EDITED BY THE TEST")) { print("FAIL native Editor could not redo an edit"); ui.close(context); return ui.noop }
+                step.set(2); save()
+            }
         } else if asked.get() == 2 {
-            dirty.set(0); path.set(field(f,1)); status.set(join(Vec<ui.Text>(plain("Saved · "),field(f,1))))
+            dirty.set(0); path.set(field(f,1)); status.set(join(Vec<ui.Text>(plain("Saved · "),field(f,1)))); asked.set(0)
             if smoke() && step.get() == 2 { print("PASS native Editor opened, edited and saved a file"); ui.close(context) }
         }
         return ui.noop
     },Vec<i64>(l.replies.value))
-    let openButton = ui.named("editor-open"); let saveButton = ui.named("editor-save")
+
+    let openButton = ui.named("editor-open"); let saveButton = ui.named("editor-save"); let findButton = ui.named("editor-find-toggle")
     let url = ui.named("editor-path"); url.expand = true; url.placeholder = plain("File path")
     let bar = ext.row(8,Vec<ui.Node>(
         ui.Entry(url,draft.value,fn(value:ui.Text) { draft.set(value) }),
         ui.Button(openButton,"Open",fn() { if has(draft.get()) { open(draft.get()) } }),
-        ui.Button(saveButton,"Save",fn() { save() })))
-    let host = ui.props(); host.expand = true; host.id = ui.text("editor-host")
-    let line = join(Vec<ui.Text>(status.value,plain(dirty.value != 0 ? " · modified" : ""),has(position.value) ? plain(" · ") : ui.emptyText(),position.value))
-    return ext.column(8,Vec<ui.Node>(bar,ui.Box(host,Vec<ui.Node>()),ext.named(k.caption(line,"settings-description"),"editor-status")))
+        ui.Button(saveButton,"Save",fn() { save() }),
+        ui.Button(findButton,"Find",fn() { if findOpen.value == 1 { closeFind() } else { showFind(false) } })))
+    let nodes = Vec<ui.Node>(bar)
+    if findOpen.value == 1 {
+        let search = ui.named("editor-find"); search.expand = true; search.placeholder = plain("Find")
+        let caseOption = ui.named("editor-find-case"); caseOption.className = ui.text(exact.value == 1 ? "selected" : "")
+        let wordOption = ui.named("editor-find-word"); wordOption.className = ui.text(whole.value == 1 ? "selected" : "")
+        let counter = ui.props(); counter.className = ui.text("settings-description"); counter.width = 80
+        nodes.push(ext.row(6,Vec<ui.Node>(ui.Entry(search,query.value,fn(value:ui.Text) { query.set(value); refind(0) }),
+            ui.Button(caseOption,"Aa",fn() { exact.set(exact.value == 1 ? 0 : 1); refind(0) }),ui.Button(wordOption,"Word",fn() { whole.set(whole.value == 1 ? 0 : 1); refind(0) }),
+            ui.withProps(ui.TextLabel(summary.value),counter),
+            ui.Button(ui.named("editor-find-previous"),"Prev",fn() { refind(0 - 1) }),ui.Button(ui.named("editor-find-next"),"Next",fn() { refind(1) }),
+            ui.Button(ui.named("editor-find-close"),"Close",fn() { closeFind() }))))
+        if replaceOpen.value == 1 {
+            let withText = ui.named("editor-replace"); withText.expand = true; withText.placeholder = plain("Replace with")
+            nodes.push(ext.row(6,Vec<ui.Node>(ui.Entry(withText,replacement.value,fn(value:ui.Text) { replacement.set(value) }),
+                ui.Button(ui.named("editor-replace-one"),"Replace",fn() { replaceCurrent() }),ui.Button(ui.named("editor-replace-all"),"Replace all",fn() { replaceEverything() }))))
+        }
+    }
+    let view = ui.props(); view.expand = true; view.id = ui.text("editor-code")
+    nodes.push(ui.onPointer(ui.CodeView(view),fn(text:ui.Text) { event(text) }))
+    let line = join(Vec<ui.Text>(status.value,plain(dirty.value != 0 ? " · modified" : ""),plain(" · "),position.value,plain(" · "),language.value))
+    nodes.push(ext.named(k.caption(line,"settings-description"),"editor-status"))
+    let frame = ui.props(); frame.spacing = 8; frame.expand = true
+    return ui.Box(frame,nodes)
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.editor.Native" }
-    unsafe {
-        rd_identity(id)
-        # The loopback port and the secret path segment are shared with server.dev through the environment, which its process inherits.
-        setenv("DEVOS_EDITOR_OWNER","${getpid()}",1)
-        if ui.text(environment("DEVOS_EDITOR_PORT")).bytes.len() == 0 { setenv("DEVOS_EDITOR_PORT","${20000 + getpid() % 30000}",1) }
-        if ui.text(environment("DEVOS_EDITOR_TOKEN")).bytes.len() == 0 { setenv("DEVOS_EDITOR_TOKEN","e${getpid()}x${getpid() * 7919 % 100003}",1) }
-    }
+    unsafe { rd_identity(id) }
     return ui.run("Editor",1100,720,App) ? 0 : 1
 }

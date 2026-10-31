@@ -2,6 +2,7 @@
 # File worker of the native Editor window: reads and writes one UTF-8 text file per request. One JSON request per line on stdin:
 #   {"action":"read","path":"..."}                  -> V<TAB>language<TAB>"content" (the content as a JSON string literal, so it holds no tab or line break)
 #   {"action":"write","path":"...","content":"..."} -> V<TAB>path
+#   {"action":"palette","family":"vscode","mode":"dark"} -> V<TAB>"spec" (the code view's colors as a JSON string literal)
 #   {"action":"ping"}                               -> V<TAB>
 # Files over 8 MB and binary files (a NUL byte) are refused.
 use "std/io"
@@ -10,8 +11,11 @@ use "std/json"
 use "std/strings"
 use "std/result"
 use "std/encoding"
+use "std/process"
 use "../../../lib/worker-kit.dev" as kit
+use "./kit.dev" as colors
 
+fn root():str { return process.hasEnv("DEV_OS_ROOT") ? process.getenv("DEV_OS_ROOT") : "." }
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn language(path:str):str {
     let name = strings.toLowerCase(strings.contains(path,"/") ? strings.substring(path,strings.lastIndexOf(path,"/") + 1,strings.charLength(path)) : path)
@@ -50,6 +54,7 @@ fn handle(line:str):str {
     let done = result.attempt(fn():str {
         if strings.equal(action,"read") { return read(text(r,"path")) }
         if strings.equal(action,"ping") { return "V\t" }
+        if strings.equal(action,"palette") { return "V\t" + json.stringify(colors.paletteSpec(root(),text(r,"family"),text(r,"mode"))) }
         if strings.equal(action,"write") { return write(text(r,"path"),text(r,"content")) }
         return kit.failure("Unsupported action")
     })

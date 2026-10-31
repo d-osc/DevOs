@@ -11,7 +11,7 @@ test.case("alpha colors preserve JS compositing and GTK rounding",fn() {
     t.equal(palette.rgba("#11223380"),"rgba(17, 34, 51, 0.502)")
     t.equal(palette.rgba("#fff"),"rgba(255, 255, 255, 1)")
 })
-test.case("the generated palette data is what data/themes/palettes.json holds (native shell and Monaco page read it)",fn() {
+test.case("the generated palette data is what data/themes/palettes.json holds (the native shell and the Editor read it)",fn() {
     let data=palette.generate(t.root())
     t.equal(json.stringify(data),json.stringify(json.parse(fs.readFileSync(t.root()+"/data/themes/palettes.json","utf8"))))
     for name in Vec<str>("familyPalettes","paletteSources","syntaxRules") { test.expect(json.has(data,name),"Missing " + name) }

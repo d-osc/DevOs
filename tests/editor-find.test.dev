@@ -1,0 +1,43 @@
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../src/apps/org.devos.editor/find.dev" as f
+use "./lib/react-devlang.dev" as t
+
+fn conv(text:str):Vec<u8> { return encoding.encode(text,"utf8") }
+fn b(text:str):Vec<u8> { return encoding.encode(text,"utf8") }
+fn show(values:Vec<i64>):str { let parts = Vec<str>(); for v in values { parts.push("${v}") }; return strings.join(parts,",") }
+
+test.case("find folds ASCII case unless exact, and matches do not overlap",fn() {
+    t.equal(show(f.findAll(b("Foo foo FOO fOo"),b("foo"),false,false)),"0,4,8,12")
+    t.equal(show(f.findAll(b("Foo foo FOO fOo"),b("foo"),true,false)),"4")
+    t.equal(show(f.findAll(b("aaaa"),b("aa"),true,false)),"0,2")
+    t.equal(show(f.findAll(b("abc"),b(""),true,false)),"")
+})
+test.case("whole word skips matches inside identifiers",fn() {
+    t.equal(show(f.findAll(b("cat concat cat_x cat. (cat)"),b("cat"),true,true)),"0,17,23")
+})
+test.case("offsets are bytes: a multi-byte text before the match shifts them",fn() {
+    t.equal(show(f.findAll(b("สวัสดี foo"),b("foo"),true,false)),"19")
+})
+test.case("next and previous wrap around the ends",fn() {
+    let s = f.findAll(b("x a x a x"),b("x"),true,false)
+    t.equal(show(s),"0,4,8")
+    t.equal("${f.nextIndex(s,0)}","0")
+    t.equal("${f.nextIndex(s,1)}","1")
+    t.equal("${f.nextIndex(s,9)}","0")
+    t.equal("${f.previousIndex(s,4)}","0")
+    t.equal("${f.previousIndex(s,0)}","2")
+    t.equal("${f.nextIndex(Vec<i64>(),3)}","-1")
+})
+test.case("replace all keeps the text around the matches, whatever the replacement's length",fn() {
+    t.equal(encoding.decode(f.replaceAll(b("one two one"),b("one"),b("three"),true,false),"utf8"),"three two three")
+    t.equal(encoding.decode(f.replaceAll(b("one two one"),b("one"),b(""),true,false),"utf8")," two ")
+    t.equal(encoding.decode(f.replaceAll(b("none one"),b("one"),b("1"),true,true),"utf8"),"none 1")
+    t.equal(encoding.decode(f.replaceAll(b("abc"),b("zzz"),b("1"),true,false),"utf8"),"abc")
+})
+test.case("marks name the current match",fn() {
+    t.equal(encoding.decode(f.marks(conv,Vec<i64>(0,4),3,1),"utf8"),"find.match 0 3\nfind.current 4 7\n")
+    t.equal(encoding.decode(f.marks(conv,Vec<i64>(),3,-1),"utf8"),"")
+})
+return t.finish()

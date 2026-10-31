@@ -30,12 +30,13 @@ if [ "$vte" != libvte-2.91.so.0 ]; then
     sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.terminal/native-main.devx" "$root/build/react-devlang/apps/terminal" "$vte"
     install -m0755 "$root/build/react-devlang/apps/terminal" "$root/dist/native/terminal"
 fi
+# The Editor is a GTK code view colored by DevLang: no WebKit, no bundle.
+sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.editor/native-main.devx" "$root/build/react-devlang/apps/editor"
+install -m0755 "$root/build/react-devlang/apps/editor" "$root/dist/native/editor"
 webkit=$(${CC:-cc} -print-file-name=libwebkit2gtk-4.1.so.0)
 if [ "$webkit" != libwebkit2gtk-4.1.so.0 ]; then
     sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.browser/native-main.devx" "$root/build/react-devlang/apps/browser" "$webkit"
     install -m0755 "$root/build/react-devlang/apps/browser" "$root/dist/native/browser"
-    sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.editor/native-main.devx" "$root/build/react-devlang/apps/editor" "$webkit"
-    install -m0755 "$root/build/react-devlang/apps/editor" "$root/dist/native/editor"
 fi
 gst=$(${CC:-cc} -print-file-name=libgstreamer-1.0.so.0)
 if [ "$gst" != libgstreamer-1.0.so.0 ]; then

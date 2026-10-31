@@ -13,15 +13,13 @@ fn checks(root:str):json.Value {
     let flags:i32=0;let linux=strings.equal(process.platform(),"linux")
     let host=fs.is_file(root+"/dist/native/libsupervisor.so")
     if linux && host {unsafe {flags=sr_runtime_features()}}
-    let editor=true
-    for file in Vec<str>("index.html","app.js","app.css","editor.worker.js","ts.worker.js","json.worker.js","css.worker.js","html.worker.js") {if !fs.is_file(root+"/dist/editor/"+file) {editor=false}}
     let bundle=true
-    for name in Vec<str>("shell","files","settings","launcher") {if !fs.is_file(root+"/dist/native/"+name) {bundle=false}}
+    for name in Vec<str>("shell","files","settings","launcher","editor") {if !fs.is_file(root+"/dist/native/"+name) {bundle=false}}
     return {linux:linux,devlang:!strings.equal(hw.which("devrun"),""),glib_2_80:(flags & 1)!=0,
         labwc:!strings.equal(hw.which("labwc"),""),dbus_run_session:!strings.equal(hw.which("dbus-run-session"),""),setsid:!strings.equal(hw.which("setsid"),""),
         native_supervisor:host && files(root,Vec<str>("src/system/supervisor.dev","lib/session-supervisor.dev")),
         window_tracker:fs.is_file(root+"/build/native/dev-os-window-tracker") || fs.is_file(root+"/native/dev-os-window-tracker") || !strings.equal(hw.which("dev-os-window-tracker"),""),
-        gtk3_and_layer_shell:(flags & 6)==6,cairo:(flags & 8)!=0,editor_webkit:(flags & 16)!=0,
-        editor_assets:editor,native_apps:bundle,config:validConfig()}
+        gtk3_and_layer_shell:(flags & 6)==6,cairo:(flags & 8)!=0,
+        native_apps:bundle,config:validConfig()}
 }
 fn healthy(value:json.Value):bool {for key in json.keys(value) {if !json.bool(json.get(value,key)) {return false}};return true}

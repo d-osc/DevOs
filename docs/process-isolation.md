@@ -45,7 +45,7 @@ own UI process. This is process isolation, not a permissions sandbox.
 | Settings | Preferences/core configuration, Wi-Fi, Bluetooth/pairing, audio, displays/rollback, accounts, device helpers and update checking/installing |
 | Files | Directory metadata, sorted/hidden/folder views, history, creation/rename, recursive indexing and fuzzy search |
 | Terminal | Shell integration files, command catalog/history/path suggestions and accepted-completion files; Bash itself already runs in its own process, with VTE retaining the UI/PTY surface |
-| Editor | Document contents, UTF-8/BOM validation, loading/saving and conflict protection; the loopback Monaco asset server |
+| Editor | Document contents, UTF-8/BOM validation, loading/saving and conflict protection |
 | Camera | Device discovery, capture pipeline, JPEG preview production and photo storage |
 | Microphone | Device discovery, capture pipeline, level processing and WAV finalization |
 | Task Manager | Process sampler and control helper, search and sorting |

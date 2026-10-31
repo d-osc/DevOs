@@ -1,0 +1,43 @@
+# The theme's colors for the native Editor, as the lines the code view's palette takes (rd_code_palette): its own colors and one line per syntax scope
+# of highlight.dev, taken from the theme's syntax rules. Run by service.dev (a window cannot import the standard library).
+use "std/fs"
+use "std/json"
+use "std/strings"
+
+fn token(palette:json.Value, key:str, fallback:str):str { return json.has(palette,key) ? json.string(json.get(palette,key)) : fallback }
+# The first rule for `scope` that sets a color or a style: "#rrggbb" plus the flags i (italic) and b (bold), or "".
+fn ruleColor(rules:json.Value, scope:str):str {
+    for i in 0..(json.len(rules) as i64) {
+        let rule = json.at(rules,i)
+        if json.has(rule,"scope") && strings.equal(json.string(json.get(rule,"scope")),scope) && json.has(rule,"foreground") {
+            let style = json.has(rule,"fontStyle") ? json.string(json.get(rule,"fontStyle")) : ""
+            return json.string(json.get(rule,"foreground")) + " " + (strings.contains(style,"italic") ? "i" : "") + (strings.contains(style,"bold") ? "b" : "")
+        }
+    }
+    return ""
+}
+# What highlight.dev calls a scope -> the theme rule that colors it (the first of the alternatives that exists).
+fn syntaxSpec(rules:json.Value, fallback:str):str {
+    let scopes = Vec<str>("comment","string","number","keyword","type","function","constant","property","tag","attribute","heading","bold","italic","code","link","quote")
+    let rulesFor = Vec<str>("comment","string","constant","keyword","support","entity.name.function","constant","support.type.property-name.json|meta.property-name|support","entity.name.tag","meta.property-name|constant","markup.heading","markup.bold","markup.italic","markup.inline.raw","string.other.link","markup.quote")
+    let lines = Vec<str>()
+    for i in 0..(scopes.len() as i64) {
+        let color = ""
+        for alternative in strings.split(rulesFor[i],"|") { if strings.equal(color,"") { color = ruleColor(rules,alternative) } }
+        if strings.equal(color,"") { color = fallback }
+        lines.push("syn." + scopes[i] + " " + color)
+    }
+    return strings.join(lines,"\n")
+}
+fn paletteSpec(root:str, family:str, mode:str):str {
+    let path = root + "/data/themes/palettes.json"
+    if !fs.existsSync(path) { return "" }
+    let data = json.parse(fs.readFileSync(path,"utf8"))
+    let p = json.get(json.get(json.get(data,"familyPalettes"),family),mode)
+    let rules = json.get(json.get(json.get(data,"syntaxRules"),family),mode)
+    let foreground = token(p,"editorFg","#cccccc")
+    let lines = Vec<str>("bg " + token(p,"editorBg","#1e1e1e"),"fg " + foreground,"caret " + token(p,"cursor",foreground),"selection " + token(p,"editorSelection","#264f78"),
+        "cursorline " + token(p,"lineHighlight","#2a2a2a"),"gutter " + token(p,"editorBg","#1e1e1e"),"gutterfg " + token(p,"fgDim","#666666"),"gutterfgcur " + token(p,"fgMuted","#aaaaaa"),
+        "find.match " + token(p,"warning","#b89500") + " g","find.current " + token(p,"accent","#297aa0") + " g")
+    return strings.join(lines,"\n") + "\n" + syntaxSpec(rules,foreground)
+}

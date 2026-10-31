@@ -15,15 +15,8 @@
     "build": "node tools/build/build.ts",
     "watch": "node tools/build/build.ts --watch",
     "release:package": "d tools/release/release.dev -- package",
-    "typecheck": "tsc --noEmit && tsc --project tsconfig.tools.json && tsc --project tsconfig.editor.json",
-    "typecheck:watch": "tsc --noEmit --watch",
+    "typecheck": "tsc --project tsconfig.tools.json",
     "theme:generate": "d tools/theme/generate-palette.dev"
-  },
-  "dependencies": {
-    "monaco-editor": "0.57.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "react-reconciler": "0.33.0"
   },
   "devDependencies": {
     "@girs/gio-2.0": "5.5.0",
@@ -38,9 +31,6 @@
     "@girs/vte-2.91": "^5.5.0",
     "@girs/webkit2-4.1": "5.5.0",
     "@types/node": "22.18.0",
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
-    "@types/react-reconciler": "0.33.1",
     "esbuild": "0.28.2",
     "typescript": "5.9.3"
   },

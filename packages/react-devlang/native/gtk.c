@@ -58,6 +58,7 @@ void rd_clipboard(const char *text) { if (text) gtk_clipboard_set_text(gtk_clipb
 int64_t rd_strlen(const char *text) { return (int64_t)strlen(text); }
 void *rd_buffer_new(int64_t length) { return g_malloc0((gsize)length + 1); }
 void rd_buffer_free(void *buffer) { g_free(buffer); }
+#include "code.inc"
 void rd_fail(const char *message) { g_error("react-devlang: %s", message); }
 void rd_close(void *data);
 /* RD_LAYER=1: a full-screen overlay (the Launcher, Task View and Snap). The layer-shell library is opened at run time, so apps need neither its headers nor
@@ -294,6 +295,7 @@ void *rd_widget(void *data, int32_t kind) {
         widget=gtk_text_view_new();gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(widget),GTK_WRAP_WORD_CHAR);GtkTextBuffer *buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));g_object_set_data(G_OBJECT(buffer),"rd-owner",widget);g_signal_connect(buffer,"changed",G_CALLBACK(rd_textarea_changed),root);break;
     }
     case 19: widget=gtk_stack_new();break;
+    case 21: widget=rd_code_new(root);break; /* the editor's code view (code.inc), driven by the rd_code_* calls */
     case 17: widget=gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,0,100,1);gtk_scale_set_draw_value(GTK_SCALE(widget),FALSE);g_object_set_data(G_OBJECT(widget),"rd-root",root);g_signal_connect(widget,"value-changed",G_CALLBACK(rd_scaled),root);g_signal_connect(widget,"destroy",G_CALLBACK(rd_scale_destroyed),NULL);break;
     case 16: widget=gtk_switch_new();g_signal_connect(widget,"notify::active",G_CALLBACK(rd_switched),root);break;
     case 12:

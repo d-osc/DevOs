@@ -1,60 +1,41 @@
 # Editor
 
-Editor เป็น system UI extension ที่ใช้ React + TypeScript, header และแท็บร่วมกับ Terminal.
-พื้นที่แก้ไขใช้ Monaco 0.57 ใน WebKitGTK 4.1. React DOM ดูแลการ mount Monaco ภายใน WebKit;
-toolbar, status bar, native header และ dialogs ใช้ GTK. Assets และ language workers bundle ใน `dist/editor/`
-และเสิร์ฟเฉพาะบน loopback ระหว่างเปิดแอป จึงใช้ได้โดยไม่ต้องเชื่อมต่อ CDN.
+Editor เป็นหน้าต่าง native เขียนด้วย DevLang ทั้งหมด: พื้นที่แก้ไขเป็น code view ของ toolkit
+(`packages/react-devlang/native/code.inc`: GtkTextView + เลขบรรทัด + undo + auto-indent) ระบายสีไวยากรณ์ด้วย
+`highlight.dev` ตามกฎสีของธีมใน `data/themes/palettes.json` ไม่มี WebKit, JavaScript หรือ bundle.
 
-ARM64 DevOs images using WebKitGTK 2.50 apply
-`distro/oe/meta-devos/recipes-sato/webkit/webkitgtk3_2.50%.bbappend` when installing
-JavaScriptCore. Its handwritten LLInt entry points lack BTI landing instructions,
-although the compiler-generated ELF property marks the entire library as compatible.
-Correcting that library's BTI property prevents WebKitWebProcess from receiving
-SIGILL on BTI-capable CPUs, including QEMU's `max` CPU. PAC/GCS properties and
-other libraries' BTI properties are retained; no sandbox or JIT setting is disabled.
-Run `DEV_OS_EDITOR_TEST_SLOW=1 gjs -m dist/live-editor-test.js` in a TCG guest to
-allow extra startup time while still checking TypeScript worker diagnostics and save.
+เปิดจาก Applications → Editor หรือ `dev-os-shell editor file.ts`.
 
-ติดตั้ง runtime บน Ubuntu:
+| ปุ่ม | ทำอะไร |
+|---|---|
+| Ctrl+S | บันทึก |
+| Ctrl+F / Ctrl+H | ค้นหา / ค้นหาและแทนที่ (เลือกข้อความก่อนเพื่อใส่ในช่องค้นหา) |
+| F3 หรือ Ctrl+G / Shift+F3 | ผลถัดไป / ก่อนหน้า (วนรอบ) |
+| Ctrl+Z / Ctrl+Y หรือ Ctrl+Shift+Z | undo / redo (แทนที่ทั้งหมดเป็น undo ขั้นเดียว) |
+| Tab / Shift+Tab | เยื้อง / ลดการเยื้องบรรทัดที่เลือก |
+| Enter | ขึ้นบรรทัดใหม่โดยคงการเยื้อง (เพิ่มอีกระดับหลัง `{ ( [`) |
+| Esc | ปิดแถบค้นหา |
 
-```sh
-sudo apt install gir1.2-webkit2-4.1 gir1.2-soup-3.0
-```
+ไฟล์ต้องเป็น UTF-8 ไม่เกิน 8 MB; binary ถูกปฏิเสธ.
 
-เปิดจาก Applications → Editor หรือ `dev-os-editor file.ts other.json` ใน Terminal.
-Ctrl+N / Ctrl+T เปิดแท็บใหม่, Ctrl+O เปิดไฟล์, Ctrl+S บันทึก, Ctrl+Shift+S บันทึกเป็นชื่อใหม่,
-Ctrl+W ปิดแท็บ และ Ctrl+Tab / Ctrl+Shift+Tab สลับแท็บ.
-ลากแท็บเพื่อแยก/รวมหน้าต่างได้เหมือน Terminal โดยย้าย WebKit widget และ Monaco instance เดิม.
-Ctrl+F, Ctrl+H, undo/redo และ syntax highlighting เป็นคำสั่งของ Monaco ตามปกติ.
+## ภาษาที่ระบายสี
 
-หน้าตาอิง VS Code: แท็บแบนพร้อมไอคอน React/TypeScript/JavaScript, ชื่อโฟลเดอร์เมื่อชื่อไฟล์ซ้ำ,
-breadcrumbs, ปุ่ม Open/Save/Find/Replace แบบไอคอน, minimap และ status bar ขนาดเล็ก.
-เปิด minimap เป็นค่าเริ่มต้นและรองรับ JSX ในไฟล์ `.tsx` / `.jsx`.
+TypeScript/JavaScript, C/C++, Rust, Go, Java/C#, Python, shell, Lua, SQL, Dockerfile, Makefile (สแกนเนอร์ทั่วไป:
+คอมเมนต์ สตริง ตัวเลข คีย์เวิร์ด ชนิด ฟังก์ชัน ค่าคงที่) และ JSON, HTML/XML, CSS/SCSS, Markdown, YAML/INI/TOML
+(สแกนเนอร์เฉพาะ). ภาษาอื่นแสดงเป็นข้อความธรรมดา. เป็น highlighter ไม่ใช่ parser: ไม่ล้มเหลวเมื่อไฟล์ไม่สมบูรณ์.
 
-ตั้งค่า font size, tab size และ minimap ที่ Settings → Editor.
-หัวข้อ **Open files with Editor** ระบุชนิดไฟล์ที่เปิดด้วย Editor จาก Files และ Quick Open.
-ช่อง **File extensions and names** รับรายการคั่นด้วย comma เช่น `.ts, .tsx, .json, .md, Dockerfile` หรือ `*.py`.
-กด Apply แล้วมีผลทันที; เว้นช่องว่างเพื่อใช้แอปเริ่มต้นของระบบ. การตั้งค่านี้ใช้ภายใน Dev OS Files.
-กดปุ่มรูปเฟืองใน toolbar ของ Editor เพื่อเปิดไฟล์ตั้งค่าในแท็บ Editor.
-ไฟล์ของ Editor อยู่ที่ `~/.config/dev-os/extensions/org.devos.editor.json` (หรือใต้ `XDG_CONFIG_HOME`).
-ระบบสร้างไฟล์จากค่าปัจจุบันเมื่อยังไม่มีไฟล์ และไม่เขียนทับไฟล์ที่มีอยู่.
-แก้ค่าใน `values` แล้วกด Ctrl+S เพื่อบันทึกและใช้ค่าทันที. หาก JSON หรือค่าไม่ถูกต้อง
-Editor จะแสดง error และคงค่าที่กำลังใช้อยู่ไว้ ให้แก้ไขแล้วบันทึกอีกครั้ง.
-ไฟล์รองรับ UTF-8 ขนาดไม่เกิน 8 MB; ปฏิเสธ binary และ encoding ที่ไม่ใช่ UTF-8.
-แสดงจุดเมื่อมีการแก้ไข เตือนก่อนปิด และตรวจ etag ก่อนบันทึกเพื่อป้องกันการเขียนทับไฟล์ที่เปลี่ยนจากภายนอก.
-การปิด session ยังคงใช้ขั้นตอน Log out ของ desktop; ควรบันทึกงานก่อนออกจากระบบ.
+## สิ่งที่ Editor ตัวนี้ไม่มี (เทียบกับ Monaco เดิม)
 
-Source:
+แท็บหลายไฟล์ในหน้าต่างเดียว, minimap, IntelliSense/diagnostics ของ TypeScript, code folding, multi-cursor,
+regex ในการค้นหา, ลากแท็บแยกหน้าต่าง. เปิดหลายไฟล์ = เปิดหลายหน้าต่างผ่าน `dev-os-shell editor`.
 
-- `extension.tsx`: window, React toolbar/status, tabs, dialogs และ lifecycle.
-- `document.ts`: local file IO, dirty state และ external modification detection.
-- `surface.ts`: WebKit และ typed bridge.
-- `assets.ts`: bundled asset server บน loopback.
-- `browser/index.tsx`: React DOM + Monaco และ workers.
-- `extension.json`: manifest และ settings.
+## Source
 
-Build ด้วย `npm run build`. `tools/test/smoke.dev` ทดสอบ file IO, Monaco workers, save,
-dirty close cancellation และการย้ายแท็บที่รักษา undo history.
-`d tools/test/editor-smoke.dev --` ทดสอบเปิดหลายไฟล์จาก command line, พิมพ์แล้วกด Ctrl+S,
-ลากแท็บแยก/รวมหน้าต่าง และ Esc ด้วย input จริงใน private headless session
-(ต้องมี `wtype`, `grim`, Pillow และ pointer helpers จาก `tools/setup/bootstrap-pointer-test.sh`).
+- `native.devx`: หน้าต่าง, แถบ Open/Save/Find, แถบค้นหา/แทนที่, สถานะ.
+- `highlight.dev`: ตัวระบายสี (ไม่ใช้ standard library เพื่อให้หน้าต่าง import ได้).
+- `find.dev`: ค้นหา/แทนที่ (offset เป็น byte).
+- `literal.dev`: ถอดรหัส JSON string literal ที่ worker ส่งมา.
+- `service.dev`: worker อ่าน/เขียนไฟล์ และส่งสีของธีมให้ code view. `kit.dev`: อ่านกฎสีจาก palettes.json.
+
+ทดสอบ: `d tests/editor-highlight.test.dev`, `editor-find`, `editor-literal` (ตรรกะล้วน) และ
+`d tests/editor-native.test.dev` (หน้าต่างจริงใต้ Xvfb: เปิดไฟล์, ข้อความตรงเป๊ะ, ค้นหา, แทนที่ทั้งหมด, undo/redo, บันทึก).

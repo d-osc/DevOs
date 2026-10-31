@@ -1,0 +1,36 @@
+# The text a JSON string literal holds, as UTF-8 bytes (the file worker sends file contents as one literal so it has no tab or line break). No
+# standard-library module is used: the native window cannot import one. Input that is not a well-formed literal yields what could be read.
+fn hex(c:u8):i64 { return c >= 48 && c <= 57 ? (c - 48) as i64 : (c >= 97 && c <= 102 ? (c - 87) as i64 : (c >= 65 && c <= 70 ? (c - 55) as i64 : 0 - 1)) }
+fn code(b:Vec<u8>, at:i64):i64 {
+    if at + 4 > (b.len() as i64) { return 0 - 1 }
+    let value = 0
+    for k in 0..4 { let d = hex(b[at + k]); if d < 0 { return 0 - 1 }; value = value * 16 + d }
+    return value
+}
+fn push(out:Vec<u8>, c:i64):Vec<u8> {
+    if c < 128 { out.push(c as u8) }
+    else if c < 2048 { out.push((192 + c / 64) as u8); out.push((128 + c % 64) as u8) }
+    else if c < 65536 { out.push((224 + c / 4096) as u8); out.push((128 + c / 64 % 64) as u8); out.push((128 + c % 64) as u8) }
+    else { out.push((240 + c / 262144) as u8); out.push((128 + c / 4096 % 64) as u8); out.push((128 + c / 64 % 64) as u8); out.push((128 + c % 64) as u8) }
+    return out
+}
+fn unescape(b:Vec<u8>):Vec<u8> {
+    let out = Vec<u8>(); let n = b.len() as i64; let i = 0
+    if n > 0 && b[0] == 34 { i = 1 }
+    while i < n {
+        let c = b[i]
+        if c == 34 { break }
+        if c != 92 || i + 1 >= n { out.push(c); i = i + 1; continue }
+        let e = b[i + 1]; i = i + 2
+        if e == 110 { out.push(10) } else if e == 116 { out.push(9) } else if e == 114 { out.push(13) } else if e == 98 { out.push(8) } else if e == 102 { out.push(12) }
+        else if e == 117 {
+            let v = code(b,i); i = i + 4
+            if v >= 55296 && v < 56320 && i + 6 <= n && b[i] == 92 && b[i + 1] == 117 {
+                let low = code(b,i + 2)
+                if low >= 56320 && low < 57344 { v = 65536 + (v - 55296) * 1024 + (low - 56320); i = i + 6 }
+            }
+            if v >= 0 { out = push(out,v) }
+        } else { out.push(e) }
+    }
+    return out
+}

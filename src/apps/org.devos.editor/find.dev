@@ -1,0 +1,48 @@
+# Find and replace of the native Editor, over UTF-8 bytes (offsets are byte offsets, like the code view's). The comparison folds ASCII case only;
+# every other byte must match exactly. A whole-word match is not preceded or followed by a letter, digit or underscore.
+use "./highlight.dev" as hl
+
+fn lower(c:u8):u8 { return c >= 65 && c <= 90 ? c + 32 : c }
+fn wordByte(c:u8):bool { return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c >= 128 }
+fn sameAt(text:Vec<u8>, at:i64, needle:Vec<u8>, exact:bool):bool {
+    let n = needle.len() as i64
+    if at + n > (text.len() as i64) { return false }
+    for k in 0..n { if exact ? text[at + k] != needle[k] : lower(text[at + k]) != lower(needle[k]) { return false } }
+    return true
+}
+# The start of every non-overlapping match, in order.
+fn findAll(text:Vec<u8>, needle:Vec<u8>, exact:bool, whole:bool):Vec<i64> {
+    let out = Vec<i64>(); let n = needle.len() as i64; let size = text.len() as i64; let i = 0
+    if n == 0 { return out }
+    while i + n <= size {
+        if sameAt(text,i,needle,exact) && (!whole || ((i == 0 || !wordByte(text[i - 1])) && (i + n == size || !wordByte(text[i + n])))) { out.push(i); i = i + n } else { i = i + 1 }
+    }
+    return out
+}
+# The index in `starts` of the first match at or after `from`, wrapping to the first; -1 when there is none.
+fn nextIndex(starts:Vec<i64>, from:i64):i64 {
+    if starts.len() == 0 { return -1 }
+    for k in 0..(starts.len() as i64) { if starts[k] >= from { return k } }
+    return 0
+}
+# The index of the last match that starts before `from`, wrapping to the last; -1 when there is none.
+fn previousIndex(starts:Vec<i64>, from:i64):i64 {
+    let n = starts.len() as i64
+    if n == 0 { return -1 }
+    let k = n - 1; while k >= 0 { if starts[k] < from { return k }; k = k - 1 }
+    return n - 1
+}
+fn replaceAll(text:Vec<u8>, needle:Vec<u8>, with:Vec<u8>, exact:bool, whole:bool):Vec<u8> {
+    let starts = findAll(text,needle,exact,whole); let out = Vec<u8>(); let at = 0; let n = needle.len() as i64
+    for s in starts { for i in at..s { out.push(text[i]) }; for b in with { out.push(b) }; at = s + n }
+    for i in at..(text.len() as i64) { out.push(text[i]) }
+    return out
+}
+# The lines the code view applies: "find.match start end" for every match, "find.current" for the current one (bytes).
+fn marks(conv:fn(str):Vec<u8>, starts:Vec<i64>, length:i64, current:i64):Vec<u8> {
+    let out = Vec<u8>()
+    for k in 0..(starts.len() as i64) {
+        out = hl.pushText(conv,out,k == current ? "find.current " : "find.match "); out = hl.pushNumber(out,starts[k]); out.push(32); out = hl.pushNumber(out,starts[k] + length); out.push(10)
+    }
+    return out
+}

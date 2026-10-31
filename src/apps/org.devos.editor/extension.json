@@ -1,7 +1,7 @@
 {
   "id": "org.devos.editor",
   "name": "Editor",
-  "description": "Monaco code editor with native draggable tabs and local file editing.",
+  "description": "Native code editor with syntax highlighting, find and replace, and local file editing.",
   "version": "1.0.0",
   "apiVersion": 1,
   "kind": "ui",

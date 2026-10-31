@@ -1,0 +1,76 @@
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../lib/hw.dev" as hw
+use "../src/apps/org.devos.editor/highlight.dev" as h
+use "./lib/react-devlang.dev" as t
+
+# The spans of `source` as "scope:text" entries (the text is cut out by the span's byte offsets, so a wrong offset shows up as the wrong text).
+fn conv(text:str):Vec<u8> { return encoding.encode(text,"utf8") }
+fn spans(source:str, id:str):Vec<str> {
+    let b = encoding.encode(source,"utf8"); let out = Vec<str>()
+    for line in strings.split(encoding.decode(h.highlight(conv,b,id),"utf8"),"\n") {
+        if strings.equal(line,"") { continue }
+        let parts = strings.split(line," ")
+        let from = hw.toInt(parts[1],0); let to = hw.toInt(parts[2],0)
+        let cut = Vec<u8>(); for i in from..to { cut.push(b[i]) }
+        out.push(strings.replaceAll(parts[0],"syn.","") + ":" + encoding.decode(cut,"utf8"))
+    }
+    return out
+}
+fn has(list:Vec<str>, entry:str):bool { for e in list { if strings.equal(e,entry) { return true } }; return false }
+fn expect(list:Vec<str>, entries:Vec<str>) { for e in entries { test.expect(has(list,e),"missing " + e + " in " + strings.join(list," | ")) } }
+
+test.case("TypeScript: keywords, types, strings, numbers, comments and calls",fn() {
+    let s = spans("// note\nconst x: number = 42;\nfunction f(a: string) { return `tpl` + 'q'; }\n/* block\nspans */ let ok = true","typescript")
+    expect(s,Vec<str>("comment:// note","keyword:const","type:number","number:42","keyword:function","function:f","type:string","keyword:return","string:'q'","comment:/* block\nspans */","keyword:let","constant:true"))
+    test.expect(has(s,"string:`tpl`"),"template string missing: " + strings.join(s," | "))
+})
+test.case("a comment marker inside a string is not a comment, and a quote inside a comment is not a string",fn() {
+    let s = spans("a = \"// not\" // real 'x'\n","typescript")
+    expect(s,Vec<str>("string:\"// not\"","comment:// real 'x'"))
+    test.expect(!has(s,"string:'x'"),"a quote in a comment started a string")
+})
+test.case("byte offsets stay right after multi-byte text",fn() {
+    let s = spans("let s = \"สวัสดี\"; // ภาษาไทย\nconst n = 7","typescript")
+    expect(s,Vec<str>("string:\"สวัสดี\"","comment:// ภาษาไทย","keyword:const","number:7"))
+})
+test.case("JSON: keys are properties, values are strings, numbers and constants",fn() {
+    let s = spans("{\"name\": \"dev\", \"n\": -12.5, \"ok\": true, \"none\": null, \"list\": [1, 2]}","json")
+    expect(s,Vec<str>("property:\"name\"","string:\"dev\"","number:12.5","constant:true","constant:null","property:\"list\"","number:1"))
+    test.expect(!has(s,"string:\"name\""),"a key was colored as a value")
+})
+test.case("CSS: selectors, properties, values, at-rules and comments",fn() {
+    let s = spans("/* c */\n@media (min-width: 600px) { .box > a:hover { color: #fff; margin: 4px 8%; background: rgba(0,0,0,.5) } }","css")
+    expect(s,Vec<str>("comment:/* c */","keyword:@media","type:.box","property:color","number:#fff","number:4px","number:8%","function:rgba"))
+})
+test.case("HTML: tags, attributes, values and comments",fn() {
+    let s = spans("<!-- hi --><div class=\"a b\" id='x'><span>text</span></div>","html")
+    expect(s,Vec<str>("comment:<!-- hi -->","tag:div","attribute:class","string:\"a b\"","attribute:id","string:'x'","tag:span"))
+})
+test.case("Markdown: headings, code, emphasis, links, quotes and list markers",fn() {
+    let s = spans("# Title\n- item with `code` and **bold** and *it* and [link](http://x)\n> quote\n```\nfenced # not heading\n```\n","markdown")
+    expect(s,Vec<str>("heading:# Title","keyword:-","code:`code`","bold:**bold**","italic:*it*","link:[link](http://x)","quote:> quote","code:fenced # not heading"))
+})
+test.case("YAML and INI: keys, sections, values and comments",fn() {
+    let y = spans("name: dev # c\nport: 8080\nenabled: true\n","yaml")
+    expect(y,Vec<str>("property:name","property:port","number:8080","constant:true","comment:# c"))
+    let i = spans("[main]\nkey = \"v\"\n; x\n","ini")
+    expect(i,Vec<str>("heading:[main]","property:key","string:\"v\""))
+})
+test.case("Python: triple quotes, hash comments and decorators-free keywords",fn() {
+    let s = spans("def f(x):\n    \"\"\"doc\n    string\"\"\"\n    return x  # tail\n","python")
+    expect(s,Vec<str>("keyword:def","function:f","string:\"\"\"doc\n    string\"\"\"","keyword:return","comment:# tail"))
+})
+test.case("Rust: a lifetime is not a string but a char literal is",fn() {
+    let s = spans("fn f<'a>(x: &'a str) -> char { 'z' }","rust")
+    expect(s,Vec<str>("keyword:fn","string:'z'","type:str"))
+    test.expect(!has(s,"string:'a>(x: &'"),"a lifetime started a string")
+})
+test.case("any text, even an unknown language or an unterminated string, is highlighted without failing",fn() {
+    let a = spans("\"unterminated string\nnext line","typescript")
+    test.expect(a.len() >= 1,"no span for the open string")
+    test.expect(spans("anything at all 123","plaintext").len() == 0,"plain text must have no spans")
+    test.expect(spans("","typescript").len() == 0,"empty text must have no spans")
+})
+return t.finish()

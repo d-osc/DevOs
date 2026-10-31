@@ -89,7 +89,7 @@ fn main(): i32 {
             for file in fs.readdirSync(session.runtime) { tool.require(!strings.startsWith(file, "wayland-"), "Updated session did not remove its Wayland socket.") }
             for field in Vec<str>("wayland", "terminal", "files", "editor", "settings", "cleanup") { report = json.set(report, field, "passed") }
             tool.jsonWrite(output + "/report.json", report)
-            print("PASS: immutable runtime, VTE, Files, Monaco, Settings and compositor cleanup")
+            print("PASS: immutable runtime, VTE, Files, Editor, Settings and compositor cleanup")
         })
         smoke.cleanup(session); result.unwrap(outcome)
     })

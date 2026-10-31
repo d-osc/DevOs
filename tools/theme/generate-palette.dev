@@ -1,7 +1,7 @@
 #!/usr/bin/env d
 use "../lib/tool.dev" as tool
 use "../../lib/theme-palette.dev" as palette
-# Writes data/themes/palettes.json: the palettes and syntax rules the native shell reads and the Monaco page bundles.
+# Writes data/themes/palettes.json: the palettes and syntax rules the native shell and the Editor read.
 fn main():i32 {
     let root=tool.root();let data=palette.generate(root)
     tool.jsonWrite(tool.option("--data-output",root+"/data/themes/palettes.json"),data)

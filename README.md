@@ -120,7 +120,7 @@ UI ทุกส่วนเขียนด้วย DevLang (`.dev` / `.devx`) �
 ```
 
 ทดสอบด้วย `d tests/<ชื่อ>.test.dev` (ใน WSL) ธีมของทุกหน้าต่างอยู่ที่ `src/apps/org.devos.theme/style.css`
-ส่วนที่ยังเป็น TypeScript มีเพียงเครื่องมือ build (`tools/build/build.ts`) และหน้า Monaco ของ Editor
+ส่วนที่ยังเป็น TypeScript/JavaScript มีเพียงเครื่องมือ build (`tools/build/build.ts`) กับเครื่องมือนำเข้าข้อมูลสองตัวและเทสต์ polkit หนึ่งตัว
 
 หากติดตั้งบนเครื่อง Windows เครื่องอื่น ให้ติดตั้ง dependencies ใน Ubuntu ตามด้านบน
 แล้วติดตั้ง build dependencies เพิ่ม:
@@ -416,10 +416,10 @@ Header ที่ compositor วาดใช้ไอคอนแอปขนา�
 
 อิมเมจ DevOs ไม่รวม VS Code, Chrome, Rust, Node.js/nvm และ QEMU เพื่อให้ไฟล์เล็ก (ดู [Bundled apps](docs/bundled-apps.md)); ไม่มี Python ด้วย (helper ใน Settings เขียนด้วย DevLang).
 
-Editor ของระบบใช้ Monaco + WebKitGTK และ header แบบแท็บร่วมกับ Terminal.
+Editor ของระบบเป็นหน้าต่าง native (code view ของ toolkit + ตัวระบายสีไวยากรณ์เขียนด้วย DevLang) ไม่ใช้ WebKit หรือ Monaco.
 เปิดจาก Applications → Editor หรือ `dev-os-editor file.ts`; ใช้ Ctrl+O / Ctrl+S และลากแท็บแยกหรือรวมหน้าต่างได้.
 ตั้งค่า font size, tab size และ minimap ผ่าน JSON preferences ที่ Settings → Editor.
-Monaco และ workers bundle ในแอปทั้งหมด; ดู [คู่มือ Editor](src/apps/org.devos.editor/README.md).
+ทุกอย่างอยู่ในแอป; ดู [คู่มือ Editor](src/apps/org.devos.editor/README.md).
 
 
 Panel อยู่ด้านล่างบนทุก monitor: ซ้ายเป็น Menu → Terminal → Files;

@@ -1,0 +1,26 @@
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "std/json"
+use "../src/apps/org.devos.editor/literal.dev" as lit
+use "./lib/react-devlang.dev" as t
+
+fn decode(literal:str):str { return encoding.decode(lit.unescape(encoding.encode(literal,"utf8")),"utf8") }
+
+test.case("escapes decode to the characters they stand for",fn() {
+    t.equal(decode("\"a\\nb\\tc\\\"d\\\\e\\/f\""),"a\nb\tc\"d\\e/f")
+})
+test.case("u escapes become UTF-8, surrogate pairs combine, and plain multi-byte text passes through",fn() {
+    t.equal(decode("\"\\u00fc\\u0e2a\""),"üส")
+    t.equal(decode("\"\\ud83d\\ude00\""),"😀")
+    t.equal(decode("\"สวัสดี ü\""),"สวัสดี ü")
+})
+test.case("what the file worker's JSON encoder writes decodes back to the same text",fn() {
+    let samples = Vec<str>("const a = 1\n\tconst \"b\" = 'ü'\n","","line\r\nnext \\ back /slash","ไทย 😀 end")
+    for text in samples { t.equal(decode(json.stringify(text)),text) }
+})
+test.case("a literal that is cut short yields what could be read and never fails",fn() {
+    t.equal(decode("\"abc"),"abc")
+    t.equal(decode("\"a\\u12"),"a")
+})
+return t.finish()
