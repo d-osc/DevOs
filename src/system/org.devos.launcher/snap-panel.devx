@@ -37,6 +37,23 @@ fn regionNames(id:str):Vec<str> {
 }
 fn count(text:ui.Text):i64 { if !has(text) { return 0 }; return channel.split(text,44).len() as i64 }
 
+# A box with one of the theme's snap-panel classes (#snap-panel .snap-header, .snap-tabs, .snap-body, .snap-editor, .snap-footer).
+fn boxed(name:str, vertical:bool, spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = vertical; options.spacing = spacing; if name != "" { options.className = ui.text(name) }; return ui.Box(options,children) }
+fn tag(options:ui.Props, name:str):ui.Props { options.className = ui.text(name); return options }
+# One region of a layout preview: a numbered slot of the given size (.snap-slot).
+fn slot(number:i64, width:i64, height:i64):ui.Node {
+    let options = ui.props(); options.className = ui.text("snap-slot"); options.width = width as i32; options.height = height as i32; options.halign = 3; options.valign = 3
+    return ui.Box(options,Vec<ui.Node>(ui.Label("${number}")))
+}
+# The mini monitor of a layout card: its regions as slots, about 96 by 56 pixels.
+fn preview(id:str):ui.Node {
+    let half = 46; let wide = 62; let narrow = 30; let third = 30
+    if id == "halves" { return boxed("snap-monitor",false,4,Vec<ui.Node>(slot(1,half,56),slot(2,half,56))) }
+    if id == "wide-left" { return boxed("snap-monitor",false,4,Vec<ui.Node>(slot(1,wide,56),slot(2,narrow,56))) }
+    if id == "wide-right" { return boxed("snap-monitor",false,4,Vec<ui.Node>(slot(1,narrow,56),slot(2,wide,56))) }
+    if id == "thirds" { return boxed("snap-monitor",false,4,Vec<ui.Node>(slot(1,third,56),slot(2,third,56),slot(3,third,56))) }
+    return boxed("snap-monitor",true,4,Vec<ui.Node>(boxed("",false,4,Vec<ui.Node>(slot(1,half,26),slot(2,half,26))),boxed("",false,4,Vec<ui.Node>(slot(3,half,26),slot(4,half,26)))))
+}
 fn SnapPanel(context:*ui.Context):ui.Node {
     let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let doneAt = ui.useRef(context,0); let tab = ui.useState(context,0); let layout = ui.useState(context,0); let note = ui.useText(context,ui.emptyText())
     let p0 = ui.useState(context,0); let p1 = ui.useState(context,0); let p2 = ui.useState(context,0); let p3 = ui.useState(context,0)
@@ -86,39 +103,42 @@ fn SnapPanel(context:*ui.Context):ui.Node {
         return ui.noop
     },Vec<i64>(candidates.len() as i64,p0.value,p1.value,ready ? 1 : 0))
     # --- the window ---
-    let close = ui.named("snap-dismiss")
-    let nodes = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(2,Vec<ui.Node>(k.note("YOUR WORKSPACE, ARRANGED","settings-description"),k.note("Snap","section-heading")))),ui.Button(close,"Close",fn() { ui.close(context) }))))
+    let close = tag(ui.named("snap-dismiss"),"snap-close")
+    let nodes = Vec<ui.Node>(boxed("snap-header",false,12,Vec<ui.Node>(ext.expand(boxed("",true,2,Vec<ui.Node>(k.note("YOUR WORKSPACE, ARRANGED","snap-eyebrow"),k.note("Snap","snap-heading")))),ui.Button(close,"Close",fn() { ui.close(context) }))))
     if has(link.failure.value) { nodes.push(k.caption(link.failure.value,"settings-error-banner")) }
     let layoutsTab = ui.named("snap-tab-layouts"); let groupsTab = ui.named("snap-tab-groups")
-    nodes.push(ext.row(8,Vec<ui.Node>(ui.Button(layoutsTab,tab.value == 0 ? "● Snap Layouts" : "Snap Layouts",fn() { tab.set(0) }),ui.Button(groupsTab,tab.value == 1 ? "● Groups (${groups.len()})" : "Groups (${groups.len()})",fn() { tab.set(1) }))))
+    nodes.push(boxed("snap-tabs",false,8,Vec<ui.Node>(ui.Button(tag(layoutsTab,tab.value == 0 ? "snap-tab snap-tab-active" : "snap-tab"),"Snap Layouts",fn() { tab.set(0) }),ui.Button(tag(groupsTab,tab.value == 1 ? "snap-tab snap-tab-active" : "snap-tab"),"Groups (${groups.len()})",fn() { tab.set(1) }))))
     let body = Vec<ui.Node>()
     if tab.value == 0 {
         let cards = Vec<ui.Node>()
         for i in 0..(layouts().len() as i64) {
-            let id = layouts()[i as usize]; let options = ui.named("snap-layout-" + id)
-            cards.push(ui.Button(options,(layout.value == i ? "● " : "") + layoutName(id),fn() { layout.set(i); p0.set(0); p1.set(0); p2.set(0); p3.set(0) }))
+            let id = layouts()[i as usize]; let options = tag(ui.named("snap-layout-" + id),layout.value == i ? "snap-layout-card snap-selected" : "snap-layout-card")
+            let face = boxed("",true,8,Vec<ui.Node>(preview(id),k.note(layoutName(id),"snap-layout-name")))
+            cards.push(ui.WidgetButton(options,face,fn() { layout.set(i); p0.set(0); p1.set(0); p2.set(0); p3.set(0) }))
         }
-        body.push(k.note("Choose your layout","section-heading")); body.push(ext.row(8,cards))
-        body.push(k.note("Place your windows","section-heading"))
+        body.push(k.note("Choose your layout","snap-section-title")); body.push(ext.row(10,cards))
+        body.push(k.note("Place your windows","snap-section-title"))
+        let editor = Vec<ui.Node>()
         let names = regionNames(chosenLayout)
         for i in 0..slots {
             let items = Vec<ui.Text>(plain("Choose a window…"))
             for w in candidates { items.push(join(Vec<ui.Text>(w.app,plain(" · "),w.title))) }
             let place = ui.named("snap-place-${i}")
             let setter = fn(index:i64) { if i == 0 { p0.set(index) } else if i == 1 { p1.set(index) } else if i == 2 { p2.set(index) } else { p3.set(index) } }
-            body.push(ext.row(8,Vec<ui.Node>(k.note(names[i as usize],"settings-description"),ext.expand(ui.Select(place,items,picks[i],setter)))))
+            editor.push(ext.row(8,Vec<ui.Node>(k.note(names[i as usize],"snap-muted"),ext.expand(ui.Select(place,items,picks[i],setter)))))
         }
-        if !canSnap { body.push(k.note("Snap Layouts requires the updated Dev OS compositor.","launcher-app-description")) }
-        else if candidates.len() < (slots as usize) { body.push(k.note("Open ${slots} windows on this desktop to fill this layout.","launcher-app-description")) }
+        body.push(boxed("snap-editor",true,8,editor))
+        if !canSnap { body.push(k.note("Snap Layouts requires the updated Dev OS compositor.","snap-muted")) }
+        else if candidates.len() < (slots as usize) { body.push(k.note("Open ${slots} windows on this desktop to fill this layout.","snap-muted")) }
         let apply = ui.named("snap-apply"); apply.sensitive = ready
-        body.push(ext.row(8,Vec<ui.Node>(ext.expand(k.caption(note.value,"launcher-hint")),ui.Button(apply,"Apply layout",fn() {
+        body.push(boxed("snap-footer",false,8,Vec<ui.Node>(ext.expand(k.caption(note.value,"snap-muted")),ui.Button(tag(apply,"snap-primary"),"Apply layout",fn() {
             let chosen = Vec<ui.Text>()
             for i in 0..slots { if i > 0 { chosen.push(plain(",")) }; chosen.push(candidates[(picks[i] - 1) as usize].id) }
             ask(join(Vec<ui.Text>(plain("{\"action\":\"arrange\",\"layout\":\"" + chosenLayout + "\",\"ids\":["),join(chosen),plain("]}")))); note.set(plain("Layout applied"))
         }))))
     } else {
-        body.push(k.note("Pick up where you left off","section-heading"))
-        body.push(k.note("Restore a whole set of windows, with the sizes you gave them. Groups stay available until you sign out.","launcher-app-description"))
+        body.push(k.note("Pick up where you left off","snap-section-title"))
+        body.push(k.note("Restore a whole set of windows, with the sizes you gave them. Groups stay available until you sign out.","snap-muted"))
         for g in groups {
             let label = join(Vec<ui.Text>(g.layout,plain(" · ${count(g.members)} windows")))
             let restore = ui.props(); restore.id = join(Vec<ui.Text>(plain("snap-restore-"),g.id)); let remove = ui.props(); remove.id = join(Vec<ui.Text>(plain("snap-remove-"),g.id))
@@ -142,10 +162,10 @@ fn SnapPanel(context:*ui.Context):ui.Node {
                 body.push(ext.row(8,steps))
             }
         }
-        if groups.len() == 0 { body.push(k.note("No snap groups yet. Apply a layout and it will be kept here.","launcher-app-description")) }
+        if groups.len() == 0 { body.push(k.note("No snap groups yet. Apply a layout and it will be kept here.","snap-empty")) }
     }
     let scroller = ui.props(); scroller.expand = true
-    nodes.push(ui.Scroll(scroller,ext.column(10,body)))
+    nodes.push(ui.Scroll(scroller,boxed("snap-body",true,12,body)))
     let outer = ui.props(); outer.spacing = 12; outer.margin = 0; outer.expand = true; outer.className = ui.text("rd-layer-panel")
     return ui.Box(outer,nodes)
 }
