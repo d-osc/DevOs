@@ -278,6 +278,31 @@ test.case("diff",fn() {
         data + "@diff - x1 < x2; echo rc=$?",data + "@diff -u x1 x2 | head -1 | cut -c1-6",data + "@diff x1; echo rc=$?"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("patch (applying unified diffs made by the system diff)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let data = "seq 1 30 > old; seq 1 30 | sed '3d;12s/.*/twelve/;20a added line;28d' > new; printf 'a\\nb\\n' > e1; printf 'a\\nb' > e2; mkdir -p a b; seq 1 5 > a/one; seq 1 5 | sed 2d > b/one; printf 'only\\n' > b/two; "
+    let cases = Vec<str>(
+        data + "diff -u old new > p.diff; cp old work; " + bb + " patch work < p.diff; cmp work new; echo cmp=$?",
+        data + "diff -u old new > p.diff; cp new work; " + bb + " patch -R work < p.diff; cmp work old; echo cmp=$?",
+        data + "diff -u old new > p.diff; cp old work; " + bb + " patch -i p.diff work; cmp work new; echo cmp=$?",
+        data + "diff -u old new > p.diff; sed -i '1i extra top' old; sed -i 1d old; (echo; cat old) > shifted; sed -i 1d shifted; (echo x; echo y; cat old) > work; " + bb + " patch work < p.diff >/dev/null; sed 1,2d work | cmp - new; echo cmp=$?",
+        data + "diff -u e1 e2 > p.diff; cp e1 work; " + bb + " patch work < p.diff; cmp work e2; echo cmp=$?",
+        data + "diff -u e2 e1 > p.diff; cp e2 work; " + bb + " patch work < p.diff; cmp work e1; echo cmp=$?",
+        data + "diff -ruN a b > p.diff; cp -r a work; cd work; " + bb + " patch -p1 < ../p.diff; cd ..; diff -r work b; echo cmp=$?",
+        data + "diff -ruN a b > p.diff; cp -r b work; cd work; " + bb + " patch -R -p1 < ../p.diff; cd ..; diff -r work a; echo cmp=$?",
+        data + "diff -u old new > p.diff; seq 100 130 > work; " + bb + " patch work < p.diff; echo rc=$?",
+        data + "diff -u old new > p.diff; " + bb + " patch -d nosuchdir < p.diff; echo rc=$?",
+        data + "printf 'not a patch' | " + bb + " patch; echo rc=$?")
+    for c in cases {
+        let got = outcome(d, c)
+        test.expect(!strings.contains(got, "cmp=1") && !strings.contains(got, "cmp=2"), "patch result differs:\n" + c + "\n" + got)
+    }
+    test.expect(strings.contains(outcome(d, cases[8]), "rc=1"), "patch did not fail on a mismatching file")
+    test.expect(strings.contains(outcome(d, cases[8]), "FAILED"), "patch did not report the failed hunk")
+    test.expect(strings.contains(outcome(d, cases[10]), "rc=2"), "patch accepted garbage")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
