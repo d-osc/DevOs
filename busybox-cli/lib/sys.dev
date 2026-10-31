@@ -33,6 +33,9 @@ fn bat(b: *Bytes, i: i64): u8 { unsafe { return (*b).data[i] } }
 # A pointer to byte i of the buffer.
 fn bptr(b: *Bytes, i: i64): *u8 { unsafe { return &(*b).data[i] } }
 fn bclear(b: *Bytes) { unsafe { (*b).len = 0 } }
+# A pointer `i` bytes into a raw buffer, and a store into a buffer.
+fn bptr_at(p: *u8, i: i64): *u8 { unsafe { return &p[i] } }
+fn bptr_set(b: *Bytes, i: i64, v: u8) { unsafe { (*b).data[i] = v } }
 fn bytes_reserve(b: *Bytes, extra: i64) { unsafe {
     let need = (*b).len + extra + 1
     if need <= (*b).cap { return }

@@ -1,0 +1,563 @@
+# sed [-nrEsz] [-i[SUFFIX]] [-e SCRIPT]... [-f FILE]... [SCRIPT] [FILE]...: the stream editor.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/regex.dev" as rx
+
+# One command. Address kinds: 0 none, 1 line, 2 last line, 3 regex, 4 first~step, 5 +N (second address), 6 ~N (second address).
+struct Cmd {
+    kind: u8, a1k: i64, a1n: i64, a1s: i64, a1r: i64, a2k: i64, a2n: i64, a2r: i64, neg: bool
+    text: str, text2: str, re: i64, flags: i64, nth: i64, jump: i64, num: i64, fd: i64
+}
+struct Script { cmds: Vec<Cmd>, ok: bool, message: str }
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn cells(count: i64): *i64 { unsafe { return sys.calloc(count as usize, 8) as *i64 } }
+fn cell_get(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cell_set(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn re_ptr(v: i64): *i64 { unsafe { return v as *i64 } }
+fn re_val(p: *i64): i64 { unsafe { return p as i64 } }
+
+# ---- parsing the script --------------------------------------------------------------------------------------------------------------------------------
+struct Ctx { text: str, cur: *i64, ere: bool, error: *i64 }
+fn peek(c: Ctx): i64 { let i = cell_get(c.cur, 0); return i < sys.length(c.text) ? sys.at(c.text, i) as i64 : 0 - 1 }
+fn peek_at(c: Ctx, k: i64): i64 { let i = cell_get(c.cur, 0) + k; return i < sys.length(c.text) ? sys.at(c.text, i) as i64 : 0 - 1 }
+fn advance(c: Ctx) { cell_set(c.cur, 0, cell_get(c.cur, 0) + 1) }
+fn skip_blank(c: Ctx) { while peek(c) == 32 || peek(c) == 9 { advance(c) } }
+fn fail(c: Ctx, code: i64) { cell_set(c.error, 0, code) }
+fn failed(c: Ctx): bool { return cell_get(c.error, 0) != 0 }
+fn read_number(c: Ctx): i64 {
+    let v = 0
+    while peek(c) >= 48 && peek(c) <= 57 { v = v * 10 + peek(c) - 48; advance(c) }
+    return v
+}
+# Text up to the (unescaped) delimiter; "\delim" becomes the delimiter, "\n" stays as it is for the regex / replacement code, other escapes are kept.
+fn read_delimited(c: Ctx, delim: i64, regex: bool): str {
+    let b = sys.bytes_new()
+    while true {
+        let ch = peek(c)
+        if ch < 0 { fail(c, 1); return "" }
+        if ch == delim { advance(c); break }
+        if ch == 92 {
+            let e = peek_at(c, 1)
+            if e < 0 { fail(c, 1); return "" }
+            advance(c); advance(c)
+            if e == delim { if regex && sys.find_char(".*[]^$\\+?(){}|", e as u8) >= 0 && delim != 124 { sys.bytes_push(b, 92) }; sys.bytes_push(b, e as u8) }
+            else if e == 10 && !regex { sys.bytes_push(b, 92); sys.bytes_push(b, 10) }
+            else { sys.bytes_push(b, 92); sys.bytes_push(b, e as u8) }
+            continue
+        }
+        if ch == 91 && regex {
+            # a bracket expression is copied whole (the delimiter may appear inside it)
+            sys.bytes_push(b, 91); advance(c)
+            if peek(c) == 94 { sys.bytes_push(b, 94); advance(c) }
+            if peek(c) == 93 { sys.bytes_push(b, 93); advance(c) }
+            while peek(c) >= 0 && peek(c) != 93 {
+                if peek(c) == 91 && (peek_at(c, 1) == 58 || peek_at(c, 1) == 46 || peek_at(c, 1) == 61) {
+                    let kind = peek_at(c, 1); sys.bytes_push(b, 91); sys.bytes_push(b, kind as u8); advance(c); advance(c)
+                    while peek(c) >= 0 && !(peek(c) == kind && peek_at(c, 1) == 93) { sys.bytes_push(b, peek(c) as u8); advance(c) }
+                    if peek(c) >= 0 { sys.bytes_push(b, kind as u8); sys.bytes_push(b, 93); advance(c); advance(c) }
+                } else { sys.bytes_push(b, peek(c) as u8); advance(c) }
+            }
+            if peek(c) == 93 { sys.bytes_push(b, 93); advance(c) }
+            continue
+        }
+        sys.bytes_push(b, ch as u8); advance(c)
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+# The rest of the line (for a, i, c text and file names).
+fn read_line_rest(c: Ctx): str {
+    let b = sys.bytes_new()
+    while peek(c) >= 0 && peek(c) != 10 { sys.bytes_push(b, peek(c) as u8); advance(c) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn read_text(c: Ctx): str {
+    skip_blank(c)
+    if peek(c) == 92 {
+        advance(c); skip_blank(c)
+        if peek(c) == 10 { advance(c) }
+    }
+    let b = sys.bytes_new()
+    while peek(c) >= 0 {
+        let ch = peek(c)
+        if ch == 10 { break }
+        if ch == 92 {
+            advance(c)
+            let e = peek(c)
+            if e < 0 { break }
+            sys.bytes_push(b, e as u8); advance(c); continue
+        }
+        sys.bytes_push(b, ch as u8); advance(c)
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn read_label(c: Ctx): str {
+    skip_blank(c)
+    let b = sys.bytes_new()
+    while peek(c) >= 0 && peek(c) != 10 && peek(c) != 59 && peek(c) != 125 && peek(c) != 32 { sys.bytes_push(b, peek(c) as u8); advance(c) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn compile_regex(c: Ctx, text: str, icase: bool): i64 {
+    if sys.length(text) == 0 { return 0 - 1 }
+    let re = rx.compile(text, c.ere, icase)
+    if rx.failed(re) { fail(c, 2); return 0 }
+    return re_val(re)
+}
+struct Addr { kind: i64, n: i64, step: i64, re: i64 }
+fn read_address(c: Ctx, second: bool): Addr {
+    let ch = peek(c)
+    if ch >= 48 && ch <= 57 {
+        let n = read_number(c)
+        if !second && peek(c) == 126 { advance(c); let step = read_number(c); return Addr(4, n, step, 0) }
+        return Addr(1, n, 0, 0)
+    }
+    if ch == 36 { advance(c); return Addr(2, 0, 0, 0) }
+    if second && ch == 43 { advance(c); return Addr(5, read_number(c), 0, 0) }
+    if second && ch == 126 { advance(c); return Addr(6, read_number(c), 0, 0) }
+    if ch == 47 || ch == 92 {
+        let delim = 47
+        if ch == 92 { advance(c); delim = peek(c) }
+        advance(c)
+        let text = read_delimited(c, delim, true)
+        let icase = false
+        while peek(c) == 73 || peek(c) == 77 { if peek(c) == 73 { icase = true }; advance(c) }
+        return Addr(3, 0, 0, compile_regex(c, text, icase))
+    }
+    return Addr(0, 0, 0, 0)
+}
+fn parse_script(source: str, ere: bool): Script {
+    let c = Ctx(source, cells(1), ere, cells(1))
+    let cmds = Vec<Cmd>(); let blocks = Vec<i64>(); let labels = Vec<str>(); let label_at = Vec<i64>()
+    while true {
+        while peek(c) == 32 || peek(c) == 9 || peek(c) == 10 || peek(c) == 59 { advance(c) }
+        if peek(c) < 0 { break }
+        if peek(c) == 35 { read_line_rest(c); continue }
+        let a1 = read_address(c, false); let a2 = Addr(0, 0, 0, 0)
+        if a1.kind != 0 && peek(c) == 44 { advance(c); a2 = read_address(c, true); if a2.kind == 0 { fail(c, 3) } }
+        skip_blank(c)
+        let neg = false
+        while peek(c) == 33 { neg = true; advance(c); skip_blank(c) }
+        let ch = peek(c)
+        if ch < 0 || failed(c) { fail(c, 4); break }
+        advance(c)
+        let cmd = Cmd(ch as u8, a1.kind, a1.n, a1.step, a1.re, a2.kind, a2.n, a2.re, neg, "", "", 0 - 1, 0, 0, 0 - 1, 0, 0 - 1)
+        if ch == 123 { blocks.push(cmds.len() as i64) }
+        else if ch == 125 {
+            if blocks.len() == 0 { fail(c, 5); break }
+            let open = blocks[(blocks.len() as i64) - 1]
+            let rebuilt = cmds[open]; rebuilt.jump = cmds.len() as i64; cmds[open] = rebuilt
+            let keep = Vec<i64>(); for k in 0..((blocks.len() as i64) - 1) { keep.push(blocks[k]) }; blocks = keep
+        }
+        else if ch == 97 || ch == 105 || ch == 99 { cmd.text = read_text(c) }
+        else if ch == 58 { let name = read_label(c); labels.push(name); label_at.push(cmds.len() as i64) }
+        else if ch == 98 || ch == 116 || ch == 84 { cmd.text = read_label(c) }
+        else if ch == 114 || ch == 82 || ch == 119 || ch == 87 {
+            skip_blank(c); cmd.text = read_line_rest(c)
+            if ch == 119 || ch == 87 {
+                if sys.same(cmd.text, "/dev/stdout") { cmd.fd = 1 } else if sys.same(cmd.text, "/dev/stderr") { cmd.fd = 2 } else { cmd.fd = sys.open_fd(cmd.text, 577, 420) }
+            }
+        }
+        else if ch == 113 || ch == 81 || ch == 108 || ch == 76 { skip_blank(c); if peek(c) >= 48 && peek(c) <= 57 { cmd.num = read_number(c) } else { cmd.num = ch == 108 ? 0 - 1 : 0 } }
+        else if ch == 115 {
+            let delim = peek(c); advance(c)
+            if delim < 0 || delim == 10 || delim == 92 { fail(c, 6); break }
+            let pattern = read_delimited(c, delim, true)
+            let replacement = read_delimited(c, delim, false)
+            let icase = false; let flags = 0; let nth = 0
+            while true {
+                let f = peek(c)
+                if f == 103 { flags = flags + (flags % 2 == 0 ? 1 : 0); advance(c) }
+                else if f == 112 { flags = flags + ((flags / 2) % 2 == 0 ? 2 : 0); advance(c) }
+                else if f == 105 || f == 73 { icase = true; advance(c) }
+                else if f == 109 || f == 77 || f == 101 { advance(c) }
+                else if f >= 48 && f <= 57 { nth = read_number(c) }
+                else if f == 119 { advance(c); skip_blank(c); let name = read_line_rest(c); cmd.text2 = name; flags = flags + 8; if sys.same(name, "/dev/stdout") { cmd.fd = 1 } else if sys.same(name, "/dev/stderr") { cmd.fd = 2 } else { cmd.fd = sys.open_fd(name, 577, 420) }; break }
+                else { break }
+            }
+            cmd.re = compile_regex(c, pattern, icase); cmd.text = replacement; cmd.flags = flags; cmd.nth = nth
+        }
+        else if ch == 121 {
+            let delim = peek(c); advance(c)
+            let src = read_delimited(c, delim, false); let dst = read_delimited(c, delim, false)
+            cmd.text = unescape_y(src); cmd.text2 = unescape_y(dst)
+            if sys.length(cmd.text) != sys.length(cmd.text2) { fail(c, 7) }
+        }
+        else if sys.find_char("dDgGhHnNpPxz=F", ch as u8) < 0 && ch != 125 && ch != 123 { fail(c, 8); break }
+        if failed(c) { break }
+        if ch != 125 { cmds.push(cmd) } else { cmds.push(cmd) }
+        # a command is followed by ; newline } or end
+        skip_blank(c)
+    }
+    if blocks.len() > 0 { fail(c, 9) }
+    # resolve branch targets
+    for k in 0..(cmds.len() as i64) {
+        let cm = cmds[k]
+        if cm.kind == 98 || cm.kind == 116 || cm.kind == 84 {
+            cm.jump = cmds.len() as i64
+            if sys.length(cm.text) > 0 {
+                let found = false
+                for q in 0..(labels.len() as i64) { if sys.same(labels[q], cm.text) { cm.jump = label_at[q]; found = true } }
+                if !found { fail(c, 10) }
+            }
+            cmds[k] = cm
+        }
+    }
+    let code = cell_get(c.error, 0)
+    let message = ""
+    if code == 1 { message = "unterminated command" } else if code == 2 { message = "invalid regular expression" } else if code == 3 { message = "unexpected `,'" } else if code == 4 { message = "missing command" }
+    else if code == 5 { message = "unexpected `}'" } else if code == 6 { message = "unterminated `s' command" } else if code == 7 { message = "strings for `y' command are different lengths" }
+    else if code == 8 { message = "unknown command" } else if code == 9 { message = "unmatched `{'" } else if code == 10 { message = "can't find label for jump" }
+    return Script(cmds, code == 0, message)
+}
+fn unescape_y(text: str): str {
+    let b = sys.bytes_new(); let n = sys.length(text); let i = 0
+    while i < n {
+        let ch = sys.at(text, i)
+        if ch == 92 && i + 1 < n { let e = sys.at(text, i + 1); let v = e; if e == 110 { v = 10 } else if e == 116 { v = 9 }; sys.bytes_push(b, v); i = i + 2 } else { sys.bytes_push(b, ch); i = i + 1 }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+
+# ---- running -------------------------------------------------------------------------------------------------------------------------------------------
+struct Settings { quiet: bool, null_data: bool }
+fn index_of_newline(b: *sys.Bytes): i64 {
+    for i in 0..sys.blen(b) { if sys.bat(b, i) == 10 { return i } }
+    return 0 - 1
+}
+fn set_bytes(b: *sys.Bytes, from: *sys.Bytes) {
+    sys.bclear(b)
+    sys.bytes_append(b, sys.bdata(from), sys.blen(from))
+}
+# Replacement text with \1..\9, &, \n, \t and the case operators \U \L \E \u \l.
+fn expand_replacement(out: *sys.Bytes, repl: str, data: *u8, caps: *i64) {
+    let n = sys.length(repl); let i = 0
+    let mode = 0; let once = 0
+    while i < n {
+        let c = sys.at(repl, i)
+        let group = 0 - 1; let literal = true; let value = c
+        if c == 38 { group = 0; literal = false }
+        else if c == 92 && i + 1 < n {
+            let e = sys.at(repl, i + 1); i = i + 1
+            if e >= 48 && e <= 57 { group = (e - 48) as i64; literal = false }
+            else if e == 110 { value = 10 } else if e == 116 { value = 9 } else if e == 85 { mode = 1; literal = false; group = 0 - 2 }
+            else if e == 76 { mode = 2; literal = false; group = 0 - 2 } else if e == 69 { mode = 0; once = 0; literal = false; group = 0 - 2 }
+            else if e == 117 { once = 1; literal = false; group = 0 - 2 } else if e == 108 { once = 2; literal = false; group = 0 - 2 }
+            else { value = e }
+        }
+        if literal { push_cased(out, value, mode, once); once = 0 }
+        else if group >= 0 {
+            let s = cell_get(caps, group * 2); let e = cell_get(caps, group * 2 + 1)
+            if s >= 0 && e >= s { for k in s..e { push_cased(out, unsafe_byte(data, k), mode, once); once = 0 } }
+        }
+        i = i + 1
+    }
+}
+fn unsafe_byte(data: *u8, k: i64): u8 { unsafe { return data[k] } }
+fn push_cased(out: *sys.Bytes, c: u8, mode: i64, once: i64) {
+    let v = c
+    let which = once != 0 ? once : mode
+    if which == 1 && v >= 97 && v <= 122 { v = v - 32 } else if which == 2 && v >= 65 && v <= 90 { v = v + 32 }
+    sys.bytes_push(out, v)
+}
+# s/re/repl/: returns true when something was replaced; `ps` is rewritten.
+fn substitute(cmd: Cmd, ps: *sys.Bytes, last: *i64): bool {
+    let re = re_ptr(cmd.re)
+    if cmd.re == 0 - 1 { re = re_ptr(cell_get(last, 0)) } else { cell_set(last, 0, cmd.re) }
+    if re_val(re) == 0 { return false }
+    let global = cmd.flags % 2 == 1
+    let caps = rx.new_caps(re)
+    let data = sys.bdata(ps); let len = sys.blen(ps)
+    let out = sys.bytes_new()
+    let from = 0; let copied = 0; let count = 0; let replaced = false
+    let previous_end = 0 - 1
+    while from <= len {
+        if !rx.search(re, data, len, from, caps) { break }
+        let s = cell_get(caps, 0); let e = cell_get(caps, 1)
+        if s == e && s == previous_end { from = s + 1; if from > len { break }; continue }
+        count = count + 1
+        if cmd.nth == 0 || count >= cmd.nth {
+            for k in copied..s { sys.bytes_push(out, unsafe_byte(data, k)) }
+            expand_replacement(out, cmd.text, data, caps)
+            copied = e; replaced = true
+            if !global { break }
+        }
+        previous_end = e
+        from = e > s ? e : e + 1
+        if e == s && e < len && !(cmd.nth == 0 || count >= cmd.nth) { }
+    }
+    if replaced {
+        for k in copied..len { sys.bytes_push(out, unsafe_byte(data, k)) }
+        set_bytes(ps, out)
+    }
+    return replaced
+}
+fn matches_re(re_value: i64, ps: *sys.Bytes, last: *i64): bool {
+    let re = re_ptr(re_value)
+    if re_value == 0 - 1 { re = re_ptr(cell_get(last, 0)) } else { cell_set(last, 0, re_value) }
+    if re_val(re) == 0 { return false }
+    let caps = rx.new_caps(re)
+    return rx.search(re, sys.bdata(ps), sys.blen(ps), 0, caps)
+}
+fn one_address(kind: i64, n: i64, step: i64, re: i64, ln: i64, last_line: bool, ps: *sys.Bytes, last: *i64): bool {
+    if kind == 1 { return ln == n }
+    if kind == 2 { return last_line }
+    if kind == 3 { return matches_re(re, ps, last) }
+    if kind == 4 { if step <= 0 { return ln == n }; return ln >= n && (ln - n) % step == 0 }
+    return false
+}
+fn command_selected(cmd: Cmd, k: i64, ln: i64, last_line: bool, ps: *sys.Bytes, last: *i64, range_on: *i64, range_end: *i64): bool {
+    let hit = false
+    if cmd.a1k == 0 { hit = true }
+    else if cmd.a2k == 0 { hit = one_address(cmd.a1k, cmd.a1n, cmd.a1s, cmd.a1r, ln, last_line, ps, last) }
+    else if cell_get(range_on, k) == 0 {
+        if one_address(cmd.a1k, cmd.a1n, cmd.a1s, cmd.a1r, ln, last_line, ps, last) {
+            hit = true
+            if cmd.a2k == 1 { if cmd.a2n > ln { cell_set(range_on, k, 1); cell_set(range_end, k, cmd.a2n) } }
+            else if cmd.a2k == 5 { if cmd.a2n > 0 { cell_set(range_on, k, 1); cell_set(range_end, k, ln + cmd.a2n) } }
+            else if cmd.a2k == 6 { if cmd.a2n > 0 && ln % cmd.a2n != 0 { cell_set(range_on, k, 1); cell_set(range_end, k, (ln / cmd.a2n + 1) * cmd.a2n) } }
+            else if cmd.a2k == 2 { if !last_line { cell_set(range_on, k, 1); cell_set(range_end, k, 0 - 1) } }
+            else { cell_set(range_on, k, 1); cell_set(range_end, k, 0 - 1) }
+        }
+    } else {
+        hit = true
+        if cmd.a2k == 3 { if matches_re(cmd.a2r, ps, last) { cell_set(range_on, k, 0) } }
+        else if cmd.a2k == 2 { if last_line { cell_set(range_on, k, 0) } }
+        else if ln >= cell_get(range_end, k) { cell_set(range_on, k, 0) }
+    }
+    return hit != cmd.neg
+}
+struct Runner { script: Script, settings: Settings, out: *sys.Out, last_re: *i64, name: str }
+fn put_line(o: *sys.Out, b: *sys.Bytes, with_newline: bool, terminator: u8) {
+    sys.out_data(o, sys.bdata(b), sys.blen(b))
+    if with_newline { sys.out_byte(o, terminator) }
+}
+fn put_text(o: *sys.Out, text: str, terminator: u8) { sys.out_str(o, text); sys.out_byte(o, terminator) }
+fn write_to(fd: i64, o: *sys.Out, data: *u8, count: i64, terminator: u8) {
+    if fd == 1 { sys.out_data(o, data, count); sys.out_byte(o, terminator); return }
+    sys.write_fd(fd, data, count)
+    let nl = sys.bytes_new(); sys.bytes_push(nl, terminator); sys.write_fd(fd, sys.bdata(nl), 1)
+}
+# 'l': the pattern space unambiguously, wrapped at `width` columns.
+fn print_unambiguous(o: *sys.Out, ps: *sys.Bytes, width: i64) {
+    let col = 0
+    let w = width < 0 ? 70 : width
+    for i in 0..sys.blen(ps) {
+        let c = sys.bat(ps, i)
+        let piece = sys.bytes_new()
+        if c == 92 { sys.bytes_push(piece, 92); sys.bytes_push(piece, 92) } else if c == 7 { sys.bytes_str(piece, "\\a") } else if c == 8 { sys.bytes_str(piece, "\\b") }
+        else if c == 12 { sys.bytes_str(piece, "\\f") } else if c == 10 { sys.bytes_str(piece, "\\n") } else if c == 13 { sys.bytes_str(piece, "\\r") } else if c == 9 { sys.bytes_str(piece, "\\t") }
+        else if c == 11 { sys.bytes_str(piece, "\\v") }
+        else if c >= 32 && c < 127 { sys.bytes_push(piece, c) }
+        else { sys.bytes_push(piece, 92); sys.bytes_push(piece, 48 + c / 64); sys.bytes_push(piece, 48 + (c / 8) % 8); sys.bytes_push(piece, 48 + c % 8) }
+        if w > 1 && col + sys.blen(piece) > w - 1 { sys.out_str(o, "\\\n"); col = 0 }
+        sys.out_data(o, sys.bdata(piece), sys.blen(piece)); col = col + sys.blen(piece)
+    }
+    sys.out_str(o, "$\n")
+}
+struct Result { quit: bool, code: i64 }
+# Runs the script over one buffer of input; output goes to r.out.
+fn run_stream(r: Runner, input: *sys.Bytes): Result {
+    let terminator: u8 = r.settings.null_data ? (0 as u8) : (10 as u8)
+    let ls = lines.split_lines(input, terminator)
+    let total = ls.starts.len() as i64
+    let cmds = r.script.cmds; let ncmds = cmds.len() as i64
+    let ps = sys.bytes_new(); let hs = sys.bytes_new()
+    let range_on = cells(ncmds + 1); let range_end = cells(ncmds + 1)
+    let data = sys.bdata(input)
+    let idx = 0; let ln = 0; let replaced = false; let quit = false; let code = 0
+    let appended = Vec<str>(); let append_kind = Vec<i64>()
+    let restart = false
+    while (idx < total || restart) && !quit {
+        if !restart {
+            sys.bclear(ps); sys.bytes_append(ps, sys.bptr_at(data, ls.starts[idx]), ls.ends[idx] - ls.starts[idx])
+            idx = idx + 1; ln = ln + 1; replaced = false
+        }
+        restart = false
+        let pc = 0; let print_it = !r.settings.quiet; let end_cycle = false
+        let missing_nl = !ls.final_newline && idx == total
+        while pc < ncmds && !end_cycle {
+            let cmd = cmds[pc]
+            let last_line = idx >= total
+            if !command_selected(cmd, pc, ln, last_line, ps, r.last_re, range_on, range_end) {
+                pc = cmd.kind == 123 ? cmd.jump + 1 : pc + 1
+                continue
+            }
+            let k = cmd.kind
+            pc = pc + 1
+            if k == 123 || k == 125 || k == 58 { }
+            else if k == 115 {
+                if substitute(cmd, ps, r.last_re) {
+                    replaced = true
+                    if (cmd.flags / 2) % 2 == 1 { put_line(r.out, ps, !missing_nl, terminator) }
+                    if (cmd.flags / 8) % 2 == 1 { write_to(cmd.fd, r.out, sys.bdata(ps), sys.blen(ps), terminator) }
+                }
+            }
+            else if k == 100 { print_it = false; end_cycle = true }
+            else if k == 68 {
+                let nl = index_of_newline(ps)
+                if nl < 0 { print_it = false; end_cycle = true }
+                else {
+                    let rest = sys.bytes_new(); sys.bytes_append(rest, sys.bptr_at(sys.bdata(ps), nl + 1), sys.blen(ps) - nl - 1)
+                    set_bytes(ps, rest); print_it = false; end_cycle = true; restart = true
+                }
+            }
+            else if k == 112 { put_line(r.out, ps, !missing_nl, terminator) }
+            else if k == 80 {
+                let nl = index_of_newline(ps)
+                sys.out_data(r.out, sys.bdata(ps), nl < 0 ? sys.blen(ps) : nl); sys.out_byte(r.out, terminator)
+            }
+            else if k == 103 { set_bytes(ps, hs) }
+            else if k == 71 { sys.bytes_push(ps, 10); sys.bytes_append(ps, sys.bdata(hs), sys.blen(hs)) }
+            else if k == 104 { set_bytes(hs, ps) }
+            else if k == 72 { sys.bytes_push(hs, 10); sys.bytes_append(hs, sys.bdata(ps), sys.blen(ps)) }
+            if k == 120 { let t = sys.bytes_new(); set_bytes(t, ps); set_bytes(ps, hs); set_bytes(hs, t) }
+            else if k == 122 { sys.bclear(ps) }
+            else if k == 61 { sys.out_num(r.out, ln); sys.out_byte(r.out, 10) }
+            else if k == 70 { sys.out_str(r.out, r.name); sys.out_byte(r.out, 10) }
+            else if k == 108 { print_unambiguous(r.out, ps, cmd.num) }
+            else if k == 121 {
+                for q in 0..sys.blen(ps) {
+                    let ch = sys.bat(ps, q); let at = sys.find_char(cmd.text, ch)
+                    if at >= 0 { sys.bptr_set(ps, q, sys.at(cmd.text2, at)) }
+                }
+            }
+            if k == 105 { put_text(r.out, cmd.text, 10) }
+            else if k == 97 { appended.push(cmd.text); append_kind.push(0) }
+            if k == 114 { appended.push(cmd.text); append_kind.push(1) }
+            else if k == 82 { appended.push(cmd.text); append_kind.push(2) }
+            if k == 99 {
+                if cmd.a2k == 0 || cell_get(range_on, pc - 1) == 0 || cmd.neg { put_text(r.out, cmd.text, 10) }
+                print_it = false; end_cycle = true
+            }
+            else if k == 119 { write_to(cmd.fd, r.out, sys.bdata(ps), sys.blen(ps), terminator) }
+            else if k == 87 { let nl = index_of_newline(ps); write_to(cmd.fd, r.out, sys.bdata(ps), nl < 0 ? sys.blen(ps) : nl, terminator) }
+            if k == 98 { pc = cmd.jump }
+            else if k == 116 { if replaced { replaced = false; pc = cmd.jump } }
+            else if k == 84 { if !replaced { pc = cmd.jump } else { replaced = false } }
+            else if k == 113 || k == 81 { if k == 113 { } else { print_it = false }; quit = true; code = cmd.num; end_cycle = true }
+            else if k == 110 {
+                if idx >= total { quit = true; end_cycle = true; if r.settings.quiet { print_it = false } }
+                else {
+                    if print_it { put_line(r.out, ps, true, terminator) }
+                    flush_appended(r, appended, append_kind, terminator)
+                    appended = Vec<str>(); append_kind = Vec<i64>()
+                    sys.bclear(ps); sys.bytes_append(ps, sys.bptr_at(data, ls.starts[idx]), ls.ends[idx] - ls.starts[idx])
+                    idx = idx + 1; ln = ln + 1
+                    missing_nl = !ls.final_newline && idx == total
+                }
+            }
+            else if k == 78 {
+                if idx >= total { quit = true; end_cycle = true; if r.settings.quiet { print_it = false } }
+                else {
+                    sys.bytes_push(ps, terminator == 0 ? 0 : 10)
+                    sys.bytes_append(ps, sys.bptr_at(data, ls.starts[idx]), ls.ends[idx] - ls.starts[idx])
+                    idx = idx + 1; ln = ln + 1
+                    missing_nl = !ls.final_newline && idx == total
+                }
+            }
+        }
+        if print_it { put_line(r.out, ps, !missing_nl, terminator) }
+        flush_appended(r, appended, append_kind, terminator)
+        appended = Vec<str>(); append_kind = Vec<i64>()
+    }
+    return Result(quit, code)
+}
+fn flush_appended(r: Runner, texts: Vec<str>, kinds: Vec<i64>, terminator: u8) {
+    for k in 0..(texts.len() as i64) {
+        if kinds[k] == 0 { put_text(r.out, texts[k], 10) }
+        else {
+            let input = sys.read_path(texts[k])
+            if input.ok {
+                if kinds[k] == 1 { sys.out_data(r.out, sys.bdata(input.bytes), sys.blen(input.bytes)) }
+                else {
+                    let ls = lines.split_lines(input.bytes, 10)
+                    if ls.starts.len() > 0 { sys.out_data(r.out, sys.bptr_at(sys.bdata(input.bytes), ls.starts[0]), ls.ends[0] - ls.starts[0]); sys.out_byte(r.out, 10) }
+                }
+            }
+        }
+    }
+}
+
+fn run_sed(args: Vec<str>): i64 {
+    let scripts = Vec<str>(); let files = Vec<str>(); let quiet = false; let ere = false; let separate = false; let in_place = false; let suffix = ""; let null_data = false
+    let have_script = false; let i = 0; let n = args.len() as i64; let ended = false
+    while i < n {
+        let a = args[i]
+        if ended || sys.length(a) < 2 || sys.at(a, 0) != 45 { files.push(a); i = i + 1; continue }
+        if sys.same(a, "--") { ended = true; i = i + 1; continue }
+        if sys.same(a, "--quiet") || sys.same(a, "--silent") { quiet = true; i = i + 1; continue }
+        if sys.same(a, "--regexp-extended") { ere = true; i = i + 1; continue }
+        if sys.same(a, "--separate") { separate = true; i = i + 1; continue }
+        if sys.same(a, "--null-data") { null_data = true; i = i + 1; continue }
+        if sys.starts(a, "--expression=") { scripts.push(sys.join2(sys.slice(a, 13, sys.length(a)), "")); have_script = true; i = i + 1; continue }
+        if sys.starts(a, "--in-place") { in_place = true; separate = true; if sys.length(a) > 11 { suffix = sys.join2(sys.slice(a, 11, sys.length(a)), "") }; i = i + 1; continue }
+        let k = 1; let len = sys.length(a)
+        while k < len {
+            let c = sys.at(a, k)
+            if c == 110 { quiet = true; k = k + 1; continue }
+            if c == 114 || c == 69 { ere = true; k = k + 1; continue }
+            if c == 115 { separate = true; k = k + 1; continue }
+            if c == 122 { null_data = true; k = k + 1; continue }
+            if c == 117 { k = k + 1; continue }
+            if c == 105 { in_place = true; separate = true; if k + 1 < len { suffix = sys.join2(sys.slice(a, k + 1, len), "") }; k = len }
+            else if c == 101 || c == 102 {
+                let value = ""
+                if k + 1 < len { value = sys.join2(sys.slice(a, k + 1, len), "") } else if i + 1 < n { i = i + 1; value = args[i] } else { sys.warn("sed", "option requires an argument"); return 1 }
+                if c == 101 { scripts.push(value) } else {
+                    let f = sys.read_path(value)
+                    if !f.ok { sys.warn_path("sed", value); return 1 }
+                    let body = lines.text_of(f.bytes, 0, sys.blen(f.bytes))
+                    if sys.length(body) > 0 && sys.at(body, sys.length(body) - 1) == 10 { body = sys.join2(sys.slice(body, 0, sys.length(body) - 1), "") }
+                    scripts.push(body)
+                }
+                have_script = true; k = len
+            } else { sys.warn("sed", "invalid usage: sed [-nrEsz] [-i[SUFFIX]] [-e SCRIPT]... [-f FILE]... [SCRIPT] [FILE]..."); return 1 }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    if !have_script {
+        if files.len() == 0 { sys.warn("sed", "no script given"); return 1 }
+        scripts.push(files[0]); let tail = Vec<str>(); for k in 1..(files.len() as i64) { tail.push(files[k]) }; files = tail
+    }
+    let source = ""
+    for k in 0..(scripts.len() as i64) { source = k == 0 ? scripts[k] : sys.join2(sys.join2(source, "\n"), scripts[k]) }
+    let script = parse_script(source, ere)
+    if !script.ok { sys.warn("sed", sys.join2("-e expression #1: ", script.message)); return 1 }
+    if files.len() == 0 { files.push("-") }
+    let settings = Settings(quiet, null_data)
+    let out = sys.out_new(1); let last_re = cells(1)
+    let status = 0
+    if !separate {
+        let all = sys.bytes_new(); let missing = false
+        for k in 0..(files.len() as i64) {
+            let input = sys.read_path(files[k])
+            if !input.ok { sys.warn_path("sed", files[k]); status = 2; continue }
+            if sys.blen(all) > 0 && sys.bat(all, sys.blen(all) - 1) != 10 { sys.bytes_push(all, 10) }
+            sys.bytes_append(all, sys.bdata(input.bytes), sys.blen(input.bytes))
+        }
+        let r = Runner(script, settings, out, last_re, files[0])
+        let result = run_stream(r, all)
+        sys.out_flush(out)
+        if result.quit && result.code != 0 { return result.code }
+        return status
+    }
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("sed", files[k]); status = 2; continue }
+        let target = out
+        let fd = 0 - 1
+        if in_place { fd = sys.open_fd(sys.join2(files[k], ".sedtmp"), 577, 420); target = sys.out_new(fd) }
+        let r = Runner(script, settings, target, last_re, files[k])
+        let result = run_stream(r, input.bytes)
+        sys.out_flush(target)
+        if in_place {
+            sys.close_fd(fd)
+            if sys.length(suffix) > 0 { fsx.do_rename(files[k], sys.join2(files[k], suffix)) }
+            fsx.do_rename(sys.join2(files[k], ".sedtmp"), files[k])
+        }
+        if result.quit { sys.out_flush(out); return result.code }
+    }
+    sys.out_flush(out)
+    return status
+}

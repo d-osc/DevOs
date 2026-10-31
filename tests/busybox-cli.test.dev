@@ -141,6 +141,18 @@ test.case("grep egrep fgrep",fn() {
         data + "@grep -f g.txt a.txt | head -0; echo ok",data + "@grep -E 'a+b?' g.txt | wc -l",data + "@grep '*' g.txt; echo rc=$?",data + "@grep -E 'q|' g.txt | wc -l",data + "@grep -ow 'a[a-z]*' g.txt",data + "@grep -c . g.txt",data + "@grep -ie APPLE g.txt",data + "@grep -r apple . | sort"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("sed",fn() {
+    let d = sandbox()
+    let data = "printf 'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\n' > s.txt; "
+    all_same(d, Vec<str>(data + "@sed 's/o/0/' s.txt",data + "@sed 's/o/0/g' s.txt",data + "@sed -n '2p' s.txt",data + "@sed -n '2,4p' s.txt",data + "@sed '2d' s.txt",data + "@sed '2,3d' s.txt",data + "@sed '$d' s.txt",data + "@sed -n '$p' s.txt",data + "@sed -n '/t/p' s.txt",data + "@sed '/t/d' s.txt",data + "@sed -n '/two/,/four/p' s.txt",
+        data + "@sed '1!d' s.txt",data + "@sed -n '2~3p' s.txt",data + "@sed -n '2,+2p' s.txt",data + "@sed -n '2,~4p' s.txt",data + "@sed 's/e/E/2' s.txt",data + "@sed -E 's/(o+)/<\\1>/' s.txt",data + "@sed 's/\\(t\\)\\(.\\)/\\2\\1/' s.txt",data + "@sed 's/.*/[&]/' s.txt",data + "@sed 's/x*/-/g' s.txt | head -3",data + "@sed 's/o/&&/' s.txt",
+        data + "@sed 's|e|/|' s.txt",data + "@sed 'y/abcdef/ABCDEF/' s.txt",data + "@sed '2q' s.txt",data + "@sed -n '3{p;q}' s.txt",data + "@sed '2i\\\\inserted' s.txt",data + "@sed '2a appended' s.txt",data + "@sed '2c changed' s.txt",data + "@sed '2,3c changed' s.txt",data + "@sed -n '$=' s.txt",data + "@sed = s.txt | head -4",data + "@sed 'N;s/\\n/+/' s.txt",
+        data + "@sed -n 'h;n;G;p' s.txt",data + "@sed '1!G;h;$!d' s.txt",data + "@sed -n 'x;p' s.txt",data + "@sed '/two/{s/two/2/;s/2/II/}' s.txt",data + "@sed -e 's/one/1/' -e 's/two/2/' s.txt",data + "@sed 's/o/0/;s/e/3/' s.txt",data + "@sed ':a;s/o/0/;ta' s.txt",data + "@sed -n '/one/{n;p}' s.txt",data + "@sed '$!N;P;D' s.txt",
+        data + "@sed 's/t/T/p' s.txt -n",data + "@sed -s -n '$p' s.txt s.txt",data + "@sed -n '$p' s.txt s.txt",data + "@sed 's/\\(.\\)\\(.\\)/\\U\\1\\E\\2/' s.txt",data + "@sed 's/.*/\\L&/' s.txt",data + "@sed 's/^/> /' s.txt",data + "@sed 's/$/ </' s.txt",data + "@sed 's/[aeiou]//g' s.txt",data + "@sed 's/\\bt/T/' s.txt",data + "@sed 's/two/a\\tb/' s.txt",
+        data + "@sed -n 'l' s.txt | head -2",data + "@sed 'n;d' s.txt",data + "@sed '1~2d' s.txt",data + "@sed '/three/,$d' s.txt",data + "@sed '/one/,/two/!d' s.txt",data + "@sed -n '/e$/!p' s.txt",data + "@sed 's/e/E/w out.txt' s.txt > /dev/null; cat out.txt",data + "@sed -i 's/one/ONE/' s.txt; cat s.txt",data + "@sed -i.bak 's/one/ONE/' s.txt; cat s.txt s.txt.bak | head -9",
+        data + "printf 'a\\nb' | @sed 's/b/c/'","printf 'a b c\\n' | @sed 's/ /\\n/g'","printf 'x\\n' | @sed 's/x/a\\/b/'","printf 'foo bar\\n' | @sed -E 's/(foo|bar)/[\\1]/g'","printf 'aaa\\n' | @sed 's/a/b/2g'","printf 'abc\\n' | @sed 's/b*/X/g'","printf 'hello\\n' | @sed 's/l*/X/g'","printf '1\\n2\\n3\\n' | @sed -n '2{p}'","printf 'a\\n' | @sed -n -e 'p' -e 'p'","printf 'a\\n' | @sed 's/a/b/;#comment","printf 'a\\n' | @sed --quiet 'p'"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
