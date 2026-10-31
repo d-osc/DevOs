@@ -27,7 +27,6 @@
     "paths": {}
   },
   "include": [
-    "packages/core/*.ts",
     "src/apps/org.devos.editor/**/*.ts",
     "src/apps/org.devos.editor/**/*.tsx"
   ],

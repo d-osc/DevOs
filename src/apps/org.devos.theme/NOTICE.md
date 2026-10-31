@@ -10,7 +10,7 @@ The Dev OS Dark and Light themes are copied from the default **2026 Dark** and
 - `extensions/theme-defaults/themes/dark_modern.json` and `light_modern.json`
   (the files the 2026 themes `include`; they supply the keys the 2026 files do not override)
 
-The copies are in `vscode/`. `packages/core/theme-palette.ts` is generated from
+The copies are in `vscode/`. `data/themes/palettes.json` is generated from
 them by `tools/theme/generate-palette.dev`. The sixteen terminal ANSI colors and the
 terminal foreground are not in those files: they are the VS Code workbench defaults
 (`terminal.ansi*`, `terminal.foreground`) and are copied from the same installation.

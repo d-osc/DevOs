@@ -14,9 +14,9 @@
 จัดการหน้าต่างและอุปกรณ์ input ส่วน desktop shell เขียนด้วย **TypeScript / GJS + GTK 3 + gtk-layer-shell**
 แยกเป็นโมดูลเพื่อเปลี่ยนหน้าตาและเพิ่มความสามารถต่อได้ง่าย
 
-รองรับ **React + TypeScript / TSX → native GTK widgets** ผ่าน lib ใน `packages/core/`
-UI ทุกส่วนของ shell ใช้ React / TSX: panel, launcher, เมนู session และพื้นหลัง
-เริ่มแก้ได้ที่ `src/system/org.devos.panel/view.tsx`, `src/system/org.devos.launcher/view.tsx` และ `src/apps/org.devos.files/view.tsx`
+เขียนด้วย **DevLang → native GTK widgets** ผ่าน `packages/react-devlang/`
+UI ทุกส่วนของ shell เป็น DevLang: panel, launcher, เมนู session และพื้นหลัง
+เริ่มแก้ได้ที่ `src/system/org.devos.panel/`, `src/system/org.devos.launcher/` และ `src/apps/org.devos.files/native.devx`
 
 ## สิ่งที่มีแล้ว
 
@@ -109,55 +109,18 @@ build ปกติใช้ React production และลดขนาด bundle;
 `node tools/build/build.ts --development` ใช้ development สำหรับ debug.
 ดูรายละเอียดการปรับประสิทธิภาพและวิธีวัดซ้ำใน [docs/performance.md](docs/performance.md).
 
-## พัฒนาด้วย React
+## พัฒนาด้วย DevLang
 
-lib ใช้ React 19.2.8 และ `react-reconciler` 0.33.0 สร้าง GTK 3 widgets จริง
-รองรับ functional components, state, effects, context, refs และ keyed lists
-lib และ React UI เขียนด้วย TypeScript แบบ `strict` มี type ของ GTK props, events และ refs
-Node.js / esbuild ใช้แปลง TSX และ bundle dependencies ก่อนรันใน GJS
+UI ทุกส่วนเขียนด้วย DevLang (`.dev` / `.devx`) และวาดเป็น GTK 3 widgets จริงผ่าน toolkit
+`packages/react-devlang` (components, state, effects และ props แบบ React แต่คอมไพล์เป็น native)
+หน้าต่างของแต่ละแอปอยู่ที่ `src/apps/<id>/native.devx` และบริการเบื้องหลังอยู่ที่ `service.dev`
 
 ```powershell
-.\dev.ps1 demo       # หน้าต่าง counter, input และนาฬิกา บน WSLg
-.\dev.ps1 run        # desktop ที่ UI ทั้งหมดเขียนด้วย React / TSX
-npm run typecheck   # ตรวจ types โดยไม่ต้องเปิด GUI
-npm run watch       # rebuild เมื่อแก้โค้ด แล้วปิด/เปิด demo หรือ session ใหม่
+.\dev.ps1 run        # desktop เต็มรูปแบบบน WSLg
 ```
 
-บน Linux ใช้ `npm run build` ตามด้วย `npm run demo` หรือ `npm run dev`
-ตัวอย่างเต็มอยู่ที่ `examples/Counter.tsx` และคู่มือ API อยู่ที่
-[packages/core/README.md](packages/core/README.md)
-
-```tsx
-import {React, Box, Label, Button, useState} from '@dev-os/core';
-
-function Counter() {
-    const [count, setCount] = useState(0);
-    return <Box orientation="vertical" spacing={12}>
-        <Label>Count: {count}</Label>
-        <Button onClicked={() => setCount(value => value + 1)}>เพิ่ม</Button>
-    </Box>;
-}
-```
-
-ใช้ `createRoot(gtkContainer).render(<Counter />)` เพื่อ mount; `root.unmount()` ก่อน destroy
-container จะ cleanup hooks และ signals ส่วน layer-shell และบริการระบบเป็น TypeScript / GJS
-เพื่อจัดการ native windows, monitors, process และ session lifecycle
-ไฟล์ `panel.ts`, `launcher.ts`, `background.ts` เป็น adapters สำหรับ Wayland surfaces
-ส่วน widget tree, การค้นหาแอป, ข้อความ, การยืนยัน logout และนาฬิกาอยู่ใน React
-พื้นหลังใช้ `<DrawingArea onDraw={...}>` ใน TSX โดยวาดภาพด้วย Cairo
-
-`npm run build` ตรวจ types ก่อน build และสร้าง `dist/core.d.ts` ให้ด้วย
-source, tests และ build tool เป็น `.ts` / `.tsx` ทั้งหมด; JavaScript ใน `dist/` เป็นไฟล์ที่สร้างจาก build
-แยกการตรวจ GJS ใน `tsconfig.json` และ Node build tool ใน `tsconfig.tools.json`
-build tool `tools/build/build.ts` รันด้วย [Node TypeScript support](https://nodejs.org/en/blog/release/v22.18.0/)
-alias `@dev-os/core` ชี้ไปที่ source ระหว่างตรวจ types และชี้ไปที่ bundle เดียวกัน
-เมื่อ build เพื่อให้ React กับ renderer ใช้ instance เดียวกัน
-ถ้าแก้เฉพาะไฟล์ type ให้ใช้ `npm run typecheck` หรือเปิด `npm run typecheck:watch` อีก terminal
-
-นี่เป็น renderer รุ่นเริ่มต้นสำหรับ GTK ไม่ใช่ตัวแปลงหน้าเว็บ HTML/CSS อัตโนมัติ
-ใช้ `<Box>`, `<Label>`, `<Button>` แทน `<div>` และใช้ GTK CSS ใน `src/apps/org.devos.theme/style.css`
-ยังไม่มี hot reload ที่รักษา state และไม่ได้รองรับ React DOM, SSR หรือ React Native APIs
-รายละเอียดสัญญา renderer ดู [React reconciler](https://github.com/facebook/react/tree/v19.2.0/packages/react-reconciler)
+ทดสอบด้วย `d tests/<ชื่อ>.test.dev` (ใน WSL) ธีมของทุกหน้าต่างอยู่ที่ `src/apps/org.devos.theme/style.css`
+ส่วนที่ยังเป็น TypeScript มีเพียงเครื่องมือ build (`tools/build/build.ts`) และหน้า Monaco ของ Editor
 
 หากติดตั้งบนเครื่อง Windows เครื่องอื่น ให้ติดตั้ง dependencies ใน Ubuntu ตามด้านบน
 แล้วติดตั้ง build dependencies เพิ่ม:
@@ -473,10 +436,5 @@ UI อยู่ที่ `src/system/org.devos.panel/view.tsx`; backend ที�
 `dev.ps1 run` เตรียม `pactl` ใน `build/wsl/bin` ให้อัตโนมัติสำหรับ WSL;
 บน Linux ติดตั้งเครื่องมือควบคุมเสียง/เครือข่ายผ่าน package manager ของ distro.
 
-แพ็กเกจ `@dev-os/core` รวม API และ types สำหรับ extension lifecycle, settings และ desktop services ดู [packages/core/README.md](packages/core/README.md).
-
-สร้างแพ็กเกจ `@dev-os/core` แบบ standalone ด้วย `npm run core:pack` ไฟล์ `.tgz` อยู่ใน `build/core-package/` โดยรวม React, React Reconciler และ Scheduler ไว้ใน bundle พร้อม TypeScript declarations ดู [คู่มือแพ็กเกจ](packages/core/README.md#pack-a-standalone-library).
-
-Extension services live in `packages/extensions` (`@dev-os/extensions`), and update services in `packages/updates` (`@dev-os/updates`). Build package archives with `npm run extensions:pack` and `npm run updates:pack`; the output is under `build/extensions-package` and `build/updates-package`.
 
 Desktop libraries are published separately as `@dev-os/runtime`, `@dev-os/services`, `@dev-os/config`, `@dev-os/shell` and `@dev-os/supervisor`. Pack each library with `npm run <name>:pack`.

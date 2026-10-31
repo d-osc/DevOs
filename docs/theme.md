@@ -26,7 +26,7 @@ up clock and time-zone changes. It also re-evaluates when the system resumes
 from sleep (logind `PrepareForSleep(false)`, the signal `packages/runtime/sleep.ts`
 already uses). The schedule is fixed times; sunrise/sunset are not computed.
 `resolveTheme(mode, now, schedule)` and `msUntilSwitch(...)` in
-`packages/core/theme.ts` are pure and unit-tested (`tests/theme.test.ts`).
+`src/apps/org.devos.theme/model.dev` are pure and unit-tested.
 
 The sign-in screen runs before any settings exist, so it follows the default
 Auto schedule.
@@ -37,7 +37,7 @@ Auto schedule.
 files (`2026-dark.json`, `2026-light.json` and the `dark_modern.json` / `light_modern.json` they
 include) and `vscode/github/` the GitHub theme 6.3.5 files; `NOTICE.md` has the MIT notices.
 `d tools/theme/generate-palette.dev` reads them and writes
-`packages/core/theme-palette.ts`, which records for every token the VS Code key
+`data/themes/palettes.json`, which records for every token the VS Code key
 it was copied from (`paletteSources`) and the sixteen terminal ANSI colors and
 terminal foreground (VS Code workbench defaults, which the theme files do not
 override). `tests/theme.test.ts` checks every copied color against the JSON files.

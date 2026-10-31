@@ -11,12 +11,9 @@ test.case("alpha colors preserve JS compositing and GTK rounding",fn() {
     t.equal(palette.rgba("#11223380"),"rgba(17, 34, 51, 0.502)")
     t.equal(palette.rgba("#fff"),"rgba(255, 255, 255, 1)")
 })
-test.case("all generated palettes match the npm binding and native data",fn() {
+test.case("the generated palette data is what data/themes/palettes.json holds (native shell and Monaco page read it)",fn() {
     let data=palette.generate(t.root())
     t.equal(json.stringify(data),json.stringify(json.parse(fs.readFileSync(t.root()+"/data/themes/palettes.json","utf8"))))
-    let source=fs.readFileSync(t.root()+"/packages/core/theme-palette.ts","utf8");let tables=strings.split(source,"Object.freeze(")
-    test.expect(tables.len()==4,"Missing npm theme exports")
-    let names=Vec<str>("familyPalettes","paletteSources","syntaxRules")
-    for i in 0..3 {t.equal(json.stringify(json.parse(strings.split(tables[i+1],");")[0])),json.stringify(json.get(data,names[i])))}
+    for name in Vec<str>("familyPalettes","paletteSources","syntaxRules") { test.expect(json.has(data,name),"Missing " + name) }
 })
 return t.finish()

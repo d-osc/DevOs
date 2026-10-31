@@ -1,7 +1,0 @@
-{
-  "name": "@dev-os/core",
-  "version": "0.3.7-ux3407na-dev",
-  "type": "module",
-  "private": true,
-  "description": "Theme palette used by the Monaco editor page"
-}
