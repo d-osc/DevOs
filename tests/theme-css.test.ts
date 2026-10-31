@@ -1,6 +1,5 @@
 import {Gtk, readText, themeTokens, themeTokenNames, themeFamilyNames, paletteFor, type ThemeName} from '@dev-os/core';
 import {ROOT} from '@dev-os/config';
-import {terminalScheme} from '../src/apps/org.devos.terminal/colors.js';
 
 Gtk.init(null);
 function assert(value: unknown, message: string): void { if (!value) throw new Error(message); }
@@ -94,19 +93,6 @@ test('body text meets WCAG AA (4.5:1) on every surface it is used on, in both th
         }
         assert(contrast(p.onAccent, p.accent) >= 4.5, `${label}: text on the accent fill ${contrast(p.onAccent, p.accent).toFixed(2)}:1`);
         assert(contrast(p.editorFg, p.editorBg) >= 4.5, `${label}: editor text`);
-    }
-});
-test('terminal text and the colored prompt are readable in every theme', () => {
-    for (const family of themeFamilyNames) for (const name of names) {
-        const scheme = terminalScheme(name, family), label = `${family}/${name}`;
-        assert(contrast(scheme.foreground, scheme.background) >= 4.5, `${label}: terminal foreground`);
-        // The prompt is bold: green for a normal user, red for root, blue for the directory. Dark maps bold to the bright colors.
-        const offset = scheme.boldIsBright ? 8 : 0;
-        for (const [hue, index] of [['green', 2], ['red', 1], ['blue', 4]] as const) {
-            const color = scheme.palette[index + offset]!, ratio = contrast(color, scheme.background);
-            assert(ratio >= 4.5, `${label}: prompt ${hue} ${color} on ${scheme.background} is ${ratio.toFixed(2)}:1`);
-        }
-        assert(scheme.palette.length === 16, 'sixteen ANSI colors');
     }
 });
 print(`PASS: ${count} theme CSS checks`);

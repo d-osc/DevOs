@@ -6,7 +6,7 @@
   "apiVersion": 1,
   "kind": "ui",
   "system": true,
-  "entry": "org.devos.terminal.js",
+  "native": "terminal",
   "order": 26,
   "settingsVersion": 2,
   "enabledByDefault": true,

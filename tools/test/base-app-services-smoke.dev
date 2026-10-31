@@ -12,7 +12,7 @@ fn main(): i32 {
         let extras = Map<str,str>(); extras.set("HOME", home); extras.set("GTK_USE_PORTAL", "0"); extras.set("PATH", tool.root() + "/build/wsl/bin:" + tool.root() + "/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
         smoke.withSession("base-app-services", extras, fn(session: smoke.Session) {
             let env = smoke.environment(session)
-            let selected = tool.option("--tests", "desktop-ui-test,task-manager-test,disk-manager-test,media-live-test,terminal-completion-test,screenshot-test,screenshot-live-test,browser-live-test,browser-downloads-live-test,live-editor-test,network-settings-test,app-store-test,package-install-ui-test")
+            let selected = tool.option("--tests", "desktop-ui-test,task-manager-test,disk-manager-test,media-live-test,screenshot-test,screenshot-live-test,browser-live-test,browser-downloads-live-test,live-editor-test,network-settings-test,app-store-test,package-install-ui-test")
             # A headless seat has no keyboard. Keep a virtual keyboard connected so
             # GTK can grant real keyboard focus (completion deliberately requires it).
             let keyboard = smoke.launch(Vec<str>("wtype", "-s", "300000"), env, session.log)
