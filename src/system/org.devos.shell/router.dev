@@ -22,7 +22,7 @@ fn appFor(command:str):str {
     if strings.equal(command,"disk-manager") { return "diskmanager" }
     if contains(Vec<str>("app-store","app-store-extensions","extension-store","settings.store","package-install"),command) { return "appstore" }
     if strings.equal(command,"installer") { return "installer" }
-    if strings.equal(command,"screenshot") || strings.equal(command,"screenshot-app") { return "screenshot" }
+    if strings.equal(command,"screenshot-app") { return "screenshot" }
     if strings.startsWith(command,"settings.") { return "settings" }
     return ""
 }
@@ -69,7 +69,7 @@ fn route(args:Vec<str>, cwd:str):Vec<Step> {
     if settingsPage(command) { out.push(step("launch","settings","settings." + command,"")); return out }
     if strings.equal(command,"switch-user") { out.push(step("launch","settings","session.switch-user",args.len() > 1 ? args[1] : "")); return out }
     if strings.equal(command,"reload") { out.push(step("reload","","","")); return out }
-    if strings.equal(command,"terminal") || strings.equal(command,"lock") || strings.equal(command,"files") { out.push(step("run","",command,cwd)); return out }
+    if strings.equal(command,"terminal") || strings.equal(command,"lock") || strings.equal(command,"files") || strings.equal(command,"screenshot") { out.push(step("run","",command,cwd)); return out }
     if strings.equal(command,"package-install") || strings.equal(command,"editor") {
         let role = strings.equal(command,"editor") ? "editor" : "appstore"
         if args.len() < 2 { out.push(step("launch",role,command,"")); return out }

@@ -1,0 +1,51 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# The Screenshot worker with stand-in grim, slurp and wl-copy: where the picture goes, what the rectangle becomes, and what is said when a tool is missing.
+fn worker(d:str, input:str, grim:str, slurp:str, copy:str):str {
+    let env = Map<str,str>(); env.set("DEVOS_SHOT_TEST","1"); env.set("DEVOS_SHOT_HOME",d + "/home"); env.set("DEVOS_SHOT_GRIM",grim); env.set("DEVOS_SHOT_SLURP",slurp); env.set("DEVOS_SHOT_COPY",copy); env.set("DEVOS_SHOT_OPEN",d + "/open"); env.set("PATH","/usr/bin:/bin")
+    let done = tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.screenshot/service.dev"),env,input,120000); return strings.trim(t.out(done)) + t.err(done)
+}
+fn rig():str {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
+    fs.mkdirSync(d + "/home",false)
+    fs.writeFileSync(d + "/grim","#!/bin/sh\nwhile [ $# -gt 1 ]; do args=\"$args $1\"; shift; done\nprintf '%s' \"$args\" > \"$1.args\"; printf png > \"$1\"\n")
+    fs.writeFileSync(d + "/slurp","#!/bin/sh\necho '10,20 300x200'\n")
+    fs.writeFileSync(d + "/cancel","#!/bin/sh\nexit 1\n")
+    fs.writeFileSync(d + "/copy","#!/bin/sh\ncat > \"$0.got\"\n")
+    fs.writeFileSync(d + "/open","#!/bin/sh\nprintf '%s\n' \"$1\" > \"$0.log\"\n")
+    tool.exec(Vec<str>("chmod","755",d + "/grim",d + "/slurp",d + "/cancel",d + "/copy",d + "/open"))
+    return d
+}
+test.case("an area is cut with slurp's rectangle, saved privately under Pictures/Screenshots and copied to the clipboard",fn() {
+    let d = rig()
+    let answer = worker(d,"{\"action\":\"region\",\"delay\":0}\n",d + "/grim",d + "/slurp",d + "/copy")
+    test.expect(strings.startsWith(answer,"V\tSaved to " + d + "/home/Pictures/Screenshots/Screenshot_") && strings.contains(answer,"copied to the clipboard"),"answer: " + answer)
+    let folder = d + "/home/Pictures/Screenshots"
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("stat","-c","%a",folder))),"700"),"the folder is not private")
+    let args = strings.trim(tool.exec(Vec<str>("sh","-c","cat " + folder + "/*.png.args")))
+    test.expect(strings.equal(args,"-g 10,20 300x200"),"grim got: " + args)
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("cat",d + "/copy.got"))),"png"),"the clipboard got the picture")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the whole screen is captured without a rectangle, and cancelling the selection is not an error",fn() {
+    let d = rig()
+    let both = worker(d,"{\"action\":\"full\"}\n{\"action\":\"region\"}\n",d + "/grim",d + "/cancel","")
+    let lines = strings.split(both,"\n")
+    test.expect(lines.len() == 2 && strings.startsWith(lines[0],"V\tSaved to ") && !strings.contains(lines[0],"clipboard") && strings.equal(lines[1],"V\tCancelled"),"answers: " + both)
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/home/Pictures/Screenshots/*.png | wc -l"))),"1"),"only the full capture is saved")
+    test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","cat " + d + "/home/Pictures/Screenshots/*.png.args"))),""),"no rectangle for the full screen")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a missing tool is named, bad requests are refused and the folder opens with the opener",fn() {
+    let d = rig()
+    let missing = worker(d,"{\"action\":\"full\"}\n{\"action\":\"region\"}\nnot json\n{\"action\":\"nothing\"}\n{\"action\":\"folder\"}\n",d + "/absent",d + "/slurp","")
+    let lines = strings.split(missing,"\n")
+    test.expect(lines.len() == 5 && strings.contains(lines[0],"needs grim") && strings.contains(lines[1],"needs grim") && strings.startsWith(lines[2],"E\t") && strings.contains(lines[3],"Unsupported") && strings.startsWith(lines[4],"V\tOpening"),"answers: " + missing)
+    test.expect(fs.is_dir(d + "/home/Pictures/Screenshots"),"the folder was created for the opener")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

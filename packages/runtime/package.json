@@ -38,14 +38,6 @@
     "./sleep": {
       "types": "./dist/sleep.d.ts",
       "import": "./dist/sleep.js"
-    },
-    "./app-service": {
-      "types": "./dist/app-service.d.ts",
-      "import": "./dist/app-service.js"
-    },
-    "./app-channel": {
-      "types": "./dist/app-channel.d.ts",
-      "import": "./dist/app-channel.js"
     }
   },
   "files": [

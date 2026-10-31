@@ -4,7 +4,7 @@ import {shellApplicationId} from '@dev-os/runtime/remote';
 import {processApplicationId, sendCommand, missingProcess, optInNative, type ProcessRole} from '@dev-os/runtime/processes';
 
 /** Apps with a native GTK executable under dist/native; every other role runs through the JS app host. */
-const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskmanager', diskmanager: 'diskmanager', installer: 'installer', files: 'files', terminal: 'terminal', settings: 'settings', camera: 'camera', microphone: 'microphone', editor: 'editor'};
+const NATIVE_APPS: Partial<Record<ProcessRole, string>> = {taskmanager: 'taskmanager', diskmanager: 'diskmanager', installer: 'installer', files: 'files', terminal: 'terminal', settings: 'settings', camera: 'camera', microphone: 'microphone', editor: 'editor', screenshot: 'screenshot', browser: 'browser', appstore: 'appstore'};
 
 /**
  * Apps whose native window can be tried before it becomes the default: DEVOS_NATIVE_<APP>=1, or a file at ~/.config/devos/native-<app>.

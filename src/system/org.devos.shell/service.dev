@@ -31,12 +31,7 @@ fn say(message:str) {
 
 # The D-Bus identity of an app process: org.devos.App.<name>.<shell id>.
 fn identity(name:str):str { return strings.replaceAll(shellId(),"org.devos.Shell.","org.devos.App." + name + ".") }
-fn optIn(role:str):bool {
-    if strings.equal(hw.env("DEVOS_NATIVE_" + strings.toUpperCase(role)),"1") { return true }
-    return fs.existsSync(hw.configHome() + "/devos/native-" + role)
-}
-fn nativeRoles():Vec<str> { return Vec<str>("taskmanager","diskmanager","installer","files","terminal","settings","camera","microphone","editor") }
-fn optInRoles():Vec<str> { return Vec<str>("browser","appstore") }
+fn nativeRoles():Vec<str> { return Vec<str>("taskmanager","diskmanager","installer","files","terminal","settings","camera","microphone","editor","screenshot","browser","appstore") }
 fn spawn(argv:Vec<str>, extra:Vec<str>) {
     let all = Vec<str>("env","DEV_OS_ROOT=" + root())
     for item in extra { all.push(item) }
@@ -61,7 +56,6 @@ fn launch(role:str, command:str, path:str) {
     let executable = ""
     if background { executable = "background-settings" }
     else if panel { executable = "panel-settings" }
-    else if shellRoleIs(optInRoles(),role) && optIn(role) && isExecutable(root() + "/dist/native/" + role) { executable = role }
     else if shellRoleIs(nativeRoles(),role) { executable = role }
     let extra = Vec<str>()
     let argv = Vec<str>()
@@ -110,6 +104,14 @@ fn configured(key:str):Vec<str> {
 # terminal, files and lock: the Dev OS program when the config names it, else the configured command.
 fn runCommand(command:str, folder:str):bool {
     if strings.equal(command,"files") { launch("files","files",""); return true }
+    if strings.equal(command,"screenshot") {
+        # Win+Shift+S: the capture worker of Screenshot picks an area, saves it and copies it. It runs apart so the shell is not held while the user drags.
+        note("run screenshot region")
+        if testing() { return true }
+        let runner = strings.equal(hw.which("d"),"") ? "d" : hw.which("d")
+        hw.spawnDetached(Vec<str>("sh","-c","printf '%s\\n' '{\"action\":\"region\",\"delay\":0}' | exec \"$1\" \"$2\" >/dev/null 2>&1","sh",runner,root() + "/src/apps/org.devos.screenshot/service.dev"))
+        return true
+    }
     let args = configured(command)
     if args.len() == 0 { return false }
     if strings.equal(command,"lock") {

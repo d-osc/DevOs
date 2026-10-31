@@ -1,0 +1,85 @@
+#!/usr/bin/env d
+# Capture worker of Screenshot (the native window and the shell's Win+Shift+S). It saves a PNG in ~/Pictures/Screenshots (a private folder), puts it on the
+# clipboard with wl-copy when that is installed, and tells the panel where it went. One JSON request per line on stdin, one answer line:
+#   {"action":"region","delay":0}   -> the user drags a rectangle (slurp), only that part is captured; cancelling is not an error
+#   {"action":"full","delay":0}     -> every output
+#   {"action":"folder"}             -> opens the folder with the default application
+# Answers: "V<TAB>message" or "E<TAB>message". The dependencies are grim (capture) and slurp (the rectangle); a missing one is reported, not guessed.
+# Test hooks (only with DEVOS_SHOT_TEST=1): DEVOS_SHOT_HOME, DEVOS_SHOT_GRIM, DEVOS_SHOT_SLURP, DEVOS_SHOT_COPY, DEVOS_SHOT_OPEN, DEVOS_SHOT_LOG.
+use "std/io"
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/worker-kit.dev" as kit
+
+fn testing():bool { return !strings.equal(hw.env("DEVOS_SHOT_TEST"),"") }
+fn setting(name:str, fallback:str):str { return testing() && !strings.equal(hw.env(name),"") ? hw.env(name) : fallback }
+fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
+fn delay(value:json.Value):i64 { return json.has(value,"delay") && strings.equal(json.kind(json.get(value,"delay")),"number") ? json.int(json.get(value,"delay")) : 0 }
+fn folder():str { return setting("DEVOS_SHOT_HOME",hw.home()) + "/Pictures/Screenshots" }
+fn program(name:str, hook:str):str {
+    if strings.equal(setting(hook,""),"") { return hw.which(name) }
+    return hw.isExecutable(setting(hook,"")) ? setting(hook,"") : ""
+}
+fn notify(message:str) {
+    if testing() { return }
+    hw.run(Vec<str>("gdbus","emit","--session","--object-path","/org/devos/Panel","--signal","org.devos.Panel.Message",message),5000)
+}
+fn capture(region:bool, seconds:i64):str {
+    let grim = program("grim","DEVOS_SHOT_GRIM")
+    if strings.equal(grim,"") { return kit.failure("Screen capture needs grim, which is not installed on this system.") }
+    let slurp = ""
+    if region { slurp = program("slurp","DEVOS_SHOT_SLURP"); if strings.equal(slurp,"") { return kit.failure("Choosing an area needs slurp, which is not installed on this system.") } }
+    if seconds > 0 { hw.sleepSeconds(seconds as f64) }
+    let geometry = ""
+    if region {
+        let chosen = hw.run(Vec<str>(slurp),300000)
+        geometry = strings.trim(chosen.out)
+        if chosen.code != 0 || strings.equal(geometry,"") { return "V\tCancelled" }
+    }
+    hw.run(Vec<str>("mkdir","-p","-m","700",folder()),5000)
+    if !fs.is_dir(folder()) { return kit.failure("Could not create the Screenshots folder.") }
+    let stamp = strings.trim(hw.run(Vec<str>("date","+%Y-%m-%d_%H-%M-%S"),5000).out)
+    let unique = strings.trim(hw.run(Vec<str>("sh","-c","od -An -N3 -tx1 /dev/urandom | tr -d ' \\n'"),5000).out)
+    let target = folder() + "/Screenshot_" + stamp + "-" + unique + ".png"
+    let argv = Vec<str>(grim)
+    if !strings.equal(geometry,"") { argv.push("-g"); argv.push(geometry) }
+    argv.push(target)
+    let made = hw.run(argv,60000)
+    if made.code != 0 || !fs.existsSync(target) { return kit.failure(strings.equal(strings.trim(made.out),"") ? "grim could not capture the screen. The compositor must allow screen capture." : strings.trim(made.out)) }
+    let copier = program("wl-copy","DEVOS_SHOT_COPY")
+    let note = "Saved to " + target
+    if !strings.equal(copier,"") {
+        let copied = hw.run(Vec<str>("sh","-c","exec \"$1\" --type image/png < \"$2\"","sh",copier,target),10000)
+        note = copied.code == 0 ? "Saved to " + target + " and copied to the clipboard." : "Saved to " + target + ", but it could not be copied."
+    }
+    notify("Screenshot: " + note)
+    return "V\t" + kit.clean(note)
+}
+fn handle(line:str):str {
+    let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+    if result.isErr(parsed) { return kit.failure("Invalid service request") }
+    let r = result.unwrap(parsed)
+    if !strings.equal(json.kind(r),"object") { return kit.failure("Expected an object request") }
+    let action = text(r,"action")
+    if strings.equal(action,"ready") { return "V\tChoose what to capture" }
+    if strings.equal(action,"region") { return capture(true,delay(r)) }
+    if strings.equal(action,"full") { return capture(false,delay(r)) }
+    if strings.equal(action,"folder") {
+        hw.run(Vec<str>("mkdir","-p","-m","700",folder()),5000)
+        let opener = setting("DEVOS_SHOT_OPEN","")
+        hw.spawnDetached(strings.equal(opener,"") ? Vec<str>("gio","open",folder()) : Vec<str>(opener,folder()))
+        return "V\tOpening " + kit.clean(folder())
+    }
+    return kit.failure("Unsupported action")
+}
+fn main():i32 {
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        print(handle(line))
+    }
+    return 0
+}
+return main()

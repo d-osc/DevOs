@@ -6,7 +6,7 @@
   "apiVersion": 1,
   "settingsVersion": 1,
   "kind": "ui",
-  "entry": "org.devos.browser.js",
+  "native": "browser",
   "system": true,
   "enabledByDefault": true,
   "order": 29,

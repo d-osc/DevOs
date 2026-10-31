@@ -44,6 +44,8 @@ if [ "$gst" != libgstreamer-1.0.so.0 ]; then
     sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.microphone/native-main.devx" "$root/build/react-devlang/apps/microphone" "$gst"
     install -m0755 "$root/build/react-devlang/apps/microphone" "$root/dist/native/microphone"
 fi
+sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.screenshot/native-main.devx" "$root/build/react-devlang/apps/screenshot"
+install -m0755 "$root/build/react-devlang/apps/screenshot" "$root/dist/native/screenshot"
 "$driver" "$root/tools/build/native-theme.dev" -- "$root"
 sh "$root/tools/build/native-system.sh"
 sh "$root/tools/build/native-supervisor.sh"

@@ -1,0 +1,57 @@
+use "react_devlang/ui" as ui
+use "../org.devos.settings/native-kit.devx" as k
+use "../org.devos.settings/native-extensions-page.devx" as ext
+use "../org.devos.settings/native-system-pages.devx" as sp
+extern fn rc_env(name:str):str
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+extern fn rd_app_header(root:*void,title:str,icons:str)
+extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
+extern fn rd_default_theme():str
+
+# Native Screenshot window. The captures themselves are made by service.dev (grim and slurp); this window picks what to capture and after how long.
+# The window stays up while the delay runs, so a delay lets the user move it out of the way. Win+Shift+S does not open this window: the shell runs the worker.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+fn plain(value:str):ui.Text { return ui.text(value) }
+fn request(action:str, seconds:i64):ui.Text { return plain("{\"action\":\"" + action + "\",\"delay\":${seconds}}") }
+fn delayOf(index:i64):i64 { return index == 1 ? 3 : index == 2 ? 5 : index == 3 ? 10 : 0 }
+
+fn App(context:*ui.Context):ui.Node {
+    let l = sp.link(context,"../org.devos.screenshot/service.dev","{\"action\":\"ready\"}")
+    let choice = ui.useState(context,0); let status = ui.useText(context,plain("Choose what to capture"))
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
+        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
+        if ui.text(family).bytes.len() == 0 { family = "vscode" }
+        unsafe {
+            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
+            rd_app_header((*context).native,"Screenshot","${root}/data/icons")
+            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"screenshot")
+        }
+        ui.onCommand(context,"screenshot.",fn(line:ui.Text) {})
+        return ui.noop
+    },Vec<i64>())
+    ui.useEffect(context,fn():fn():void {
+        let f = l.frame.value
+        if f.bytes.len() > 0 { status.set(sp.cell(sp.head(f),1)) }
+        return ui.noop
+    },Vec<i64>(l.replies.value))
+    let busy = l.waiting.get() != 0
+    let region = ui.named("screenshot-region"); region.sensitive = !busy
+    let full = ui.named("screenshot-full"); full.sensitive = !busy
+    let folder = ui.named("screenshot-folder")
+    let delays = Vec<ui.Text>(plain("No delay"),plain("3 seconds"),plain("5 seconds"),plain("10 seconds"))
+    let nodes = Vec<ui.Node>(k.heading("camera","Screenshot"))
+    nodes.push(ext.named(k.caption(l.failure.value.bytes.len() > 0 ? l.failure.value : status.value,l.failure.value.bytes.len() > 0 ? "settings-error-banner" : "settings-description"),"screenshot-status"))
+    nodes.push(ext.row(8,Vec<ui.Node>(ui.Label("Delay"),ui.Select(ui.named("screenshot-delay"),delays,choice.value,fn(index:i64) { choice.set(index) }))))
+    nodes.push(ext.row(8,Vec<ui.Node>(
+        ui.Button(region,"Capture an area",fn() { status.set(plain("Drag to choose an area. Esc cancels.")); sp.send(l,request("region",delayOf(choice.get()))) }),
+        ui.Button(full,"Capture the screen",fn() { status.set(plain("Capturing…")); sp.send(l,request("full",delayOf(choice.get()))) }),
+        ui.Button(folder,"Open screenshots",fn() { sp.send(l,plain("{\"action\":\"folder\"}")) }))))
+    return ext.column(12,nodes)
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.screenshot.Native" }
+    unsafe { rd_identity(id) }
+    return ui.run("Screenshot",520,300,App) ? 0 : 1
+}
