@@ -1,0 +1,205 @@
+# runsv, runsvdir, sv, svlogd: the runit service supervision tools.
+# A service directory holds ./run (and optionally ./finish, ./down); runsv keeps supervise/{control,stat,pid,status} up to date.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/clock.dev" as clock
+use "./gzip.dev" as gz
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn put_text_file(path: str, text: str) { let b = sys.bytes_new(); sys.bytes_str(b, text); gz.write_file(path, b, 420) }
+fn self_exe(): str { let l = fsx.read_link("/proc/self/exe"); return sys.length(l) > 0 ? l : "busybox" }
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+
+// ---- runsv SERVICE_DIR ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+// status file (20 bytes): 8 TAI seconds (big endian), 4 nanoseconds, 4 pid (little endian), paused, want ('u' or 'd'), got a TERM
+fn write_status(dir: str, started: i64, pid: i64, paused: bool, want: u8, got_term: bool) {
+    let b = sys.bytes_new(); let tai = 4611686018427387914 + started
+    for i in 0..8 { sys.bytes_push(b, ((tai / pow256(7 - i)) % 256) as u8) }
+    for i in 0..4 { sys.bytes_push(b, 0) }
+    for i in 0..4 { sys.bytes_push(b, ((pid / pow256(i)) % 256) as u8) }
+    sys.bytes_push(b, paused ? 1 : 0); sys.bytes_push(b, want); sys.bytes_push(b, got_term ? 1 : 0); sys.bytes_push(b, 0)
+    gz.write_file(sys.join2(dir, "/supervise/status"), b, 420)
+}
+fn signal_for(c: u8): i64 {
+    if c == 116 { return 15 } if c == 107 { return 9 } if c == 104 { return 1 } if c == 97 { return 14 } if c == 105 { return 2 } if c == 113 { return 3 }
+    if c == 49 { return 10 } if c == 50 { return 12 } if c == 112 { return 19 } if c == 99 { return 18 }
+    return 0
+}
+fn run_runsv(args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn("runsv", "invalid usage: runsv SERVICE_DIR"); return 1 }
+    let dir = args[0]
+    if !sys.is_dir(dir) { sys.warn("runsv", sys.join2(dir, ": unable to change to service directory")); return 1 }
+    let sup = sys.join2(dir, "/supervise")
+    if !sys.is_dir(sup) { fsx.make_dirs(sup, 493) }
+    let control = sys.join2(sup, "/control")
+    if !sys.exists(control) { fsx.do_mkfifo(control, 384) }
+    let cfd = sys.open_fd(control, 2 + 2048, 0)
+    if cfd < 0 { sys.warn("runsv", "unable to open supervise/control"); return 1 }
+    let want = sys.exists(sys.join2(dir, "/down")) ? 100 : 117
+    let pid = 0; let started = clock.now(); let paused = false; let got_term = false; let exit_after = false; let once = false; let finishing = false
+    let restart_at = 0
+    put_text_file(sys.join2(sup, "/stat"), "down\n"); write_status(dir, started, 0, false, want as u8, false)
+    let cmdbuf = sys.bytes_new(); sys.bytes_push(cmdbuf, 0)
+    while true {
+        # start the service when it is wanted and not running
+        if pid == 0 && want == 117 && !exit_after && clock.now() >= restart_at {
+            let target = finishing ? "./finish" : "./run"
+            let program = sys.join2(dir, finishing ? "/finish" : "/run")
+            if sys.exists(program) {
+                let abs = sys.starts(dir, "/") ? dir : fsx.join_path(sys.current_dir(), dir)
+                pid = proc.launch(Vec<str>("sh", "-c", sys.join2(sys.join2("cd ", sys.join2(abs, " && exec ")), sys.join2(target, ""))), proc.environment(), 0)
+                if pid > 0 { started = clock.now(); got_term = false; paused = false; put_text_file(sys.join2(sup, "/stat"), "run\n"); put_text_file(sys.join2(sup, "/pid"), sys.join2(decimal(pid), "\n")); write_status(dir, started, pid, false, want as u8, false) } else { pid = 0; restart_at = clock.now() + 1 }
+            } else { restart_at = clock.now() + 5 }
+        }
+        # control commands
+        while true {
+            let n = sys.read_into(cfd, sys.bdata(cmdbuf), 1)
+            if n <= 0 { break }
+            let c = sys.bat(cmdbuf, 0)
+            if c == 117 { want = 117; if once { once = false }; write_status(dir, started, pid, paused, 117, got_term) }
+            else if c == 100 { want = 100; if pid > 0 { proc.send_signal(pid, 15); proc.send_signal(pid, 18); got_term = true }; write_status(dir, started, pid, paused, 100, got_term) }
+            else if c == 111 { want = 100; once = true; write_status(dir, started, pid, paused, 100, got_term) }
+            else if c == 120 { exit_after = true; want = 100; if pid > 0 { proc.send_signal(pid, 15); proc.send_signal(pid, 18) } }
+            else if signal_for(c) > 0 && pid > 0 { proc.send_signal(pid, signal_for(c)); if c == 116 { got_term = true }; if c == 112 { paused = true }; if c == 99 { paused = false }; write_status(dir, started, pid, paused, want as u8, got_term) }
+        }
+        if pid > 0 {
+            let status = proc.poll_exit(pid)
+            if status >= 0 {
+                pid = 0; started = clock.now(); restart_at = clock.now() + 1
+                if !finishing && sys.exists(sys.join2(dir, "/finish")) { finishing = true; restart_at = 0; want = want } else { finishing = false }
+                if !finishing { put_text_file(sys.join2(sup, "/stat"), "down\n") }
+                if once && !finishing { want = 100; once = false }
+                write_status(dir, started, 0, false, want as u8, false)
+                if exit_after && !finishing { break }
+            }
+        } else if exit_after { break }
+        proc.pause_us(100000)
+    }
+    return 0
+}
+
+// ---- runsvdir DIR: one runsv per sub-directory ---------------------------------------------------------------------------------------------------------------------------------------
+fn run_runsvdir(args: Vec<str>): i64 {
+    let words = Vec<str>(); for k in 0..(args.len() as i64) { if !sys.starts(args[k], "-") { words.push(args[k]) } }
+    if words.len() == 0 { sys.warn("runsvdir", "invalid usage: runsvdir [-P] DIRECTORY"); return 1 }
+    let dir = words[0]; let started_names = Vec<str>(); let started_pids = Vec<i64>()
+    while true {
+        let l = fsx.list_dir(dir)
+        if !l.ok { sys.warn("runsvdir", sys.join2(dir, ": unable to read directory")); return 1 }
+        for k in 0..(l.names.len() as i64) {
+            let name = l.names[k]; let path = fsx.join_path(dir, name)
+            if sys.at(name, 0) == 46 || !sys.is_dir(path) { continue }
+            let found = 0 - 1; for q in 0..(started_names.len() as i64) { if sys.same(started_names[q], name) { found = q } }
+            if found >= 0 && started_pids[found] > 0 { let st = proc.poll_exit(started_pids[found]); if st < 0 { continue }; started_pids[found] = 0 }
+            let pid = proc.launch(Vec<str>(self_exe(), "runsv", path), proc.environment(), 0)
+            if found < 0 { started_names.push(name); started_pids.push(pid) } else { started_pids[found] = pid }
+        }
+        proc.pause_us(2000000)
+    }
+    return 0
+}
+
+// ---- sv [-v] [-w SECONDS] COMMAND SERVICE... ---------------------------------------------------------------------------------------------------------------------------------
+struct State { ok: bool, pid: i64, since: i64, want: i64, paused: bool, running: bool }
+fn read_state(dir: str): State {
+    let input = sys.read_path(sys.join2(dir, "/supervise/status"))
+    if !input.ok || sys.blen(input.bytes) < 20 { return State(false, 0, 0, 0, false, false) }
+    let b = input.bytes; let tai = 0
+    for i in 0..8 { tai = tai * 256 + (sys.bat(b, i) as i64) }
+    let pid = 0; for i in 0..4 { pid = pid + (sys.bat(b, 12 + i) as i64) * pow256(i) }
+    return State(true, pid, tai - 4611686018427387914, sys.bat(b, 17) as i64, sys.bat(b, 16) == 1, pid > 0)
+}
+fn describe(dir: str, s: State): str {
+    let secs = clock.now() - s.since; if secs < 0 { secs = 0 }
+    if !s.ok { return sys.join2("fail: ", sys.join2(dir, ": runsv not running")) }
+    if s.running {
+        let text = sys.join2(sys.join2("run: ", dir), sys.join2(": (pid ", sys.join2(decimal(s.pid), sys.join2(") ", sys.join2(decimal(secs), "s")))))
+        if s.want == 100 { text = sys.join2(text, ", want down") }
+        if s.paused { text = sys.join2(text, ", paused") }
+        return text
+    }
+    let text = sys.join2(sys.join2("down: ", dir), sys.join2(": ", sys.join2(decimal(secs), "s")))
+    if s.want == 117 { text = sys.join2(text, ", want up") } else if !sys.exists(sys.join2(dir, "/down")) { text = sys.join2(text, ", normally up") }
+    return text
+}
+fn control_char(command: str): u8 {
+    if sys.same(command, "up") || sys.same(command, "u") { return 117 } if sys.same(command, "down") || sys.same(command, "d") { return 100 } if sys.same(command, "once") || sys.same(command, "o") { return 111 }
+    if sys.same(command, "term") || sys.same(command, "t") { return 116 } if sys.same(command, "kill") || sys.same(command, "k") { return 107 } if sys.same(command, "exit") || sys.same(command, "x") { return 120 }
+    if sys.same(command, "hup") || sys.same(command, "h") { return 104 } if sys.same(command, "alarm") || sys.same(command, "a") { return 97 } if sys.same(command, "interrupt") || sys.same(command, "i") { return 105 }
+    if sys.same(command, "quit") || sys.same(command, "q") { return 113 } if sys.same(command, "pause") || sys.same(command, "p") { return 112 } if sys.same(command, "cont") || sys.same(command, "c") { return 99 }
+    if sys.same(command, "1") { return 49 } if sys.same(command, "2") { return 50 }
+    return 0
+}
+fn run_sv(args: Vec<str>): i64 {
+    let words = Vec<str>(); let wait = 7; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-v") { } else if sys.same(a, "-w") && i + 1 < n { i = i + 1; wait = sys.parse_number(args[i]).value } else if sys.same(a, "-s") || sys.same(a, "-x") { }
+        else { words.push(a) }
+        i = i + 1
+    }
+    if words.len() < 2 { sys.warn("sv", "invalid usage: sv [-v] [-w SECONDS] COMMAND SERVICE..."); return 1 }
+    let command = words[0]; let out = sys.out_new(1); let status = 0
+    for k in 1..(words.len() as i64) {
+        let dir = words[k]
+        if !sys.is_dir(dir) { sys.out_str(out, sys.join2(sys.join2("fail: ", dir), ": unable to change to service directory\n")); status = 1; continue }
+        if sys.same(command, "status") || sys.same(command, "s") {
+            let s = read_state(dir); sys.out_str(out, describe(dir, s)); sys.out_byte(out, 10); if !s.ok { status = 1 }; continue
+        }
+        let c = control_char(command)
+        if c == 0 { sys.warn("sv", sys.join2("unknown command ", command)); return 1 }
+        let fd = sys.open_fd(sys.join2(dir, "/supervise/control"), 1 + 2048, 0)
+        if fd < 0 { sys.out_str(out, sys.join2(sys.join2("fail: ", dir), ": runsv not running\n")); status = 1; continue }
+        let b = sys.bytes_new(); sys.bytes_push(b, c); sys.write_fd(fd, sys.bdata(b), 1); sys.close_fd(fd)
+        # wait for the state to settle
+        let deadline = clock.now() + wait; let settled = false
+        while clock.now() <= deadline {
+            let s = read_state(dir)
+            if (c == 117 && s.running) || (c == 100 && !s.running) || (c == 116 && !s.running) || (c == 107 && !s.running) || (c == 120 && !s.ok) || c == 111 || c == 104 || c == 97 || c == 105 || c == 113 || c == 49 || c == 50 || c == 112 || c == 99 { settled = true; break }
+            proc.pause_us(100000)
+        }
+        let s = read_state(dir)
+        sys.out_str(out, sys.join2(settled ? "ok: " : "timeout: ", describe(dir, s))); sys.out_byte(out, 10)
+        if !settled { status = 1 }
+    }
+    sys.out_flush(out)
+    return status
+}
+
+// ---- svlogd [-tt] DIR...: lines from standard input into DIR/current, rotated by size ----------------------------------------------------------------------------------
+fn config_value(dir: str, letter: u8, fallback: i64): i64 {
+    let input = sys.read_path(sys.join2(dir, "/config")); if !input.ok { return fallback }
+    let ls = lines.split_lines(input.bytes, 10); let value = fallback
+    for k in 0..(ls.starts.len() as i64) { let line = lines.text_of(input.bytes, ls.starts[k], ls.ends[k]); if sys.length(line) > 1 && sys.at(line, 0) == letter { value = sys.parse_number(sys.join2(sys.slice(line, 1, sys.length(line)), "")).value } }
+    return value
+}
+fn run_svlogd(args: Vec<str>): i64 {
+    let stamps = 0; let dirs = Vec<str>()
+    for k in 0..(args.len() as i64) { let a = args[k]; if sys.same(a, "-t") { stamps = 1 } else if sys.same(a, "-tt") { stamps = 2 } else if sys.same(a, "-ttt") { stamps = 3 } else if !sys.starts(a, "-") { dirs.push(a) } }
+    if dirs.len() == 0 { sys.warn("svlogd", "invalid usage: svlogd [-tt] DIR..."); return 1 }
+    for k in 0..(dirs.len() as i64) { if !sys.is_dir(dirs[k]) { fsx.make_dirs(dirs[k], 493) } }
+    let input = sys.read_path("-"); let ls = lines.split_lines(input.bytes, 10)
+    for q in 0..(ls.starts.len() as i64) {
+        let line = lines.text_of(input.bytes, ls.starts[q], ls.ends[q])
+        let prefix = ""
+        if stamps == 2 { let now = clock.now(); prefix = sys.join2(clock.format("%Y-%m-%d_%H:%M:%S", clock.fields(now, true), now, true), ".00000 ") }
+        else if stamps > 0 { prefix = sys.join2(sys.join2("@", decimal(4611686018427387914 + clock.now())), " ") }
+        for k in 0..(dirs.len() as i64) {
+            let dir = dirs[k]; let current = sys.join2(dir, "/current")
+            let size_limit = config_value(dir, 115, 1000000); let keep = config_value(dir, 110, 10)
+            let info = sys.file_info(current, true)
+            if info.ok && info.size >= size_limit {
+                let rotated = sys.join2(sys.join2(dir, "/@"), sys.join2(decimal(clock.now()), sys.join2(sys.join2(decimal(proc.my_pid()), "."), sys.join2(decimal(q), ".s"))))
+                fsx.do_rename(current, rotated)
+                let l = fsx.list_dir(dir); let old = Vec<str>(); for z in 0..(l.names.len() as i64) { if sys.starts(l.names[z], "@") { old.push(l.names[z]) } }
+                let extra = (old.len() as i64) - keep
+                for z in 0..(extra > 0 ? extra : 0) { fsx.do_unlink(fsx.join_path(dir, old[z])) }
+            }
+            let fd = sys.open_fd(current, 1089, 420)
+            if fd >= 0 { let b = sys.bytes_new(); sys.bytes_str(b, prefix); sys.bytes_str(b, line); sys.bytes_push(b, 10); sys.write_fd(fd, sys.bdata(b), sys.blen(b)); sys.close_fd(fd) }
+        }
+    }
+    return 0
+}
