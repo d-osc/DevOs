@@ -664,6 +664,21 @@ test.case("ftpd dnsd (Python ftplib and a raw DNS query as clients)",fn() {
     test.expect(strings.contains(outcome(d, dns + query + "r=ask('nosuch.example.test'); print(r[3] & 15)\"" + stop), "3"), "dnsd NXDOMAIN")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("chrt chattr last volname stty",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    all_same(d, Vec<str>("@chrt -m","@chrt -p 1 | sed -n 2p | cut -d' ' -f3-","@chrt -p 1 | head -1 | cut -d' ' -f3-","@chrt -p 99999999 2>/dev/null; echo rc=$?"))
+    test.expect(strings.contains(outcome(d, "touch ca.txt; " + bb + " chattr +A ca.txt; echo rc=$?; lsattr ca.txt | cut -c1-8; " + bb + " chattr -A ca.txt; lsattr ca.txt | cut -c1-8"), "-------A\n--------"), "chattr +A / -A:\n" + outcome(d, "touch ca.txt; " + bb + " chattr +A ca.txt; echo rc=$?; lsattr ca.txt | cut -c1-8"))
+    test.expect(strings.contains(outcome(d, "touch ca.txt; " + bb + " chattr +Q ca.txt; echo rc=$?"), "rc=1"), "chattr accepted an unknown flag")
+    let wtmp = "python3 -c \"import struct,time\nopen('wt','wb').write(b''.join(struct.pack('hxx i 32s 4s 32s 256s hh i i i 4i 20x', 7, 100+i, b'pts/'+str(i).encode(), b'', ('user'+str(i)).encode(), b'host'+str(i).encode(), 0, 0, 0, 1700000000+i*3600, 0, 0,0,0,0) for i in range(3)))\"; "
+    test.expect(strings.contains(outcome(d, wtmp + bb + " last -f wt"), "user2"), "last lists the newest login first:\n" + outcome(d, wtmp + bb + " last -f wt"))
+    test.expect(strings.contains(outcome(d, wtmp + bb + " last -f wt -n 1 | grep -c user"), "1\n"), "last -n 1")
+    test.expect(strings.contains(outcome(d, bb + " last -f nosuch; echo rc=$?"), "rc=1"), "last of a missing file")
+    test.expect(strings.contains(outcome(d, "head -c 40000 /dev/zero > iso.img; printf 'MY_DISC_LABEL' | dd of=iso.img bs=1 seek=32808 conv=notrunc 2>/dev/null; " + bb + " volname iso.img"), "MY_DISC_LABEL\n"), "volname")
+    test.expect(strings.contains(outcome(d, "python3 -c \"import pty,os,fcntl,termios,struct,sys\npid,fd=pty.fork()\nif pid==0:\n  os.execv('" + bb + "',['busybox','stty','size'])\nfcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',31,97,0,0))\nimport time; time.sleep(1)\nos.write(fd,b'')\nprint(os.read(fd,100).decode().strip())\""), "31 97") || strings.contains(outcome(d, "python3 -c \"import pty,os,fcntl,termios,struct\npid,fd=pty.fork()\nif pid==0:\n  fcntl.ioctl(0,termios.TIOCSWINSZ,struct.pack('HHHH',31,97,0,0))\n  os.execv('" + bb + "',['busybox','stty','size'])\nprint(os.read(fd,100).decode().strip())\""), "31 97"), "stty size")
+    test.expect(strings.contains(outcome(d, bb + " stty size < /dev/null; echo rc=$?"), "rc=1"), "stty without a terminal")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
