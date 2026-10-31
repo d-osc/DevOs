@@ -528,6 +528,27 @@ test.case("cryptpw mkpasswd passwd chpasswd su (against openssl passwd)",fn() {
     test.expect(strings.contains(outcome(d, etc + "printf 'x\\nx\\n' | " + bb + " passwd bob >/dev/null; " + bb + " passwd -l bob; grep '^bob:!' etc/shadow | wc -l; " + bb + " passwd -u bob; grep '^bob:\\$' etc/shadow | wc -l"), "1\n1\n"), "passwd -l / -u")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("ipcs ipcrm start-stop-daemon ifup ifdown pscan",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    all_same(d, Vec<str>("@ipcs","@ipcs -m","@ipcs -q","@ipcs -s","id=$(ipcmk -M 4096 | grep -o '[0-9]*'); @ipcs -m | tail -n +4 | cut -d' ' -f2- | sed \"s/^$id /ID /\" | cut -c1-50; ipcrm -m $id"))
+    test.expect(strings.contains(outcome(d, "id=$(ipcmk -M 2048 | grep -o '[0-9]*'); " + bb + " ipcrm -m $id; echo rc=$?; ipcs -m | grep -c \" $id \""), "rc=0\n0"), "ipcrm did not remove the segment")
+    test.expect(strings.contains(outcome(d, bb + " ipcrm -m 99999999; echo rc=$?"), "rc=1"), "ipcrm of a missing id")
+    let svc = "sleep 300 & echo $! > keep.pid; "
+    test.expect(strings.contains(outcome(d, bb + " start-stop-daemon -S -b -m -p ssd.pid -x /bin/sleep -- 60; sleep 1; " + bb + " start-stop-daemon -T -p ssd.pid; echo running=$?; " + bb + " start-stop-daemon -K -p ssd.pid; sleep 1; " + bb + " start-stop-daemon -T -p ssd.pid; echo stopped=$?"), "running=0\n"), "start-stop-daemon -S/-T")
+    test.expect(strings.contains(outcome(d, bb + " start-stop-daemon -S -b -m -p ssd.pid -x /bin/sleep -- 60; sleep 1; " + bb + " start-stop-daemon -K -p ssd.pid; sleep 1; " + bb + " start-stop-daemon -T -p ssd.pid; echo stopped=$?"), "stopped=3"), "start-stop-daemon -K did not stop the process")
+    test.expect(strings.contains(outcome(d, bb + " start-stop-daemon -S -q -b -m -p ssd.pid -x /bin/sleep -- 60; sleep 1; " + bb + " start-stop-daemon -S -q -p ssd.pid -x /bin/sleep -- 60; echo second=$?; " + bb + " start-stop-daemon -K -p ssd.pid"), "second=1"), "start-stop-daemon started a second instance")
+    test.expect(strings.contains(outcome(d, bb + " start-stop-daemon -K -p nosuch.pid; echo rc=$?"), "rc=1"), "start-stop-daemon -K without a process")
+    test.expect(strings.contains(outcome(d, bb + " start-stop-daemon -K -o -p nosuch.pid; echo rc=$?"), "rc=0"), "start-stop-daemon -K -o")
+    let ifaces = "printf 'auto lo eth0\\niface lo inet loopback\\niface eth0 inet static\\n  address 10.0.0.2\\n  netmask 255.255.255.0\\n  gateway 10.0.0.1\\n' > ifs; "
+    test.expect(strings.equal(outcome(d, ifaces + bb + " ifup -n -i ifs eth0"), "ifconfig eth0 10.0.0.2 netmask 255.255.255.0 up\nroute add default gw 10.0.0.1 dev eth0\nrc=0\n"), "ifup commands:\n" + outcome(d, ifaces + bb + " ifup -n -i ifs eth0"))
+    test.expect(strings.equal(outcome(d, ifaces + bb + " ifup -n -a -i ifs"), "ifconfig lo 127.0.0.1 up\nifconfig eth0 10.0.0.2 netmask 255.255.255.0 up\nroute add default gw 10.0.0.1 dev eth0\nrc=0\n"), "ifup -a commands")
+    test.expect(strings.equal(outcome(d, ifaces + bb + " ifdown -n -i ifs eth0"), "ifconfig eth0 down\nrc=0\n"), "ifdown commands")
+    test.expect(strings.contains(outcome(d, ifaces + bb + " ifup -n -i ifs nosuch; echo rc=$?"), "rc=1"), "ifup of an unknown interface")
+    test.expect(strings.contains(outcome(d, "python3 -m http.server 18820 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > p.pid; sleep 1; " + bb + " pscan -p 18819 -P 18821 127.0.0.1; kill $(cat p.pid); sleep 1"), "18820/tcp\topen"), "pscan did not find the open port")
+    test.expect(strings.contains(outcome(d, bb + " pscan -p 18830 -P 18832 127.0.0.1"), "3 closed ports"), "pscan closed port count")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

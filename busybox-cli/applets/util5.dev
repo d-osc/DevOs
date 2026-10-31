@@ -1,0 +1,253 @@
+# start-stop-daemon, ifup, ifdown, pscan, ipcs, ipcrm: service control, network configuration, port scanning and System V IPC.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "./gzip.dev" as gz
+use "./files.dev" as files
+use "./accounts.dev" as ac
+
+extern fn shmctl(id: i32, command: i32, buffer: *void): i32
+extern fn msgctl(id: i32, command: i32, buffer: *void): i32
+extern fn semctl(id: i32, number: i32, command: i32, argument: i64): i32
+extern fn shmget(key: i32, size: usize, flags: i32): i32
+extern fn msgget(key: i32, flags: i32): i32
+extern fn semget(key: i32, count: i32, flags: i32): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn pad_right(text: str, width: i64): str { let b = sys.bytes_new(); sys.bytes_str(b, text); while sys.blen(b) < width { sys.bytes_push(b, 32) }; return sys.join2(sys.bytes_cstr(b), "") }
+
+// ---- start-stop-daemon -------------------------------------------------------------------------------------------------------------------------------------------------------
+fn exe_of(pid: str): str { return fsx.read_link(sys.join2(sys.join2("/proc/", pid), "/exe")) }
+fn comm_of(pid: str): str {
+    let input = sys.read_path(sys.join2(sys.join2("/proc/", pid), "/comm")); if !input.ok { return "" }
+    let n = sys.blen(input.bytes); while n > 0 && sys.bat(input.bytes, n - 1) == 10 { n = n - 1 }
+    return lines.text_of(input.bytes, 0, n)
+}
+fn owner_of(pid: str): i64 { let info = sys.file_info(sys.join2("/proc/", pid), true); return info.ok ? info.uid : 0 - 1 }
+fn matching_pids(exec: str, name: str, pidfile: str, user: str): Vec<str> {
+    let out = Vec<str>(); let me = proc.my_pid()
+    if sys.length(pidfile) > 0 {
+        let input = sys.read_path(pidfile); if !input.ok { return out }
+        let text = lines.text_of(input.bytes, 0, sys.blen(input.bytes)); let n = sys.parse_number(sys.join2(sys.slice(text, 0, sys.find_char(text, 10) < 0 ? sys.length(text) : sys.find_char(text, 10)), ""))
+        if n.ok && sys.exists(sys.join2("/proc/", decimal(n.value))) { out.push(decimal(n.value)) }
+        return out
+    }
+    let l = fsx.list_dir("/proc"); let uid = sys.length(user) > 0 ? ac.account_of(user).uid : 0 - 1
+    for k in 0..(l.names.len() as i64) {
+        let pid = sys.parse_number(l.names[k]); if !pid.ok || pid.value == me { continue }
+        if sys.length(exec) > 0 && !sys.same(exe_of(l.names[k]), exec) { continue }
+        if sys.length(name) > 0 && !sys.same(comm_of(l.names[k]), name) { continue }
+        if uid >= 0 && owner_of(l.names[k]) != uid { continue }
+        out.push(l.names[k])
+    }
+    return out
+}
+fn run_start_stop_daemon(args: Vec<str>): i64 {
+    let mode = 0; let background = false; let make_pid = false; let pidfile = ""; let exec = ""; let name = ""; let user = ""; let signal = 15; let quiet = false; let chuid = ""; let oknodo = false; let rest = Vec<str>(); let startas = ""
+    let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "--") { for q in (i + 1)..n { rest.push(args[q]) }; break }
+        if sys.same(a, "-S") || sys.same(a, "--start") { mode = 1 } else if sys.same(a, "-K") || sys.same(a, "--stop") { mode = 2 } else if sys.same(a, "-T") || sys.same(a, "--status") { mode = 3 }
+        else if sys.same(a, "-b") || sys.same(a, "--background") { background = true } else if sys.same(a, "-m") || sys.same(a, "--make-pidfile") { make_pid = true }
+        else if sys.same(a, "-q") || sys.same(a, "--quiet") { quiet = true } else if sys.same(a, "-o") || sys.same(a, "--oknodo") { oknodo = true } else if sys.same(a, "-v") || sys.same(a, "-t") || sys.same(a, "-d") { }
+        else if (sys.same(a, "-p") || sys.same(a, "--pidfile")) && i + 1 < n { i = i + 1; pidfile = args[i] }
+        else if (sys.same(a, "-x") || sys.same(a, "--exec")) && i + 1 < n { i = i + 1; exec = args[i] }
+        else if (sys.same(a, "-n") || sys.same(a, "--name")) && i + 1 < n { i = i + 1; name = args[i] }
+        else if (sys.same(a, "-u") || sys.same(a, "--user")) && i + 1 < n { i = i + 1; user = args[i] }
+        else if (sys.same(a, "-c") || sys.same(a, "--chuid")) && i + 1 < n { i = i + 1; chuid = args[i] }
+        else if (sys.same(a, "-a") || sys.same(a, "--startas")) && i + 1 < n { i = i + 1; startas = args[i] }
+        else if (sys.same(a, "-s") || sys.same(a, "--signal")) && i + 1 < n { i = i + 1; signal = proc.parse_signal(args[i]) }
+        else if sys.starts(a, "--") && sys.find_char(a, 61) > 0 { let eq = sys.find_char(a, 61); let key = sys.join2(sys.slice(a, 0, eq), ""); let value = sys.join2(sys.slice(a, eq + 1, sys.length(a)), ""); if sys.same(key, "--pidfile") { pidfile = value } else if sys.same(key, "--exec") { exec = value } else if sys.same(key, "--name") { name = value } else if sys.same(key, "--user") { user = value } else if sys.same(key, "--startas") { startas = value } }
+        else { sys.warn("start-stop-daemon", sys.join2("unrecognized option ", a)); return 3 }
+        i = i + 1
+    }
+    if mode == 0 { sys.warn("start-stop-daemon", "need one of --start, --stop or --status"); return 3 }
+    if sys.length(exec) == 0 && sys.length(name) == 0 && sys.length(pidfile) == 0 && sys.length(user) == 0 { sys.warn("start-stop-daemon", "need at least one of --exec, --pidfile, --user or --name"); return 3 }
+    let found = matching_pids(exec, name, pidfile, user)
+    if mode == 3 { return found.len() > 0 ? 0 : 3 }
+    if mode == 2 {
+        if found.len() == 0 { if !quiet { sys.warn("start-stop-daemon", "no matching processes found") }; return oknodo ? 0 : 1 }
+        for q in 0..(found.len() as i64) { proc.send_signal(sys.parse_number(found[q]).value, signal) }
+        return 0
+    }
+    if found.len() > 0 { if !quiet { sys.put_fd(1, sys.join2(sys.join2(sys.length(exec) > 0 ? exec : name, " already running.\n"), "")) }; return oknodo ? 0 : 1 }
+    let program = sys.length(startas) > 0 ? startas : exec
+    if sys.length(program) == 0 { sys.warn("start-stop-daemon", "no program to start"); return 3 }
+    let cmd = Vec<str>(program); for q in 0..(rest.len() as i64) { cmd.push(rest[q]) }
+    if sys.length(chuid) > 0 { let account = ac.account_of(chuid); if !account.ok || !ac.become(account) { sys.warn("start-stop-daemon", "unable to change user"); return 1 } }
+    if background {
+        let pid = proc.launch(cmd, proc.environment(), 1)
+        if pid < 0 { sys.warn("start-stop-daemon", sys.join2("unable to start ", program)); return 1 }
+        if make_pid && sys.length(pidfile) > 0 { let b = sys.bytes_new(); sys.bytes_num(b, pid); sys.bytes_push(b, 10); gz.write_file(pidfile, b, 420) }
+        return 0
+    }
+    return proc.run_wait(cmd, proc.environment())
+}
+
+// ---- ifup / ifdown [-a] [-n] [-v] [-i FILE] IFACE... ------------------------------------------------------------------------------------------------------------------------
+struct Iface { name: str, family: str, method: str, options: Vec<str>, values: Vec<str> }
+fn read_interfaces(path: str): Vec<Iface> {
+    let out = Vec<Iface>(); let input = sys.read_path(path); if !input.ok { return out }
+    let ls = lines.split_lines(input.bytes, 10); let current = 0 - 1
+    for k in 0..(ls.starts.len() as i64) {
+        let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k]))
+        if parts.len() == 0 || sys.starts(parts[0], "#") { continue }
+        if sys.same(parts[0], "iface") && parts.len() >= 4 { out.push(Iface(parts[1], parts[2], parts[3], Vec<str>(), Vec<str>())); current = (out.len() as i64) - 1; continue }
+        if sys.same(parts[0], "auto") || sys.same(parts[0], "allow-hotplug") || sys.same(parts[0], "mapping") || sys.same(parts[0], "source") { current = 0 - 1; continue }
+        if current >= 0 && parts.len() >= 2 {
+            let rest = ""; for q in 1..(parts.len() as i64) { rest = q == 1 ? parts[q] : sys.join2(sys.join2(rest, " "), parts[q]) }
+            let item = out[current]; item.options.push(parts[0]); item.values.push(rest); out[current] = item
+        }
+    }
+    return out
+}
+fn option_of(i: Iface, key: str): str { for q in 0..(i.options.len() as i64) { if sys.same(i.options[q], key) { return i.values[q] } }; return "" }
+fn auto_names(path: str): Vec<str> {
+    let out = Vec<str>(); let input = sys.read_path(path); if !input.ok { return out }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) { let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])); if parts.len() >= 2 && (sys.same(parts[0], "auto") || sys.same(parts[0], "allow-hotplug")) { for q in 1..(parts.len() as i64) { out.push(parts[q]) } } }
+    return out
+}
+fn interface_commands(i: Iface, up: bool): Vec<str> {
+    let cmds = Vec<str>(); let n = i.name
+    if sys.same(i.method, "loopback") { if up { cmds.push(sys.join2("ifconfig ", sys.join2(n, " 127.0.0.1 up"))) } else { cmds.push(sys.join2("ifconfig ", sys.join2(n, " down"))) }; return cmds }
+    if sys.same(i.method, "static") {
+        if up {
+            let line = sys.join2(sys.join2("ifconfig ", n), sys.join2(" ", option_of(i, "address")))
+            if sys.length(option_of(i, "netmask")) > 0 { line = sys.join2(sys.join2(line, " netmask "), option_of(i, "netmask")) }
+            if sys.length(option_of(i, "broadcast")) > 0 { line = sys.join2(sys.join2(line, " broadcast "), option_of(i, "broadcast")) }
+            cmds.push(sys.join2(line, " up"))
+            if sys.length(option_of(i, "gateway")) > 0 { cmds.push(sys.join2("route add default gw ", sys.join2(option_of(i, "gateway"), sys.join2(" dev ", n)))) }
+        } else { cmds.push(sys.join2("ifconfig ", sys.join2(n, " down"))) }
+        return cmds
+    }
+    if sys.same(i.method, "dhcp") {
+        if up { cmds.push(sys.join2("udhcpc -R -n -p /var/run/udhcpc.", sys.join2(n, sys.join2(".pid -i ", n)))) }
+        else { cmds.push(sys.join2("kill `cat /var/run/udhcpc.", sys.join2(n, ".pid` 2>/dev/null"))); cmds.push(sys.join2("ifconfig ", sys.join2(n, " down"))) }
+        return cmds
+    }
+    return cmds
+}
+fn run_ifupdown(args: Vec<str>, up: bool): i64 {
+    let o = sys.parse_opts(args, "anvfi:")
+    if o.bad != 0 || o.missing != 0 { sys.warn(up ? "ifup" : "ifdown", "invalid usage: ifup|ifdown [-anv] [-i FILE] -a | IFACE..."); return 1 }
+    let path = sys.has(o, 105) ? sys.val(o, 105) : "/etc/network/interfaces"
+    let defs = read_interfaces(path); let names = o.rest
+    if sys.has(o, 97) { names = auto_names(path) }
+    if names.len() == 0 { sys.warn(up ? "ifup" : "ifdown", "no interface given"); return 1 }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(names.len() as i64) {
+        let name = names[k]; let found = false
+        for q in 0..(defs.len() as i64) {
+            if !sys.same(defs[q].name, name) { continue }
+            found = true
+            let cmds = interface_commands(defs[q], up)
+            for c in 0..(cmds.len() as i64) {
+                if sys.has(o, 110) || sys.has(o, 118) { sys.out_str(out, cmds[c]); sys.out_byte(out, 10); sys.out_flush(out) }
+                if !sys.has(o, 110) { if proc.run_wait(Vec<str>("sh", "-c", cmds[c]), proc.environment()) != 0 && !sys.has(o, 102) { status = 1 } }
+            }
+        }
+        if !found { sys.warn(up ? "ifup" : "ifdown", sys.join2("unknown interface ", name)); status = 1 }
+    }
+    sys.out_flush(out)
+    return status
+}
+fn run_ifup(args: Vec<str>): i64 { return run_ifupdown(args, true) }
+fn run_ifdown(args: Vec<str>): i64 { return run_ifupdown(args, false) }
+
+// ---- pscan [-cb] [-p MIN] [-P MAX] [-t TIMEOUT_MS] HOST ------------------------------------------------------------------------------------------------------------------
+fn service_name(port: i64): str {
+    let input = sys.read_path("/etc/services"); if !input.ok { return "unknown" }
+    let ls = lines.split_lines(input.bytes, 10); let want = sys.join2(decimal(port), "/tcp")
+    for k in 0..(ls.starts.len() as i64) { let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])); if parts.len() >= 2 && !sys.starts(parts[0], "#") && sys.same(parts[1], want) { return parts[0] } }
+    return "unknown"
+}
+fn run_pscan(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "cbp:P:t:T:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("pscan", "invalid usage: pscan [-cb] [-p MIN_PORT] [-P MAX_PORT] [-t TIMEOUT] HOST"); return 1 }
+    let lo = sys.has(o, 112) ? sys.parse_number(sys.val(o, 112)).value : 1; let hi = sys.has(o, 80) ? sys.parse_number(sys.val(o, 80)).value : 1024
+    let ip = net.resolve(o.rest[0]); if ip < 0 { sys.warn("pscan", sys.join2(sys.join2("bad address '", o.rest[0]), "'")); return 1 }
+    let out = sys.out_new(1)
+    sys.out_str(out, sys.join2(sys.join2("Scanning ", o.rest[0]), sys.join2(sys.join2(" ports ", decimal(lo)), sys.join2(" to ", sys.join2(decimal(hi), "\n")))))
+    let closed = 0
+    for port in lo..(hi + 1) {
+        let fd = net.connect_to(ip, port, 1)
+        if fd >= 0 { sys.close_fd(fd); sys.out_str(out, sys.join2(sys.join2(decimal(port), "/tcp"), sys.join2("\t", sys.join2("open", sys.join2("\t", sys.join2(service_name(port), "\n")))))); sys.out_flush(out) } else { closed = closed + 1 }
+    }
+    sys.out_str(out, sys.join2(decimal(closed), sys.join2(" closed ports\n", "")))
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- ipcs [-qms] / ipcrm [-mqsMQS id|key]... ----------------------------------------------------------------------------------------------------------------------------------
+fn key_text(key: str): str {
+    let v = sys.parse_number(key).value; if v < 0 { v = v + 4294967296 }
+    let digits = "0123456789abcdef"; let b = sys.bytes_new(); sys.bytes_str(b, "0x")
+    for i in 0..8 { let p = 1; for k in 0..(7 - i) { p = p * 16 }; sys.bytes_push(b, sys.at(digits, (v / p) % 16)) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn octal_text(v: i64): str { if v == 0 { return "0" }; let d = Vec<u8>(); let r = v; while r > 0 { d.push((48 + r % 8) as u8); r = r / 8 }; let b = sys.bytes_new(); let i = (d.len() as i64) - 1; while i >= 0 { sys.bytes_push(b, d[i]); i = i - 1 }; return sys.join2(sys.bytes_cstr(b), "") }
+fn perm_text(raw: str): str { return sys.length(raw) > 3 ? sys.join2(sys.slice(raw, sys.length(raw) - 3, sys.length(raw)), "") : raw }
+fn owner_name(uid: str): str { let n = fsx.user_name(sys.parse_number(uid).value); return sys.length(n) > 0 ? n : uid }
+fn run_ipcs(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "qmsatpcul")
+    if o.bad != 0 { sys.warn("ipcs", "invalid usage: ipcs [-qms]"); return 1 }
+    let all = !(sys.has(o, 113) || sys.has(o, 109) || sys.has(o, 115))
+    let out = sys.out_new(1)
+    if all || sys.has(o, 113) {
+        sys.out_str(out, "\n------ Message Queues --------\nkey        msqid      owner      perms      used-bytes   messages    \n")
+        let rows = table("/proc/sysvipc/msg")
+        for k in 1..(rows.len() as i64) { let r = rows[k]; if r.len() < 10 { continue }; sys.out_str(out, sys.join2(sys.join2(pad_right(key_text(r[0]), 10), " "), sys.join2(sys.join2(pad_right(r[1], 10), " "), sys.join2(sys.join2(pad_right(owner_name(r[7]), 10), " "), sys.join2(sys.join2(pad_right(perm_text(r[2]), 10), " "), sys.join2(sys.join2(pad_right(r[3], 12), " "), sys.join2(pad_right(r[4], 12), "\n"))))))) }
+    }
+    if all || sys.has(o, 109) {
+        sys.out_str(out, "\n------ Shared Memory Segments --------\nkey        shmid      owner      perms      bytes      nattch     status      \n")
+        let rows = table("/proc/sysvipc/shm")
+        for k in 1..(rows.len() as i64) {
+            let r = rows[k]; if r.len() < 10 { continue }
+            let perms = sys.parse_number(r[2]).value; let status = ""
+            sys.out_str(out, sys.join2(sys.join2(pad_right(key_text(r[0]), 10), " "), sys.join2(sys.join2(pad_right(r[1], 10), " "), sys.join2(sys.join2(pad_right(owner_name(r[7]), 10), " "), sys.join2(sys.join2(pad_right(perm_text(r[2]), 10), " "), sys.join2(sys.join2(pad_right(r[3], 10), " "), sys.join2(sys.join2(pad_right(r[6], 10), " "), sys.join2(pad_right(status, 13), "\n"))))))))
+        }
+    }
+    if all || sys.has(o, 115) {
+        sys.out_str(out, "\n------ Semaphore Arrays --------\nkey        semid      owner      perms      nsems     \n")
+        let rows = table("/proc/sysvipc/sem")
+        for k in 1..(rows.len() as i64) { let r = rows[k]; if r.len() < 6 { continue }; sys.out_str(out, sys.join2(sys.join2(pad_right(key_text(r[0]), 10), " "), sys.join2(sys.join2(pad_right(r[1], 10), " "), sys.join2(sys.join2(pad_right(owner_name(r[4]), 10), " "), sys.join2(sys.join2(pad_right(perm_text(r[2]), 10), " "), sys.join2(pad_right(r[3], 10), "\n")))))) }
+    }
+    sys.out_str(out, "\n"); sys.out_flush(out)
+    return 0
+}
+fn table(path: str): Vec<Vec<str>> {
+    let rows = Vec<Vec<str>>(); let input = sys.read_path(path); if !input.ok { return rows }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) { rows.push(fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k]))) }
+    return rows
+}
+fn run_ipcrm(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("ipcrm", "invalid usage: ipcrm [-m|-q|-s SHMID|MSGID|SEMID] [-M|-Q|-S SHMKEY|MSGKEY|SEMKEY]"); return 1 }
+    let status = 0; let i = 0; let n = args.len() as i64
+    while i + 1 < n + 1 && i < n {
+        let flag = args[i]
+        if i + 1 >= n || sys.length(flag) != 2 || sys.at(flag, 0) != 45 { sys.warn("ipcrm", "invalid usage"); return 1 }
+        let value = sys.parse_number(args[i + 1]); if !value.ok { sys.warn("ipcrm", sys.join2("invalid id: ", args[i + 1])); return 1 }
+        let c = sys.at(flag, 1); let id = value.value; let r = 0 - 1
+        unsafe {
+            if c == 77 { id = shmget(value.value as i32, 0, 0) as i64 } else if c == 81 { id = msgget(value.value as i32, 0) as i64 } else if c == 83 { id = semget(value.value as i32, 0, 0) as i64 }
+            if id < 0 { sys.warn("ipcrm", "invalid key"); status = 1; i = i + 2; continue }
+            if c == 109 || c == 77 { r = shmctl(id as i32, 0, 0 as *void) as i64 } else if c == 113 || c == 81 { r = msgctl(id as i32, 0, 0 as *void) as i64 } else if c == 115 || c == 83 { r = semctl(id as i32, 0, 0, 0) as i64 }
+        }
+        if r != 0 { sys.warn("ipcrm", sys.join2("cannot remove id ", args[i + 1])); status = 1 }
+        i = i + 2
+    }
+    return status
+}
