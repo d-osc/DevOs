@@ -5,6 +5,8 @@ use "./applets/text.dev" as text
 use "./applets/files.dev" as files
 use "./applets/sort.dev" as sorts
 use "./applets/filters.dev" as filt
+use "./applets/sysinfo.dev" as si
+use "./applets/procs.dev" as pr
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
@@ -60,6 +62,32 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "od") { return filt.run_od(args) }
     if sys.same(name, "hexdump") { return filt.run_hexdump(args) }
     if sys.same(name, "hd") { return filt.run_hd(args) }
+    if sys.same(name, "id") { return si.run_id(args) }
+    if sys.same(name, "whoami") { return si.run_whoami(args) }
+    if sys.same(name, "logname") { return si.run_logname(args) }
+    if sys.same(name, "hostname") { return si.run_hostname(args) }
+    if sys.same(name, "uname") { return si.run_uname(args) }
+    if sys.same(name, "env") { return si.run_env(args) }
+    if sys.same(name, "printenv") { return si.run_printenv(args) }
+    if sys.same(name, "which") { return si.run_which(args) }
+    if sys.same(name, "tty") { return si.run_tty(args) }
+    if sys.same(name, "usleep") { return si.run_usleep(args) }
+    if sys.same(name, "nice") { return si.run_nice(args) }
+    if sys.same(name, "nohup") { return si.run_nohup(args) }
+    if sys.same(name, "setsid") { return si.run_setsid(args) }
+    if sys.same(name, "time") { return si.run_time(args) }
+    if sys.same(name, "timeout") { return si.run_timeout(args) }
+    if sys.same(name, "xargs") { return pr.run_xargs(args) }
+    if sys.same(name, "kill") { return pr.run_kill(args) }
+    if sys.same(name, "killall") { return pr.run_killall(args) }
+    if sys.same(name, "pidof") { return pr.run_pidof(args) }
+    if sys.same(name, "pgrep") { return pr.run_pgrep(args) }
+    if sys.same(name, "pkill") { return pr.run_pkill(args) }
+    if sys.same(name, "ps") { return pr.run_ps(args) }
+    if sys.same(name, "free") { return pr.run_free(args) }
+    if sys.same(name, "uptime") { return pr.run_uptime(args) }
+    if sys.same(name, "watch") { return pr.run_watch(args) }
+    if sys.same(name, "mountpoint") { return pr.run_mountpoint(args) }
     sys.warn(name, "applet not found")
     return 127
 }

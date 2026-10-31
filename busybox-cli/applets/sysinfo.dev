@@ -1,0 +1,263 @@
+# id whoami logname hostname uname env printenv which tty usleep nice nohup setsid time timeout xargs kill killall pidof pgrep pkill ps free uptime
+# watch mountpoint: users, the environment, running programs and processes.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+
+fn say(prog: str, text: str) { sys.warn(prog, text) }
+fn quoted(text: str): str { return sys.join2(sys.join2("'", text), "'") }
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn pad_left(text: str, width: i64): str {
+    let b = sys.bytes_new()
+    for i in sys.length(text)..width { sys.bytes_push(b, 32) }
+    sys.bytes_str(b, text)
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn pad_right(text: str, width: i64): str {
+    let b = sys.bytes_new(); sys.bytes_str(b, text)
+    for i in sys.length(text)..width { sys.bytes_push(b, 32) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn print_line(text: str) { let o = sys.out_new(1); sys.out_str(o, text); sys.out_byte(o, 10); sys.out_flush(o) }
+
+# ---- id [-ugGnr] [USER], whoami, logname -------------------------------------------------------------------------------------------------------------------
+# The ids of the groups a user belongs to: its primary group and every /etc/group line that lists it.
+fn user_groups(user: str, primary: i64): Vec<i64> {
+    let out = Vec<i64>(); out.push(primary)
+    let input = sys.read_path("/etc/group")
+    if !input.ok { return out }
+    let b = input.bytes; let n = sys.blen(b); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.bat(b, i) == 10 {
+            let members = fsx.field_of(b, start, i, 3); let gid = sys.parse_number(fsx.field_of(b, start, i, 2))
+            if gid.ok && gid.value != primary {
+                let mn = sys.length(members); let from = 0
+                for k in 0..(mn + 1) { if k == mn || sys.at(members, k) == 44 { if sys.same(sys.slice(members, from, k), user) { out.push(gid.value) }; from = k + 1 } }
+            }
+            start = i + 1
+        }
+    }
+    return out
+}
+fn current_groups(): Vec<i64> { unsafe {
+    let out = Vec<i64>()
+    let buffer = sys.calloc(4096, 4)
+    let n = proc.getgroups(1024, buffer)
+    let p = buffer as *u8
+    for i in 0..(n as i64) { out.push(sys.le(p, i * 4, 4)) }
+    sys.free(buffer)
+    return out
+} }
+fn run_id(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "ugGnr")
+    if o.bad != 0 || o.rest.len() > 1 { say("id", "invalid usage: id [OPTIONS] [USER]"); return 1 }
+    let uid = 0; let gid = 0; let groups = Vec<i64>(); let user = ""
+    if o.rest.len() == 1 {
+        user = o.rest[0]
+        uid = fsx.lookup_id("/etc/passwd", user)
+        if uid < 0 { say("id", sys.join2(quoted(user), ": no such user")); return 1 }
+        user = fsx.user_name(uid)
+        gid = 0 - 1
+        let input = sys.read_path("/etc/passwd")
+        if input.ok { let b = input.bytes; let n = sys.blen(b); let start = 0; for i in 0..(n + 1) { if i == n || sys.bat(b, i) == 10 { let u = sys.parse_number(fsx.field_of(b, start, i, 2)); if u.ok && u.value == uid { let g = sys.parse_number(fsx.field_of(b, start, i, 3)); if g.ok { gid = g.value } }; start = i + 1 } } }
+        if gid < 0 { gid = uid }
+        groups = user_groups(user, gid)
+    } else {
+        uid = sys.has(o, 114) ? fsx.uid() : fsx.euid()
+        gid = sys.has(o, 114) ? fsx.gid() : fsx.egid()
+        groups = current_groups()
+        let first = Vec<i64>(); first.push(gid)
+        for i in 0..(groups.len() as i64) { if groups[i] != gid { first.push(groups[i]) } }
+        groups = first
+    }
+    let names = sys.has(o, 110)
+    let out = sys.out_new(1)
+    if sys.has(o, 117) { sys.out_str(out, names ? name_of(fsx.user_name(uid), uid) : decimal(uid)); sys.out_byte(out, 10); sys.out_flush(out); return 0 }
+    if sys.has(o, 103) { sys.out_str(out, names ? name_of(fsx.group_name(gid), gid) : decimal(gid)); sys.out_byte(out, 10); sys.out_flush(out); return 0 }
+    if sys.has(o, 71) {
+        for i in 0..(groups.len() as i64) { if i > 0 { sys.out_byte(out, 32) }; sys.out_str(out, names ? name_of(fsx.group_name(groups[i]), groups[i]) : decimal(groups[i])) }
+        sys.out_byte(out, 10); sys.out_flush(out); return 0
+    }
+    sys.out_str(out, "uid="); sys.out_str(out, decimal(uid)); if sys.length(fsx.user_name(uid)) > 0 { sys.out_byte(out, 40); sys.out_str(out, fsx.user_name(uid)); sys.out_byte(out, 41) }
+    sys.out_str(out, " gid="); sys.out_str(out, decimal(gid)); if sys.length(fsx.group_name(gid)) > 0 { sys.out_byte(out, 40); sys.out_str(out, fsx.group_name(gid)); sys.out_byte(out, 41) }
+    sys.out_str(out, " groups=")
+    for i in 0..(groups.len() as i64) { if i > 0 { sys.out_byte(out, 44) }; sys.out_str(out, decimal(groups[i])); if sys.length(fsx.group_name(groups[i])) > 0 { sys.out_byte(out, 40); sys.out_str(out, fsx.group_name(groups[i])); sys.out_byte(out, 41) } }
+    sys.out_byte(out, 10); sys.out_flush(out)
+    return 0
+} }
+fn name_of(name: str, id: i64): str { return sys.length(name) > 0 ? name : decimal(id) }
+fn run_whoami(args: Vec<str>): i64 {
+    let name = fsx.user_name(fsx.euid())
+    if sys.length(name) == 0 { say("whoami", sys.join2("unknown uid ", decimal(fsx.euid()))); return 1 }
+    print_line(name); return 0
+}
+fn run_logname(args: Vec<str>): i64 {
+    let env = proc.environment(); let v = proc.lookup(env, "LOGNAME")
+    if !v.found || sys.length(v.value) == 0 { let u = proc.lookup(env, "USER"); if u.found && sys.length(u.value) > 0 { print_line(u.value); return 0 } }
+    if v.found && sys.length(v.value) > 0 { print_line(v.value); return 0 }
+    let name = fsx.user_name(fsx.uid())
+    if sys.length(name) == 0 { say("logname", "no login name"); return 1 }
+    print_line(name); return 0
+}
+
+# ---- hostname [OPTIONS] [HOSTNAME | -F FILE], uname -------------------------------------------------------------------------------------------------------------
+fn host_name(): str { unsafe {
+    let buffer = sys.calloc(256, 1)
+    proc.gethostname(buffer, 255)
+    return buffer as str
+} }
+fn run_hostname(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "sidfF:")
+    if o.bad != 0 || o.missing != 0 { say("hostname", "invalid usage: hostname [OPTIONS] [HOSTNAME | -F FILE]"); return 1 }
+    if sys.has(o, 70) || o.rest.len() == 1 {
+        let name = o.rest.len() == 1 ? o.rest[0] : ""
+        if sys.has(o, 70) { let input = sys.read_path(sys.val(o, 70)); if !input.ok { sys.warn_path("hostname", sys.val(o, 70)); return 1 }; let text = sys.bytes_cstr(input.bytes); name = text; let cut = sys.find_char(text, 10); if cut >= 0 { name = sys.slice(text, 0, cut) } }
+        if proc.sethostname(name, sys.length(name) as usize) != 0 { say("hostname", "you must be root to change the host name"); return 1 }
+        return 0
+    }
+    let name = host_name()
+    let dot = sys.find_char(name, 46)
+    if sys.has(o, 115) { print_line(dot >= 0 ? sys.slice(name, 0, dot) : name); return 0 }
+    if sys.has(o, 100) { print_line(dot >= 0 ? sys.slice(name, dot + 1, sys.length(name)) : ""); return 0 }
+    print_line(name)
+    return 0
+} }
+fn uname_field(index: i64): str { unsafe {
+    let buffer = sys.calloc(512, 1) as *u8
+    sys.uname(buffer as *void)
+    let text = sys.join2(&buffer[index * 65] as str, "")
+    sys.free(buffer as *void)
+    return text
+} }
+fn run_uname(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "amnrspvio")
+    if o.bad != 0 || o.rest.len() > 0 { say("uname", "invalid usage: uname [-amnrspv]"); return 1 }
+    let all = sys.has(o, 97)
+    let parts = Vec<str>()
+    if all || sys.has(o, 115) || (!sys.has(o, 109) && !sys.has(o, 110) && !sys.has(o, 114) && !sys.has(o, 112) && !sys.has(o, 118) && !sys.has(o, 105) && !sys.has(o, 111)) { parts.push(uname_field(0)) }
+    if all || sys.has(o, 110) { parts.push(uname_field(1)) }
+    if all || sys.has(o, 114) { parts.push(uname_field(2)) }
+    if all || sys.has(o, 118) { parts.push(uname_field(3)) }
+    if all || sys.has(o, 109) { parts.push(uname_field(4)) }
+    if sys.has(o, 112) || all { parts.push("unknown") }
+    if sys.has(o, 105) || all { parts.push("unknown") }
+    if sys.has(o, 111) || all { parts.push("GNU/Linux") }
+    let out = sys.out_new(1)
+    for i in 0..(parts.len() as i64) { if i > 0 { sys.out_byte(out, 32) }; sys.out_str(out, parts[i]) }
+    sys.out_byte(out, 10); sys.out_flush(out)
+    return 0
+}
+
+# ---- env, printenv, which, tty, usleep ------------------------------------------------------------------------------------------------------------------
+fn run_env(args: Vec<str>): i64 {
+    let env = proc.environment(); let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-i") || sys.same(a, "-") { env = Vec<str>(); i = i + 1 }
+        else if sys.same(a, "-u") && i + 1 < n { env = proc.unset_variable(env, args[i + 1]); i = i + 2 }
+        else if sys.length(a) > 2 && sys.starts(a, "-u") { env = proc.unset_variable(env, sys.slice(a, 2, sys.length(a))); i = i + 1 }
+        else if sys.same(a, "--") { i = i + 1; break }
+        else if sys.length(a) > 1 && sys.at(a, 0) == 45 { say("env", "invalid option"); return 125 }
+        else { break }
+    }
+    while i < n { let a = args[i]; let eq = sys.find_char(a, 61); if eq <= 0 { break }; env = proc.set_variable(env, sys.slice(a, 0, eq), sys.slice(a, eq + 1, sys.length(a))); i = i + 1 }
+    if i >= n { let out = sys.out_new(1); for k in 0..(env.len() as i64) { sys.out_str(out, env[k]); sys.out_byte(out, 10) }; sys.out_flush(out); return 0 }
+    let argv = Vec<str>(); for k in i..n { argv.push(args[k]) }
+    let pid = proc.launch(argv, env, 0)
+    if pid == 0 - 2 { say("env", sys.join2(sys.join2("can't execute ", quoted(argv[0])), ": No such file or directory")); return 127 }
+    if pid < 0 { say("env", "can't execute"); return 126 }
+    return proc.wait_for(pid)
+}
+fn run_printenv(args: Vec<str>): i64 {
+    let env = proc.environment(); let out = sys.out_new(1); let status = 0
+    if args.len() == 0 { for k in 0..(env.len() as i64) { sys.out_str(out, env[k]); sys.out_byte(out, 10) } }
+    else { for i in 0..(args.len() as i64) { let v = proc.lookup(env, args[i]); if v.found { sys.out_str(out, v.value); sys.out_byte(out, 10) } else { status = 1 } } }
+    sys.out_flush(out)
+    return status
+}
+fn run_which(args: Vec<str>): i64 {
+    let env = proc.environment(); let status = 0; let out = sys.out_new(1)
+    for i in 0..(args.len() as i64) { let p = proc.find_program(args[i], env); if sys.length(p) > 0 { sys.out_str(out, p); sys.out_byte(out, 10) } else { status = 1 } }
+    sys.out_flush(out)
+    return status
+}
+fn run_tty(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "s")
+    if !sys.is_tty(0) { if !sys.has(o, 115) { print_line("not a tty") }; return 1 }
+    if !sys.has(o, 115) { print_line(proc.ttyname(0)) }
+    return 0
+} }
+fn run_usleep(args: Vec<str>): i64 {
+    if args.len() != 1 { say("usleep", "invalid usage: usleep N"); return 1 }
+    let v = sys.parse_number(args[0])
+    if !v.ok || v.value < 0 { say("usleep", sys.join2("invalid number ", quoted(args[0]))); return 1 }
+    proc.pause_us(v.value)
+    return 0
+}
+
+# ---- nice, nohup, setsid, time, timeout ---------------------------------------------------------------------------------------------------------------------
+fn exec_command(prog: str, argv: Vec<str>, before: i64): i64 {
+    let pid = proc.launch(argv, proc.environment(), before)
+    if pid == 0 - 2 { say(prog, sys.join2(sys.join2("can't execute ", quoted(argv[0])), ": No such file or directory")); return 127 }
+    if pid < 0 { say(prog, "can't execute"); return 126 }
+    return proc.wait_for(pid)
+}
+fn run_nice(args: Vec<str>): i64 { unsafe {
+    let adjust = 10; let i = 0
+    if args.len() >= 2 && sys.same(args[0], "-n") { let v = sys.parse_number(args[1]); if !v.ok { say("nice", sys.join2("invalid number ", quoted(args[1]))); return 1 }; adjust = v.value; i = 2 }
+    else if args.len() >= 1 && sys.length(args[0]) > 2 && sys.starts(args[0], "-n") { let v = sys.parse_number(sys.slice(args[0], 2, sys.length(args[0]))); if v.ok { adjust = v.value; i = 1 } }
+    if i >= args.len() as i64 { print_line("0"); return 0 }
+    proc.nice(adjust as i32)
+    let argv = Vec<str>(); for k in i..(args.len() as i64) { argv.push(args[k]) }
+    return exec_command("nice", argv, 0)
+} }
+fn run_nohup(args: Vec<str>): i64 {
+    if args.len() == 0 { say("nohup", "invalid usage: nohup PROG [ARGS]"); return 1 }
+    return exec_command("nohup", args, 2)
+}
+fn run_setsid(args: Vec<str>): i64 {
+    if args.len() == 0 { say("setsid", "invalid usage: setsid PROG [ARG...]"); return 1 }
+    return exec_command("setsid", args, 1)
+}
+fn run_time(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "v")
+    if o.rest.len() == 0 { say("time", "invalid usage: time [OPTIONS] PROG [ARGS]"); return 1 }
+    let start = file_clock()
+    let status = exec_command("time", o.rest, 0)
+    let elapsed = file_clock() - start
+    sys.put_fd(2, "\nreal\t"); sys.put_fd(2, decimal(elapsed / 1000)); sys.put_fd(2, "m"); sys.put_fd(2, decimal((elapsed / 1000) % 60)); sys.put_fd(2, "."); sys.put_fd(2, pad_zero3(elapsed % 1000)); sys.put_fd(2, "s\n")
+    return status
+}
+fn pad_zero3(v: i64): str { let t = decimal(v); let b = sys.bytes_new(); for i in sys.length(t)..3 { sys.bytes_push(b, 48) }; sys.bytes_str(b, t); return sys.join2(sys.bytes_cstr(b), "") }
+# milliseconds from the uptime clock
+fn file_clock(): i64 {
+    let input = sys.read_path("/proc/uptime")
+    if !input.ok { return 0 }
+    let text = sys.bytes_cstr(input.bytes); let dot = sys.find_char(text, 46); let space = sys.find_char(text, 32)
+    if dot < 0 || space < 0 { return 0 }
+    let whole = sys.parse_number(sys.slice(text, 0, dot)); let frac = sys.parse_number(sys.slice(text, dot + 1, dot + 3 < space ? dot + 3 : space))
+    return (whole.ok ? whole.value : 0) * 1000 + (frac.ok ? frac.value * 10 : 0)
+}
+fn run_timeout(args: Vec<str>): i64 {
+    let seconds = 10; let sig = 15; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-t") && i + 1 < n { let v = sys.parse_number(args[i + 1]); if !v.ok { say("timeout", sys.join2("invalid number ", quoted(args[i + 1]))); return 1 }; seconds = v.value; i = i + 2 }
+        else if sys.same(a, "-s") && i + 1 < n { sig = proc.parse_signal(args[i + 1]); if sig < 0 { say("timeout", sys.join2("unknown signal ", quoted(args[i + 1]))); return 1 }; i = i + 2 }
+        else if sys.length(a) > 1 && sys.at(a, 0) == 45 && sys.is_digit(sys.at(a, 1)) { let v = sys.parse_number(sys.slice(a, 1, sys.length(a))); if v.ok { seconds = v.value }; i = i + 1 }
+        else { break }
+    }
+    if i >= n { say("timeout", "invalid usage: timeout [-t SECS] [-s SIG] PROG [ARGS]"); return 1 }
+    let argv = Vec<str>(); for k in i..n { argv.push(args[k]) }
+    let pid = proc.launch(argv, proc.environment(), 0)
+    if pid == 0 - 2 { say("timeout", sys.join2(sys.join2("can't execute ", quoted(argv[0])), ": No such file or directory")); return 127 }
+    if pid < 0 { return 126 }
+    let waited = 0
+    while waited < seconds * 10 {
+        let r = proc.poll_exit(pid)
+        if r >= 0 { return r }
+        proc.pause_us(100000); waited = waited + 1
+    }
+    proc.send_signal(pid, sig)
+    return proc.wait_for(pid)
+}

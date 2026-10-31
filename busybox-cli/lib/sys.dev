@@ -271,7 +271,7 @@ fn has(o: Opts, c: u8): bool { return o.flag[c as i64] > 0 }
 fn val(o: Opts, c: u8): str { return o.value[c as i64] }
 
 # ---- stat -----------------------------------------------------------------------------------------------------------------------------------------
-struct Info { ok: bool, mode: i64, size: i64, mtime: i64, atime: i64, ctime: i64, uid: i64, gid: i64, nlink: i64, inode: i64, blocks: i64 }
+struct Info { ok: bool, mode: i64, size: i64, mtime: i64, atime: i64, ctime: i64, uid: i64, gid: i64, nlink: i64, inode: i64, blocks: i64, dev: i64, rdev: i64 }
 fn le(p: *u8, off: i64, width: i64): i64 {
     unsafe {
         let v = 0
@@ -293,10 +293,11 @@ fn file_info(path: str, follow: bool): Info { unsafe {
     let p = calloc(512, 1) as *u8
     let failed = false
     if follow { failed = stat(path, p as *void) != 0 } else { failed = lstat(path, p as *void) != 0 }
-    if failed { free(p as *void); return Info(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) }
-    let info = Info(true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    if failed { free(p as *void); return Info(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) }
+    let info = Info(true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     if is_arm64() { info.mode = le(p, 16, 4); info.nlink = le(p, 20, 4); info.uid = le(p, 24, 4); info.gid = le(p, 28, 4) }
     else { info.nlink = le(p, 16, 8); info.mode = le(p, 24, 4); info.uid = le(p, 28, 4); info.gid = le(p, 32, 4) }
+    info.dev = le(p, 0, 8); info.rdev = is_arm64() ? le(p, 32, 8) : le(p, 40, 8)
     info.inode = le(p, 8, 8); info.size = le(p, 48, 8); info.blocks = le(p, 64, 8)
     info.atime = le(p, 72, 8); info.mtime = le(p, 88, 8); info.ctime = le(p, 104, 8)
     free(p as *void)

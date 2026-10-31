@@ -111,6 +111,40 @@ test.case("fold expand unexpand comm cmp split strings od hexdump",fn() {
         "@hexdump -C a.txt","@hexdump a.txt","@hexdump -b b.txt","@hexdump -c b.txt","@hexdump -x b.txt","@hexdump -n 5 -C a.txt","@hexdump -s 3 -C b.txt","@hexdump -d b.txt","@hexdump -o b.txt"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("id whoami hostname uname env printenv which tty nice nohup setsid time xargs kill mountpoint",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("@id -u","@id -g","@id -un","@id -gn","@id -G","@id -Gn","@id","@id root","@id -u root","@id nosuchuser","@id -ur","@whoami","@hostname","@hostname -s","@uname","@uname -s","@uname -n","@uname -r","@uname -v","@uname -m","@uname -o","@uname -sr",
+        "@env -i A=1 B=2","FOO=bar @env | grep -c '^FOO=bar$'","@env -i A=1 printenv A","@env -u HOME printenv HOME; echo rc","@env nosuchprog; echo rc","@env A=1 sh -c 'echo $A'","FOO=1 @printenv FOO","@printenv NOSUCH_VAR; echo rc","@printenv HOME PATH | wc -l",
+        "@which sh","@which nosuchprog; echo rc","@which sh ls","@which /bin/sh","@tty; echo rc","@tty -s; echo rc","@nice","@nice sh -c 'echo ok'","@nice -n 3 true; echo rc","@nohup echo hi","@setsid sh -c 'echo ok'","@time true; echo rc","@time sh -c 'exit 3'; echo rc",
+        "echo a b c | @xargs echo","echo a b c | @xargs -n1 echo","printf 'a\\0b\\0' | @xargs -0 echo","echo | @xargs -r echo hi","echo | @xargs echo hi","printf 'a b\\nc\\n' | @xargs -n2 echo","echo \"'a b' c\" | @xargs -n1 echo","echo a b c d | @xargs -n3 echo x","echo a | @xargs sh -c 'exit 5'; echo rc","echo a | @xargs nosuchprog; echo rc",
+        "sleep 30 & p=$!; @kill $p; wait $p; echo rc=$?","@kill -0 $$; echo rc","@kill -9 99999999; echo rc","sleep 30 & p=$!; @kill -s TERM $p; wait $p; echo rc=$?","@kill -l 9","@kill -l 15",
+        "@mountpoint /","@mountpoint dir; echo rc","@mountpoint -q /; echo rc","@mountpoint nosuch; echo rc"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("process applets and system information (BusyBox only)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let script = "cp /bin/sleep zzsleep; ./zzsleep 40 & p=$!; "
+    test.expect(strings.contains(outcome(d, script + bb + " pidof zzsleep | tr ' ' '\\n' | grep -c \"^$p$\"; kill $p"), "1\nrc=0"), "pidof did not find the process")
+    test.expect(strings.contains(outcome(d, script + bb + " pgrep -x zzsleep | grep -c \"^$p$\"; kill $p"), "1\nrc=0"), "pgrep did not find the process")
+    test.expect(strings.contains(outcome(d, script + bb + " pgrep -f 'zzsleep 40' >/dev/null; echo found=$?; kill $p"), "found=0"), "pgrep -f missed the command line")
+    test.expect(strings.contains(outcome(d, script + bb + " pgrep nosuchprocessname; echo rc=$?; kill $p"), "rc=1"), "pgrep found something that is not there")
+    test.expect(strings.contains(outcome(d, script + bb + " pkill -x zzsleep; wait $p; echo rc=$?"), "rc=143"), "pkill did not terminate the process")
+    test.expect(strings.contains(outcome(d, script + bb + " killall zzsleep; wait $p; echo rc=$?"), "rc=143"), "killall did not terminate the process")
+    test.expect(strings.contains(outcome(d, bb + " killall nosuchprocessname; echo rc=$?"), "rc=1"), "killall reported success for nothing")
+    test.expect(strings.contains(outcome(d, bb + " killall -q nosuchprocessname; echo rc=$?"), "rc=1"), "killall -q changed the status")
+    test.expect(strings.contains(outcome(d, script + bb + " ps | grep -c \"^ *$p \"; kill $p"), "1\nrc=0"), "ps does not list the process")
+    test.expect(strings.contains(outcome(d, bb + " ps -o pid,comm | head -1"), "PID COMM"), "ps -o headers are wrong")
+    test.expect(strings.contains(outcome(d, bb + " ps -o pid=ID,comm | head -1"), "ID COMM"), "ps -o col=header is wrong")
+    test.expect(strings.contains(outcome(d, bb + " free"), "Mem:"), "free prints no Mem line")
+    test.expect(strings.contains(outcome(d, bb + " uptime"), " up "), "uptime prints no uptime")
+    test.expect(strings.contains(outcome(d, bb + " timeout -t 1 sleep 5; echo rc=$?"), "rc=143"), "timeout did not stop the program")
+    test.expect(strings.contains(outcome(d, bb + " timeout -t 5 sh -c 'exit 4'; echo rc=$?"), "rc=4"), "timeout lost the exit status")
+    test.expect(strings.contains(outcome(d, bb + " timeout -s KILL -t 1 sleep 5; echo rc=$?"), "rc=137"), "timeout -s KILL is wrong")
+    test.expect(strings.contains(outcome(d, bb + " usleep 1000; echo rc=$?"), "rc=0"), "usleep failed")
+    test.expect(strings.contains(outcome(d, bb + " logname >/dev/null; echo rc=$?"), "rc="), "logname did not run")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("dos2unix unix2dos length (BusyBox only)",fn() {
     let d = sandbox()
     test.expect(strings.contains(outcome(d, "printf 'a\\r\\nb\\r\\n' | " + busybox() + " dos2unix | od -An -c"), "a  \\n   b  \\n"), "dos2unix did not strip the carriage returns")

@@ -23,6 +23,10 @@ extern fn getgid(): i32
 extern fn geteuid(): i32
 extern fn getegid(): i32
 
+fn uid(): i64 { unsafe { return getuid() as i64 } }
+fn gid(): i64 { unsafe { return getgid() as i64 } }
+fn euid(): i64 { unsafe { return geteuid() as i64 } }
+fn egid(): i64 { unsafe { return getegid() as i64 } }
 # Safe forms of the calls (result 0 on success, like C).
 fn do_chmod(path: str, mode: i64): i64 { unsafe { return chmod(path, mode) as i64 } }
 fn do_unlink(path: str): i64 { unsafe { return unlink(path) as i64 } }

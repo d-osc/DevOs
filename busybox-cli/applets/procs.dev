@@ -1,0 +1,436 @@
+# xargs kill killall pidof pgrep pkill ps free uptime watch mountpoint: running programs and processes.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/lines.dev" as ln
+
+fn say(prog: str, text: str) { sys.warn(prog, text) }
+fn quoted(text: str): str { return sys.join2(sys.join2("'", text), "'") }
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn pad_left(text: str, width: i64): str {
+    let b = sys.bytes_new()
+    for i in sys.length(text)..width { sys.bytes_push(b, 32) }
+    sys.bytes_str(b, text)
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn pad_right(text: str, width: i64): str {
+    let b = sys.bytes_new(); sys.bytes_str(b, text)
+    for i in sys.length(text)..width { sys.bytes_push(b, 32) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+
+# ---- xargs [OPTIONS] [PROG [ARGS]] ---------------------------------------------------------------------------------------------------------------------------
+# The items of the input: split at blanks and newlines (quotes and backslashes group and escape), or at NUL with -0.
+fn read_items(b: *sys.Bytes, zero: bool): Vec<str> {
+    let items = Vec<str>(); let n = sys.blen(b); let current = sys.bytes_new(); let started = false; let i = 0
+    while i < n {
+        let c = sys.bat(b, i)
+        if zero {
+            if c == 0 { items.push(sys.join2(sys.bytes_cstr(current), "")); sys.bclear(current); started = false } else { sys.bytes_push(current, c); started = true }
+            i = i + 1; continue
+        }
+        if c == 39 || c == 34 {
+            let quote = c; i = i + 1; started = true
+            while i < n && sys.bat(b, i) != quote && sys.bat(b, i) != 10 { sys.bytes_push(current, sys.bat(b, i)); i = i + 1 }
+            i = i + 1; continue
+        }
+        if c == 92 && i + 1 < n { sys.bytes_push(current, sys.bat(b, i + 1)); started = true; i = i + 2; continue }
+        if ln.is_space(c) { if started { items.push(sys.join2(sys.bytes_cstr(current), "")); sys.bclear(current); started = false }; i = i + 1; continue }
+        sys.bytes_push(current, c); started = true; i = i + 1
+    }
+    if started || (zero && sys.blen(current) > 0) { items.push(sys.join2(sys.bytes_cstr(current), "")) }
+    return items
+}
+fn run_xargs(args: Vec<str>): i64 {
+    let zero = false; let verbose = false; let ask = false; let no_empty = false; let per_command = 0; let size_limit = 131072; let strict_size = false; let eof_text = ""; let has_eof = false
+    let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.length(a) < 2 || sys.at(a, 0) != 45 { break }
+        if sys.same(a, "--") { i = i + 1; break }
+        let k = 1; let len = sys.length(a); let stop = false
+        while k < len && !stop {
+            let c = sys.at(a, k)
+            if c == 48 { zero = true } else if c == 116 { verbose = true } else if c == 112 { ask = true; verbose = true } else if c == 114 { no_empty = true } else if c == 120 { strict_size = true }
+            else if c == 110 || c == 115 {
+                let value = k + 1 < len ? sys.slice(a, k + 1, len) : (i + 1 < n ? args[i + 1] : "")
+                if k + 1 >= len { i = i + 1 }
+                let v = sys.parse_number(value); if !v.ok || v.value < 1 { say("xargs", sys.join2("invalid number ", quoted(value))); return 1 }
+                if c == 110 { per_command = v.value } else { size_limit = v.value }
+                stop = true
+            }
+            else if c == 101 || c == 69 { has_eof = true; eof_text = sys.slice(a, k + 1, len); stop = true }
+            else { say("xargs", "invalid option"); return 1 }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    let base = Vec<str>(); for k in i..n { base.push(args[k]) }
+    if base.len() == 0 { base.push("echo") }
+    let input = sys.read_fd(0)
+    let items = read_items(input.bytes, zero)
+    if has_eof && sys.length(eof_text) > 0 { let kept = Vec<str>(); for k in 0..(items.len() as i64) { if sys.same(items[k], eof_text) { break }; kept.push(items[k]) }; items = kept }
+    if items.len() == 0 && no_empty { return 0 }
+    let base_size = 0; for k in 0..(base.len() as i64) { base_size = base_size + sys.length(base[k]) + 1 }
+    let status = 0; let at = 0; let total = items.len() as i64; let ran = false
+    while at < total || (!ran && total == 0) {
+        let argv = Vec<str>(); for k in 0..(base.len() as i64) { argv.push(base[k]) }
+        let size = base_size; let taken = 0
+        while at < total && (per_command == 0 || taken < per_command) {
+            let need = sys.length(items[at]) + 1
+            if size + need > size_limit && taken > 0 { break }
+            if size + need > size_limit && strict_size { say("xargs", "argument line too long"); return 1 }
+            argv.push(items[at]); size = size + need; at = at + 1; taken = taken + 1
+        }
+        if verbose { for k in 0..(argv.len() as i64) { if k > 0 { sys.put_fd(2, " ") }; sys.put_fd(2, argv[k]) }; if ask { sys.put_fd(2, " ?...") } else { sys.put_fd(2, "\n") } }
+        if ask {
+            let answer = tty_line()
+            if !(sys.length(answer) > 0 && (sys.at(answer, 0) == 121 || sys.at(answer, 0) == 89)) { ran = true; if total == 0 { break }; continue }
+        }
+        let pid = proc.launch(argv, proc.environment(), 0)
+        if pid == 0 - 2 { say("xargs", sys.join2(sys.join2("can't execute ", quoted(argv[0])), ": No such file or directory")); return 127 }
+        if pid < 0 { return 126 }
+        let code = proc.wait_for(pid); ran = true
+        if code == 255 { say("xargs", sys.join2(quoted(argv[0]), ": exited with status 255; aborting")); return 124 }
+        if code >= 128 { return 125 }
+        if code != 0 { status = 123 }
+        if total == 0 { break }
+    }
+    return status
+}
+fn tty_line(): str {
+    let input = sys.read_path("/dev/tty")
+    if !input.ok { return "" }
+    return sys.bytes_cstr(input.bytes)
+}
+
+# ---- processes (from /proc) --------------------------------------------------------------------------------------------------------------------------------------
+struct Proc { pid: i64, ppid: i64, comm: str, state: str, session: i64, pgrp: i64, uid: i64, vsz: i64, rss: i64, nice: i64, cmdline: str, utime: i64, start: i64 }
+fn is_number_text(text: str): bool { return sys.parse_number(text).ok && sys.length(text) > 0 && sys.is_digit(sys.at(text, 0)) }
+fn read_proc(pid: i64): Proc {
+    let none = Proc(0 - 1, 0, "", "", 0, 0, 0, 0, 0, 0, "", 0, 0)
+    let stat = sys.read_path(sys.join2(sys.join2("/proc/", decimal(pid)), "/stat"))
+    if !stat.ok { return none }
+    let text = sys.bytes_cstr(stat.bytes)
+    let open = sys.find_char(text, 40); let close = sys.last_char(text, 41)
+    if open < 0 || close < open { return none }
+    let comm = sys.slice(text, open + 1, close)
+    let rest = sys.slice(text, close + 2, sys.length(text))
+    let fields = Vec<str>(); let n = sys.length(rest); let start = 0
+    for i in 0..(n + 1) { if i == n || sys.at(rest, i) == 32 { fields.push(sys.slice(rest, start, i)); start = i + 1 } }
+    if fields.len() < 22 { return none }
+    let p = Proc(pid, number_at(fields, 1), comm, fields[0], number_at(fields, 3), number_at(fields, 2), 0, number_at(fields, 20), number_at(fields, 21) * 4, number_at(fields, 16), "", number_at(fields, 11) + number_at(fields, 12), number_at(fields, 19))
+    let info = sys.file_info(sys.join2("/proc/", decimal(pid)), true)
+    if info.ok { p.uid = info.uid }
+    let cmd = sys.read_path(sys.join2(sys.join2("/proc/", decimal(pid)), "/cmdline"))
+    if cmd.ok {
+        let b = cmd.bytes; let text2 = sys.bytes_new()
+        for i in 0..sys.blen(b) { let c = sys.bat(b, i); sys.bytes_push(text2, c == 0 ? (32 as u8) : c) }
+        let joined = sys.bytes_cstr(text2)
+        let end = sys.length(joined); while end > 0 && sys.at(joined, end - 1) == 32 { end = end - 1 }
+        p.cmdline = sys.slice(joined, 0, end)
+    }
+    return p
+}
+fn number_at(fields: Vec<str>, i: i64): i64 { let v = sys.parse_number(fields[i]); return v.ok ? v.value : 0 }
+fn all_procs(): Vec<Proc> {
+    let out = Vec<Proc>(); let listing = fsx.list_dir("/proc")
+    if !listing.ok { return out }
+    let pids = Vec<i64>()
+    for i in 0..(listing.names.len() as i64) { if is_number_text(listing.names[i]) { pids.push(sys.parse_number(listing.names[i]).value) } }
+    let sorted = sort_numbers(pids)
+    for i in 0..(sorted.len() as i64) { let p = read_proc(sorted[i]); if p.pid >= 0 { out.push(p) } }
+    return out
+}
+fn sort_numbers(items: Vec<i64>): Vec<i64> {
+    let n = items.len() as i64
+    if n < 2 { return items }
+    let mid = n / 2; let left = Vec<i64>(); let right = Vec<i64>()
+    for i in 0..mid { left.push(items[i]) }
+    for i in mid..n { right.push(items[i]) }
+    left = sort_numbers(left); right = sort_numbers(right)
+    let out = Vec<i64>(); let a = 0; let b = 0; let ln_ = left.len() as i64; let rn = right.len() as i64
+    while a < ln_ && b < rn { if left[a] <= right[b] { out.push(left[a]); a = a + 1 } else { out.push(right[b]); b = b + 1 } }
+    while a < ln_ { out.push(left[a]); a = a + 1 }
+    while b < rn { out.push(right[b]); b = b + 1 }
+    return out
+}
+# The command name a process is known by: the base name of its first argument, else its kernel name.
+fn program_name(p: Proc): str {
+    if sys.length(p.cmdline) > 0 {
+        let sp = sys.find_char(p.cmdline, 32); let first = sp < 0 ? p.cmdline : sys.slice(p.cmdline, 0, sp)
+        let name = sys.base_name(first)
+        if sys.length(name) > 0 { return name }
+    }
+    return p.comm
+}
+
+# ---- kill [-l] [-SIG] PID..., killall [-lq] [-SIG] NAME... ---------------------------------------------------------------------------------------------------
+fn print_signals(out: *sys.Out) { let names = proc.signal_names(); for i in 1..(names.len() as i64) { if i > 1 { sys.out_byte(out, i % 8 == 1 ? 10 : 32) }; sys.out_str(out, names[i]) }; sys.out_byte(out, 10) }
+fn run_kill(args: Vec<str>): i64 {
+    let sig = 15; let i = 0; let n = args.len() as i64
+    if n > 0 && sys.same(args[0], "-l") {
+        let out = sys.out_new(1)
+        if n == 1 { print_signals(out) } else { for k in 1..n { let v = sys.parse_number(args[k]); if v.ok { let names = proc.signal_names(); sys.out_str(out, v.value > 0 && v.value < (names.len() as i64) ? names[v.value] : ""); sys.out_byte(out, 10) } else { sys.out_num(out, proc.parse_signal(args[k])); sys.out_byte(out, 10) } } }
+        sys.out_flush(out); return 0
+    }
+    if n > 1 && sys.same(args[0], "-s") { sig = proc.parse_signal(args[1]); if sig < 0 { say("kill", sys.join2("unknown signal ", quoted(args[1]))); return 1 }; i = 2 }
+    else if n > 0 && sys.length(args[0]) > 1 && sys.at(args[0], 0) == 45 { sig = proc.parse_signal(sys.slice(args[0], 1, sys.length(args[0]))); if sig < 0 { say("kill", sys.join2("unknown signal ", quoted(sys.slice(args[0], 1, sys.length(args[0]))))); return 1 }; i = 1 }
+    if i >= n { say("kill", "invalid usage: kill [-l] [-SIG] PID..."); return 1 }
+    let status = 0
+    for k in i..n {
+        let v = sys.parse_number(args[k])
+        if !v.ok { say("kill", sys.join2("invalid pid ", quoted(args[k]))); status = 1; continue }
+        if !proc.send_signal(v.value, sig) { say("kill", sys.join2(sys.join2("can't kill pid ", args[k]), ": No such process")); status = 1 }
+    }
+    return status
+}
+fn run_killall(args: Vec<str>): i64 {
+    let sig = 15; let quiet = false; let names = Vec<str>(); let list = false
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        if sys.same(a, "-l") { list = true } else if sys.same(a, "-q") { quiet = true }
+        else if sys.length(a) > 1 && sys.at(a, 0) == 45 { sig = proc.parse_signal(sys.slice(a, 1, sys.length(a))); if sig < 0 { say("killall", sys.join2("unknown signal ", quoted(sys.slice(a, 1, sys.length(a))))); return 1 } }
+        else { names.push(a) }
+    }
+    if list { let out = sys.out_new(1); print_signals(out); sys.out_flush(out); return 0 }
+    if names.len() == 0 { say("killall", "invalid usage: killall [-l] [-q] [-SIG] process-name..."); return 1 }
+    let procs = all_procs(); let status = 0; let me = proc.my_pid()
+    for k in 0..(names.len() as i64) {
+        let found = false
+        for i in 0..(procs.len() as i64) {
+            let p = procs[i]
+            if p.pid == me { continue }
+            if sys.same(program_name(p), names[k]) || sys.same(p.comm, names[k]) { found = true; proc.send_signal(p.pid, sig) }
+        }
+        if !found { if !quiet { say("killall", sys.join2(names[k], ": no process killed")) }; status = 1 }
+    }
+    return status
+}
+
+# ---- pidof, pgrep, pkill ---------------------------------------------------------------------------------------------------------------------------------------
+fn run_pidof(args: Vec<str>): i64 {
+    let single = false; let omit = Vec<i64>(); let names = Vec<str>(); let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-s") { single = true } else if sys.same(a, "-o") && i + 1 < n { i = i + 1; let t = args[i]; if sys.same(t, "%PPID") { omit.push(proc.parent_pid()) } else { let v = sys.parse_number(t); if v.ok { omit.push(v.value) } } }
+        else { names.push(a) }
+        i = i + 1
+    }
+    let procs = all_procs(); let out = sys.out_new(1); let any = false; let first = true
+    for k in 0..(names.len() as i64) {
+        for j in 0..(procs.len() as i64) {
+            let p = procs[j]
+            let skip = false; for q in 0..(omit.len() as i64) { if omit[q] == p.pid { skip = true } }
+            if skip || (!sys.same(program_name(p), names[k]) && !sys.same(p.comm, names[k])) { continue }
+            if !first { sys.out_byte(out, 32) }; sys.out_num(out, p.pid); first = false; any = true
+            if single { break }
+        }
+    }
+    if any { sys.out_byte(out, 10) }
+    sys.out_flush(out)
+    return any ? 0 : 1
+}
+fn contains_text(text: str, pattern: str): bool {
+    let n = sys.length(text); let m = sys.length(pattern)
+    if m == 0 { return true }
+    for i in 0..(n - m + 1) { let ok = true; for k in 0..m { if sys.at(text, i + k) != sys.at(pattern, k) { ok = false; break } }; if ok { return true } }
+    return false
+}
+fn select_procs(prog: str, args: Vec<str>, signal_mode: bool): Vec<Proc> {
+    let full = false; let newest = false; let oldest = false; let invert = false; let exact = false; let session = 0 - 1; let parent = 0 - 1; let pattern = ""; let have_pattern = false
+    let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.length(a) > 1 && sys.at(a, 0) == 45 && !have_pattern {
+            let k = 1; let len = sys.length(a)
+            while k < len {
+                let c = sys.at(a, k)
+                if c == 102 { full = true } else if c == 110 { newest = true } else if c == 111 { oldest = true } else if c == 118 { invert = true } else if c == 120 { exact = true } else if c == 108 { }
+                else if c == 115 || c == 80 { let v = sys.parse_number(k + 1 < len ? sys.slice(a, k + 1, len) : (i + 1 < n ? args[i + 1] : "")); if k + 1 >= len { i = i + 1 }; if c == 115 { session = v.ok ? v.value : 0 } else { parent = v.ok ? v.value : 0 }; k = len }
+                else if !signal_mode { return Vec<Proc>() }
+                k = k + 1
+            }
+        } else { pattern = a; have_pattern = true }
+        i = i + 1
+    }
+    let procs = all_procs(); let out = Vec<Proc>(); let me = proc.my_pid()
+    for j in 0..(procs.len() as i64) {
+        let p = procs[j]
+        if p.pid == me { continue }
+        let subject = full && sys.length(p.cmdline) > 0 ? p.cmdline : p.comm
+        let hit = true
+        if have_pattern { hit = exact ? sys.same(subject, pattern) : contains_text(subject, pattern) }
+        if session >= 0 { hit = hit && (session == 0 ? p.session == proc.my_session() : p.session == session) }
+        if parent >= 0 { hit = hit && p.ppid == parent }
+        if invert { hit = !hit }
+        if hit { out.push(p) }
+    }
+    if (newest || oldest) && out.len() > 0 {
+        let pick = out[0]
+        for j in 0..(out.len() as i64) { if newest ? out[j].start > pick.start : out[j].start < pick.start { pick = out[j] } }
+        let one = Vec<Proc>(); one.push(pick); return one
+    }
+    return out
+}
+fn run_pgrep(args: Vec<str>): i64 {
+    let list = false; for i in 0..(args.len() as i64) { if sys.same(args[i], "-l") { list = true } }
+    let found = select_procs("pgrep", args, false)
+    let out = sys.out_new(1)
+    for i in 0..(found.len() as i64) { sys.out_num(out, found[i].pid); if list { sys.out_byte(out, 32); sys.out_str(out, found[i].comm) }; sys.out_byte(out, 10) }
+    sys.out_flush(out)
+    return found.len() > 0 ? 0 : 1
+}
+fn run_pkill(args: Vec<str>): i64 {
+    let sig = 15; let rest = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        if sys.same(a, "-l") { let out = sys.out_new(1); print_signals(out); sys.out_flush(out); return 0 }
+        if sys.length(a) > 1 && sys.at(a, 0) == 45 && rest.len() == 0 && (sys.is_digit(sys.at(a, 1)) || proc.parse_signal(sys.slice(a, 1, sys.length(a))) > 0) { sig = proc.parse_signal(sys.slice(a, 1, sys.length(a))); continue }
+        rest.push(a)
+    }
+    let found = select_procs("pkill", rest, true)
+    for i in 0..(found.len() as i64) { proc.send_signal(found[i].pid, sig) }
+    return found.len() > 0 ? 0 : 1
+}
+
+# ---- ps [-o col1,col2=header] [-T] ----------------------------------------------------------------------------------------------------------------------------
+fn user_of(uid: i64): str { let n = fsx.user_name(uid); return sys.length(n) > 0 ? n : decimal(uid) }
+fn run_ps(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "o:T")
+    if o.bad != 0 || o.missing != 0 { say("ps", "invalid usage: ps [-o col1,col2=header] [-T]"); return 1 }
+    let columns = Vec<str>(); let headers = Vec<str>()
+    let spec = sys.has(o, 111) ? sys.val(o, 111) : "pid,user,vsz,stat,args"
+    let n = sys.length(spec); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(spec, i) == 44 {
+            let item = sys.slice(spec, start, i); let eq = sys.find_char(item, 61)
+            let name = eq < 0 ? item : sys.slice(item, 0, eq)
+            columns.push(name)
+            headers.push(eq >= 0 ? sys.slice(item, eq + 1, sys.length(item)) : upper(name == "args" ? "command" : name))
+            start = i + 1
+        }
+    }
+    let out = sys.out_new(1)
+    let widths = Vec<i64>()
+    for c in 0..(columns.len() as i64) { widths.push(column_width(columns[c])) }
+    for c in 0..(columns.len() as i64) {
+        let last = c + 1 == (columns.len() as i64)
+        sys.out_str(out, last ? headers[c] : (left_aligned(columns[c]) ? pad_right(headers[c], widths[c]) : pad_left(headers[c], widths[c]))); if !last { sys.out_byte(out, 32) }
+    }
+    sys.out_byte(out, 10)
+    let procs = all_procs()
+    for i in 0..(procs.len() as i64) {
+        let p = procs[i]
+        for c in 0..(columns.len() as i64) {
+            let last = c + 1 == (columns.len() as i64)
+            let text = column_value(columns[c], p)
+            sys.out_str(out, last ? text : (left_aligned(columns[c]) ? pad_right(text, widths[c]) : pad_left(text, widths[c]))); if !last { sys.out_byte(out, 32) }
+        }
+        sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return 0
+}
+fn upper(text: str): str { let b = sys.bytes_new(); for i in 0..sys.length(text) { let c = sys.at(text, i); sys.bytes_push(b, c >= 97 && c <= 122 ? c - 32 : c) }; return sys.join2(sys.bytes_cstr(b), "") }
+fn left_aligned(name: str): bool { return sys.same(name, "user") || sys.same(name, "group") || sys.same(name, "stat") || sys.same(name, "comm") || sys.same(name, "args") }
+fn column_width(name: str): i64 {
+    if sys.same(name, "pid") || sys.same(name, "ppid") || sys.same(name, "pgid") || sys.same(name, "sid") { return 5 }
+    if sys.same(name, "user") || sys.same(name, "group") { return 8 }
+    if sys.same(name, "vsz") || sys.same(name, "rss") { return 6 }
+    if sys.same(name, "stat") { return 4 }
+    if sys.same(name, "nice") || sys.same(name, "ni") { return 3 }
+    return 1
+}
+fn column_value(name: str, p: Proc): str {
+    if sys.same(name, "pid") { return decimal(p.pid) } else if sys.same(name, "ppid") { return decimal(p.ppid) } else if sys.same(name, "pgid") { return decimal(p.pgrp) } else if sys.same(name, "sid") { return decimal(p.session) }
+    if sys.same(name, "user") { return user_of(p.uid) } else if sys.same(name, "group") { let n = fsx.group_name(p.uid); return sys.length(n) > 0 ? n : decimal(p.uid) }
+    if sys.same(name, "comm") { return p.comm } else if sys.same(name, "args") { return sys.length(p.cmdline) > 0 ? p.cmdline : sys.join2(sys.join2("[", p.comm), "]") }
+    if sys.same(name, "vsz") { return decimal(p.vsz / 1024) } else if sys.same(name, "rss") { return decimal(p.rss) }
+    if sys.same(name, "stat") { return p.state } else if sys.same(name, "nice") || sys.same(name, "ni") { return decimal(p.nice) }
+    return "-"
+}
+
+# ---- free, uptime ----------------------------------------------------------------------------------------------------------------------------------------------------
+fn meminfo(name: str): i64 {
+    let input = sys.read_path("/proc/meminfo")
+    if !input.ok { return 0 }
+    let text = sys.bytes_cstr(input.bytes); let n = sys.length(text); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(text, i) == 10 {
+            let line = sys.slice(text, start, i)
+            if sys.starts(line, name) && sys.length(line) > sys.length(name) && sys.at(line, sys.length(name)) == 58 {
+                let rest = sys.slice(line, sys.length(name) + 1, sys.length(line)); let k = 0
+                while k < sys.length(rest) && sys.at(rest, k) == 32 { k = k + 1 }
+                let end = k; while end < sys.length(rest) && sys.is_digit(sys.at(rest, end)) { end = end + 1 }
+                let v = sys.parse_number(sys.slice(rest, k, end)); return v.ok ? v.value : 0
+            }
+            start = i + 1
+        }
+    }
+    return 0
+}
+fn run_free(args: Vec<str>): i64 {
+    let total = meminfo("MemTotal"); let free_ = meminfo("MemFree"); let buffers = meminfo("Buffers"); let cached = meminfo("Cached")
+    let swap_total = meminfo("SwapTotal"); let swap_free = meminfo("SwapFree"); let shared = meminfo("Shmem")
+    let used = total - free_
+    let out = sys.out_new(1)
+    sys.out_str(out, "              total         used         free       shared      buffers\n")
+    sys.out_str(out, sys.join2("Mem:     ", sys.join2(pad_left(decimal(total), 13), sys.join2(pad_left(decimal(used), 13), sys.join2(pad_left(decimal(free_), 13), sys.join2(pad_left(decimal(shared), 13), sys.join2(pad_left(decimal(buffers), 13), "\n")))))))
+    sys.out_str(out, sys.join2("-/+ buffers:", sys.join2(pad_left(decimal(used - buffers - cached), 21), sys.join2(pad_left(decimal(free_ + buffers + cached), 13), "\n"))))
+    sys.out_str(out, sys.join2("Swap:    ", sys.join2(pad_left(decimal(swap_total), 13), sys.join2(pad_left(decimal(swap_total - swap_free), 13), sys.join2(pad_left(decimal(swap_free), 13), "\n")))))
+    sys.out_flush(out)
+    return 0
+}
+fn run_uptime(args: Vec<str>): i64 {
+    let up = sys.read_path("/proc/uptime"); let load = sys.read_path("/proc/loadavg")
+    if !up.ok { say("uptime", "can't read /proc/uptime"); return 1 }
+    let text = sys.bytes_cstr(up.bytes); let dot = sys.find_char(text, 46)
+    let seconds = sys.parse_number(sys.slice(text, 0, dot < 0 ? sys.length(text) : dot)).value
+    let days = seconds / 86400; let hours = (seconds / 3600) % 24; let minutes = (seconds / 60) % 60
+    let out = sys.out_new(1); sys.out_str(out, " up ")
+    if days > 0 { sys.out_num(out, days); sys.out_str(out, days == 1 ? " day, " : " days, ") }
+    if hours > 0 { sys.out_num(out, hours); sys.out_str(out, ":"); if minutes < 10 { sys.out_byte(out, 48) }; sys.out_num(out, minutes) } else { sys.out_num(out, minutes); sys.out_str(out, " min") }
+    if load.ok {
+        let l = sys.bytes_cstr(load.bytes); let a = sys.find_char(l, 32)
+        let parts = Vec<str>(); let start = 0; let n = sys.length(l)
+        for i in 0..(n + 1) { if i == n || sys.at(l, i) == 32 { parts.push(sys.slice(l, start, i)); start = i + 1 } }
+        if parts.len() >= 3 { sys.out_str(out, ",  load average: "); sys.out_str(out, parts[0]); sys.out_str(out, ", "); sys.out_str(out, parts[1]); sys.out_str(out, ", "); sys.out_str(out, parts[2]) }
+    }
+    sys.out_byte(out, 10); sys.out_flush(out)
+    return 0
+}
+
+fn clear_screen() { let b = sys.bytes_new(); sys.bytes_push(b, 27); sys.bytes_str(b, "[H"); sys.bytes_push(b, 27); sys.bytes_str(b, "[J"); sys.put_fd(1, sys.bytes_cstr(b)) }
+# ---- watch [-n seconds] [-t] PROG [ARGS] ---------------------------------------------------------------------------------------------------------------------------
+fn run_watch(args: Vec<str>): i64 {
+    let period = 2; let header = true; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-n") && i + 1 < n { let v = sys.parse_number(args[i + 1]); if !v.ok || v.value < 1 { say("watch", sys.join2("invalid number ", quoted(args[i + 1]))); return 1 }; period = v.value; i = i + 2 }
+        else if sys.same(a, "-t") { header = false; i = i + 1 } else { break }
+    }
+    if i >= n { say("watch", "invalid usage: watch [-n seconds] [-t] PROG [ARGS]"); return 1 }
+    let argv = Vec<str>(); for k in i..n { argv.push(args[k]) }
+    while true {
+        clear_screen()
+        if header { sys.put_fd(1, "Every "); sys.put_fd(1, decimal(period)); sys.put_fd(1, "s: "); for k in 0..(argv.len() as i64) { if k > 0 { sys.put_fd(1, " ") }; sys.put_fd(1, argv[k]) }; sys.put_fd(1, "\n\n") }
+        proc.run_wait(argv, proc.environment())
+        proc.pause_us(period * 1000000)
+    }
+    return 0
+}
+
+# ---- mountpoint [-q] [-d] [-n] DIR | -x DEVICE ------------------------------------------------------------------------------------------------------------------------
+fn run_mountpoint(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "qdnx")
+    if o.bad != 0 || o.rest.len() != 1 { say("mountpoint", "invalid usage: mountpoint [-q] <[-dn] DIR | -x DEVICE>"); return 1 }
+    let path = o.rest[0]; let info = sys.file_info(path, true)
+    if !info.ok { if !sys.has(o, 113) { sys.warn_path("mountpoint", path) }; return 1 }
+    if sys.has(o, 120) { let major = ((info.rdev / 256) % 4096); let minor = (info.rdev % 256) + ((info.rdev / 1048576) * 256); let out = sys.out_new(1); sys.out_num(out, major); sys.out_byte(out, 58); sys.out_num(out, minor); sys.out_byte(out, 10); sys.out_flush(out); return 0 }
+    let parent = sys.file_info(sys.join2(path, "/.."), true)
+    let is_mount = sys.is_dir_mode(info.mode) && parent.ok && (info.dev != parent.dev || info.inode == parent.inode)
+    if sys.has(o, 100) { let major = (info.dev / 256) % 4096; let minor = (info.dev % 256) + ((info.dev / 1048576) * 256); let out = sys.out_new(1); sys.out_num(out, major); sys.out_byte(out, 58); sys.out_num(out, minor); sys.out_byte(out, 10); sys.out_flush(out); return is_mount ? 0 : 1 }
+    if !sys.has(o, 113) { let out = sys.out_new(1); sys.out_str(out, path); sys.out_str(out, is_mount ? " is a mountpoint\n" : " is not a mountpoint\n"); sys.out_flush(out) }
+    return is_mount ? 0 : 1
+}

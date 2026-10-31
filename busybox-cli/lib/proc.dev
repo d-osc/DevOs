@@ -1,0 +1,158 @@
+# Processes for the DevLang BusyBox: the environment, finding programs, running them (fork / exec / wait) and signals.
+use "./sys.dev" as sys
+
+extern fn fork(): i32
+extern fn execve(path: str, argv: *void, envp: *void): i32
+extern fn waitpid(pid: i32, status: *void, options: i32): i32
+extern fn kill(pid: i32, signal: i32): i32
+extern fn getpid(): i32
+extern fn getppid(): i32
+extern fn getsid(pid: i32): i32
+extern fn setsid(): i32
+extern fn alarm(seconds: u32): u32
+extern fn dup2(from: i32, to: i32): i32
+extern fn getgroups(size: i32, list: *void): i32
+extern fn gethostname(buffer: *void, size: usize): i32
+extern fn sethostname(name: str, length: usize): i32
+extern fn usleep(microseconds: u32): i32
+extern fn nice(increment: i32): i32
+extern fn ttyname(fd: i32): str
+extern fn signal(number: i32, handler: i64): i64
+extern fn exit(code: i32)
+
+# ---- the environment (read from /proc/self/environ) --------------------------------------------------------------------------------------------
+fn environment(): Vec<str> { unsafe {
+    let out = Vec<str>()
+    let input = sys.read_path("/proc/self/environ")
+    if !input.ok { return out }
+    let b = input.bytes; let start = 0
+    for i in 0..sys.blen(b) {
+        if sys.bat(b, i) == 0 {
+            let copy = sys.calloc((i - start + 1) as usize, 1) as *u8
+            for k in start..i { copy[k - start] = sys.bat(b, k) }
+            out.push(copy as str); start = i + 1
+        }
+    }
+    return out
+} }
+# The value of a variable ("" when it is not set); `found` tells the two apart.
+struct Variable { found: bool, value: str }
+fn lookup(env: Vec<str>, name: str): Variable {
+    let n = sys.length(name)
+    for i in 0..(env.len() as i64) {
+        let entry = env[i]
+        if sys.length(entry) > n && sys.starts(entry, name) && sys.at(entry, n) == 61 { return Variable(true, sys.slice(entry, n + 1, sys.length(entry))) }
+    }
+    return Variable(false, "")
+}
+fn set_variable(env: Vec<str>, name: str, value: str): Vec<str> {
+    let out = Vec<str>(); let n = sys.length(name); let done = false
+    for i in 0..(env.len() as i64) {
+        let entry = env[i]
+        if sys.length(entry) > n && sys.starts(entry, name) && sys.at(entry, n) == 61 { out.push(sys.join2(sys.join2(name, "="), value)); done = true } else { out.push(entry) }
+    }
+    if !done { out.push(sys.join2(sys.join2(name, "="), value)) }
+    return out
+}
+fn unset_variable(env: Vec<str>, name: str): Vec<str> {
+    let out = Vec<str>(); let n = sys.length(name)
+    for i in 0..(env.len() as i64) {
+        let entry = env[i]
+        if !(sys.length(entry) > n && sys.starts(entry, name) && sys.at(entry, n) == 61) { out.push(entry) }
+    }
+    return out
+}
+
+# ---- finding programs -------------------------------------------------------------------------------------------------------------------------------
+fn is_executable_file(path: str): bool {
+    let info = sys.file_info(path, true)
+    if !info.ok || !sys.is_reg_mode(info.mode) { return false }
+    unsafe { return sys.access(path, 1) == 0 }
+}
+# The path of a command: itself when it has a slash, else the first match in PATH ("" when none).
+fn find_program(name: str, env: Vec<str>): str {
+    if sys.find_char(name, 47) >= 0 { return is_executable_file(name) ? name : "" }
+    let path = lookup(env, "PATH")
+    let dirs = path.found ? path.value : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    let n = sys.length(dirs); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(dirs, i) == 58 {
+            let dir = i == start ? "." : sys.slice(dirs, start, i)
+            let candidate = sys.length(dir) == 0 ? name : sys.join2(sys.ends(dir, "/") ? dir : sys.join2(dir, "/"), name)
+            if is_executable_file(candidate) { return candidate }
+            start = i + 1
+        }
+    }
+    return ""
+}
+
+# ---- running programs ---------------------------------------------------------------------------------------------------------------------------------
+fn pointer_array(items: Vec<str>): *void { unsafe {
+    let n = items.len() as i64
+    let array = sys.calloc((n + 1) as usize, 8) as *i64
+    for i in 0..n { array[i] = items[i] as i64 }
+    return array as *void
+} }
+# Starts `argv` (argv[0] is looked up in PATH) with the environment `env` in a new process and returns its pid; -1 when it cannot be started,
+# -2 when the program is not found. `before` of 1 makes the child a session leader, 2 makes it ignore SIGHUP.
+fn launch(argv: Vec<str>, env: Vec<str>, before: i64): i64 { unsafe {
+    if argv.len() == 0 { return 0 - 1 }
+    let program = find_program(argv[0], env)
+    if sys.length(program) == 0 { return 0 - 2 }
+    let args = pointer_array(argv); let vars = pointer_array(env)
+    let pid = fork()
+    if pid < 0 { return 0 - 1 }
+    if pid == 0 {
+        if before == 1 { setsid() }
+        if before == 2 { signal(1, 1) }
+        execve(program, args, vars)
+        exit(126)
+    }
+    return pid as i64
+} }
+# Waits for a process; its exit status (128 + signal when it was killed), or -1.
+fn wait_for(pid: i64): i64 { unsafe {
+    let status = sys.calloc(8, 1) as *u8
+    let r = waitpid(pid as i32, status as *void, 0)
+    if r < 0 { sys.free(status as *void); return 0 - 1 }
+    let low = status[0] as i64; let high = status[1] as i64
+    sys.free(status as *void)
+    if low % 128 != 0 { return 128 + low % 128 }          # killed by a signal
+    return high                                           # exited with this status
+} }
+# The exit status of a finished process (waitpid WNOHANG), or -1 while it still runs.
+fn poll_exit(pid: i64): i64 { unsafe {
+    let status = sys.calloc(8, 1) as *u8
+    let r = waitpid(pid as i32, status as *void, 1)
+    if r <= 0 { sys.free(status as *void); return 0 - 1 }
+    let low = status[0] as i64; let high = status[1] as i64
+    sys.free(status as *void)
+    if low % 128 != 0 { return 128 + low % 128 }
+    return high
+} }
+# Runs a program and waits for it: its exit status, or 127 (not found) / 126 (cannot run) like a shell.
+fn run_wait(argv: Vec<str>, env: Vec<str>): i64 {
+    let pid = launch(argv, env, 0)
+    if pid == 0 - 2 { return 127 }
+    if pid < 0 { return 126 }
+    return wait_for(pid)
+}
+
+# ---- signals ---------------------------------------------------------------------------------------------------------------------------------------------
+fn signal_names(): Vec<str> {
+    return Vec<str>("", "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS")
+}
+# A signal given as a number, a name ("TERM", "SIGTERM"), or 0; -1 when it is none of them.
+fn parse_signal(text: str): i64 {
+    let number = sys.parse_number(text)
+    if number.ok { return number.value >= 0 && number.value < 65 ? number.value : 0 - 1 }
+    let name = sys.starts(text, "SIG") ? sys.slice(text, 3, sys.length(text)) : text
+    let names = signal_names()
+    for i in 1..(names.len() as i64) { if sys.same(names[i], name) { return i } }
+    return 0 - 1
+}
+fn send_signal(pid: i64, sig: i64): bool { unsafe { return kill(pid as i32, sig as i32) == 0 } }
+fn my_pid(): i64 { unsafe { return getpid() as i64 } }
+fn my_session(): i64 { unsafe { return getsid(0) as i64 } }
+fn parent_pid(): i64 { unsafe { return getppid() as i64 } }
+fn pause_us(microseconds: i64) { unsafe { usleep(microseconds as u32) } }
