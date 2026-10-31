@@ -1,0 +1,225 @@
+# route, arp, netstat, ifconfig, top: network and process tables read from /proc and /sys.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+
+extern fn socket(domain: i32, kind: i32, protocol: i32): i32
+extern fn ioctl(fd: i32, request: u64, argument: *void): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn table_rows(path: str): Vec<Vec<str>> {
+    let rows = Vec<Vec<str>>(); let input = sys.read_path(path)
+    if !input.ok { return rows }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) { rows.push(fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k]))) }
+    return rows
+}
+fn hex_value(text: str): i64 {
+    let v = 0
+    for i in 0..sys.length(text) { let c = sys.at(text, i); let d = 0; if c >= 48 && c <= 57 { d = (c - 48) as i64 } else if c >= 97 && c <= 102 { d = (c - 87) as i64 } else if c >= 65 && c <= 70 { d = (c - 55) as i64 }; v = v * 16 + d }
+    return v
+}
+// An address as /proc prints it (host byte order, little endian) in dotted form.
+fn dotted(hex: str): str {
+    let v = hex_value(hex)
+    return sys.join2(sys.join2(decimal(v % 256), "."), sys.join2(sys.join2(decimal((v / 256) % 256), "."), sys.join2(sys.join2(decimal((v / 65536) % 256), "."), decimal((v / 16777216) % 256))))
+}
+fn pad_right(text: str, width: i64): str { let b = sys.bytes_new(); sys.bytes_str(b, text); while sys.blen(b) < width { sys.bytes_push(b, 32) }; return sys.join2(sys.bytes_cstr(b), "") }
+fn pad_left(text: str, width: i64): str { let b = sys.bytes_new(); for i in 0..(width - sys.length(text)) { sys.bytes_push(b, 32) }; sys.bytes_str(b, text); return sys.join2(sys.bytes_cstr(b), "") }
+
+// ---- route [-n] -------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn route_flags(value: i64): str {
+    let b = sys.bytes_new()
+    if value % 2 == 1 { sys.bytes_push(b, 85) }
+    if (value / 2) % 2 == 1 { sys.bytes_push(b, 71) }
+    if (value / 4) % 2 == 1 { sys.bytes_push(b, 72) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_route(args: Vec<str>): i64 {
+    let rows = table_rows("/proc/net/route")
+    if rows.len() == 0 { sys.warn_path("route", "/proc/net/route"); return 1 }
+    let out = sys.out_new(1)
+    sys.out_str(out, "Kernel IP routing table\nDestination     Gateway         Genmask         Flags Metric Ref    Use Iface\n")
+    for k in 1..(rows.len() as i64) {
+        let r = rows[k]; if r.len() < 8 { continue }
+        let flags = hex_value(r[3])
+        sys.out_str(out, pad_right(dotted(r[1]), 16)); sys.out_str(out, pad_right(dotted(r[2]), 16)); sys.out_str(out, pad_right(dotted(r[7]), 16))
+        sys.out_str(out, pad_right(route_flags(flags), 6)); sys.out_str(out, pad_right(r[6], 7)); sys.out_str(out, pad_right(r[4], 5)); sys.out_str(out, pad_left(r[5], 5)); sys.out_byte(out, 32); sys.out_str(out, r[0]); sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- arp [-an] ------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn run_arp(args: Vec<str>): i64 {
+    let rows = table_rows("/proc/net/arp")
+    if rows.len() == 0 { sys.warn_path("arp", "/proc/net/arp"); return 1 }
+    let out = sys.out_new(1)
+    for k in 1..(rows.len() as i64) {
+        let r = rows[k]; if r.len() < 6 { continue }
+        sys.out_str(out, sys.join2(sys.join2("? (", r[0]), sys.join2(") at ", sys.join2(r[3], sys.join2(sys.join2(" [ether] on ", r[5]), "\n")))))
+    }
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- netstat [-tuwxlanp] -----------------------------------------------------------------------------------------------------------------------------------------------
+fn state_name(code: str): str {
+    let names = Vec<str>("", "ESTABLISHED", "SYN_SENT", "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2", "TIME_WAIT", "CLOSE", "CLOSE_WAIT", "LAST_ACK", "LISTEN", "CLOSING")
+    let v = hex_value(code)
+    return v < (names.len() as i64) ? names[v] : "UNKNOWN"
+}
+fn endpoint(text: str, v6: bool, numeric: bool): str {
+    let colon = sys.find_char(text, 58)
+    if colon < 0 { return text }
+    let host = sys.join2(sys.slice(text, 0, colon), ""); let port = hex_value(sys.join2(sys.slice(text, colon + 1, sys.length(text)), ""))
+    let shown = v6 ? (hex_value(host) == 0 && sys.length(host) == 32 && is_zero(host) ? "::" : "::1") : dotted(host)
+    if v6 && !is_zero(host) { shown = v6_text(host) }
+    return sys.join2(sys.join2(shown, ":"), port == 0 ? "*" : decimal(port))
+}
+fn is_zero(text: str): bool { for i in 0..sys.length(text) { if sys.at(text, i) != 48 { return false } }; return true }
+fn v6_text(host: str): str {
+    # 4 little-endian words; print as 8 groups without compression of inner zeros
+    let b = sys.bytes_new()
+    for w in 0..4 {
+        let word = sys.join2(sys.slice(host, w * 8, w * 8 + 8), "")
+        let bytes = Vec<str>(sys.join2(sys.slice(word, 6, 8), ""), sys.join2(sys.slice(word, 4, 6), ""), sys.join2(sys.slice(word, 2, 4), ""), sys.join2(sys.slice(word, 0, 2), ""))
+        let g1 = sys.join2(bytes[0], bytes[1]); let g2 = sys.join2(bytes[2], bytes[3])
+        if w > 0 { sys.bytes_push(b, 58) }
+        sys.bytes_str(b, strip_zero(g1)); sys.bytes_push(b, 58); sys.bytes_str(b, strip_zero(g2))
+    }
+    return collapse(sys.join2(sys.bytes_cstr(b), ""))
+}
+fn strip_zero(g: str): str { let i = 0; while i < sys.length(g) - 1 && sys.at(g, i) == 48 { i = i + 1 }; return sys.join2(sys.slice(g, i, sys.length(g)), "") }
+fn collapse(text: str): str {
+    if sys.same(text, "0:0:0:0:0:0:0:0") { return "::" }
+    if sys.same(text, "0:0:0:0:0:0:0:1") { return "::1" }
+    return text
+}
+fn run_netstat(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "tuwxlanpesrW")
+    if o.bad != 0 { sys.warn("netstat", "invalid usage: netstat [-tuwxlantp]"); return 1 }
+    let listening_only = sys.has(o, 108) && !sys.has(o, 97)
+    let all = sys.has(o, 97)
+    let want_tcp = sys.has(o, 116) || !(sys.has(o, 117) || sys.has(o, 119) || sys.has(o, 120))
+    let want_udp = sys.has(o, 117) || !(sys.has(o, 116) || sys.has(o, 119) || sys.has(o, 120))
+    let out = sys.out_new(1)
+    sys.out_str(out, listening_only ? "Active Internet connections (only servers)\n" : (all ? "Active Internet connections (servers and established)\n" : "Active Internet connections (w/o servers)\n"))
+    sys.out_str(out, "Proto Recv-Q Send-Q Local Address           Foreign Address         State\n")
+    let tables = Vec<str>("tcp", "tcp6", "udp", "udp6")
+    for t in 0..4 {
+        let name = tables[t]
+        if (t < 2 && !want_tcp) || (t >= 2 && !want_udp) { continue }
+        let rows = table_rows(sys.join2("/proc/net/", name))
+        for k in 1..(rows.len() as i64) {
+            let r = rows[k]; if r.len() < 5 { continue }
+            let state = state_name(r[3])
+            let is_listen = t < 2 ? sys.same(state, "LISTEN") : sys.same(state, "CLOSE")
+            if listening_only && !is_listen { continue }
+            if !all && !listening_only && is_listen { continue }
+            let queues = r[4]; let colon = sys.find_char(queues, 58)
+            let tx = colon < 0 ? "0" : decimal(hex_value(sys.join2(sys.slice(queues, 0, colon), ""))); let rxq = colon < 0 ? "0" : decimal(hex_value(sys.join2(sys.slice(queues, colon + 1, sys.length(queues)), "")))
+            sys.out_str(out, pad_right(name, 5)); sys.out_byte(out, 32); sys.out_str(out, pad_left(rxq, 6)); sys.out_byte(out, 32); sys.out_str(out, pad_left(tx, 6)); sys.out_byte(out, 32)
+            sys.out_str(out, pad_right(endpoint(r[1], t % 2 == 1, true), 23)); sys.out_byte(out, 32); sys.out_str(out, pad_right(endpoint(r[2], t % 2 == 1, true), 23)); sys.out_byte(out, 32)
+            sys.out_str(out, t < 2 ? state : ""); sys.out_byte(out, 10)
+        }
+    }
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- ifconfig [-a] [INTERFACE] --------------------------------------------------------------------------------------------------------------------------------------------
+fn read_trim(path: str): str {
+    let input = sys.read_path(path); if !input.ok { return "" }
+    let n = sys.blen(input.bytes); while n > 0 && (sys.bat(input.bytes, n - 1) == 10 || sys.bat(input.bytes, n - 1) == 32) { n = n - 1 }
+    return lines.text_of(input.bytes, 0, n)
+}
+fn query_address(name: str, request: i64): str { unsafe {
+    let fd = socket(2, 2, 0); if fd < 0 { return "" }
+    let req = sys.calloc(40, 1) as *u8
+    for i in 0..sys.length(name) { if i < 15 { req[i] = sys.at(name, i) } }
+    let ok = ioctl(fd, request as u64, req as *void) == 0
+    sys.close_fd(fd as i64)
+    let text = ok ? sys.join2(sys.join2(decimal(req[20] as i64), "."), sys.join2(sys.join2(decimal(req[21] as i64), "."), sys.join2(sys.join2(decimal(req[22] as i64), "."), decimal(req[23] as i64)))) : ""
+    sys.free(req as *void)
+    return text
+} }
+fn has_a(args: Vec<str>): bool { for k in 0..(args.len() as i64) { if sys.same(args[k], "-a") { return true } }; return false }
+fn run_ifconfig(args: Vec<str>): i64 {
+    let rows = table_rows("/proc/net/dev")
+    if rows.len() < 3 { sys.warn_path("ifconfig", "/proc/net/dev"); return 1 }
+    let out = sys.out_new(1); let wanted = ""
+    for k in 0..(args.len() as i64) { if !sys.starts(args[k], "-") { wanted = args[k] } }
+    for k in 2..(rows.len() as i64) {
+        let r = rows[k]; if r.len() < 10 { continue }
+        let colon = sys.find_char(r[0], 58)
+        let name = colon < 0 ? r[0] : sys.join2(sys.slice(r[0], 0, colon), "")
+        let nums = Vec<str>(); if colon >= 0 && colon + 1 < sys.length(r[0]) { nums.push(sys.join2(sys.slice(r[0], colon + 1, sys.length(r[0])), "")) }; for q in 1..(r.len() as i64) { nums.push(r[q]) }
+        if sys.length(wanted) > 0 && !sys.same(wanted, name) { continue }
+        let flags = hex_value(read_trim(sys.join2(sys.join2("/sys/class/net/", name), "/flags")))
+        let up = flags % 2 == 1
+        if !up && !has_a(args) && sys.length(wanted) == 0 { continue }
+        let mac = read_trim(sys.join2(sys.join2("/sys/class/net/", name), "/address")); let mtu = read_trim(sys.join2(sys.join2("/sys/class/net/", name), "/mtu"))
+        let loopback = sys.same(name, "lo")
+        sys.out_str(out, pad_right(name, 10)); sys.out_str(out, loopback ? "Link encap:Local Loopback  \n" : sys.join2(sys.join2("Link encap:Ethernet  HWaddr ", mac), "  \n"))
+        let addr = query_address(name, 35093)
+        if sys.length(addr) > 0 {
+            sys.out_str(out, "          inet addr:"); sys.out_str(out, addr)
+            let bcast = query_address(name, 35097); if sys.length(bcast) > 0 && !loopback { sys.out_str(out, "  Bcast:"); sys.out_str(out, bcast) }
+            sys.out_str(out, "  Mask:"); sys.out_str(out, query_address(name, 35099)); sys.out_byte(out, 10)
+        }
+        sys.out_str(out, "          "); sys.out_str(out, up ? "UP " : ""); sys.out_str(out, loopback ? "LOOPBACK " : ((flags / 2) % 2 == 1 ? "BROADCAST " : "")); sys.out_str(out, (flags / 64) % 2 == 1 ? "RUNNING " : ""); sys.out_str(out, (flags / 4096) % 2 == 1 ? "MULTICAST  " : " "); sys.out_str(out, "MTU:"); sys.out_str(out, mtu); sys.out_str(out, "  Metric:1\n")
+        sys.out_str(out, sys.join2(sys.join2("          RX packets:", nums[1]), sys.join2(sys.join2(" errors:", nums[2]), sys.join2(sys.join2(" dropped:", nums[3]), " overruns:0 frame:0\n"))))
+        sys.out_str(out, sys.join2(sys.join2("          TX packets:", nums[9]), sys.join2(sys.join2(" errors:", nums[10]), sys.join2(sys.join2(" dropped:", nums[11]), " overruns:0 carrier:0\n"))))
+        sys.out_str(out, sys.join2(sys.join2("          RX bytes:", nums[0]), sys.join2(sys.join2(" TX bytes:", nums[8]), "\n\n")))
+    }
+    sys.out_flush(out)
+    return 0
+}
+
+// ---- top [-b] [-n COUNT] [-d SECONDS] ----------------------------------------------------------------------------------------------------------------------------------
+fn run_top(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "bn:d:m")
+    if o.bad != 0 || o.missing != 0 { sys.warn("top", "invalid usage: top [-b] [-n COUNT] [-d SECONDS]"); return 1 }
+    let count = sys.has(o, 110) ? sys.parse_number(sys.val(o, 110)).value : 1
+    let out = sys.out_new(1)
+    for round in 0..count {
+        let mem = table_rows("/proc/meminfo"); let total = 0; let free = 0; let cached = 0; let buffers = 0
+        for k in 0..(mem.len() as i64) {
+            if mem[k].len() < 2 { continue }
+            if sys.same(mem[k][0], "MemTotal:") { total = sys.parse_number(mem[k][1]).value } else if sys.same(mem[k][0], "MemFree:") { free = sys.parse_number(mem[k][1]).value }
+            else if sys.same(mem[k][0], "Cached:") { cached = sys.parse_number(mem[k][1]).value } else if sys.same(mem[k][0], "Buffers:") { buffers = sys.parse_number(mem[k][1]).value }
+        }
+        sys.out_str(out, sys.join2(sys.join2("Mem: ", decimal(total - free)), sys.join2("K used, ", sys.join2(decimal(free), sys.join2("K free, ", sys.join2(decimal(buffers), sys.join2("K buff, ", sys.join2(decimal(cached), "K cached\n"))))))))
+        let load = table_rows("/proc/loadavg")
+        if load.len() > 0 && load[0].len() >= 3 { sys.out_str(out, sys.join2("Load average: ", sys.join2(load[0][0], sys.join2(" ", sys.join2(load[0][1], sys.join2(" ", sys.join2(load[0][2], "\n"))))))) }
+        sys.out_str(out, "  PID  PPID USER     STAT   VSZ %VSZ COMMAND\n")
+        let l = fsx.list_dir("/proc")
+        for k in 0..(l.names.len() as i64) {
+            let pid = sys.parse_number(l.names[k]); if !pid.ok { continue }
+            let stat = table_rows(sys.join2(sys.join2("/proc/", l.names[k]), "/stat"))
+            if stat.len() == 0 || stat[0].len() < 24 { continue }
+            let s = stat[0]; let name = s[1]
+            let vsz = sys.parse_number(s[22]).value / 1024
+            let pct = total > 0 ? vsz * 100 / total : 0
+            let status = table_rows(sys.join2(sys.join2("/proc/", l.names[k]), "/status")); let uid = 0
+            for q in 0..(status.len() as i64) { if status[q].len() >= 2 && sys.same(status[q][0], "Uid:") { uid = sys.parse_number(status[q][1]).value } }
+            let user = fsx.user_name(uid); if sys.length(user) == 0 { user = decimal(uid) }
+            sys.out_str(out, pad_left(l.names[k], 5)); sys.out_byte(out, 32); sys.out_str(out, pad_left(s[3], 5)); sys.out_byte(out, 32); sys.out_str(out, pad_right(user, 8)); sys.out_byte(out, 32)
+            sys.out_str(out, pad_right(s[2], 4)); sys.out_byte(out, 32); sys.out_str(out, pad_left(decimal(vsz), 7)); sys.out_byte(out, 32); sys.out_str(out, pad_left(decimal(pct), 3)); sys.out_str(out, "% ")
+            sys.out_str(out, sys.starts(name, "(") ? sys.join2(sys.slice(name, 1, sys.length(name) - 1), "") : name); sys.out_byte(out, 10)
+        }
+        if round + 1 < count { sys.out_flush(out); proc.pause_us((sys.has(o, 100) ? sys.parse_number(sys.val(o, 100)).value : 5) * 1000000) }
+    }
+    sys.out_flush(out)
+    return 0
+}

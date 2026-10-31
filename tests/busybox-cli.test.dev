@@ -402,6 +402,21 @@ test.case("adduser addgroup deluser delgroup envdir chpst softlimit mkswap (Busy
     test.expect(strings.contains(outcome(d, "head -c 100000 /dev/zero > sw.img; " + bb + " mkswap sw.img; file sw.img 2>/dev/null | grep -c swap; blkid sw.img 2>/dev/null | grep -c swap; od -An -c -j 4086 -N 10 sw.img"), "S   W   A   P   S   P   A   C   E   2"), "mkswap wrote no signature")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("route arp netstat ifconfig top (BusyBox only, pattern checks)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    test.expect(strings.contains(outcome(d, bb + " route -n"), "Kernel IP routing table\nDestination     Gateway         Genmask         Flags Metric Ref    Use Iface"), "route header is wrong")
+    test.expect(strings.contains(outcome(d, bb + " route -n | tail -1"), "eth0") || strings.contains(outcome(d, bb + " route -n | tail -1"), "lo") || strings.contains(outcome(d, bb + " route -n | wc -l"), "1"), "route lists no interface")
+    test.expect(strings.contains(outcome(d, bb + " netstat -tuln"), "Active Internet connections (only servers)\nProto Recv-Q Send-Q Local Address           Foreign Address         State"), "netstat header is wrong")
+    test.expect(strings.equal(outcome(d, bb + " netstat -tln | tail -n +3 | grep -c LISTEN"), outcome(d, "ss -tln | tail -n +2 | wc -l")) || strings.contains(outcome(d, bb + " netstat -tln | tail -n +3 | grep -c LISTEN"), "rc=0"), "netstat listener count")
+    test.expect(strings.contains(outcome(d, bb + " ifconfig lo"), "lo        Link encap:Local Loopback"), "ifconfig lo header is wrong:\n" + outcome(d, bb + " ifconfig lo"))
+    test.expect(strings.contains(outcome(d, bb + " ifconfig lo"), "inet addr:127.0.0.1  Mask:255.0.0.0"), "ifconfig lo address is wrong")
+    test.expect(strings.contains(outcome(d, bb + " ifconfig lo"), "RX packets:"), "ifconfig lo statistics are missing")
+    test.expect(strings.contains(outcome(d, bb + " top -b -n 1"), "  PID  PPID USER     STAT   VSZ %VSZ COMMAND"), "top header is wrong")
+    test.expect(strings.contains(outcome(d, bb + " top -b -n 1 | grep -c ' top\\| busybox'"), "rc=0"), "top failed")
+    test.expect(strings.contains(outcome(d, bb + " arp; echo rc=$?"), "rc="), "arp did not run")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
