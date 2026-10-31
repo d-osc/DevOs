@@ -436,6 +436,25 @@ test.case("nc wget ping nslookup (against local servers)",fn() {
     test.expect(strings.contains(outcome(d, bb + " ping -c 1 nosuch-host.invalid; echo rc=$?"), "rc=1"), "ping accepted an unknown host")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("httpd telnet ftpget ftpput (against local peers)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let ftpd = t.root() + "/tests/lib/mini-ftpd.py"
+    let prep = "mkdir -p site srv && printf '<h1>home</h1>\\n' > site/index.html && printf 'plain\\n' > site/a.txt && head -c 30000 /dev/urandom > site/r.bin && printf 'remote file\\n' > srv/get.txt; "
+    let start = prep + bb + " httpd -p 127.0.0.1:18810 -h site -f & echo $! > h.pid; sleep 1; "
+    let stop = "; kill $(cat h.pid) 2>/dev/null; sleep 1"
+    test.expect(strings.contains(outcome(d, start + "python3 -c \"import urllib.request as u; print(u.urlopen('http://127.0.0.1:18810/a.txt').read().decode())\"" + stop), "plain"), "httpd did not serve a file")
+    test.expect(strings.contains(outcome(d, start + "python3 -c \"import urllib.request as u; print(u.urlopen('http://127.0.0.1:18810/').read().decode())\"" + stop), "<h1>home</h1>"), "httpd did not serve index.html")
+    test.expect(strings.contains(outcome(d, start + bb + " wget -q -O got.bin http://127.0.0.1:18810/r.bin; cmp got.bin site/r.bin; echo cmp=$?" + stop), "cmp=0"), "httpd corrupted a binary file")
+    test.expect(strings.contains(outcome(d, start + bb + " wget -q -O - http://127.0.0.1:18810/missing; echo rc=$?" + stop), "rc=1"), "httpd did not return 404")
+    test.expect(strings.contains(outcome(d, start + bb + " wget -q -O - http://127.0.0.1:18810/../etc/passwd; echo rc=$?" + stop), "rc=1"), "httpd served a path outside its root")
+    test.expect(strings.contains(outcome(d, start + "printf 'GET /a.txt HTTP/1.0\\r\\n\\r\\n' | " + bb + " nc 127.0.0.1 18810 | head -1" + stop), "HTTP/1.0 200 OK"), "httpd status line")
+    test.expect(strings.contains(outcome(d, prep + "python3 -m http.server 18811 --bind 127.0.0.1 --directory site >/dev/null 2>&1 & echo $! > s.pid; sleep 1; printf 'GET /a.txt HTTP/1.0\\r\\n\\r\\n' | " + bb + " telnet 127.0.0.1 18811 | tail -1; kill $(cat s.pid); sleep 1"), "plain"), "telnet did not relay the response")
+    test.expect(strings.contains(outcome(d, prep + "python3 " + ftpd + " 18812 srv & sleep 1; " + bb + " ftpget -P 18812 127.0.0.1 got.txt get.txt; cat got.txt; wait"), "remote file"), "ftpget failed")
+    test.expect(strings.contains(outcome(d, prep + "python3 " + ftpd + " 18813 srv & sleep 1; " + bb + " ftpput -P 18813 127.0.0.1 up.txt site/a.txt; wait; cat srv/up.txt"), "plain"), "ftpput failed")
+    test.expect(strings.contains(outcome(d, prep + "python3 " + ftpd + " 18814 srv & sleep 1; " + bb + " ftpget -P 18814 127.0.0.1 x.txt nosuch.txt; echo rc=$?; wait"), "rc=1"), "ftpget accepted a missing file")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

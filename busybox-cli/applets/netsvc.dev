@@ -1,0 +1,212 @@
+# httpd, telnet, ftpget, ftpput: simple servers and clients over IPv4 sockets.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/net.dev" as net
+use "./gzip.dev" as gz
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn read_all(fd: i64): *sys.Bytes {
+    let out = sys.bytes_new(); let chunk = sys.bytes_new(); for i in 0..16384 { sys.bytes_push(chunk, 0) }
+    while true { let n = sys.read_into(fd, sys.bdata(chunk), 16384); if n <= 0 { break }; sys.bytes_append(out, sys.bdata(chunk), n) }
+    return out
+}
+fn send_text(fd: i64, text: str) { let b = sys.bytes_new(); sys.bytes_str(b, text); net.send_all(fd, sys.bdata(b), sys.blen(b)) }
+
+// ---- httpd [-p [IP:]PORT] [-h HOME] ------------------------------------------------------------------------------------------------------------------------------------
+fn mime_of(path: str): str {
+    let dot = 0 - 1; for i in 0..sys.length(path) { if sys.at(path, i) == 46 { dot = i } }
+    let ext = dot < 0 ? "" : sys.join2(sys.slice(path, dot + 1, sys.length(path)), "")
+    if sys.same(ext, "html") || sys.same(ext, "htm") { return "text/html" }
+    if sys.same(ext, "txt") { return "text/plain" }
+    if sys.same(ext, "css") { return "text/css" }
+    if sys.same(ext, "js") { return "application/javascript" }
+    if sys.same(ext, "json") { return "application/json" }
+    if sys.same(ext, "png") { return "image/png" }
+    if sys.same(ext, "jpg") || sys.same(ext, "jpeg") { return "image/jpeg" }
+    if sys.same(ext, "gif") { return "image/gif" }
+    if sys.same(ext, "svg") { return "image/svg+xml" }
+    if sys.same(ext, "xml") { return "text/xml" }
+    return "application/octet-stream"
+}
+fn hex_digit(c: u8): i64 { if c >= 48 && c <= 57 { return (c - 48) as i64 }; if c >= 97 && c <= 102 { return (c - 87) as i64 }; if c >= 65 && c <= 70 { return (c - 55) as i64 }; return 0 - 1 }
+fn url_decode(text: str): str {
+    let b = sys.bytes_new(); let n = sys.length(text); let i = 0
+    while i < n {
+        let c = sys.at(text, i)
+        if c == 37 && i + 2 < n + 0 && hex_digit(sys.at(text, i + 1)) >= 0 && hex_digit(sys.at(text, i + 2)) >= 0 { sys.bytes_push(b, (hex_digit(sys.at(text, i + 1)) * 16 + hex_digit(sys.at(text, i + 2))) as u8); i = i + 3 }
+        else { sys.bytes_push(b, c); i = i + 1 }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn safe_path(path: str): bool {
+    let n = sys.length(path)
+    for i in 0..(n - 1) { if sys.at(path, i) == 46 && sys.at(path, i + 1) == 46 && (i == 0 || sys.at(path, i - 1) == 47) && (i + 2 >= n || sys.at(path, i + 2) == 47) { return false } }
+    return true
+}
+fn respond(client: i64, code: i64, reason: str, mime: str, body: *sys.Bytes, head_only: bool) {
+    let head = sys.join2(sys.join2(sys.join2("HTTP/1.0 ", decimal(code)), sys.join2(" ", reason)), sys.join2("\r\nContent-Type: ", sys.join2(mime, sys.join2(sys.join2("\r\nContent-Length: ", decimal(sys.blen(body))), "\r\nConnection: close\r\n\r\n"))))
+    send_text(client, head)
+    if !head_only && sys.blen(body) > 0 { net.send_all(client, sys.bdata(body), sys.blen(body)) }
+}
+fn text_body(s: str): *sys.Bytes { let b = sys.bytes_new(); sys.bytes_str(b, s); return b }
+fn handle_request(client: i64, home: str, verbose: bool) {
+    net.set_timeout(client, 5)
+    let req = sys.bytes_new(); let chunk = sys.bytes_new(); for i in 0..4096 { sys.bytes_push(chunk, 0) }
+    while true {
+        let n = sys.read_into(client, sys.bdata(chunk), 4096)
+        if n <= 0 { break }
+        sys.bytes_append(req, sys.bdata(chunk), n)
+        let done = false; for i in 0..(sys.blen(req) - 3) { if sys.bat(req, i) == 13 && sys.bat(req, i + 1) == 10 && sys.bat(req, i + 2) == 13 && sys.bat(req, i + 3) == 10 { done = true; break } }
+        if done || sys.blen(req) > 65536 { break }
+    }
+    let first_end = 0; while first_end < sys.blen(req) && sys.bat(req, first_end) != 13 && sys.bat(req, first_end) != 10 { first_end = first_end + 1 }
+    let line = copy_range(req, 0, first_end)
+    let s1 = sys.find_char(line, 32)
+    if s1 <= 0 { respond(client, 400, "Bad Request", "text/plain", text_body("Bad request\n"), false); return }
+    let method = sys.join2(sys.slice(line, 0, s1), ""); let rest = sys.join2(sys.slice(line, s1 + 1, sys.length(line)), ""); let s2 = sys.find_char(rest, 32)
+    let target = s2 < 0 ? rest : sys.join2(sys.slice(rest, 0, s2), "")
+    let q = sys.find_char(target, 63); if q >= 0 { target = sys.join2(sys.slice(target, 0, q), "") }
+    target = url_decode(target)
+    if verbose { sys.put_fd(2, sys.join2(line, "\n")) }
+    if !sys.same(method, "GET") && !sys.same(method, "HEAD") { respond(client, 501, "Not Implemented", "text/plain", text_body("Not implemented\n"), false); return }
+    if !safe_path(target) || !sys.starts(target, "/") { respond(client, 400, "Bad Request", "text/plain", text_body("Bad request\n"), false); return }
+    let path = fsx.join_path(home, sys.join2(sys.slice(target, 1, sys.length(target)), ""))
+    if sys.is_dir(path) {
+        if !sys.ends(target, "/") { respond(client, 302, "Found", "text/plain", text_body("Redirect\n"), false); return }
+        path = fsx.join_path(path, "index.html")
+    }
+    let input = sys.read_path(path)
+    if !input.ok || !sys.exists(path) { respond(client, 404, "Not Found", "text/plain", text_body("Not found\n"), sys.same(method, "HEAD")); return }
+    respond(client, 200, "OK", mime_of(path), input.bytes, sys.same(method, "HEAD"))
+}
+fn run_httpd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "p:h:fvc:u:r:m:i")
+    if o.bad != 0 || o.missing != 0 { sys.warn("httpd", "invalid usage: httpd [-p [IP:]PORT] [-h HOME] [-v]"); return 1 }
+    let port_text = sys.has(o, 112) ? sys.val(o, 112) : "80"; let colon = sys.find_char(port_text, 58)
+    let port = sys.parse_number(colon < 0 ? port_text : sys.join2(sys.slice(port_text, colon + 1, sys.length(port_text)), ""))
+    if !port.ok { sys.warn("httpd", "bad port"); return 1 }
+    let home = sys.has(o, 104) ? sys.val(o, 104) : "."
+    let server = net.listen_on(port.value)
+    if server < 0 { sys.warn("httpd", "can't bind to the port"); return 1 }
+    while true {
+        let client = net.accept_one(server)
+        if client < 0 { continue }
+        handle_request(client, home, sys.has(o, 118))
+        sys.close_fd(client)
+    }
+    return 0
+}
+
+// ---- telnet HOST [PORT] -----------------------------------------------------------------------------------------------------------------------------------------------------
+fn run_telnet(args: Vec<str>): i64 {
+    let words = Vec<str>(); for k in 0..(args.len() as i64) { if !sys.starts(args[k], "-") { words.push(args[k]) } }
+    if words.len() == 0 || words.len() > 2 { sys.warn("telnet", "invalid usage: telnet HOST [PORT]"); return 1 }
+    let ip = net.resolve(words[0]); if ip < 0 { sys.warn("telnet", sys.join2(sys.join2("bad address '", words[0]), "'")); return 1 }
+    let port = words.len() == 2 ? sys.parse_number(words[1]).value : 23
+    let fd = net.connect_to(ip, port, 10)
+    if fd < 0 { sys.warn("telnet", sys.join2(sys.join2("can't connect to remote host (", net.ip_text(ip)), "): Connection refused")); return 1 }
+    net.set_timeout(fd, 3)
+    if !sys.is_tty(0) { let input = sys.read_fd(0); if input.ok && sys.blen(input.bytes) > 0 { net.send_all(fd, sys.bdata(input.bytes), sys.blen(input.bytes)) } }
+    let data = read_all(fd); let out = sys.out_new(1); let n = sys.blen(data); let i = 0
+    while i < n {
+        let c = sys.bat(data, i)
+        if c == 255 && i + 1 < n {
+            let cmd = sys.bat(data, i + 1)
+            if cmd == 255 { sys.out_byte(out, 255); i = i + 2; continue }
+            if cmd >= 251 && cmd <= 254 && i + 2 < n {
+                let reply = sys.bytes_new(); sys.bytes_push(reply, 255); let answer = cmd; if cmd == 253 { answer = 252 } else if cmd == 251 { answer = 254 }; sys.bytes_push(reply, answer); sys.bytes_push(reply, sys.bat(data, i + 2))
+                if cmd == 253 || cmd == 251 { net.send_all(fd, sys.bdata(reply), 3) }
+                i = i + 3; continue
+            }
+            i = i + 2; continue
+        }
+        sys.out_byte(out, c); i = i + 1
+    }
+    sys.out_flush(out); sys.close_fd(fd)
+    return 0
+}
+
+// ---- ftpget / ftpput ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Reads one (possibly multi-line) FTP reply; returns the numeric code.
+fn ftp_reply(fd: i64): i64 {
+    let code = 0
+    while true {
+        let line = sys.bytes_new(); let c = sys.bytes_new(); sys.bytes_push(c, 0)
+        while true { let n = sys.read_into(fd, sys.bdata(c), 1); if n <= 0 { return 0 - 1 }; if sys.bat(c, 0) == 10 { break }; if sys.bat(c, 0) != 13 { sys.bytes_push(line, sys.bat(c, 0)) } }
+        let text = sys.join2(sys.bytes_cstr(line), "")
+        if sys.length(text) >= 4 && sys.is_digit(sys.at(text, 0)) && sys.is_digit(sys.at(text, 1)) && sys.is_digit(sys.at(text, 2)) {
+            code = (sys.at(text, 0) - 48) as i64 * 100 + (sys.at(text, 1) - 48) as i64 * 10 + (sys.at(text, 2) - 48) as i64
+            if sys.at(text, 3) == 32 { return code }
+        }
+    }
+    return code
+}
+struct Ftp { ok: bool, control: i64 }
+fn ftp_command(fd: i64, command: str): i64 { send_text(fd, sys.join2(command, "\r\n")); return ftp_reply(fd) }
+fn ftp_open(host: str, port: i64, user: str, pass: str): Ftp {
+    let ip = net.resolve(host); if ip < 0 { sys.warn("ftp", sys.join2(sys.join2("bad address '", host), "'")); return Ftp(false, 0) }
+    let fd = net.connect_to(ip, port, 10); if fd < 0 { sys.warn("ftp", "can't connect to remote host"); return Ftp(false, 0) }
+    net.set_timeout(fd, 10)
+    if ftp_reply(fd) != 220 { sys.warn("ftp", "bad greeting"); return Ftp(false, 0) }
+    let r = ftp_command(fd, sys.join2("USER ", user))
+    if r == 331 { r = ftp_command(fd, sys.join2("PASS ", pass)) }
+    if r != 230 { sys.warn("ftp", "login failed"); return Ftp(false, 0) }
+    ftp_command(fd, "TYPE I")
+    return Ftp(true, fd)
+}
+// Opens the passive data connection announced by the server (227 reply parsed from the control channel).
+fn ftp_passive(fd: i64): i64 {
+    send_text(fd, "PASV\r\n")
+    let line = sys.bytes_new(); let c = sys.bytes_new(); sys.bytes_push(c, 0)
+    while true { let n = sys.read_into(fd, sys.bdata(c), 1); if n <= 0 { return 0 - 1 }; if sys.bat(c, 0) == 10 { break }; sys.bytes_push(line, sys.bat(c, 0)) }
+    let text = sys.join2(sys.bytes_cstr(line), "")
+    if !sys.starts(text, "227") { return 0 - 1 }
+    let open = sys.find_char(text, 40); if open < 0 { return 0 - 1 }
+    let nums = Vec<i64>(); let v = 0; let have = false
+    for i in (open + 1)..sys.length(text) { let ch = sys.at(text, i); if sys.is_digit(ch) { v = v * 10 + (ch - 48) as i64; have = true } else { if have { nums.push(v) }; v = 0; have = false; if ch == 41 { break } } }
+    if nums.len() < 6 { return 0 - 1 }
+    let ip = nums[0] * 16777216 + nums[1] * 65536 + nums[2] * 256 + nums[3]
+    return net.connect_to(ip, nums[4] * 256 + nums[5], 10)
+}
+fn ftp_options(args: Vec<str>, prog: str): sys.Opts {
+    return sys.parse_opts(args, "u:p:P:v")
+}
+fn run_ftpget(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "u:p:P:vcs:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 2 || o.rest.len() > 3 { sys.warn("ftpget", "invalid usage: ftpget [-u USER] [-p PASS] [-P PORT] HOST [LOCAL] REMOTE"); return 1 }
+    let host = o.rest[0]; let remote = o.rest[(o.rest.len() as i64) - 1]; let local = o.rest.len() == 3 ? o.rest[1] : sys.base_name(remote)
+    let ftp = ftp_open(host, sys.has(o, 80) ? sys.parse_number(sys.val(o, 80)).value : 21, sys.has(o, 117) ? sys.val(o, 117) : "anonymous", sys.has(o, 112) ? sys.val(o, 112) : "busybox@")
+    if !ftp.ok { return 1 }
+    let data = ftp_passive(ftp.control)
+    if data < 0 { sys.warn("ftpget", "passive mode failed"); return 1 }
+    let r = ftp_command(ftp.control, sys.join2("RETR ", remote))
+    if r != 150 && r != 125 { sys.warn("ftpget", sys.join2(remote, ": cannot retrieve")); sys.close_fd(data); return 1 }
+    let body = read_all(data); sys.close_fd(data)
+    ftp_reply(ftp.control)
+    ftp_command(ftp.control, "QUIT")
+    if sys.same(local, "-") { let out = sys.out_new(1); sys.out_data(out, sys.bdata(body), sys.blen(body)); sys.out_flush(out); return 0 }
+    if !gz.write_file(local, body, 420) { sys.warn_write("ftpget", local); return 1 }
+    return 0
+}
+fn run_ftpput(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "u:p:P:vcs:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 2 || o.rest.len() > 3 { sys.warn("ftpput", "invalid usage: ftpput [-u USER] [-p PASS] [-P PORT] HOST REMOTE [LOCAL]"); return 1 }
+    let host = o.rest[0]; let remote = o.rest[1]; let local = o.rest.len() == 3 ? o.rest[2] : remote
+    let input = sys.read_path(local); if !input.ok { sys.warn_path("ftpput", local); return 1 }
+    let ftp = ftp_open(host, sys.has(o, 80) ? sys.parse_number(sys.val(o, 80)).value : 21, sys.has(o, 117) ? sys.val(o, 117) : "anonymous", sys.has(o, 112) ? sys.val(o, 112) : "busybox@")
+    if !ftp.ok { return 1 }
+    let data = ftp_passive(ftp.control)
+    if data < 0 { sys.warn("ftpput", "passive mode failed"); return 1 }
+    let r = ftp_command(ftp.control, sys.join2("STOR ", remote))
+    if r != 150 && r != 125 { sys.warn("ftpput", sys.join2(remote, ": cannot store")); sys.close_fd(data); return 1 }
+    net.send_all(data, sys.bdata(input.bytes), sys.blen(input.bytes)); sys.close_fd(data)
+    let done = ftp_reply(ftp.control)
+    ftp_command(ftp.control, "QUIT")
+    return done == 226 ? 0 : 1
+}
