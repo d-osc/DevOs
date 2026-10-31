@@ -196,6 +196,14 @@ test.case("ls",fn() {
         data + "@ls -l a.txt lnk",data + "@ls -lL lnk",data + "@ls -l /dev/null",data + "@ls -lu a.txt | cut -c1-10",data + "@ls -lc a.txt | cut -c1-10",data + "@ls -ls",data + "@ls -lSr",data + "@ls -m | tr -d ' ' | head -c 5; echo",data + "@ls -l sub/",data + "@ls --nosuchoption; echo rc=$?"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("stat du df",fn() {
+    let d = sandbox()
+    let data = "export LC_ALL=C; mkdir -p t/sub && printf 'x' > t/a.txt && printf 'hello world' > t/sub/b.log && ln -s a.txt t/lnk && chmod 640 t/a.txt && touch -d '2001-02-03 04:05:06' t/a.txt; cd t; "
+    all_same(d, Vec<str>(data + "@stat -c '%n %s %F %a %A %h %u %g %U %G' a.txt sub lnk",data + "@stat -c '%N' lnk a.txt",data + "@stat -L -c '%F' lnk",data + "@stat -c '%Y %X' a.txt",data + "@stat -c '%b %B' a.txt",data + "@stat -c '%f' a.txt sub",data + "@stat -c '%i' a.txt | wc -l",data + "@stat -c 'a\\tb%%' a.txt",data + "@stat nosuch; echo rc=$?",data + "@stat a.txt | head -1",data + "@stat -c '%F' /dev/null",data + "@stat -c '%t %T' /dev/null",
+        data + "@du -s .",data + "@du -sk sub",data + "@du -a . | sort -k2",data + "@du .",data + "@du -sh .",data + "@du -c a.txt sub | tail -1",data + "@du -b a.txt sub/b.log",data + "@du -d 0 .",data + "@du -s nosuch; echo rc=$?",data + "@du -L lnk",data + "@du -sm .",data + "@du -a sub",
+        "@df -P / | head -1 | tr -s ' '","@df -k / | head -1 | wc -w","@df -h / | head -1 | tr -s ' '","@df -T / | head -1 | wc -w","@df / | wc -l","@df -P . | wc -l","@df -i / | head -1 | tr -s ' '","@df nosuch; echo rc=$?"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
