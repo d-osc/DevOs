@@ -376,7 +376,7 @@ void rd_class(void *data, const unsigned char *bytes, int64_t length) {
 }
 void rd_layout(void *data, int32_t kind, int32_t vertical, int32_t spacing, int32_t expand, int32_t sensitive, int32_t visible, int32_t width, int32_t height) {
     GtkWidget *widget = data;
-    if (kind == 0 || kind == 9) { gtk_orientable_set_orientation(GTK_ORIENTABLE(widget), vertical ? GTK_ORIENTATION_VERTICAL : GTK_ORIENTATION_HORIZONTAL); gtk_box_set_spacing(GTK_BOX(widget), spacing); }
+    if (kind == 0 || kind == 9) { gtk_orientable_set_orientation(GTK_ORIENTABLE(widget), vertical ? GTK_ORIENTATION_VERTICAL : GTK_ORIENTATION_HORIZONTAL); gtk_box_set_spacing(GTK_BOX(widget), spacing); gtk_box_set_homogeneous(GTK_BOX(widget), gtk_style_context_has_class(gtk_widget_get_style_context(widget), "homogeneous")); }
     gtk_widget_set_hexpand(widget, expand); gtk_widget_set_vexpand(widget, expand);
     gtk_widget_set_sensitive(widget, sensitive); gtk_widget_set_size_request(widget, width, height);
     if(kind==18)g_object_set_data(G_OBJECT(widget),"rd-popover-visible",GINT_TO_POINTER(visible));else gtk_widget_set_visible(widget, visible);

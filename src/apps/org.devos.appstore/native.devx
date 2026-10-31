@@ -63,7 +63,8 @@ fn grid(cards:Vec<ui.Node>):ui.Node {
     while i < cards.len() as i64 {
         let pair = Vec<ui.Node>(cards[i])
         if i + 1 < cards.len() as i64 { pair.push(cards[i + 1]) } else { let spacer = ui.props(); spacer.expand = true; pair.push(ui.Box(spacer,Vec<ui.Node>())) }
-        rows.push(ext.row(14,pair)); i = i + 2
+        let line = ui.props(); line.vertical = false; line.spacing = 14; line.className = ui.text("homogeneous")
+        rows.push(ui.Box(line,pair)); i = i + 2
     }
     return boxed("",true,14,rows)
 }
