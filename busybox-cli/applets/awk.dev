@@ -1,0 +1,76 @@
+# awk [-F FS] [-v VAR=VALUE]... [-f PROGFILE | 'PROGRAM'] [FILE]...: pattern scanning and processing language.
+use "../lib/sys.dev" as sys
+use "../lib/lines.dev" as lines
+use "../lib/awkval.dev" as av
+use "../lib/awkparse.dev" as ap
+use "../lib/awkrt.dev" as rt
+use "../lib/awkexec.dev" as ex
+use "../lib/proc.dev" as proc
+
+fn run_awk(args: Vec<str>): i64 {
+    let fs = ""; let have_fs = false; let assigns = Vec<str>(); let program = ""; let have_program = false; let operands = Vec<str>()
+    let i = 0; let n = args.len() as i64; let ended = false
+    while i < n {
+        let a = args[i]
+        if ended || sys.length(a) < 2 || sys.at(a, 0) != 45 {
+            if !have_program { program = a; have_program = true } else { operands.push(a) }
+            i = i + 1; continue
+        }
+        if sys.same(a, "--") { ended = true; i = i + 1; continue }
+        let c = sys.at(a, 1)
+        if c == 70 { have_fs = true; if sys.length(a) > 2 { fs = sys.join2(sys.slice(a, 2, sys.length(a)), "") } else if i + 1 < n { i = i + 1; fs = args[i] } }
+        else if c == 118 { if sys.length(a) > 2 { assigns.push(sys.join2(sys.slice(a, 2, sys.length(a)), "")) } else if i + 1 < n { i = i + 1; assigns.push(args[i]) } }
+        else if c == 102 {
+            let file = sys.length(a) > 2 ? sys.join2(sys.slice(a, 2, sys.length(a)), "") : (i + 1 < n ? args[i + 1] : "")
+            if sys.length(a) <= 2 { i = i + 1 }
+            let input = sys.read_path(file)
+            if !input.ok { sys.warn_path("awk", file); return 2 }
+            program = sys.join2(sys.join2(program, have_program ? "\n" : ""), lines.text_of(input.bytes, 0, sys.blen(input.bytes))); have_program = true
+        }
+        else { sys.warn("awk", "invalid usage: awk [-F FS] [-v VAR=VALUE]... [-f PROGFILE | 'PROGRAM'] [FILE]..."); return 2 }
+        i = i + 1
+    }
+    if !have_program { sys.warn("awk", "no program given"); return 2 }
+    let capacity = (sys.length(program) * 3 + 64)
+    let p = ap.P(program, ap.cells(32), ap.cells(capacity * 10), ap.fcells(capacity + 8), ap.cells(4096), ap.cells(1024 * 4), ap.cells(256))
+    for name in Vec<str>("NF", "NR", "FNR", "FS", "OFS", "ORS", "RS", "FILENAME", "SUBSEP", "RSTART", "RLENGTH", "CONVFMT", "OFMT", "ENVIRON", "ARGC", "ARGV") { ap.global_index(p, name) }
+    ap.parse_program(p)
+    if ap.failed(p) { sys.warn("awk", "syntax error in program"); return 2 }
+    let slots = 70000
+    let r = rt.R(p, ap.cells(slots), ap.fcells(slots), ap.cells(slots), ap.cells(64), ap.fcells(4), rt.ht_new(1024), ap.cells(32768), sys.out_new(1), operands, ap.cells(3 * 256), ap.cells(3 * 256))
+    rt.is_(r.rc, 0, 4200); rt.is_(r.rc, 1, 4200); rt.is_(r.rc, 5, 0); rt.is_(r.rc, 15, 1)
+    rt.slot_set(r, rt.FS(), rt.text(have_fs ? (sys.same(fs, "t") ? "\t" : rt.unescape(fs)) : " "))
+    rt.slot_set(r, rt.OFS(), rt.text(" ")); rt.slot_set(r, rt.ORS(), rt.text("\n")); rt.slot_set(r, rt.RS(), rt.text("\n"))
+    rt.slot_set(r, rt.SUBSEP(), rt.text(sep_text())); rt.slot_set(r, rt.CONVFMT(), rt.text("%.6g")); rt.slot_set(r, rt.OFMT(), rt.text("%.6g"))
+    rt.slot_set(r, rt.NR(), rt.num(0.0)); rt.slot_set(r, rt.FNR(), rt.num(0.0)); rt.slot_set(r, rt.NF(), rt.num(0.0)); rt.slot_set(r, rt.RSTART(), rt.num(0.0)); rt.slot_set(r, rt.RLENGTH(), rt.num(0.0 - 1.0))
+    rt.set_record(r, "")
+    let env = rt.array_id(r, rt.ENVIRON()); let vars = proc_env()
+    for k in 0..(vars.len() as i64) { let e = vars[k]; let eq = sys.find_char(e, 61); if eq > 0 { rt.ht_set(r, env, sys.join2(sys.slice(e, 0, eq), ""), rt.input_value(sys.join2(sys.slice(e, eq + 1, sys.length(e)), ""))) } }
+    let argv = rt.array_id(r, rt.ARGV())
+    rt.ht_set(r, argv, "0", rt.text("awk"))
+    for k in 0..(operands.len() as i64) { rt.ht_set(r, argv, rt.radix_text(k + 1, 10, false), rt.input_value(operands[k])) }
+    rt.slot_set(r, rt.ARGC(), rt.num((operands.len() as f64) + 1.0))
+    rt.is_(r.rc, 12, 1)
+    for k in 0..(assigns.len() as i64) { if !rt.assign_operand(r, assigns[k]) { sys.warn("awk", sys.join2("invalid assignment ", assigns[k])); return 2 } }
+    let ranges = ap.cells(ap.cg(p.c, 5) + 1)
+    let begin_status = ex.run_rules(r, 1, ranges)
+    let has_main = false; let has_end = false
+    let rule = ap.cg(p.c, 16)
+    while rule >= 0 { let aux = ap.ng(p, rule, 4); if aux == 0 { has_main = true } else if aux == 2 { has_end = true }; rule = ap.ng(p, rule, 5) }
+    if rt.ig(r.rc, 9) == 0 && (has_main || has_end) {
+        while rt.main_record(r) {
+            let st = ex.run_rules(r, 0, ranges)
+            if st == 4 || rt.ig(r.rc, 9) != 0 { break }
+        }
+    }
+    let exit_code = rt.ig(r.rc, 8)
+    if has_end {
+        rt.is_(r.rc, 9, 0)
+        ex.run_rules(r, 2, ranges)
+        exit_code = rt.ig(r.rc, 8)
+    }
+    rt.close_all(r)
+    return exit_code
+}
+fn sep_text(): str { let b = sys.bytes_new(); sys.bytes_push(b, 28); return sys.join2(sys.bytes_cstr(b), "") }
+fn proc_env(): Vec<str> { return proc.environment() }

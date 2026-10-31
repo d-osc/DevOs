@@ -1,0 +1,197 @@
+# Number and string conversions for awk: parsing leading numbers, %g/%f/%e formatting, and a small math library (no libm).
+use "./sys.dev" as sys
+
+fn pow10(n: i64): f64 {
+    let r = 1.0; let k = n < 0 ? 0 - n : n
+    for i in 0..k { r = r * 10.0 }
+    return n < 0 ? 1.0 / r : r
+}
+fn abs_f(x: f64): f64 { return x < 0.0 ? 0.0 - x : x }
+fn trunc_f(x: f64): f64 { if x > 9.0e18 || x < 0.0 - 9.0e18 { return x }; return (x as i64) as f64 }
+fn floor_f(x: f64): f64 { let t = trunc_f(x); return t > x ? t - 1.0 : t }
+// The numeric value of the leading part of a string ("12abc" is 12, "abc" is 0).
+fn str_to_num(s: str): f64 {
+    let n = sys.length(s); let i = 0
+    while i < n && (sys.at(s, i) == 32 || sys.at(s, i) == 9 || sys.at(s, i) == 10) { i = i + 1 }
+    let neg = false
+    if i < n && (sys.at(s, i) == 45 || sys.at(s, i) == 43) { neg = sys.at(s, i) == 45; i = i + 1 }
+    let value = 0.0; let any = false
+    while i < n && sys.is_digit(sys.at(s, i)) { value = value * 10.0 + (sys.at(s, i) - 48) as f64; i = i + 1; any = true }
+    if i < n && sys.at(s, i) == 46 {
+        i = i + 1; let scale = 0.1
+        while i < n && sys.is_digit(sys.at(s, i)) { value = value + (sys.at(s, i) - 48) as f64 * scale; scale = scale / 10.0; i = i + 1; any = true }
+    }
+    if !any { return 0.0 }
+    if i < n && (sys.at(s, i) == 101 || sys.at(s, i) == 69) {
+        let j = i + 1; let eneg = false
+        if j < n && (sys.at(s, j) == 45 || sys.at(s, j) == 43) { eneg = sys.at(s, j) == 45; j = j + 1 }
+        if j < n && sys.is_digit(sys.at(s, j)) {
+            let e = 0; while j < n && sys.is_digit(sys.at(s, j)) { e = e * 10 + (sys.at(s, j) - 48) as i64; j = j + 1 }
+            value = value * pow10(eneg ? 0 - e : e)
+        }
+    }
+    return neg ? 0.0 - value : value
+}
+// true when the whole string (ignoring blanks around it) is a number: such input fields compare as numbers.
+fn looks_numeric(s: str): bool {
+    let n = sys.length(s); let i = 0
+    while i < n && (sys.at(s, i) == 32 || sys.at(s, i) == 9) { i = i + 1 }
+    let end = n; while end > i && (sys.at(s, end - 1) == 32 || sys.at(s, end - 1) == 9 || sys.at(s, end - 1) == 10) { end = end - 1 }
+    if i >= end { return false }
+    if sys.at(s, i) == 45 || sys.at(s, i) == 43 { i = i + 1 }
+    let digits = 0
+    while i < end && sys.is_digit(sys.at(s, i)) { i = i + 1; digits = digits + 1 }
+    if i < end && sys.at(s, i) == 46 { i = i + 1; while i < end && sys.is_digit(sys.at(s, i)) { i = i + 1; digits = digits + 1 } }
+    if digits == 0 { return false }
+    if i < end && (sys.at(s, i) == 101 || sys.at(s, i) == 69) {
+        i = i + 1
+        if i < end && (sys.at(s, i) == 45 || sys.at(s, i) == 43) { i = i + 1 }
+        let ed = 0; while i < end && sys.is_digit(sys.at(s, i)) { i = i + 1; ed = ed + 1 }
+        if ed == 0 { return false }
+    }
+    return i == end
+}
+fn int_text(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn zeros(n: i64): str { let b = sys.bytes_new(); for i in 0..n { sys.bytes_push(b, 48) }; return sys.join2(sys.bytes_cstr(b), "") }
+// %.<prec>f
+fn fmt_f(x: f64, prec: i64): str {
+    let neg = x < 0.0; let a = abs_f(x)
+    let scaled = a * pow10(prec) + 0.5
+    if scaled >= 9.0e18 { return sys.join2(neg ? "-" : "", int_text(a as i64)) }
+    let v = scaled as i64
+    let p = 1; for i in 0..prec { p = p * 10 }
+    let ip = v / p; let fp = v % p
+    let b = sys.bytes_new()
+    if neg && v != 0 { sys.bytes_push(b, 45) } else if neg { sys.bytes_push(b, 45) }
+    sys.bytes_num(b, ip)
+    if prec > 0 { sys.bytes_push(b, 46); let f = int_text(fp); sys.bytes_str(b, zeros(prec - sys.length(f))); sys.bytes_str(b, f) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+// Splits |x| into prec significant digits and a decimal exponent: digits d (an integer below 10^prec) with value d * 10^(e - prec + 1).
+struct Sci { digits: i64, exp: i64 }
+fn sci_parts(x: f64, prec: i64): Sci {
+    let a = abs_f(x)
+    if a == 0.0 { return Sci(0, 0) }
+    let e = 0
+    while a >= 10.0 { a = a / 10.0; e = e + 1 }
+    while a < 1.0 { a = a * 10.0; e = e - 1 }
+    let scaled = a * pow10(prec - 1) + 0.5
+    let d = scaled as i64
+    let limit = 1; for i in 0..prec { limit = limit * 10 }
+    if d >= limit { d = d / 10; e = e + 1 }
+    return Sci(d, e)
+}
+fn strip_zeros(text: str): str {
+    if sys.find_char(text, 46) < 0 { return text }
+    let n = sys.length(text)
+    while n > 0 && sys.at(text, n - 1) == 48 { n = n - 1 }
+    if n > 0 && sys.at(text, n - 1) == 46 { n = n - 1 }
+    return sys.join2(sys.slice(text, 0, n), "")
+}
+fn exp_text(e: i64): str {
+    let a = e < 0 ? 0 - e : e
+    let t = int_text(a)
+    return sys.join2(sys.join2(e < 0 ? "e-" : "e+", a < 10 ? "0" : ""), t)
+}
+fn fmt_e(x: f64, prec: i64, upper: bool): str {
+    let s = sci_parts(x, prec + 1)
+    let digits = int_text(s.digits)
+    if s.digits == 0 { digits = zeros(prec + 1) }
+    let b = sys.bytes_new()
+    if x < 0.0 { sys.bytes_push(b, 45) }
+    sys.bytes_push(b, sys.at(digits, 0))
+    if prec > 0 { sys.bytes_push(b, 46); sys.bytes_str(b, sys.join2(sys.slice(digits, 1, sys.length(digits)), "")) }
+    let tail = exp_text(s.exp)
+    sys.bytes_str(b, upper ? upper_text(tail) : tail)
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn upper_text(t: str): str {
+    let b = sys.bytes_new()
+    for i in 0..sys.length(t) { let c = sys.at(t, i); let v = c; if c >= 97 && c <= 122 { v = c - 32 }; sys.bytes_push(b, v) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+// %.<prec>g
+fn fmt_g(x: f64, prec0: i64, alt: bool): str {
+    let prec = prec0 == 0 ? 1 : prec0
+    if x == 0.0 { return "0" }
+    let s = sci_parts(x, prec)
+    if s.exp < 0 - 4 || s.exp >= prec {
+        let body = fmt_e(x, prec - 1, false)
+        if alt { return body }
+        let epos = sys.find_char(body, 101)
+        return sys.join2(strip_zeros(sys.join2(sys.slice(body, 0, epos), "")), sys.join2(sys.slice(body, epos, sys.length(body)), ""))
+    }
+    let decimals = prec - 1 - s.exp
+    let body = fmt_f(x, decimals < 0 ? 0 : decimals)
+    return alt ? body : strip_zeros(body)
+}
+// A number as awk prints it: integers exactly, other values with the given %g precision.
+fn num_to_str(x: f64): str {
+    if x == trunc_f(x) && x < 1.0e16 && x > 0.0 - 1.0e16 { return int_text(x as i64) }
+    return fmt_g(x, 6, false)
+}
+
+// ---- math without libm ---------------------------------------------------------------------------------------------------------------------------------------------
+fn sqrt_f(x: f64): f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x > 1.0 ? x / 2.0 : 1.0
+    for i in 0..60 { g = (g + x / g) / 2.0 }
+    return g
+}
+fn exp_f(x: f64): f64 {
+    if x > 709.0 { return 1.0e308 }
+    if x < 0.0 - 745.0 { return 0.0 }
+    let k = floor_f(x / 0.6931471805599453 + 0.5)
+    let r = x - k * 0.6931471805599453
+    let term = 1.0; let sum = 1.0
+    for i in 1..30 { term = term * r / (i as f64); sum = sum + term }
+    let n = k as i64; let scale = 1.0
+    if n >= 0 { for i in 0..n { scale = scale * 2.0 } } else { for i in 0..(0 - n) { scale = scale / 2.0 } }
+    return sum * scale
+}
+fn log_f(x: f64): f64 {
+    if x <= 0.0 { return 0.0 - 1.0e308 }
+    let m = x; let e = 0
+    while m >= 2.0 { m = m / 2.0; e = e + 1 }
+    while m < 1.0 { m = m * 2.0; e = e - 1 }
+    let y = (m - 1.0) / (m + 1.0); let y2 = y * y; let term = y; let sum = 0.0
+    for i in 0..60 { sum = sum + term / ((2 * i + 1) as f64); term = term * y2 }
+    return 2.0 * sum + (e as f64) * 0.6931471805599453
+}
+fn reduce_pi(x: f64): f64 {
+    let two_pi = 6.283185307179586
+    let r = x - trunc_f(x / two_pi) * two_pi
+    if r > 3.141592653589793 { r = r - two_pi }
+    if r < 0.0 - 3.141592653589793 { r = r + two_pi }
+    return r
+}
+fn sin_f(x: f64): f64 {
+    let r = reduce_pi(x); let term = r; let sum = r; let r2 = r * r
+    for i in 1..20 { term = 0.0 - term * r2 / (((2 * i) * (2 * i + 1)) as f64); sum = sum + term }
+    return sum
+}
+fn cos_f(x: f64): f64 { return sin_f(x + 1.5707963267948966) }
+fn atan_f(x: f64): f64 {
+    if x < 0.0 { return 0.0 - atan_f(0.0 - x) }
+    if x > 1.0 { return 1.5707963267948966 - atan_f(1.0 / x) }
+    if x > 0.4 { return 0.7853981633974483 + atan_f((x - 1.0) / (1.0 + x)) }
+    let term = x; let sum = x; let x2 = x * x
+    for i in 1..40 { term = 0.0 - term * x2; sum = sum + term / ((2 * i + 1) as f64) }
+    return sum
+}
+fn atan2_f(y: f64, x: f64): f64 {
+    if x > 0.0 { return atan_f(y / x) }
+    if x < 0.0 { return y >= 0.0 ? atan_f(y / x) + 3.141592653589793 : atan_f(y / x) - 3.141592653589793 }
+    if y > 0.0 { return 1.5707963267948966 }
+    if y < 0.0 { return 0.0 - 1.5707963267948966 }
+    return 0.0
+}
+fn pow_f(a: f64, b: f64): f64 {
+    if b == trunc_f(b) && abs_f(b) < 1000.0 {
+        let n = b as i64; let r = 1.0; let k = n < 0 ? 0 - n : n
+        for i in 0..k { r = r * a }
+        return n < 0 ? 1.0 / r : r
+    }
+    if a <= 0.0 { return 0.0 }
+    return exp_f(b * log_f(a))
+}

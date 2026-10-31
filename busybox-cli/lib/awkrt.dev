@@ -1,0 +1,482 @@
+# runtime for awk [-v VAR=VALUE]... [-f PROGFILE | 'PROGRAM'] [FILE]...: pattern scanning and processing language.
+use "./sys.dev" as sys
+use "./fsx.dev" as fsx
+use "./lines.dev" as lines
+use "./proc.dev" as proc
+use "./regex.dev" as rx
+use "./awkval.dev" as av
+use "./awkparse.dev" as ap
+
+struct Val { k: i64, n: f64, s: str }
+// k: 0 uninitialised, 1 number, 2 string, 3 numeric string (input that looks like a number)
+struct R { p: ap.P, vk: *i64, vn: *f64, vs: *i64, rc: *i64, rf: *f64, ht: *i64, fld: *i64, out: *sys.Out, args: Vec<str>, rd: *i64, wr: *i64 }
+// rc cells: 0 stack top, 1 frame base, 2 record, 3 fields split, 4 record valid, 5 next array id, 6 return kind, 7 return string, 8 exit code, 9 exit flag, 10 main buffer, 11 main position,
+//           12 next operand index, 13 input started, 14 range state base, 15 rand state, 16 reader count, 17 writer count, 18 nf, 19 main input finished, 20 getline position holder
+//           21 end record start, 22 end record end, 23 end new position
+fn NF(): i64 { return 0 }
+fn NR(): i64 { return 1 }
+fn FNR(): i64 { return 2 }
+fn FS(): i64 { return 3 }
+fn OFS(): i64 { return 4 }
+fn ORS(): i64 { return 5 }
+fn RS(): i64 { return 6 }
+fn FILENAME(): i64 { return 7 }
+fn SUBSEP(): i64 { return 8 }
+fn RSTART(): i64 { return 9 }
+fn RLENGTH(): i64 { return 10 }
+fn CONVFMT(): i64 { return 11 }
+fn OFMT(): i64 { return 12 }
+fn ENVIRON(): i64 { return 13 }
+fn ARGC(): i64 { return 14 }
+fn ARGV(): i64 { return 15 }
+
+fn ig(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn is_(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn fgx(c: *f64, i: i64): f64 { unsafe { return c[i] } }
+fn fsx_(c: *f64, i: i64, v: f64) { unsafe { c[i] = v } }
+fn sp(v: i64): str { unsafe { return v as str } }
+fn si(s: str): i64 { unsafe { return s as i64 } }
+fn keep(s: str): str { return sys.join2(s, "") }
+fn cells(n: i64): *i64 { unsafe { return sys.calloc(n as usize, 8) as *i64 } }
+fn fcells(n: i64): *f64 { unsafe { return sys.calloc(n as usize, 8) as *f64 } }
+fn num(n: f64): Val { return Val(1, n, "") }
+fn text(s: str): Val { return Val(2, 0.0, s) }
+fn uninit(): Val { return Val(0, 0.0, "") }
+fn boolean(b: bool): Val { return Val(1, b ? 1.0 : 0.0, "") }
+
+fn error(r: R, message: str) {
+    sys.out_flush(r.out)
+    sys.warn("awk", message)
+    is_(r.rc, 8, 2); is_(r.rc, 9, 1)
+}
+
+// ---- conversions --------------------------------------------------------------------------------------------------------------------------------------------------
+fn to_num(v: Val): f64 {
+    if v.k == 1 { return v.n }
+    if v.k == 0 { return 0.0 }
+    return av.str_to_num(v.s)
+}
+fn to_str(v: Val): str {
+    if v.k == 1 { return av.num_to_str(v.n) }
+    if v.k == 0 { return "" }
+    return v.s
+}
+fn truthy(v: Val): bool {
+    if v.k == 1 { return v.n != 0.0 }
+    if v.k == 0 { return false }
+    if v.k == 3 { return av.str_to_num(v.s) != 0.0 }
+    return sys.length(v.s) > 0
+}
+fn input_value(s: str): Val { return av.looks_numeric(s) ? Val(3, 0.0, s) : Val(2, 0.0, s) }
+
+// ---- variables ------------------------------------------------------------------------------------------------------------------------------------------------------
+fn slot_of(r: R, node: i64): i64 {
+    let k = ap.kind_of(r.p, node)
+    if k == ap.K_LVAR() { return ig(r.rc, 1) + ap.ng(r.p, node, 1) }
+    return ap.ng(r.p, node, 1)
+}
+fn slot_get(r: R, slot: i64): Val {
+    let k = ig(r.vk, slot)
+    if k == 1 { return num(fgx(r.vn, slot)) }
+    if k == 2 { return text(sp(ig(r.vs, slot))) }
+    if k == 3 { return Val(3, 0.0, sp(ig(r.vs, slot))) }
+    return uninit()
+}
+fn slot_set(r: R, slot: i64, v: Val) {
+    is_(r.vk, slot, v.k)
+    if v.k == 1 { fsx_(r.vn, slot, v.n) } else if v.k >= 2 { is_(r.vs, slot, si(keep(v.s))) }
+}
+fn array_id(r: R, slot: i64): i64 {
+    if ig(r.vk, slot) == 4 { return ig(r.vs, slot) }
+    let id = ig(r.rc, 5) + 1; is_(r.rc, 5, id)
+    is_(r.vk, slot, 4); is_(r.vs, slot, id)
+    return id
+}
+
+// ---- the array table (open addressing; the key is the array id plus the subscript text) ------------------------------------------------------------------------------
+// ht cells: 0 capacity, 1 used slots (with deleted ones), 2 states, 3 array ids, 4 keys, 5 kinds, 6 numbers, 7 strings
+fn ht_new(cap: i64): *i64 {
+    let h = cells(8)
+    is_(h, 0, cap); is_(h, 1, 0)
+    unsafe { is_(h, 2, cells(cap) as i64); is_(h, 3, cells(cap) as i64); is_(h, 4, cells(cap) as i64); is_(h, 5, cells(cap) as i64); is_(h, 6, fcells(cap) as i64); is_(h, 7, cells(cap) as i64) }
+    return h
+}
+fn hp(h: *i64, f: i64): *i64 { unsafe { return ig(h, f) as *i64 } }
+fn hash_of(arr: i64, key: str): i64 {
+    let hv = 1469598103 + arr * 7919
+    for i in 0..sys.length(key) { hv = (hv * 31 + sys.at(key, i) as i64) % 1000000007 }
+    return hv
+}
+fn ht_find(h: *i64, arr: i64, key: str): i64 {
+    let cap = ig(h, 0); let states = hp(h, 2); let arrs = hp(h, 3); let keys = hp(h, 4)
+    let i = hash_of(arr, key) % cap
+    for step in 0..cap {
+        let st = ig(states, i)
+        if st == 0 { return 0 - 1 }
+        if st == 1 && ig(arrs, i) == arr && sys.same(sp(ig(keys, i)), key) { return i }
+        i = (i + 1) % cap
+    }
+    return 0 - 1
+}
+fn ht_grow(r: R) {
+    let old = r.ht; let cap = ig(old, 0)
+    let fresh = ht_new(cap * 2)
+    let states = hp(old, 2); let arrs = hp(old, 3); let keys = hp(old, 4); let kinds = hp(old, 5); let nums = unsafe_f(old, 6); let strs = hp(old, 7)
+    for i in 0..cap {
+        if ig(states, i) == 1 {
+            let slot = ht_place(fresh, ig(arrs, i), sp(ig(keys, i)))
+            is_(hp(fresh, 5), slot, ig(kinds, i)); fsx_(unsafe_f(fresh, 6), slot, fgx(nums, i)); is_(hp(fresh, 7), slot, ig(strs, i))
+        }
+    }
+    is_(r.ht, 0, ig(fresh, 0)); is_(r.ht, 1, ig(fresh, 1))
+    for f in 2..8 { is_(r.ht, f, ig(fresh, f)) }
+}
+fn unsafe_f(h: *i64, f: i64): *f64 { unsafe { return ig(h, f) as *f64 } }
+fn ht_place(h: *i64, arr: i64, key: str): i64 {
+    let cap = ig(h, 0); let states = hp(h, 2)
+    let i = hash_of(arr, key) % cap
+    while ig(states, i) == 1 { i = (i + 1) % cap }
+    is_(states, i, 1); is_(hp(h, 3), i, arr); is_(hp(h, 4), i, si(keep(key))); is_(h, 1, ig(h, 1) + 1)
+    return i
+}
+fn ht_slot(r: R, arr: i64, key: str, create: bool): i64 {
+    let found = ht_find(r.ht, arr, key)
+    if found >= 0 || !create { return found }
+    if (ig(r.ht, 1) + 1) * 2 > ig(r.ht, 0) { ht_grow(r) }
+    let slot = ht_place(r.ht, arr, key)
+    is_(hp(r.ht, 5), slot, 0)
+    return slot
+}
+fn ht_get(r: R, arr: i64, key: str): Val {
+    let slot = ht_slot(r, arr, key, true)
+    let k = ig(hp(r.ht, 5), slot)
+    if k == 1 { return num(fgx(unsafe_f(r.ht, 6), slot)) }
+    if k >= 2 { return Val(k, 0.0, sp(ig(hp(r.ht, 7), slot))) }
+    return uninit()
+}
+fn ht_set(r: R, arr: i64, key: str, v: Val) {
+    let slot = ht_slot(r, arr, key, true)
+    is_(hp(r.ht, 5), slot, v.k)
+    if v.k == 1 { fsx_(unsafe_f(r.ht, 6), slot, v.n) } else if v.k >= 2 { is_(hp(r.ht, 7), slot, si(keep(v.s))) }
+}
+fn ht_delete(r: R, arr: i64, key: str) { let slot = ht_find(r.ht, arr, key); if slot >= 0 { is_(hp(r.ht, 2), slot, 2) } }
+fn ht_clear(r: R, arr: i64) {
+    let cap = ig(r.ht, 0)
+    for i in 0..cap { if ig(hp(r.ht, 2), i) == 1 && ig(hp(r.ht, 3), i) == arr { is_(hp(r.ht, 2), i, 2) } }
+}
+fn ht_keys(r: R, arr: i64): Vec<str> {
+    let out = Vec<str>(); let cap = ig(r.ht, 0)
+    for i in 0..cap { if ig(hp(r.ht, 2), i) == 1 && ig(hp(r.ht, 3), i) == arr { out.push(sp(ig(hp(r.ht, 4), i))) } }
+    return out
+}
+
+// ---- records and fields --------------------------------------------------------------------------------------------------------------------------------------------
+fn gvar_str(r: R, idx: i64): str { return to_str(slot_get(r, idx)) }
+fn compile_regex(r: R, pattern: str): *i64 { return rx.compile(pattern, true, false) }
+fn is_space(c: u8): bool { return c == 32 || c == 9 || c == 10 }
+fn field_set_count(r: R, n: i64) { is_(r.rc, 18, n); slot_set(r, NF(), num(n as f64)) }
+fn split_text(r: R, s: str, fs: str, out: Vec<str>): Vec<str> {
+    let n = sys.length(s)
+    if sys.same(fs, " ") {
+        let i = 0
+        while i < n {
+            while i < n && is_space(sys.at(s, i)) { i = i + 1 }
+            if i >= n { break }
+            let start = i
+            while i < n && !is_space(sys.at(s, i)) { i = i + 1 }
+            out.push(sys.join2(sys.slice(s, start, i), ""))
+        }
+        return out
+    }
+    if n == 0 { return out }
+    if sys.length(fs) == 0 { for i in 0..n { out.push(sys.join2(sys.slice(s, i, i + 1), "")) }; return out }
+    if sys.length(fs) == 1 && sys.at(fs, 0) != 92 {
+        let start = 0
+        for i in 0..(n + 1) { if i == n || sys.at(s, i) == sys.at(fs, 0) { out.push(sys.join2(sys.slice(s, start, i), "")); start = i + 1 } }
+        return out
+    }
+    let re = compile_regex(r, fs)
+    let buffer = sys.bytes_new(); for i in 0..n { sys.bytes_push(buffer, sys.at(s, i)) }
+    let caps = rx.new_caps(re); let start = 0; let from = 0
+    while from <= n {
+        if !rx.search(re, sys.bdata(buffer), n, from, caps) { break }
+        let ms = ig(caps, 0); let me = ig(caps, 1)
+        if me == ms { from = ms + 1; continue }
+        out.push(sys.join2(sys.slice(s, start, ms), "")); start = me; from = me
+    }
+    out.push(sys.join2(sys.slice(s, start, n), ""))
+    return out
+}
+fn ensure_split(r: R) {
+    if ig(r.rc, 3) != 0 { return }
+    is_(r.rc, 3, 1)
+    let parts = split_text(r, sp(ig(r.rc, 2)), gvar_str(r, FS()), Vec<str>())
+    let n = parts.len() as i64
+    for i in 0..n { is_(r.fld, i, si(keep(parts[i]))) }
+    field_set_count(r, n)
+}
+fn rebuild_record(r: R) {
+    let b = sys.bytes_new(); let n = ig(r.rc, 18); let ofs = gvar_str(r, OFS())
+    for i in 0..n { if i > 0 { sys.bytes_str(b, ofs) }; sys.bytes_str(b, sp(ig(r.fld, i))) }
+    is_(r.rc, 2, si(keep(sys.bytes_cstr(b)))); is_(r.rc, 4, 1)
+}
+fn set_record(r: R, s: str) { is_(r.rc, 2, si(keep(s))); is_(r.rc, 3, 0); is_(r.rc, 4, 1) }
+fn get_field(r: R, i: i64): Val {
+    if i == 0 { if ig(r.rc, 4) == 0 { rebuild_record(r) }; return input_value(sp(ig(r.rc, 2))) }
+    ensure_split(r)
+    if i < 0 || i > ig(r.rc, 18) { return uninit() }
+    return input_value(sp(ig(r.fld, i - 1)))
+}
+fn set_field(r: R, i: i64, s: str) {
+    if i == 0 { set_record(r, s); return }
+    ensure_split(r)
+    if i > 30000 { error(r, "field index too large"); return }
+    let n = ig(r.rc, 18)
+    if i > n { for k in n..i { is_(r.fld, k, si("")) }; field_set_count(r, i) }
+    is_(r.fld, i - 1, si(keep(s))); is_(r.rc, 4, 0)
+}
+fn set_nf(r: R, n: i64) {
+    ensure_split(r)
+    let cur = ig(r.rc, 18)
+    if n > cur { for k in cur..n { is_(r.fld, k, si("")) } }
+    field_set_count(r, n < 0 ? 0 : n); is_(r.rc, 4, 0)
+}
+
+// ---- formatting (printf / sprintf) --------------------------------------------------------------------------------------------------------------------------------------
+fn pad_text(body: str, width: i64, left: bool, zero: bool): str {
+    let b = sys.bytes_new(); let n = sys.length(body)
+    if n >= width { return body }
+    if left { sys.bytes_str(b, body); for i in 0..(width - n) { sys.bytes_push(b, 32) } }
+    else if zero {
+        let sign = n > 0 && (sys.at(body, 0) == 45 || sys.at(body, 0) == 43)
+        if sign { sys.bytes_push(b, sys.at(body, 0)) }
+        for i in 0..(width - n) { sys.bytes_push(b, 48) }
+        sys.bytes_str(b, sign ? sys.join2(sys.slice(body, 1, n), "") : body)
+    } else { for i in 0..(width - n) { sys.bytes_push(b, 32) }; sys.bytes_str(b, body) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn radix_text(v: i64, base: i64, upper: bool): str {
+    if v == 0 { return "0" }
+    let digits = Vec<u8>(); let rest = v < 0 ? 0 - v : v
+    while rest > 0 { let d = rest % base; digits.push((d < 10 ? 48 + d : (upper ? 55 : 87) + d) as u8); rest = rest / base }
+    let b = sys.bytes_new(); if v < 0 { sys.bytes_push(b, 45) }
+    let i = (digits.len() as i64) - 1
+    while i >= 0 { sys.bytes_push(b, digits[i]); i = i - 1 }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn awk_format(r: R, fmt: str, vals: Vec<Val>): str {
+    let out = sys.bytes_new(); let n = sys.length(fmt); let i = 0; let next = 0; let total = vals.len() as i64
+    while i < n {
+        let c = sys.at(fmt, i)
+        if c != 37 { sys.bytes_push(out, c); i = i + 1; continue }
+        i = i + 1
+        if i >= n { sys.bytes_push(out, 37); break }
+        if sys.at(fmt, i) == 37 { sys.bytes_push(out, 37); i = i + 1; continue }
+        let left = false; let plus = false; let space = false; let zero = false; let alt = false
+        while i < n && sys.find_char("-+ 0#", sys.at(fmt, i)) >= 0 { let f = sys.at(fmt, i); if f == 45 { left = true } else if f == 43 { plus = true } else if f == 32 { space = true } else if f == 48 { zero = true } else { alt = true }; i = i + 1 }
+        let width = 0; let prec = 0 - 1
+        if i < n && sys.at(fmt, i) == 42 { if next < total { width = to_num(vals[next]) as i64; next = next + 1 }; if width < 0 { left = true; width = 0 - width }; i = i + 1 }
+        else { while i < n && sys.is_digit(sys.at(fmt, i)) { width = width * 10 + (sys.at(fmt, i) - 48) as i64; i = i + 1 } }
+        if i < n && sys.at(fmt, i) == 46 {
+            i = i + 1; prec = 0
+            if i < n && sys.at(fmt, i) == 42 { if next < total { prec = to_num(vals[next]) as i64; next = next + 1 }; i = i + 1 }
+            else { while i < n && sys.is_digit(sys.at(fmt, i)) { prec = prec * 10 + (sys.at(fmt, i) - 48) as i64; i = i + 1 } }
+        }
+        while i < n && (sys.at(fmt, i) == 108 || sys.at(fmt, i) == 104 || sys.at(fmt, i) == 113 || sys.at(fmt, i) == 76) { i = i + 1 }
+        if i >= n { break }
+        let spec = sys.at(fmt, i); i = i + 1
+        let arg = next < total ? vals[next] : uninit(); if next < total { next = next + 1 }
+        if spec == 115 {
+            let s = to_str(arg); if prec >= 0 && prec < sys.length(s) { s = sys.join2(sys.slice(s, 0, prec), "") }
+            sys.bytes_str(out, pad_text(s, width, left, false))
+        } else if spec == 99 {
+            let body = ""
+            if arg.k == 1 || arg.k == 3 && false { let code = to_num(arg) as i64; let t = sys.bytes_new(); sys.bytes_push(t, (code % 256) as u8); body = sys.join2(sys.bytes_cstr(t), "") }
+            else { let s = to_str(arg); body = sys.length(s) > 0 ? sys.join2(sys.slice(s, 0, 1), "") : "" }
+            sys.bytes_str(out, pad_text(body, width, left, false))
+        } else if spec == 100 || spec == 105 {
+            let v = to_num(arg) as i64
+            let body = radix_text(v, 10, false)
+            if prec >= 0 { let digits = v < 0 ? sys.length(body) - 1 : sys.length(body); if digits < prec { let z = sys.bytes_new(); for q in 0..(prec - digits) { sys.bytes_push(z, 48) }; body = v < 0 ? sys.join2("-", sys.join2(sys.bytes_cstr(z), sys.join2(sys.slice(body, 1, sys.length(body)), ""))) : sys.join2(sys.bytes_cstr(z), body) } }
+            if v >= 0 { if plus { body = sys.join2("+", body) } else if space { body = sys.join2(" ", body) } }
+            sys.bytes_str(out, pad_text(body, width, left, zero && prec < 0))
+        } else if spec == 111 || spec == 120 || spec == 88 || spec == 117 {
+            let v = to_num(arg) as i64; let base = spec == 111 ? 8 : (spec == 117 ? 10 : 16)
+            let body = radix_text(v < 0 ? v : v, base, spec == 88)
+            if alt && v != 0 { body = sys.join2(spec == 111 ? "0" : (spec == 120 ? "0x" : (spec == 88 ? "0X" : "")), body) }
+            sys.bytes_str(out, pad_text(body, width, left, zero))
+        } else if spec == 102 || spec == 70 || spec == 101 || spec == 69 || spec == 103 || spec == 71 {
+            let x = to_num(arg); let p = prec < 0 ? 6 : prec
+            let body = ""
+            if spec == 102 || spec == 70 { body = av.fmt_f(x, p) } else if spec == 101 || spec == 69 { body = av.fmt_e(x, p, spec == 69) } else { body = av.fmt_g(x, p, alt); if spec == 71 { body = av.upper_text(body) } }
+            if x >= 0.0 { if plus { body = sys.join2("+", body) } else if space { body = sys.join2(" ", body) } }
+            sys.bytes_str(out, pad_text(body, width, left, zero))
+        } else { sys.bytes_push(out, 37); sys.bytes_push(out, spec) }
+    }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+
+// ---- input ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Finds the next record of buffer b from pos using RS; the bounds go to rc 21 (start), 22 (end), 23 (next position). Returns false at the end of the data.
+fn scan_record(r: R, b: *sys.Bytes, pos: i64): bool {
+    let n = sys.blen(b); let rs = gvar_str(r, RS())
+    if pos >= n { return false }
+    if sys.length(rs) == 1 {
+        let c = sys.at(rs, 0); let i = pos
+        while i < n && sys.bat(b, i) != c { i = i + 1 }
+        is_(r.rc, 21, pos); is_(r.rc, 22, i); is_(r.rc, 23, i < n ? i + 1 : n)
+        return true
+    }
+    if sys.length(rs) == 0 {
+        let start = pos
+        while start < n && sys.bat(b, start) == 10 { start = start + 1 }
+        if start >= n { return false }
+        let i = start
+        while i < n && !(sys.bat(b, i) == 10 && i + 1 < n && sys.bat(b, i + 1) == 10) { i = i + 1 }
+        let end = i; let next = i
+        while next < n && sys.bat(b, next) == 10 { next = next + 1 }
+        if i >= n { end = n; if end > start && sys.bat(b, end - 1) == 10 { end = end - 1 } }
+        is_(r.rc, 21, start); is_(r.rc, 22, end); is_(r.rc, 23, next)
+        return true
+    }
+    let re = compile_regex(r, rs); let caps = rx.new_caps(re); let from = pos
+    while from <= n {
+        if !rx.search(re, sys.bptr(b, 0), n, from, caps) { break }
+        if ig(caps, 1) > ig(caps, 0) && ig(caps, 0) >= pos { is_(r.rc, 21, pos); is_(r.rc, 22, ig(caps, 0)); is_(r.rc, 23, ig(caps, 1)); return true }
+        from = ig(caps, 0) + 1
+    }
+    is_(r.rc, 21, pos); is_(r.rc, 22, n); is_(r.rc, 23, n)
+    return true
+}
+fn record_text(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn assign_operand(r: R, operand: str): bool {
+    let eq = sys.find_char(operand, 61)
+    if eq <= 0 { return false }
+    for i in 0..eq { let c = sys.at(operand, i); if !(ap.is_name_char(c as i64)) || (i == 0 && sys.is_digit(c)) { return false } }
+    let name = sys.join2(sys.slice(operand, 0, eq), ""); let value = sys.join2(sys.slice(operand, eq + 1, sys.length(operand)), "")
+    let idx = ap.global_index(r.p, name)
+    slot_set(r, idx, input_value(unescape(value)))
+    return true
+}
+fn unescape(s: str): str {
+    let b = sys.bytes_new(); let n = sys.length(s); let i = 0
+    while i < n {
+        if sys.at(s, i) == 92 && i + 1 < n {
+            let e = sys.at(s, i + 1); i = i + 2
+            if e == 110 { sys.bytes_push(b, 10) } else if e == 116 { sys.bytes_push(b, 9) } else if e == 92 { sys.bytes_push(b, 92) } else if e == 34 { sys.bytes_push(b, 34) } else { sys.bytes_push(b, 92); sys.bytes_push(b, e) }
+        } else { sys.bytes_push(b, sys.at(s, i)); i = i + 1 }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn bytes_ptr(v: i64): *sys.Bytes { unsafe { return v as *sys.Bytes } }
+fn bytes_val(b: *sys.Bytes): i64 { unsafe { return b as i64 } }
+// Reads the next record of the main input into $0; false when all input is used.
+fn main_record(r: R): bool {
+    while true {
+        if ig(r.rc, 10) == 0 {
+            let argc = to_num(slot_get(r, ARGC())) as i64; let idx = ig(r.rc, 12)
+            let opened = false
+            while idx < argc {
+                let arg = to_str(ht_get(r, array_id(r, ARGV()), radix_text(idx, 10, false)))
+                idx = idx + 1
+                if sys.length(arg) == 0 { continue }
+                if assign_operand(r, arg) { continue }
+                let input = sys.read_path(arg)
+                if !input.ok { sys.warn_path("awk", arg); is_(r.rc, 8, 2); continue }
+                is_(r.rc, 10, bytes_val(input.bytes)); is_(r.rc, 11, 0); slot_set(r, FILENAME(), text(arg)); slot_set(r, FNR(), num(0.0)); opened = true; is_(r.rc, 13, 1)
+                break
+            }
+            is_(r.rc, 12, idx)
+            if !opened {
+                if ig(r.rc, 13) != 0 { return false }
+                let input = sys.read_path("-"); is_(r.rc, 10, bytes_val(input.bytes)); is_(r.rc, 11, 0); is_(r.rc, 13, 1)
+            }
+        }
+        let b = bytes_ptr(ig(r.rc, 10))
+        if scan_record(r, b, ig(r.rc, 11)) {
+            set_record(r, record_text(b, ig(r.rc, 21), ig(r.rc, 22))); is_(r.rc, 11, ig(r.rc, 23))
+            slot_set(r, NR(), num(to_num(slot_get(r, NR())) + 1.0)); slot_set(r, FNR(), num(to_num(slot_get(r, FNR())) + 1.0))
+            return true
+        }
+        is_(r.rc, 10, 0)
+    }
+    return false
+}
+// Reader table (getline from files and commands): rd cells: 3 slots per reader (name, buffer, position).
+fn reader_for(r: R, key: str, is_command: bool): i64 {
+    let n = ig(r.rc, 16)
+    for i in 0..n { if sys.same(sp(ig(r.rd, i * 3)), key) { return i } }
+    let b = sys.bytes_new()
+    if is_command {
+        sys.out_flush(r.out)
+        let tmp = tmp_name(r)
+        proc.run_wait(Vec<str>("sh", "-c", sys.join2(key, sys.join2(" > ", tmp))), proc.environment())
+        let input = sys.read_path(tmp); if input.ok { b = input.bytes }
+        fsx.do_unlink(tmp)
+    } else {
+        let input = sys.read_path(key); if !input.ok { return 0 - 1 }
+        b = input.bytes
+    }
+    is_(r.rd, n * 3, si(keep(key))); is_(r.rd, n * 3 + 1, bytes_val(b)); is_(r.rd, n * 3 + 2, 0); is_(r.rc, 16, n + 1)
+    return n
+}
+fn tmp_name(r: R): str {
+    let n = ig(r.rc, 20) + 1; is_(r.rc, 20, n)
+    return sys.join2(sys.join2("/tmp/.awk-", radix_text(proc.my_pid(), 10, false)), sys.join2("-", radix_text(n, 10, false)))
+}
+
+// ---- output ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Writer table: 3 slots per writer (name, kind, object): kind 1 file or 2 append (object is an Out), 3 pipe (object is a Bytes of pending output).
+fn writer_for(r: R, key: str, kind: i64): i64 {
+    let n = ig(r.rc, 17)
+    for i in 0..n { if sys.same(sp(ig(r.wr, i * 3)), key) && ig(r.wr, i * 3 + 1) == kind { return i } }
+    let obj = 0
+    if kind == 3 { obj = bytes_val(sys.bytes_new()) }
+    else {
+        let fd = 0 - 1
+        if sys.same(key, "/dev/stdout") { fd = 1 } else if sys.same(key, "/dev/stderr") { fd = 2 } else { fd = sys.open_fd(key, kind == 1 ? 577 : 1089, 420) }
+        if fd < 0 { return 0 - 1 }
+        obj = out_val(sys.out_new(fd))
+    }
+    is_(r.wr, n * 3, si(keep(key))); is_(r.wr, n * 3 + 1, kind); is_(r.wr, n * 3 + 2, obj); is_(r.rc, 17, n + 1)
+    return n
+}
+fn out_val(o: *sys.Out): i64 { unsafe { return o as i64 } }
+fn out_ptr(v: i64): *sys.Out { unsafe { return v as *sys.Out } }
+fn write_to(r: R, redirect_kind: i64, target: str, data: str): bool {
+    if redirect_kind == 0 { sys.out_str(r.out, data); return true }
+    let w = writer_for(r, target, redirect_kind)
+    if w < 0 { error(r, sys.join2("can't redirect to ", target)); return false }
+    if redirect_kind == 3 { sys.bytes_str(bytes_ptr(ig(r.wr, w * 3 + 2)), data); return true }
+    let o = out_ptr(ig(r.wr, w * 3 + 2)); sys.out_str(o, data)
+    if ig(r.wr, w * 3) != 0 && (sys.same(target, "/dev/stderr")) { sys.out_flush(o) }
+    return true
+}
+fn close_writer(r: R, i: i64): i64 {
+    let kind = ig(r.wr, i * 3 + 1); let status = 0
+    if kind == 3 {
+        sys.out_flush(r.out)
+        let tmp = tmp_name(r); let b = bytes_ptr(ig(r.wr, i * 3 + 2))
+        let fd = sys.open_fd(tmp, 577, 384); sys.write_fd(fd, sys.bdata(b), sys.blen(b)); sys.close_fd(fd)
+        status = proc.run_wait(Vec<str>("sh", "-c", sys.join2(sys.join2(sp(ig(r.wr, i * 3)), " < "), tmp)), proc.environment()) as i64
+        fsx.do_unlink(tmp)
+    } else { sys.out_flush(out_ptr(ig(r.wr, i * 3 + 2))); let fd = out_fd(out_ptr(ig(r.wr, i * 3 + 2))); if fd > 2 { sys.close_fd(fd) } }
+    is_(r.wr, i * 3 + 1, 0)
+    return status
+}
+fn out_fd(o: *sys.Out): i64 { unsafe { return (*o).fd as i64 } }
+fn close_all(r: R) {
+    sys.out_flush(r.out)
+    for i in 0..ig(r.rc, 17) { if ig(r.wr, i * 3 + 1) != 0 { close_writer(r, i) } }
+    sys.out_flush(r.out)
+}
+fn close_named(r: R, name: str): i64 {
+    let result = 0 - 1
+    for i in 0..ig(r.rc, 17) { if ig(r.wr, i * 3 + 1) != 0 && sys.same(sp(ig(r.wr, i * 3)), name) { result = close_writer(r, i) } }
+    for i in 0..ig(r.rc, 16) { if sys.same(sp(ig(r.rd, i * 3)), name) { is_(r.rd, i * 3, si("")); result = 0 } }
+    return result
+}

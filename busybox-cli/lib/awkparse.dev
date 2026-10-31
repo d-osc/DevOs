@@ -1,0 +1,659 @@
+# The awk lexer and parser: the program text becomes a tree kept in a flat table (10 slots per node: kind a b c d next string aux).
+use "./sys.dev" as sys
+use "./awkval.dev" as av
+
+// expression kinds
+fn K_NUM(): i64 { return 1 }
+fn K_STR(): i64 { return 2 }
+fn K_ERE(): i64 { return 3 }
+fn K_GVAR(): i64 { return 4 }
+fn K_LVAR(): i64 { return 5 }
+fn K_FIELD(): i64 { return 6 }
+fn K_INDEX(): i64 { return 7 }
+fn K_SUBSEP(): i64 { return 8 }
+fn K_ASSIGN(): i64 { return 9 }
+fn K_COND(): i64 { return 10 }
+fn K_OR(): i64 { return 11 }
+fn K_AND(): i64 { return 12 }
+fn K_IN(): i64 { return 13 }
+fn K_MATCH(): i64 { return 14 }
+fn K_CMP(): i64 { return 15 }
+fn K_CONCAT(): i64 { return 16 }
+fn K_ADD(): i64 { return 17 }
+fn K_SUB(): i64 { return 18 }
+fn K_MUL(): i64 { return 19 }
+fn K_DIV(): i64 { return 20 }
+fn K_MOD(): i64 { return 21 }
+fn K_POW(): i64 { return 22 }
+fn K_NOT(): i64 { return 23 }
+fn K_NEG(): i64 { return 24 }
+fn K_PLUS(): i64 { return 25 }
+fn K_PREINC(): i64 { return 26 }
+fn K_POSTINC(): i64 { return 27 }
+fn K_BUILTIN(): i64 { return 28 }
+fn K_CALL(): i64 { return 29 }
+fn K_GETLINE(): i64 { return 30 }
+fn K_GROUP(): i64 { return 33 }
+// statement kinds
+fn S_BLOCK(): i64 { return 40 }
+fn S_EXPR(): i64 { return 41 }
+fn S_PRINT(): i64 { return 42 }
+fn S_PRINTF(): i64 { return 43 }
+fn S_IF(): i64 { return 44 }
+fn S_WHILE(): i64 { return 45 }
+fn S_DO(): i64 { return 46 }
+fn S_FOR(): i64 { return 47 }
+fn S_FORIN(): i64 { return 48 }
+fn S_BREAK(): i64 { return 49 }
+fn S_CONTINUE(): i64 { return 50 }
+fn S_NEXT(): i64 { return 51 }
+fn S_EXIT(): i64 { return 52 }
+fn S_RETURN(): i64 { return 53 }
+fn S_DELETE(): i64 { return 54 }
+fn S_NEXTFILE(): i64 { return 56 }
+
+// token kinds
+fn T_EOF(): i64 { return 0 }
+fn T_NUM(): i64 { return 1 }
+fn T_STR(): i64 { return 2 }
+fn T_ERE(): i64 { return 3 }
+fn T_NAME(): i64 { return 4 }
+fn T_FUNC(): i64 { return 5 }
+fn T_BUILTIN(): i64 { return 6 }
+fn T_OP(): i64 { return 7 }
+
+// cells: 0 position, 1 token kind, 2 token text, 3 previous token kind, 4 previous token text, 5 node count, 6 global count, 7 function count, 8 error, 9 parameter count, 10 inside function
+//        11 no '>' (print), 12 no 'in' (for header), 13 token number holder (index into nums), 14 line, 15 rule count, 16 first rule, 17 last rule
+struct P { src: str, c: *i64, t: *i64, nums: *f64, gn: *i64, fns: *i64, pn: *i64 }
+fn cells(count: i64): *i64 { unsafe { return sys.calloc(count as usize, 8) as *i64 } }
+fn fcells(count: i64): *f64 { unsafe { return sys.calloc(count as usize, 8) as *f64 } }
+fn cg(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cs(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn fg(c: *f64, i: i64): f64 { unsafe { return c[i] } }
+fn fs_(c: *f64, i: i64, v: f64) { unsafe { c[i] = v } }
+fn str_ptr(s: str): i64 { unsafe { return s as i64 } }
+fn ptr_str(v: i64): str { unsafe { return v as str } }
+fn new_text(s: str): str { return sys.join2(s, "") }
+
+fn ng(p: P, n: i64, f: i64): i64 { return cg(p.t, n * 10 + f) }
+fn ns(p: P, n: i64, f: i64, v: i64) { cs(p.t, n * 10 + f, v) }
+fn kind_of(p: P, n: i64): i64 { return n < 0 ? 0 - 1 : cg(p.t, n * 10) }
+fn mk(p: P, kind: i64, a: i64, b: i64, c: i64, d: i64): i64 {
+    let id = cg(p.c, 5); cs(p.c, 5, id + 1)
+    cs(p.t, id * 10, kind); cs(p.t, id * 10 + 1, a); cs(p.t, id * 10 + 2, b); cs(p.t, id * 10 + 3, c); cs(p.t, id * 10 + 4, d); cs(p.t, id * 10 + 5, 0 - 1)
+    return id
+}
+fn fail(p: P) { cs(p.c, 8, 1) }
+fn failed(p: P): bool { return cg(p.c, 8) != 0 }
+
+// ---- lexer ---------------------------------------------------------------------------------------------------------------------------------------------------------
+fn ch(p: P, off: i64): i64 { let i = cg(p.c, 0) + off; return i < sys.length(p.src) ? sys.at(p.src, i) as i64 : 0 - 1 }
+fn tkind(p: P): i64 { return cg(p.c, 1) }
+fn ttext(p: P): str { return ptr_str(cg(p.c, 2)) }
+fn is_op(p: P, text: str): bool { return tkind(p) == T_OP() && sys.same(ttext(p), text) }
+fn is_kw(p: P, text: str): bool { return tkind(p) == T_NAME() && sys.same(ttext(p), text) }
+fn is_name_char(c: i64): bool { return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 }
+fn builtin_id(name: str): i64 {
+    let names = Vec<str>("length", "substr", "index", "split", "sub", "gsub", "match", "sprintf", "sin", "cos", "atan2", "exp", "log", "sqrt", "int", "rand", "srand", "tolower", "toupper", "system", "close", "fflush")
+    for i in 0..(names.len() as i64) { if sys.same(names[i], name) { return i + 1 } }
+    return 0
+}
+fn is_keyword(name: str): bool {
+    let words = Vec<str>("BEGIN", "END", "function", "func", "if", "else", "while", "for", "do", "break", "continue", "next", "nextfile", "exit", "return", "delete", "in", "getline", "print", "printf")
+    for i in 0..(words.len() as i64) { if sys.same(words[i], name) { return true } }
+    return false
+}
+fn set_token(p: P, kind: i64, text: str) {
+    cs(p.c, 3, cg(p.c, 1)); cs(p.c, 4, cg(p.c, 2))
+    cs(p.c, 1, kind); cs(p.c, 2, str_ptr(new_text(text)))
+}
+fn escape_char(p: P, b: *sys.Bytes, in_regex: bool) {
+    # called after a backslash was consumed
+    let e = ch(p, 0)
+    if e < 0 { sys.bytes_push(b, 92); return }
+    cs(p.c, 0, cg(p.c, 0) + 1)
+    if in_regex { if e == 47 { sys.bytes_push(b, 47) } else { sys.bytes_push(b, 92); sys.bytes_push(b, e as u8) }; return }
+    if e == 110 { sys.bytes_push(b, 10) } else if e == 116 { sys.bytes_push(b, 9) } else if e == 92 { sys.bytes_push(b, 92) } else if e == 34 { sys.bytes_push(b, 34) } else if e == 47 { sys.bytes_push(b, 47) }
+    else if e == 114 { sys.bytes_push(b, 13) } else if e == 97 { sys.bytes_push(b, 7) } else if e == 98 { sys.bytes_push(b, 8) } else if e == 102 { sys.bytes_push(b, 12) } else if e == 118 { sys.bytes_push(b, 11) }
+    else if e >= 48 && e <= 55 {
+        let v = e - 48; let k = 0
+        while k < 2 && ch(p, 0) >= 48 && ch(p, 0) <= 55 { v = v * 8 + ch(p, 0) - 48; cs(p.c, 0, cg(p.c, 0) + 1); k = k + 1 }
+        sys.bytes_push(b, (v % 256) as u8)
+    } else if e == 10 { }
+    else { sys.bytes_push(b, 92); sys.bytes_push(b, e as u8) }
+}
+fn regex_allowed(p: P): bool {
+    let k = cg(p.c, 1)
+    if k == T_NUM() || k == T_STR() || k == T_ERE() || k == T_BUILTIN() || k == T_FUNC() { return false }
+    if k == T_NAME() { return is_keyword(ttext(p)) }
+    if k == T_OP() { let t = ttext(p); return !(sys.same(t, ")") || sys.same(t, "]") || sys.same(t, "++") || sys.same(t, "--") || sys.same(t, "$")) }
+    return true
+}
+fn lex(p: P) {
+    while true {
+        let c = ch(p, 0)
+        if c == 32 || c == 9 || c == 13 { cs(p.c, 0, cg(p.c, 0) + 1); continue }
+        if c == 92 && ch(p, 1) == 10 { cs(p.c, 0, cg(p.c, 0) + 2); continue }
+        if c == 35 { while ch(p, 0) >= 0 && ch(p, 0) != 10 { cs(p.c, 0, cg(p.c, 0) + 1) }; continue }
+        break
+    }
+    let c = ch(p, 0)
+    if c < 0 { set_token(p, T_EOF(), ""); return }
+    if c == 10 { cs(p.c, 0, cg(p.c, 0) + 1); set_token(p, T_OP(), "\n"); return }
+    if (c >= 48 && c <= 57) || (c == 46 && ch(p, 1) >= 48 && ch(p, 1) <= 57) {
+        let start = cg(p.c, 0); let i = start
+        while ch(p, i - start) >= 48 && ch(p, i - start) <= 57 { i = i + 1 }
+        if ch(p, i - start) == 46 { i = i + 1; while ch(p, i - start) >= 48 && ch(p, i - start) <= 57 { i = i + 1 } }
+        if ch(p, i - start) == 101 || ch(p, i - start) == 69 {
+            let j = i + 1
+            if ch(p, j - start) == 43 || ch(p, j - start) == 45 { j = j + 1 }
+            if ch(p, j - start) >= 48 && ch(p, j - start) <= 57 { while ch(p, j - start) >= 48 && ch(p, j - start) <= 57 { j = j + 1 }; i = j }
+        }
+        let text = sys.join2(sys.slice(p.src, start, i), "")
+        cs(p.c, 0, i)
+        set_token(p, T_NUM(), text)
+        return
+    }
+    if is_name_char(c) && !(c >= 48 && c <= 57) {
+        let start = cg(p.c, 0); let i = start
+        while is_name_char(ch(p, i - start)) { i = i + 1 }
+        let name = sys.join2(sys.slice(p.src, start, i), "")
+        cs(p.c, 0, i)
+        if builtin_id(name) > 0 { set_token(p, T_BUILTIN(), name); return }
+        if !is_keyword(name) && ch(p, 0) == 40 { set_token(p, T_FUNC(), name); return }
+        set_token(p, T_NAME(), name)
+        return
+    }
+    if c == 34 {
+        cs(p.c, 0, cg(p.c, 0) + 1)
+        let b = sys.bytes_new()
+        while true {
+            let d = ch(p, 0)
+            if d < 0 || d == 10 { fail(p); break }
+            cs(p.c, 0, cg(p.c, 0) + 1)
+            if d == 34 { break }
+            if d == 92 { escape_char(p, b, false); continue }
+            sys.bytes_push(b, d as u8)
+        }
+        set_token(p, T_STR(), sys.join2(sys.bytes_cstr(b), ""))
+        return
+    }
+    if c == 47 && regex_allowed(p) {
+        cs(p.c, 0, cg(p.c, 0) + 1)
+        let b = sys.bytes_new(); let in_class = false
+        while true {
+            let d = ch(p, 0)
+            if d < 0 || d == 10 { fail(p); break }
+            cs(p.c, 0, cg(p.c, 0) + 1)
+            if d == 91 { in_class = true } else if d == 93 { in_class = false }
+            if d == 47 && !in_class { break }
+            if d == 92 { escape_char(p, b, true); continue }
+            sys.bytes_push(b, d as u8)
+        }
+        set_token(p, T_ERE(), sys.join2(sys.bytes_cstr(b), ""))
+        return
+    }
+    let two = sys.join2(sys.slice(p.src, cg(p.c, 0), cg(p.c, 0) + 2 > sys.length(p.src) ? sys.length(p.src) : cg(p.c, 0) + 2), "")
+    let ops2 = Vec<str>("&&", "||", "==", "!=", "<=", ">=", "++", "--", "+=", "-=", "*=", "/=", "%=", "^=", "!~", ">>", "**")
+    for i in 0..(ops2.len() as i64) {
+        if sys.same(ops2[i], two) {
+            cs(p.c, 0, cg(p.c, 0) + 2)
+            if sys.same(two, "**") { if ch(p, 0) == 61 { cs(p.c, 0, cg(p.c, 0) + 1); set_token(p, T_OP(), "^="); return }; set_token(p, T_OP(), "^"); return }
+            set_token(p, T_OP(), two); return
+        }
+    }
+    cs(p.c, 0, cg(p.c, 0) + 1)
+    set_token(p, T_OP(), sys.join2(sys.slice(p.src, cg(p.c, 0) - 1, cg(p.c, 0)), ""))
+}
+
+// ---- names ---------------------------------------------------------------------------------------------------------------------------------------------------------
+fn global_index(p: P, name: str): i64 {
+    let n = cg(p.c, 6)
+    for i in 0..n { if sys.same(ptr_str(cg(p.gn, i)), name) { return i } }
+    cs(p.gn, n, str_ptr(new_text(name))); cs(p.c, 6, n + 1)
+    return n
+}
+fn param_index(p: P, name: str): i64 {
+    let n = cg(p.c, 9)
+    for i in 0..n { if sys.same(ptr_str(cg(p.pn, i)), name) { return i } }
+    return 0 - 1
+}
+fn func_index(p: P, name: str): i64 {
+    let n = cg(p.c, 7)
+    for i in 0..n { if sys.same(ptr_str(cg(p.fns, i * 4)), name) { return i } }
+    cs(p.fns, n * 4, str_ptr(new_text(name))); cs(p.fns, n * 4 + 1, 0 - 1); cs(p.fns, n * 4 + 2, 0 - 1); cs(p.fns, n * 4 + 3, 0); cs(p.c, 7, n + 1)
+    return n
+}
+fn var_node(p: P, name: str): i64 {
+    if cg(p.c, 10) != 0 { let k = param_index(p, name); if k >= 0 { return mk(p, K_LVAR(), k, 0, 0, 0) } }
+    return mk(p, K_GVAR(), global_index(p, name), 0, 0, 0)
+}
+fn mark_array(p: P, node: i64) {
+    if kind_of(p, node) == K_LVAR() { let idx = cg(p.c, 18); cs(p.fns, idx * 4 + 3, cg(p.fns, idx * 4 + 3) | (1 << ng(p, node, 1))) }
+}
+
+// ---- parser --------------------------------------------------------------------------------------------------------------------------------------------------------
+fn skip_nl(p: P) { while is_op(p, "\n") { lex(p) } }
+fn skip_terms(p: P) { while is_op(p, "\n") || is_op(p, ";") { lex(p) } }
+fn expect(p: P, text: str) { if is_op(p, text) { lex(p) } else { fail(p) } }
+fn is_lvalue(p: P, n: i64): bool { let k = kind_of(p, n); return k == K_GVAR() || k == K_LVAR() || k == K_FIELD() || k == K_INDEX() }
+fn list_append(p: P, head: i64, tail: i64, item: i64): i64 {
+    if head < 0 { return item }
+    ns(p, tail, 5, item)
+    return head
+}
+fn parse_expr_list(p: P, close: str): i64 {
+    # comma separated expressions up to the closing token; returns the head of a linked list (via the next slot)
+    let head = 0 - 1; let tail = 0 - 1
+    skip_nl(p)
+    if is_op(p, close) { return head }
+    while !failed(p) {
+        let e = parse_expr(p)
+        head = list_append(p, head, tail, e); tail = e
+        skip_nl(p)
+        if is_op(p, ",") { lex(p); skip_nl(p); continue }
+        break
+    }
+    return head
+}
+fn parse_expr(p: P): i64 { return parse_assign(p) }
+fn assign_code(t: str): i64 {
+    if sys.same(t, "=") { return 0 } if sys.same(t, "+=") { return 1 } if sys.same(t, "-=") { return 2 } if sys.same(t, "*=") { return 3 }
+    if sys.same(t, "/=") { return 4 } if sys.same(t, "%=") { return 5 } if sys.same(t, "^=") { return 6 }
+    return 0 - 1
+}
+fn parse_assign(p: P): i64 {
+    let left = parse_ternary(p)
+    if tkind(p) == T_OP() && is_lvalue(p, left) {
+        let code = assign_code(ttext(p))
+        if code >= 0 { lex(p); skip_nl(p); let right = parse_assign(p); return mk(p, K_ASSIGN(), left, right, code, 0) }
+    }
+    return left
+}
+fn parse_ternary(p: P): i64 {
+    let cond = parse_or(p)
+    if is_op(p, "?") {
+        lex(p); skip_nl(p)
+        let a = parse_assign(p); skip_nl(p)
+        expect(p, ":"); skip_nl(p)
+        let b = parse_assign(p)
+        return mk(p, K_COND(), cond, a, b, 0)
+    }
+    return cond
+}
+fn parse_or(p: P): i64 {
+    let left = parse_and(p)
+    while is_op(p, "||") { lex(p); skip_nl(p); let right = parse_and(p); left = mk(p, K_OR(), left, right, 0, 0) }
+    return left
+}
+fn parse_and(p: P): i64 {
+    let left = parse_in(p)
+    while is_op(p, "&&") { lex(p); skip_nl(p); let right = parse_in(p); left = mk(p, K_AND(), left, right, 0, 0) }
+    return left
+}
+fn parse_in(p: P): i64 {
+    let left = parse_match(p)
+    while is_kw(p, "in") && cg(p.c, 12) == 0 {
+        lex(p)
+        if tkind(p) != T_NAME() { fail(p); return left }
+        let arr = var_node(p, ttext(p)); lex(p)
+        mark_array(p, arr)
+        left = mk(p, K_IN(), left, arr, 0, 0)
+    }
+    return left
+}
+fn parse_match(p: P): i64 {
+    let left = parse_comparison(p)
+    while is_op(p, "~") || is_op(p, "!~") {
+        let negate = is_op(p, "!~") ? 1 : 0
+        lex(p)
+        let right = parse_comparison(p)
+        left = mk(p, K_MATCH(), left, right, negate, 0)
+    }
+    return left
+}
+fn cmp_code(t: str): i64 {
+    if sys.same(t, "<") { return 0 } if sys.same(t, "<=") { return 1 } if sys.same(t, "==") { return 2 } if sys.same(t, "!=") { return 3 } if sys.same(t, ">") { return 4 } if sys.same(t, ">=") { return 5 }
+    return 0 - 1
+}
+fn parse_comparison(p: P): i64 {
+    let left = parse_concat(p)
+    while true {
+        if is_op(p, "|") {
+            # cmd | getline [var]
+            let save_pos = cg(p.c, 0); let sk = cg(p.c, 1); let st = cg(p.c, 2); let pk = cg(p.c, 3); let pt = cg(p.c, 4)
+            lex(p)
+            if is_kw(p, "getline") {
+                lex(p)
+                let target = 0 - 1
+                if tkind(p) == T_NAME() && !is_keyword(ttext(p)) || is_op(p, "$") { target = parse_primary_lvalue(p) }
+                left = mk(p, K_GETLINE(), target, left, 2, 0)
+                continue
+            }
+            cs(p.c, 0, save_pos); cs(p.c, 1, sk); cs(p.c, 2, st); cs(p.c, 3, pk); cs(p.c, 4, pt)
+            break
+        }
+        if tkind(p) == T_OP() {
+            let code = cmp_code(ttext(p))
+            if code >= 0 && !(code == 4 && cg(p.c, 11) != 0) {
+                lex(p)
+                let right = parse_concat(p)
+                left = mk(p, K_CMP(), left, right, code, 0)
+                break
+            }
+        }
+        break
+    }
+    return left
+}
+fn starts_operand(p: P): bool {
+    let k = tkind(p)
+    if k == T_NUM() || k == T_STR() || k == T_ERE() || k == T_FUNC() || k == T_BUILTIN() { return true }
+    if k == T_NAME() { return !is_keyword(ttext(p)) }
+    if k == T_OP() { return is_op(p, "$") || is_op(p, "(") }
+    return false
+}
+fn parse_concat(p: P): i64 {
+    let left = parse_additive(p)
+    while starts_operand(p) && !(is_kw(p, "in")) {
+        let right = parse_additive(p)
+        left = mk(p, K_CONCAT(), left, right, 0, 0)
+    }
+    return left
+}
+fn parse_additive(p: P): i64 {
+    let left = parse_mul(p)
+    while is_op(p, "+") || is_op(p, "-") {
+        let plus = is_op(p, "+"); lex(p)
+        let right = parse_mul(p)
+        left = mk(p, plus ? K_ADD() : K_SUB(), left, right, 0, 0)
+    }
+    return left
+}
+fn parse_mul(p: P): i64 {
+    let left = parse_unary(p)
+    while is_op(p, "*") || is_op(p, "/") || is_op(p, "%") {
+        let t = ttext(p); lex(p)
+        let right = parse_unary(p)
+        left = mk(p, sys.same(t, "*") ? K_MUL() : (sys.same(t, "/") ? K_DIV() : K_MOD()), left, right, 0, 0)
+    }
+    return left
+}
+fn parse_unary(p: P): i64 {
+    if is_op(p, "!") { lex(p); let e = parse_unary(p); return mk(p, K_NOT(), e, 0, 0, 0) }
+    if is_op(p, "-") { lex(p); let e = parse_unary(p); return mk(p, K_NEG(), e, 0, 0, 0) }
+    if is_op(p, "+") { lex(p); let e = parse_unary(p); return mk(p, K_PLUS(), e, 0, 0, 0) }
+    return parse_power(p)
+}
+fn parse_power(p: P): i64 {
+    let base = parse_postfix(p)
+    if is_op(p, "^") { lex(p); let e = parse_unary_power(p); return mk(p, K_POW(), base, e, 0, 0) }
+    return base
+}
+fn parse_unary_power(p: P): i64 {
+    if is_op(p, "-") { lex(p); let e = parse_unary_power(p); return mk(p, K_NEG(), e, 0, 0, 0) }
+    if is_op(p, "+") { lex(p); return parse_unary_power(p) }
+    if is_op(p, "!") { lex(p); let e = parse_unary_power(p); return mk(p, K_NOT(), e, 0, 0, 0) }
+    return parse_power(p)
+}
+fn parse_postfix(p: P): i64 {
+    if is_op(p, "++") || is_op(p, "--") {
+        let delta = is_op(p, "++") ? 1 : 0 - 1; lex(p)
+        let target = parse_primary_lvalue(p)
+        return mk(p, K_PREINC(), target, 0, delta, 0)
+    }
+    let e = parse_primary(p)
+    if (is_op(p, "++") || is_op(p, "--")) && is_lvalue(p, e) {
+        let delta = is_op(p, "++") ? 1 : 0 - 1; lex(p)
+        return mk(p, K_POSTINC(), e, 0, delta, 0)
+    }
+    return e
+}
+fn parse_primary_lvalue(p: P): i64 {
+    if is_op(p, "$") { lex(p); let e = parse_primary_dollar(p); return mk(p, K_FIELD(), e, 0, 0, 0) }
+    if tkind(p) == T_NAME() && !is_keyword(ttext(p)) {
+        let node = var_node(p, ttext(p)); lex(p)
+        if is_op(p, "[") { lex(p); let sub = parse_subscript(p); mark_array(p, node); return mk(p, K_INDEX(), node, sub, 0, 0) }
+        return node
+    }
+    fail(p); return 0
+}
+fn parse_primary_dollar(p: P): i64 {
+    if is_op(p, "++") || is_op(p, "--") { return parse_postfix(p) }
+    if is_op(p, "-") { lex(p); let e = parse_primary_dollar(p); return mk(p, K_NEG(), e, 0, 0, 0) }
+    return parse_primary(p)
+}
+fn parse_subscript(p: P): i64 {
+    # after '[': expr {, expr} ']'
+    let first = parse_expr(p)
+    let acc = first
+    while is_op(p, ",") { lex(p); skip_nl(p); let next = parse_expr(p); acc = mk(p, K_SUBSEP(), acc, next, 0, 0) }
+    expect(p, "]")
+    return acc
+}
+fn parse_primary(p: P): i64 {
+    let k = tkind(p)
+    if k == T_NUM() { let n = mk(p, K_NUM(), 0, 0, 0, 0); fs_(p.nums, n, av.str_to_num(ttext(p))); lex(p); return n }
+    if k == T_STR() { let n = mk(p, K_STR(), 0, 0, 0, 0); ns(p, n, 6, str_ptr(ttext(p))); lex(p); return n }
+    if k == T_ERE() { let n = mk(p, K_ERE(), 0, 0, 0, 0); ns(p, n, 6, str_ptr(ttext(p))); lex(p); return n }
+    if k == T_FUNC() {
+        let name = ttext(p); lex(p); expect(p, "(")
+        let args = parse_expr_list(p, ")"); skip_nl(p); expect(p, ")")
+        return mk(p, K_CALL(), func_index(p, name), args, 0, 0)
+    }
+    if k == T_BUILTIN() {
+        let name = ttext(p); let id = builtin_id(name); lex(p)
+        let args = 0 - 1
+        if is_op(p, "(") {
+            lex(p); args = parse_expr_list(p, ")"); skip_nl(p); expect(p, ")")
+        } else if !sys.same(name, "length") { fail(p) }
+        # array arguments (split target, length of an array) must be marked
+        if (id == 4) && args >= 0 { let second = ng(p, args, 5); if second >= 0 { mark_array(p, second) } }
+        if id == 1 && args >= 0 { mark_array(p, args) }
+        return mk(p, K_BUILTIN(), id, args, 0, 0)
+    }
+    if k == T_OP() {
+        if is_op(p, "(") {
+            lex(p); skip_nl(p)
+            let first = parse_expr(p); skip_nl(p)
+            if is_op(p, ",") {
+                let head = first; let tail = first
+                while is_op(p, ",") { lex(p); skip_nl(p); let e = parse_expr(p); ns(p, tail, 5, e); tail = e; skip_nl(p) }
+                expect(p, ")")
+                return mk(p, K_GROUP(), head, 0, 0, 0)
+            }
+            expect(p, ")")
+            return mk(p, K_GROUP(), first, 0, 1, 0)
+        }
+        if is_op(p, "$") { lex(p); let e = parse_primary_dollar(p); return mk(p, K_FIELD(), e, 0, 0, 0) }
+        if is_op(p, "-") { lex(p); let e = parse_unary(p); return mk(p, K_NEG(), e, 0, 0, 0) }
+        if is_op(p, "+") { lex(p); let e = parse_unary(p); return mk(p, K_PLUS(), e, 0, 0, 0) }
+        if is_op(p, "!") { lex(p); let e = parse_unary(p); return mk(p, K_NOT(), e, 0, 0, 0) }
+        fail(p); return 0
+    }
+    if k == T_NAME() {
+        if is_kw(p, "getline") {
+            lex(p)
+            let target = 0 - 1
+            if (tkind(p) == T_NAME() && !is_keyword(ttext(p))) || is_op(p, "$") { target = parse_primary_lvalue(p) }
+            if is_op(p, "<") { lex(p); let file = parse_primary_concat_free(p); return mk(p, K_GETLINE(), target, file, 1, 0) }
+            return mk(p, K_GETLINE(), target, 0 - 1, 0, 0)
+        }
+        if is_keyword(ttext(p)) { fail(p); return 0 }
+        return parse_primary_lvalue(p)
+    }
+    fail(p); return 0
+}
+fn parse_primary_concat_free(p: P): i64 { return parse_postfix(p) }
+
+// statements
+fn end_of_simple(p: P) {
+    if is_op(p, ";") || is_op(p, "\n") { lex(p); return }
+    if is_op(p, "}") || tkind(p) == T_EOF() { return }
+    fail(p)
+}
+fn parse_block(p: P): i64 {
+    expect(p, "{")
+    let head = 0 - 1; let tail = 0 - 1
+    skip_terms(p)
+    while !is_op(p, "}") && tkind(p) != T_EOF() && !failed(p) {
+        let s = parse_stmt(p)
+        head = list_append(p, head, tail, s); tail = s
+        skip_terms(p)
+    }
+    expect(p, "}")
+    return mk(p, S_BLOCK(), head, 0, 0, 0)
+}
+fn parse_simple_or_block(p: P): i64 {
+    skip_nl(p)
+    if is_op(p, ";") { lex(p); return mk(p, S_BLOCK(), 0 - 1, 0, 0, 0) }
+    return parse_stmt(p)
+}
+fn parse_print(p: P, printf_mode: bool): i64 {
+    lex(p)
+    cs(p.c, 11, 1)
+    let args = 0 - 1
+    if !is_op(p, ";") && !is_op(p, "\n") && !is_op(p, "}") && !is_op(p, ">") && !is_op(p, ">>") && !is_op(p, "|") && tkind(p) != T_EOF() {
+        args = parse_expr_list(p, ";")
+    }
+    cs(p.c, 11, 0)
+    if args >= 0 && ng(p, args, 5) < 0 && kind_of(p, args) == K_GROUP() && ng(p, args, 3) == 0 { args = ng(p, args, 1) }
+    let redirect = 0 - 1; let rkind = 0
+    if is_op(p, ">") { rkind = 1 } else if is_op(p, ">>") { rkind = 2 } else if is_op(p, "|") { rkind = 3 }
+    if rkind > 0 { lex(p); cs(p.c, 11, 1); redirect = parse_concat(p); cs(p.c, 11, 0) }
+    return mk(p, printf_mode ? S_PRINTF() : S_PRINT(), args, redirect, rkind, 0)
+}
+fn parse_stmt(p: P): i64 {
+    if is_op(p, "{") { return parse_block(p) }
+    if tkind(p) == T_NAME() {
+        let t = ttext(p)
+        if sys.same(t, "if") {
+            lex(p); expect(p, "("); let cond = parse_expr(p); expect(p, ")")
+            let then = parse_simple_or_block(p)
+            skip_terms(p)
+            let other = 0 - 1
+            if is_kw(p, "else") { lex(p); other = parse_simple_or_block(p) }
+            return mk(p, S_IF(), cond, then, other, 0)
+        }
+        if sys.same(t, "while") {
+            lex(p); expect(p, "("); let cond = parse_expr(p); expect(p, ")")
+            if is_op(p, ";") { lex(p); return mk(p, S_WHILE(), cond, mk(p, S_BLOCK(), 0 - 1, 0, 0, 0), 0, 0) }
+            let body = parse_simple_or_block(p)
+            return mk(p, S_WHILE(), cond, body, 0, 0)
+        }
+        if sys.same(t, "do") {
+            lex(p); let body = parse_simple_or_block(p); skip_terms(p)
+            if !is_kw(p, "while") { fail(p); return body }
+            lex(p); expect(p, "("); let cond = parse_expr(p); expect(p, ")"); end_of_simple(p)
+            return mk(p, S_DO(), body, cond, 0, 0)
+        }
+        if sys.same(t, "for") {
+            lex(p); expect(p, "(")
+            # for (x in arr) or for (init; cond; incr)
+            if tkind(p) == T_NAME() && !is_keyword(ttext(p)) {
+                let save_pos = cg(p.c, 0); let sk = cg(p.c, 1); let st = cg(p.c, 2); let pk = cg(p.c, 3); let pt = cg(p.c, 4); let save_nodes = cg(p.c, 5)
+                let var = var_node(p, ttext(p)); lex(p)
+                if is_kw(p, "in") {
+                    lex(p)
+                    if tkind(p) == T_NAME() {
+                        let arr = var_node(p, ttext(p)); lex(p)
+                        if is_op(p, ")") {
+                            lex(p); mark_array(p, arr)
+                            let body = parse_simple_or_block(p)
+                            return mk(p, S_FORIN(), var, arr, body, 0)
+                        }
+                    }
+                }
+                cs(p.c, 0, save_pos); cs(p.c, 1, sk); cs(p.c, 2, st); cs(p.c, 3, pk); cs(p.c, 4, pt); cs(p.c, 5, save_nodes)
+            }
+            let init = 0 - 1; let cond = 0 - 1; let incr = 0 - 1
+            if !is_op(p, ";") { init = parse_simple_statement(p) }
+            expect(p, ";"); skip_nl(p)
+            if !is_op(p, ";") { cond = parse_expr(p) }
+            expect(p, ";"); skip_nl(p)
+            if !is_op(p, ")") { incr = parse_simple_statement(p) }
+            expect(p, ")")
+            if is_op(p, ";") { lex(p); return mk(p, S_FOR(), init, cond, incr, mk(p, S_BLOCK(), 0 - 1, 0, 0, 0)) }
+            let body = parse_simple_or_block(p)
+            return mk(p, S_FOR(), init, cond, incr, body)
+        }
+    }
+    let s = parse_simple_statement(p)
+    end_of_simple(p)
+    return s
+}
+fn parse_simple_statement(p: P): i64 {
+    if tkind(p) == T_NAME() {
+        let t = ttext(p)
+        if sys.same(t, "print") { return parse_print(p, false) }
+        if sys.same(t, "printf") { return parse_print(p, true) }
+        if sys.same(t, "break") { lex(p); return mk(p, S_BREAK(), 0, 0, 0, 0) }
+        if sys.same(t, "continue") { lex(p); return mk(p, S_CONTINUE(), 0, 0, 0, 0) }
+        if sys.same(t, "next") { lex(p); return mk(p, S_NEXT(), 0, 0, 0, 0) }
+        if sys.same(t, "nextfile") { lex(p); return mk(p, S_NEXTFILE(), 0, 0, 0, 0) }
+        if sys.same(t, "exit") || sys.same(t, "return") {
+            lex(p)
+            let e = 0 - 1
+            if !is_op(p, ";") && !is_op(p, "\n") && !is_op(p, "}") && tkind(p) != T_EOF() { e = parse_expr(p) }
+            return mk(p, sys.same(t, "exit") ? S_EXIT() : S_RETURN(), e, 0, 0, 0)
+        }
+        if sys.same(t, "delete") {
+            lex(p)
+            if tkind(p) != T_NAME() { fail(p); return 0 }
+            let arr = var_node(p, ttext(p)); lex(p); mark_array(p, arr)
+            let sub = 0 - 1
+            if is_op(p, "[") { lex(p); sub = parse_subscript(p) }
+            return mk(p, S_DELETE(), arr, sub, 0, 0)
+        }
+    }
+    let e = parse_expr(p)
+    return mk(p, S_EXPR(), e, 0, 0, 0)
+}
+
+// program: rules are collected in a list through the next slot of rule nodes (kind 60); aux 0 pattern, 1 BEGIN, 2 END
+fn parse_program(p: P) {
+    lex(p)
+    cs(p.c, 16, 0 - 1); cs(p.c, 17, 0 - 1)
+    skip_terms(p)
+    while tkind(p) != T_EOF() && !failed(p) {
+        parse_item(p)
+        skip_terms(p)
+    }
+}
+fn add_rule(p: P, pattern: i64, pattern2: i64, action: i64, aux: i64) {
+    let r = mk(p, 60, pattern, pattern2, action, aux)
+    let last = cg(p.c, 17)
+    if last < 0 { cs(p.c, 16, r) } else { ns(p, last, 5, r) }
+    cs(p.c, 17, r)
+}
+fn parse_item(p: P) {
+    if is_kw(p, "function") || is_kw(p, "func") {
+        lex(p)
+        if tkind(p) != T_FUNC() && tkind(p) != T_NAME() { fail(p); return }
+        let name = ttext(p); lex(p)
+        let index = func_index(p, name)
+        expect(p, "(")
+        let count = 0
+        skip_nl(p)
+        while tkind(p) == T_NAME() {
+            cs(p.pn, count, str_ptr(new_text(ttext(p)))); count = count + 1; lex(p); skip_nl(p)
+            if is_op(p, ",") { lex(p); skip_nl(p) }
+        }
+        expect(p, ")"); skip_nl(p)
+        cs(p.c, 9, count); cs(p.c, 10, 1); cs(p.c, 18, index)
+        cs(p.fns, index * 4 + 1, count)
+        let body = parse_block(p)
+        cs(p.fns, index * 4 + 2, body)
+        cs(p.c, 10, 0)
+        return
+    }
+    if is_kw(p, "BEGIN") { lex(p); skip_nl(p); let b = parse_block(p); add_rule(p, 0 - 1, 0 - 1, b, 1); return }
+    if is_kw(p, "END") { lex(p); skip_nl(p); let b = parse_block(p); add_rule(p, 0 - 1, 0 - 1, b, 2); return }
+    let pattern = 0 - 1; let pattern2 = 0 - 1; let action = 0 - 1
+    if !is_op(p, "{") {
+        pattern = parse_expr(p)
+        if is_op(p, ",") { lex(p); skip_nl(p); pattern2 = parse_expr(p) }
+    }
+    if is_op(p, "{") { action = parse_block(p) }
+    add_rule(p, pattern, pattern2, action, 0)
+}

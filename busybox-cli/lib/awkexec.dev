@@ -1,0 +1,487 @@
+# The awk evaluator: expressions, statements and the pattern/action loop.
+use "./sys.dev" as sys
+use "./fsx.dev" as fsx
+use "./proc.dev" as proc
+use "./regex.dev" as rx
+use "./awkval.dev" as av
+use "./awkparse.dev" as ap
+use "./awkrt.dev" as rt
+
+fn st_ok(): i64 { return 0 }
+fn arg_at(r: rt.R, list: i64, k: i64): i64 {
+    let n = list; let i = 0
+    while n >= 0 && i < k { n = ap.ng(r.p, n, 5); i = i + 1 }
+    return n
+}
+fn arg_count(r: rt.R, list: i64): i64 { let n = list; let c = 0; while n >= 0 { c = c + 1; n = ap.ng(r.p, n, 5) }; return c }
+fn regex_of(r: rt.R, node: i64): *i64 {
+    if ap.kind_of(r.p, node) == ap.K_ERE() {
+        let cached = ap.ng(r.p, node, 7)
+        if cached != 0 { return rx_ptr(cached) }
+        let re = rt.compile_regex(r, rt.sp(ap.ng(r.p, node, 6)))
+        ap.ns(r.p, node, 7, rx_val(re))
+        return re
+    }
+    return rt.compile_regex(r, rt.to_str(eval(r, node)))
+}
+fn rx_ptr(v: i64): *i64 { unsafe { return v as *i64 } }
+fn rx_val(p: *i64): i64 { unsafe { return p as i64 } }
+fn buffer_of(s: str): *sys.Bytes {
+    let b = sys.bytes_new()
+    for i in 0..sys.length(s) { sys.bytes_push(b, sys.at(s, i)) }
+    return b
+}
+fn regex_search(re: *i64, s: str, from: i64): bool {
+    if rx.failed(re) { return false }
+    let b = buffer_of(s); let caps = rx.new_caps(re)
+    return rx.search(re, sys.bdata(b), sys.length(s), from, caps)
+}
+fn subscript_key(r: rt.R, node: i64): str {
+    if ap.kind_of(r.p, node) == ap.K_SUBSEP() {
+        return sys.join2(sys.join2(subscript_key(r, ap.ng(r.p, node, 1)), rt.gvar_str(r, rt.SUBSEP())), subscript_key(r, ap.ng(r.p, node, 2)))
+    }
+    return rt.to_str(eval(r, node))
+}
+fn compare_values(a: rt.Val, b: rt.Val): i64 {
+    let a_num = a.k == 1 || a.k == 3 || a.k == 0; let b_num = b.k == 1 || b.k == 3 || b.k == 0
+    if a_num && b_num && !(a.k == 0 && b.k == 0) {
+        let x = rt.to_num(a); let y = rt.to_num(b)
+        return x < y ? 0 - 1 : (x > y ? 1 : 0)
+    }
+    let s = rt.to_str(a); let t = rt.to_str(b)
+    let c = fsx.compare_str(s, t)
+    return c < 0 ? 0 - 1 : (c > 0 ? 1 : 0)
+}
+fn assign_lvalue(r: rt.R, node: i64, v: rt.Val) {
+    let k = ap.kind_of(r.p, node)
+    if k == ap.K_GVAR() || k == ap.K_LVAR() {
+        let slot = rt.slot_of(r, node)
+        if k == ap.K_GVAR() && slot == rt.NF() { rt.set_nf(r, rt.to_num(v) as i64); return }
+        rt.slot_set(r, slot, v)
+        return
+    }
+    if k == ap.K_FIELD() { rt.set_field(r, rt.to_num(eval(r, ap.ng(r.p, node, 1))) as i64, rt.to_str(v)); return }
+    if k == ap.K_INDEX() {
+        let arr = rt.array_id(r, rt.slot_of(r, ap.ng(r.p, node, 1)))
+        rt.ht_set(r, arr, subscript_key(r, ap.ng(r.p, node, 2)), v)
+    }
+}
+fn arith(code: i64, x: f64, y: f64, r: rt.R): f64 {
+    if code == 1 { return x + y }
+    if code == 2 { return x - y }
+    if code == 3 { return x * y }
+    if code == 4 { if y == 0.0 { rt.error(r, "division by zero"); return 0.0 }; return x / y }
+    if code == 5 { if y == 0.0 { rt.error(r, "division by zero in %"); return 0.0 }; return x - av.trunc_f(x / y) * y }
+    if code == 6 { return av.pow_f(x, y) }
+    return y
+}
+fn eval(r: rt.R, n: i64): rt.Val {
+    let k = ap.kind_of(r.p, n)
+    if k == ap.K_NUM() { return rt.num(ap.fg(r.p.nums, n)) }
+    if k == ap.K_STR() { return rt.text(rt.sp(ap.ng(r.p, n, 6))) }
+    if k == ap.K_GVAR() || k == ap.K_LVAR() {
+        let slot = rt.slot_of(r, n)
+        if k == ap.K_GVAR() && slot == rt.NF() { rt.ensure_split(r) }
+        return rt.slot_get(r, slot)
+    }
+    if k == ap.K_FIELD() { return rt.get_field(r, rt.to_num(eval(r, ap.ng(r.p, n, 1))) as i64) }
+    if k == ap.K_INDEX() {
+        let arr = rt.array_id(r, rt.slot_of(r, ap.ng(r.p, n, 1)))
+        return rt.ht_get(r, arr, subscript_key(r, ap.ng(r.p, n, 2)))
+    }
+    if k == ap.K_GROUP() { return eval(r, ap.ng(r.p, n, 1)) }
+    if k == ap.K_ERE() { return rt.boolean(regex_search(regex_of(r, n), rt.to_str(rt.get_field(r, 0)), 0)) }
+    if k == ap.K_ASSIGN() { return eval_assign(r, n) }
+    if k == ap.K_COND() { return rt.truthy(eval(r, ap.ng(r.p, n, 1))) ? eval(r, ap.ng(r.p, n, 2)) : eval(r, ap.ng(r.p, n, 3)) }
+    if k == ap.K_OR() { return rt.boolean(rt.truthy(eval(r, ap.ng(r.p, n, 1))) || rt.truthy(eval(r, ap.ng(r.p, n, 2)))) }
+    if k == ap.K_AND() { return rt.boolean(rt.truthy(eval(r, ap.ng(r.p, n, 1))) && rt.truthy(eval(r, ap.ng(r.p, n, 2)))) }
+    return eval_more(r, n, k)
+}
+fn eval_more(r: rt.R, n: i64, k: i64): rt.Val {
+    if k == ap.K_IN() {
+        let left = ap.ng(r.p, n, 1)
+        let key = ""
+        if ap.kind_of(r.p, left) == ap.K_GROUP() && ap.ng(r.p, left, 3) == 0 {
+            let item = ap.ng(r.p, left, 1); let first = true
+            while item >= 0 { key = first ? rt.to_str(eval(r, item)) : sys.join2(sys.join2(key, rt.gvar_str(r, rt.SUBSEP())), rt.to_str(eval(r, item))); first = false; item = ap.ng(r.p, item, 5) }
+        } else { key = rt.to_str(eval(r, left)) }
+        let arr = rt.array_id(r, rt.slot_of(r, ap.ng(r.p, n, 2)))
+        return rt.boolean(rt.ht_slot(r, arr, key, false) >= 0)
+    }
+    if k == ap.K_MATCH() {
+        let subject = rt.to_str(eval(r, ap.ng(r.p, n, 1)))
+        let hit = regex_search(regex_of(r, ap.ng(r.p, n, 2)), subject, 0)
+        return rt.boolean(ap.ng(r.p, n, 3) != 0 ? !hit : hit)
+    }
+    if k == ap.K_CMP() {
+        let c = compare_values(eval(r, ap.ng(r.p, n, 1)), eval(r, ap.ng(r.p, n, 2))); let code = ap.ng(r.p, n, 3)
+        let ok = false
+        if code == 0 { ok = c < 0 } else if code == 1 { ok = c <= 0 } else if code == 2 { ok = c == 0 } else if code == 3 { ok = c != 0 } else if code == 4 { ok = c > 0 } else { ok = c >= 0 }
+        return rt.boolean(ok)
+    }
+    if k == ap.K_CONCAT() { return rt.text(sys.join2(rt.to_str(eval(r, ap.ng(r.p, n, 1))), rt.to_str(eval(r, ap.ng(r.p, n, 2))))) }
+    if k == ap.K_ADD() { return rt.num(rt.to_num(eval(r, ap.ng(r.p, n, 1))) + rt.to_num(eval(r, ap.ng(r.p, n, 2)))) }
+    if k == ap.K_SUB() { return rt.num(rt.to_num(eval(r, ap.ng(r.p, n, 1))) - rt.to_num(eval(r, ap.ng(r.p, n, 2)))) }
+    if k == ap.K_MUL() { return rt.num(rt.to_num(eval(r, ap.ng(r.p, n, 1))) * rt.to_num(eval(r, ap.ng(r.p, n, 2)))) }
+    if k == ap.K_DIV() { return rt.num(arith(4, rt.to_num(eval(r, ap.ng(r.p, n, 1))), rt.to_num(eval(r, ap.ng(r.p, n, 2))), r)) }
+    if k == ap.K_MOD() { return rt.num(arith(5, rt.to_num(eval(r, ap.ng(r.p, n, 1))), rt.to_num(eval(r, ap.ng(r.p, n, 2))), r)) }
+    if k == ap.K_POW() { return rt.num(av.pow_f(rt.to_num(eval(r, ap.ng(r.p, n, 1))), rt.to_num(eval(r, ap.ng(r.p, n, 2))))) }
+    if k == ap.K_NOT() { return rt.boolean(!rt.truthy(eval(r, ap.ng(r.p, n, 1)))) }
+    if k == ap.K_NEG() { return rt.num(0.0 - rt.to_num(eval(r, ap.ng(r.p, n, 1)))) }
+    if k == ap.K_PLUS() { return rt.num(rt.to_num(eval(r, ap.ng(r.p, n, 1)))) }
+    if k == ap.K_PREINC() || k == ap.K_POSTINC() {
+        let target = ap.ng(r.p, n, 1)
+        let old = rt.to_num(eval(r, target)); let updated = old + (ap.ng(r.p, n, 3) as f64)
+        assign_lvalue(r, target, rt.num(updated))
+        return rt.num(k == ap.K_PREINC() ? updated : old)
+    }
+    if k == ap.K_BUILTIN() { return eval_builtin(r, n) }
+    if k == ap.K_CALL() { return call_function(r, n) }
+    if k == ap.K_GETLINE() { return eval_getline(r, n) }
+    if k == ap.K_SUBSEP() { return rt.text(subscript_key(r, n)) }
+    return rt.uninit()
+}
+fn eval_assign(r: rt.R, n: i64): rt.Val {
+    let target = ap.ng(r.p, n, 1); let code = ap.ng(r.p, n, 3)
+    let value = eval(r, ap.ng(r.p, n, 2))
+    if code == 0 {
+        assign_lvalue(r, target, value)
+        return value
+    }
+    let old = rt.to_num(eval(r, target))
+    let result = rt.num(arith(code, old, rt.to_num(value), r))
+    assign_lvalue(r, target, result)
+    return result
+}
+fn round_half(x: f64): f64 { return av.floor_f(x + 0.5) }
+fn do_substitute(r: rt.R, n: i64, global: bool): rt.Val {
+    let args = ap.ng(r.p, n, 2); let count = arg_count(r, args)
+    if count < 2 { rt.error(r, "sub/gsub need a pattern and a replacement"); return rt.num(0.0) }
+    let re = regex_of(r, args)
+    let repl = rt.to_str(eval(r, arg_at(r, args, 1)))
+    let target = count >= 3 ? arg_at(r, args, 2) : 0 - 1
+    let subject = target >= 0 ? rt.to_str(eval(r, target)) : rt.to_str(rt.get_field(r, 0))
+    if rx.failed(re) { return rt.num(0.0) }
+    let b = buffer_of(subject); let len = sys.length(subject); let caps = rx.new_caps(re)
+    let out = sys.bytes_new(); let from = 0; let copied = 0; let replaced = 0; let last_end = 0 - 1
+    while from <= len {
+        if !rx.search(re, sys.bdata(b), len, from, caps) { break }
+        let s = rt.ig(caps, 0); let e = rt.ig(caps, 1)
+        if s == e && s == last_end { from = s + 1; continue }
+        for q in copied..s { sys.bytes_push(out, sys.bat(b, q)) }
+        let i = 0; let rn = sys.length(repl)
+        while i < rn {
+            let c = sys.at(repl, i)
+            if c == 92 && i + 1 < rn && (sys.at(repl, i + 1) == 38 || sys.at(repl, i + 1) == 92) { sys.bytes_push(out, sys.at(repl, i + 1)); i = i + 2 }
+            else if c == 38 { for q in s..e { sys.bytes_push(out, sys.bat(b, q)) }; i = i + 1 }
+            else { sys.bytes_push(out, c); i = i + 1 }
+        }
+        copied = e; replaced = replaced + 1; last_end = e
+        if !global { break }
+        if e == s { if s < len { sys.bytes_push(out, sys.bat(b, s)) }; copied = s + 1; from = s + 1 } else { from = e }
+    }
+    if replaced > 0 {
+        for q in copied..len { sys.bytes_push(out, sys.bat(b, q)) }
+        let result = rt.text(sys.join2(sys.bytes_cstr(out), ""))
+        if target >= 0 { assign_lvalue(r, target, result) } else { rt.set_record(r, result.s) }
+    }
+    return rt.num(replaced as f64)
+}
+fn eval_builtin(r: rt.R, n: i64): rt.Val {
+    let id = ap.ng(r.p, n, 1); let args = ap.ng(r.p, n, 2); let count = arg_count(r, args)
+    if id == 1 {
+        if count == 0 { return rt.num(sys.length(rt.to_str(rt.get_field(r, 0))) as f64) }
+        let a = arg_at(r, args, 0); let ka = ap.kind_of(r.p, a)
+        if ka == ap.K_GVAR() || ka == ap.K_LVAR() {
+            let slot = rt.slot_of(r, a)
+            if rt.ig(r.vk, slot) == 4 { return rt.num(rt.ht_keys(r, rt.ig(r.vs, slot)).len() as f64) }
+        }
+        return rt.num(sys.length(rt.to_str(eval(r, a))) as f64)
+    }
+    if id == 2 {
+        let s = rt.to_str(eval(r, args)); let m = round_half(rt.to_num(eval(r, arg_at(r, args, 1)))); let len = sys.length(s) as f64
+        let from = m
+        let to = count >= 3 ? m + round_half(rt.to_num(eval(r, arg_at(r, args, 2)))) : len + 1.0
+        if from < 1.0 { from = 1.0 }
+        if to > len + 1.0 { to = len + 1.0 }
+        if to <= from { return rt.text("") }
+        return rt.text(sys.join2(sys.slice(s, (from as i64) - 1, (to as i64) - 1), ""))
+    }
+    if id == 3 {
+        let s = rt.to_str(eval(r, args)); let t = rt.to_str(eval(r, arg_at(r, args, 1)))
+        let sn = sys.length(s); let tn = sys.length(t)
+        if tn == 0 { return rt.num(0.0) }
+        for i in 0..(sn - tn + 1) { let ok = true; for q in 0..tn { if sys.at(s, i + q) != sys.at(t, q) { ok = false; break } }; if ok { return rt.num((i + 1) as f64) } }
+        return rt.num(0.0)
+    }
+    if id == 4 {
+        let s = rt.to_str(eval(r, args)); let target = arg_at(r, args, 1)
+        let fs = count >= 3 ? rt.to_str(eval(r, arg_at(r, args, 2))) : rt.gvar_str(r, rt.FS())
+        if count >= 3 && ap.kind_of(r.p, arg_at(r, args, 2)) == ap.K_ERE() { fs = rt.sp(ap.ng(r.p, arg_at(r, args, 2), 6)) }
+        let arr = rt.array_id(r, rt.slot_of(r, target))
+        let parts = rt.split_text(r, s, fs, Vec<str>())
+        rt.ht_clear(r, arr)
+        for i in 0..(parts.len() as i64) { rt.ht_set(r, arr, rt.radix_text(i + 1, 10, false), rt.input_value(parts[i])) }
+        return rt.num(parts.len() as f64)
+    }
+    if id == 5 { return do_substitute(r, n, false) }
+    if id == 6 { return do_substitute(r, n, true) }
+    return eval_builtin2(r, id, args, count)
+}
+fn eval_builtin2(r: rt.R, id: i64, args: i64, count: i64): rt.Val {
+    if id == 7 {
+        let s = rt.to_str(eval(r, args)); let re = regex_of(r, arg_at(r, args, 1))
+        if rx.failed(re) { return rt.num(0.0) }
+        let b = buffer_of(s); let caps = rx.new_caps(re)
+        if rx.search(re, sys.bdata(b), sys.length(s), 0, caps) {
+            rt.slot_set(r, rt.RSTART(), rt.num((rt.ig(caps, 0) + 1) as f64)); rt.slot_set(r, rt.RLENGTH(), rt.num((rt.ig(caps, 1) - rt.ig(caps, 0)) as f64))
+            return rt.num((rt.ig(caps, 0) + 1) as f64)
+        }
+        rt.slot_set(r, rt.RSTART(), rt.num(0.0)); rt.slot_set(r, rt.RLENGTH(), rt.num(0.0 - 1.0))
+        return rt.num(0.0)
+    }
+    if id == 8 {
+        let vals = Vec<rt.Val>()
+        for i in 1..count { vals.push(eval(r, arg_at(r, args, i))) }
+        return rt.text(rt.awk_format(r, rt.to_str(eval(r, args)), vals))
+    }
+    if id == 9 { return rt.num(av.sin_f(rt.to_num(eval(r, args)))) }
+    if id == 10 { return rt.num(av.cos_f(rt.to_num(eval(r, args)))) }
+    if id == 11 { return rt.num(av.atan2_f(rt.to_num(eval(r, args)), rt.to_num(eval(r, arg_at(r, args, 1))))) }
+    if id == 12 { return rt.num(av.exp_f(rt.to_num(eval(r, args)))) }
+    if id == 13 { return rt.num(av.log_f(rt.to_num(eval(r, args)))) }
+    if id == 14 { return rt.num(av.sqrt_f(rt.to_num(eval(r, args)))) }
+    if id == 15 { return rt.num(av.trunc_f(rt.to_num(eval(r, args)))) }
+    if id == 16 {
+        let state = (rt.ig(r.rc, 15) * 1103515245 + 12345) % 2147483648
+        rt.is_(r.rc, 15, state)
+        return rt.num((state as f64) / 2147483648.0)
+    }
+    if id == 17 {
+        let old = rt.ig(r.rc, 15)
+        rt.is_(r.rc, 15, count > 0 ? (rt.to_num(eval(r, args)) as i64) : proc.my_pid())
+        return rt.num(old as f64)
+    }
+    if id == 18 || id == 19 {
+        let s = rt.to_str(eval(r, args)); let b = sys.bytes_new()
+        for i in 0..sys.length(s) {
+            let c = sys.at(s, i); let v = c
+            if id == 18 && c >= 65 && c <= 90 { v = c + 32 } else if id == 19 && c >= 97 && c <= 122 { v = c - 32 }
+            sys.bytes_push(b, v)
+        }
+        return rt.text(sys.join2(sys.bytes_cstr(b), ""))
+    }
+    if id == 20 {
+        rt.close_all(r)
+        return rt.num(proc.run_wait(Vec<str>("sh", "-c", rt.to_str(eval(r, args))), proc.environment()) as f64)
+    }
+    if id == 21 { return rt.num(rt.close_named(r, rt.to_str(eval(r, args))) as f64) }
+    if id == 22 { sys.out_flush(r.out); return rt.num(0.0) }
+    return rt.uninit()
+}
+fn eval_getline(r: rt.R, n: i64): rt.Val {
+    let target = ap.ng(r.p, n, 1); let source = ap.ng(r.p, n, 2); let kind = ap.ng(r.p, n, 3)
+    if kind == 0 {
+        if target < 0 { return rt.num(rt.main_record(r) ? 1.0 : 0.0) }
+        let saved = rt.sp(rt.ig(r.rc, 2)); let ok = rt.main_record(r)
+        if ok { let line = rt.sp(rt.ig(r.rc, 2)); rt.set_record(r, saved); assign_lvalue(r, target, rt.input_value(line)) }
+        return rt.num(ok ? 1.0 : 0.0)
+    }
+    let key = rt.to_str(eval(r, source))
+    let idx = rt.reader_for(r, key, kind == 2)
+    if idx < 0 { return rt.num(0.0 - 1.0) }
+    let b = rt.bytes_ptr(rt.ig(r.rd, idx * 3 + 1)); let pos = rt.ig(r.rd, idx * 3 + 2)
+    if !rt.scan_record(r, b, pos) { return rt.num(0.0) }
+    let line = rt.record_text(b, rt.ig(r.rc, 21), rt.ig(r.rc, 22)); rt.is_(r.rd, idx * 3 + 2, rt.ig(r.rc, 23))
+    if kind == 2 { rt.slot_set(r, rt.NR(), rt.num(rt.to_num(rt.slot_get(r, rt.NR())) + 1.0)) }
+    if target < 0 { rt.set_record(r, line) } else { assign_lvalue(r, target, rt.input_value(line)) }
+    return rt.num(1.0)
+}
+fn call_function(r: rt.R, n: i64): rt.Val {
+    let index = ap.ng(r.p, n, 1); let args = ap.ng(r.p, n, 2)
+    let nparams = rt.ig(r.p.fns, index * 4 + 1); let body = rt.ig(r.p.fns, index * 4 + 2); let mask = rt.ig(r.p.fns, index * 4 + 3)
+    if body < 0 { rt.error(r, sys.join2("calling undefined function ", rt.sp(rt.ig(r.p.fns, index * 4)))); return rt.uninit() }
+    let count = arg_count(r, args)
+    let base = rt.ig(r.rc, 0)
+    if base + nparams + 8 >= 69000 { rt.error(r, "function call nesting too deep"); return rt.uninit() }
+    # evaluate the arguments in the caller's frame first
+    let kinds = rt.cells(nparams + 1); let nums = rt.fcells(nparams + 1); let strs = rt.cells(nparams + 1)
+    for i in 0..nparams {
+        if i < count {
+            let a = arg_at(r, args, i); let ka = ap.kind_of(r.p, a)
+            if (ka == ap.K_GVAR() || ka == ap.K_LVAR()) {
+                let slot = rt.slot_of(r, a)
+                if rt.ig(r.vk, slot) == 4 || (rt.ig(r.vk, slot) == 0 && (mask / (1 << i)) % 2 == 1) { rt.is_(kinds, i, 4); rt.is_(strs, i, rt.array_id(r, slot)); continue }
+            }
+            let v = eval(r, a)
+            rt.is_(kinds, i, v.k)
+            if v.k == 1 { rt.fsx_(nums, i, v.n) } else if v.k >= 2 { rt.is_(strs, i, rt.si(rt.keep(v.s))) }
+        }
+    }
+    let saved_base = rt.ig(r.rc, 1)
+    rt.is_(r.rc, 1, base); rt.is_(r.rc, 0, base + nparams)
+    for i in 0..nparams { rt.is_(r.vk, base + i, rt.ig(kinds, i)); rt.fsx_(r.vn, base + i, rt.fgx(nums, i)); rt.is_(r.vs, base + i, rt.ig(strs, i)) }
+    rt.is_(r.rc, 6, 0)
+    let status = exec(r, body)
+    rt.is_(r.rc, 1, saved_base); rt.is_(r.rc, 0, base)
+    let result = rt.uninit()
+    if status == 5 {
+        let rk = rt.ig(r.rc, 6)
+        if rk == 1 { result = rt.num(rt.fgx(r.rf, 0)) } else if rk >= 2 { result = Val_of(rk, rt.sp(rt.ig(r.rc, 7))) }
+    }
+    if status == 4 { rt.is_(r.rc, 9, 1) }
+    return result
+}
+fn Val_of(k: i64, s: str): rt.Val { return rt.Val(k, 0.0, s) }
+
+// ---- statements -----------------------------------------------------------------------------------------------------------------------------------------------------
+fn exec_list(r: rt.R, head: i64): i64 {
+    let s = head
+    while s >= 0 {
+        let st = exec(r, s)
+        if st != 0 { return st }
+        if rt.ig(r.rc, 9) != 0 { return 4 }
+        s = ap.ng(r.p, s, 5)
+    }
+    return 0
+}
+fn loop_status(st: i64): i64 {
+    # 0 keep going, 1 leave the loop normally, 2 leave with the status
+    if st == 0 || st == 2 { return 0 }
+    if st == 1 { return 1 }
+    return 2
+}
+fn exec(r: rt.R, n: i64): i64 {
+    let k = ap.kind_of(r.p, n)
+    if k == ap.S_BLOCK() { return exec_list(r, ap.ng(r.p, n, 1)) }
+    if k == ap.S_EXPR() { eval(r, ap.ng(r.p, n, 1)); return 0 }
+    if k == ap.S_PRINT() || k == ap.S_PRINTF() { return exec_print(r, n, k == ap.S_PRINTF()) }
+    if k == ap.S_IF() {
+        if rt.truthy(eval(r, ap.ng(r.p, n, 1))) { return exec(r, ap.ng(r.p, n, 2)) }
+        if ap.ng(r.p, n, 3) >= 0 { return exec(r, ap.ng(r.p, n, 3)) }
+        return 0
+    }
+    if k == ap.S_WHILE() {
+        while rt.truthy(eval(r, ap.ng(r.p, n, 1))) {
+            let st = exec(r, ap.ng(r.p, n, 2)); let ls = loop_status(st)
+            if ls == 1 { return 0 }
+            if ls == 2 { return st }
+            if rt.ig(r.rc, 9) != 0 { return 4 }
+        }
+        return 0
+    }
+    if k == ap.S_DO() {
+        while true {
+            let st = exec(r, ap.ng(r.p, n, 1)); let ls = loop_status(st)
+            if ls == 1 { return 0 }
+            if ls == 2 { return st }
+            if !rt.truthy(eval(r, ap.ng(r.p, n, 2))) { break }
+        }
+        return 0
+    }
+    if k == ap.S_FOR() {
+        if ap.ng(r.p, n, 1) >= 0 { exec(r, ap.ng(r.p, n, 1)) }
+        while ap.ng(r.p, n, 2) < 0 || rt.truthy(eval(r, ap.ng(r.p, n, 2))) {
+            let st = exec(r, ap.ng(r.p, n, 4)); let ls = loop_status(st)
+            if ls == 1 { return 0 }
+            if ls == 2 { return st }
+            if rt.ig(r.rc, 9) != 0 { return 4 }
+            if ap.ng(r.p, n, 3) >= 0 { exec(r, ap.ng(r.p, n, 3)) }
+        }
+        return 0
+    }
+    return exec_more(r, n, k)
+}
+fn exec_more(r: rt.R, n: i64, k: i64): i64 {
+    if k == ap.S_FORIN() {
+        let arr = rt.array_id(r, rt.slot_of(r, ap.ng(r.p, n, 2)))
+        let keys = rt.ht_keys(r, arr)
+        for i in 0..(keys.len() as i64) {
+            if rt.ht_slot(r, arr, keys[i], false) < 0 { continue }
+            assign_lvalue(r, ap.ng(r.p, n, 1), rt.input_value(keys[i]))
+            let st = exec(r, ap.ng(r.p, n, 3)); let ls = loop_status(st)
+            if ls == 1 { return 0 }
+            if ls == 2 { return st }
+        }
+        return 0
+    }
+    if k == ap.S_BREAK() { return 1 }
+    if k == ap.S_CONTINUE() { return 2 }
+    if k == ap.S_NEXT() { return 3 }
+    if k == ap.S_NEXTFILE() { rt.is_(r.rc, 10, 0); return 3 }
+    if k == ap.S_EXIT() {
+        if ap.ng(r.p, n, 1) >= 0 { rt.is_(r.rc, 8, rt.to_num(eval(r, ap.ng(r.p, n, 1))) as i64) }
+        rt.is_(r.rc, 9, 1)
+        return 4
+    }
+    if k == ap.S_RETURN() {
+        let v = ap.ng(r.p, n, 1) >= 0 ? eval(r, ap.ng(r.p, n, 1)) : rt.uninit()
+        rt.is_(r.rc, 6, v.k)
+        if v.k == 1 { rt.fsx_(r.rf, 0, v.n) } else if v.k >= 2 { rt.is_(r.rc, 7, rt.si(rt.keep(v.s))) }
+        return 5
+    }
+    if k == ap.S_DELETE() {
+        let arr = rt.array_id(r, rt.slot_of(r, ap.ng(r.p, n, 1)))
+        if ap.ng(r.p, n, 2) < 0 { rt.ht_clear(r, arr) } else { rt.ht_delete(r, arr, subscript_key(r, ap.ng(r.p, n, 2))) }
+        return 0
+    }
+    return 0
+}
+fn exec_print(r: rt.R, n: i64, is_printf: bool): i64 {
+    let args = ap.ng(r.p, n, 1); let redirect = ap.ng(r.p, n, 2); let rkind = ap.ng(r.p, n, 3)
+    let text = ""
+    if is_printf {
+        if args < 0 { return 0 }
+        let vals = Vec<rt.Val>(); let a = ap.ng(r.p, args, 5)
+        while a >= 0 { vals.push(eval(r, a)); a = ap.ng(r.p, a, 5) }
+        text = rt.awk_format(r, rt.to_str(eval(r, args)), vals)
+    } else if args < 0 { text = sys.join2(rt.to_str(rt.get_field(r, 0)), rt.gvar_str(r, rt.ORS())) }
+    else {
+        let b = sys.bytes_new(); let a = args; let first = true; let ofs = rt.gvar_str(r, rt.OFS())
+        while a >= 0 {
+            if !first { sys.bytes_str(b, ofs) }
+            first = false
+            let v = eval(r, a)
+            sys.bytes_str(b, v.k == 1 ? av.num_to_str(v.n) : rt.to_str(v))
+            a = ap.ng(r.p, a, 5)
+        }
+        sys.bytes_str(b, rt.gvar_str(r, rt.ORS()))
+        text = sys.join2(sys.bytes_cstr(b), "")
+    }
+    let target = redirect >= 0 ? rt.to_str(eval(r, redirect)) : ""
+    rt.write_to(r, rkind, target, text)
+    if rt.ig(r.rc, 9) != 0 && rt.ig(r.rc, 8) == 2 { return 4 }
+    return 0
+}
+// Does the rule's pattern select the current record?
+fn rule_selected(r: rt.R, rule: i64, ranges: *i64): bool {
+    let pattern = ap.ng(r.p, rule, 1); let pattern2 = ap.ng(r.p, rule, 2)
+    if pattern < 0 { return true }
+    if pattern2 < 0 { return rt.truthy(eval(r, pattern)) }
+    if rt.ig(ranges, rule) == 0 {
+        if rt.truthy(eval(r, pattern)) {
+            if !rt.truthy(eval(r, pattern2)) { rt.is_(ranges, rule, 1) }
+            return true
+        }
+        return false
+    }
+    if rt.truthy(eval(r, pattern2)) { rt.is_(ranges, rule, 0) }
+    return true
+}
+fn run_rules(r: rt.R, aux: i64, ranges: *i64): i64 {
+    # BEGIN (aux 1) and END (aux 2) actions run once; aux 0 rules run for the current record
+    let rule = rt.ig(r.p.c, 16)
+    while rule >= 0 {
+        if ap.ng(r.p, rule, 4) == aux {
+            if aux != 0 || rule_selected(r, rule, ranges) {
+                let action = ap.ng(r.p, rule, 3)
+                let st = 0
+                if action < 0 { rt.write_to(r, 0, "", sys.join2(rt.to_str(rt.get_field(r, 0)), rt.gvar_str(r, rt.ORS()))) } else { st = exec(r, action) }
+                if st == 4 || rt.ig(r.rc, 9) != 0 { return 4 }
+                if st == 3 { return 3 }
+            }
+        }
+        rule = ap.ng(r.p, rule, 5)
+    }
+    return 0
+}
