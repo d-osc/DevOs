@@ -51,7 +51,7 @@ struct Item { id:ui.Text, name:ui.Text, description:ui.Text, icon:ui.Text, file:
 fn itemOf(record:ui.Text):Item { let c = sp.cells(record); return Item(sp.cell(c,1),sp.cell(c,2),sp.cell(c,3),sp.cell(c,4),sp.cell(c,5)) }
 
 fn App(context:*ui.Context):ui.Node {
-    let l = sp.link(context,"../../system/org.devos.launcher/service.dev","{\"action\":\"start\"}")
+    let l = sp.linkWith(context,"../../system/org.devos.launcher/service.dev","{\"action\":\"start\"}",environment("DEV_OS_ROOT") + "/dist/native/libsupervisor.so")
     # asked: the kind of the last request (0 start or save, 1 launch, 2 power, 3 shell command)
     let asked = ui.useRef(context,0); let query = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText())
     let editing = ui.useState(context,0); let confirm = ui.useText(context,ui.emptyText()); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0)

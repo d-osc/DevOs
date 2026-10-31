@@ -23,11 +23,13 @@ fn plain(value:str):ui.Text { return ui.text(value) }
 # One worker process and the state every page needs.
 # `replies` counts every answer, so a page can react to an answer that equals the previous one.
 struct Link { frame: ui.TextState, failure: ui.TextState, pipe: ui.IntRef, waiting: ui.IntRef, replies: ui.State }
-fn link(context:*ui.Context, script:str, first:str):Link {
+fn link(context:*ui.Context, script:str, first:str):Link { return linkWith(context,script,first,"") }
+# `library`: a shared library the worker loads (the shell command client needs dist/native/libsupervisor.so); "" for none.
+fn linkWith(context:*ui.Context, script:str, first:str, library:str):Link {
     let frame = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText()); let pipe = ui.useRef(context,0); let waiting = ui.useRef(context,0); let replies = ui.useState(context,0)
     ui.useEffect(context,fn():fn():void {
         let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
-        return channel.connect(context,runner,"${root}/src/apps/org.devos.settings/" + script,root,fn(value:ui.Text) {
+        return channel.connectWithLibrary(context,runner,"${root}/src/apps/org.devos.settings/" + script,root,library,fn(value:ui.Text) {
             waiting.set(0); replies.set(replies.get() + 1)
             if value.bytes.len() > 0 && value.bytes[0] == 69 { let parts = channel.split(value,9); if parts.len() > 1 { failure.set(parts[1]) }; return }
             failure.set(ui.emptyText()); frame.set(value)

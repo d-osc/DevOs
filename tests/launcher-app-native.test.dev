@@ -133,4 +133,9 @@ test.case("on a real layer-shell compositor the Launcher is a full-screen overla
     test.expect(strings.contains(out,"set_anchor(15)") && strings.contains(out,"set_keyboard_interactivity(1)") && strings.contains(out,"set_exclusive_zone(-1)"),"anchored to every edge with the keyboard: " + out)
     test.expect(strings.contains(out,".configure(") && strings.contains(out,"1280, 720"),"the compositor gave it the whole output: " + out)
 })
+test.case("the worker's shell commands reach the shell client: with libsupervisor loaded a missing shell is reported, not a missing native symbol",fn() {
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("XDG_RUNTIME_DIR","/nonexistent-devos-runtime"); env.set("WAYLAND_DISPLAY","wayland-none")
+    let answer = tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.launcher/service.dev","--ffi-lib",t.root() + "/dist/native/libsupervisor.so"),env,"{\"action\":\"shell\",\"command\":\"settings\"}\n",60000)
+    test.expect(strings.contains(t.out(answer),"Could not settings.") && !strings.contains(t.out(answer),"native symbol"),"shell command: " + t.out(answer))
+})
 return t.finish()
