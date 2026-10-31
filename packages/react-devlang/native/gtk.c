@@ -114,6 +114,13 @@ static void rd_layer_overlay(RdRoot *root) {
 static void rd_app_css(RdRoot *root) {
     GtkCssProvider *css = gtk_css_provider_new();
     gtk_css_provider_load_from_data(css,
+        /* one title bar for every window: the theme styles buttons per window (#settings button, #app-store button ...), which made some title bar buttons boxed and others flat */
+        "headerbar.app-titlebar {min-height: 34px; padding: 0 6px;} "
+        "headerbar.app-titlebar .title {font-size: 13px; font-weight: 600;} "
+        "headerbar.app-titlebar button {background-image: none; background-color: transparent; background-color: alpha(@dv_s5, 0); border: 1px solid transparent; box-shadow: none; text-shadow: none; padding: 4px 7px; min-height: 0; min-width: 0; border-radius: 7px;} "
+        "headerbar.app-titlebar button:hover {background-color: #2f3031; background-color: @dv_s5;} "
+        "headerbar.app-titlebar button image, headerbar.app-titlebar image {color: #48a0c7; color: @dv_accent_fg;} "
+        "headerbar.app-titlebar button.close:hover image {color: #f48771; color: @dv_error;} "
         ".fl-side {background-color: #121314; background-color: @dv_s0; border-right: 1px solid #2a2b2c; border-right: 1px solid @dv_line0; padding: 16px 12px;} "
         ".fl-brand-title {font-size: 19px; font-weight: 700; color: #ededed; color: @dv_fg_strong;} "
         ".fl-brand-icon {color: #48a0c7; color: @dv_accent_fg;} "
