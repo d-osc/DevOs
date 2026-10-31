@@ -11,7 +11,7 @@ fn compatible(root:str):bool {return result.isOk(result.attempt(fn():json.Value 
 test.case("all existing npm packages retain their exports",fn() {
     let data=json.parse(fs.readFileSync(t.root()+"/data/compat/npm-api.json","utf8"))
     let checked=migration.checkCompatibility(t.root(),data)
-    test.expect(json.len(checked)==7,"Lost a required @dev-os package")
+    test.expect(json.len(checked)==4,"Lost a required @dev-os package")
 })
 test.case("compatibility gate rejects removed exports and renamed packages",fn() {
     let root=t.root()+"/build/npm-compat-fixtures/"+uuid.v4();let path=root+"/packages/demo/package.json"

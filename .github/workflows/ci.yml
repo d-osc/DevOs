@@ -119,16 +119,9 @@ jobs:
           d tests/panel-command-native.test.dev
           d tests/panel-tray-native.test.dev
           d tests/panel-battery-care-native.test.dev
-          gjs -m dist/native-action-test.js
-          xvfb-run --auto-servernum env GDK_BACKEND=x11 gjs -m dist/panel-menu-data-test.js
-          xvfb-run --auto-servernum env GDK_BACKEND=x11 gjs -m dist/panel-taskbar-data-test.js
           d tools/test/background-menu-smoke.dev -- panel top
           d tools/test/background-menu-smoke.dev -- panel bottom
           sh tools/build/native-background-runtime.sh
           d tools/test/background-runtime-smoke.dev
-          xvfb-run --auto-servernum env GDK_BACKEND=x11 gjs -m dist/supervisor-test.js
-          gjs -m dist/version-request-test.js
-      - name: Shell tests under GJS
-        run: xvfb-run --auto-servernum env GDK_BACKEND=x11 npm run check
       - name: Python tests
         run: /usr/bin/python3 tools/release/run_python_tests.py

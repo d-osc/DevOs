@@ -25,47 +25,20 @@
       "@girs/soup-3.0"
     ],
     "paths": {
-      "@dev-os/core": [
-        "./packages/core/index.ts"
-      ],
       "@dev-os/core/*": [
         "./packages/core/*.ts"
-      ],
-      "@dev-os/extensions": [
-        "./packages/extensions/index.ts"
       ],
       "@dev-os/extensions/*": [
         "./packages/extensions/*.ts"
       ],
-      "@dev-os/updates": [
-        "./packages/updates/index.ts"
-      ],
       "@dev-os/updates/*": [
         "./packages/updates/*.ts"
-      ],
-      "@dev-os/runtime": [
-        "./packages/runtime/index.ts"
-      ],
-      "@dev-os/runtime/*": [
-        "./packages/runtime/*"
-      ],
-      "@dev-os/services": [
-        "./packages/services/index.ts"
-      ],
-      "@dev-os/services/*": [
-        "./packages/services/*"
       ],
       "@dev-os/config": [
         "./packages/config/index.ts"
       ],
       "@dev-os/config/*": [
         "./packages/config/*"
-      ],
-      "@dev-os/supervisor": [
-        "./packages/supervisor/index.ts"
-      ],
-      "@dev-os/supervisor/*": [
-        "./packages/supervisor/*"
       ]
     }
   },

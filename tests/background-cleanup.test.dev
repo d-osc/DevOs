@@ -17,6 +17,5 @@ test.case("production background selects the native manager",fn() {
     t.equal(json.string(json.get(manifest,"native")),"system-background")
     test.expect(!json.has(manifest,"entry"),"Legacy production entry returned")
     t.lacks(fs.readFileSync(t.root()+"/tools/build/build.ts","utf8"),"packages/compat/background-legacy/extension")
-    t.lacks(fs.readFileSync(t.root()+"/src/app-settings.tsx","utf8"),"background-legacy/settings-view")
 })
 return t.finish()

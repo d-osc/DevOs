@@ -3,17 +3,9 @@
   "version": "0.3.7-ux3407na-dev",
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
-    },
-    "./service": {
-      "types": "./dist/service.d.ts",
-      "import": "./dist/service.js"
     },
     "./installed": {
       "types": "./dist/installed.d.ts",
