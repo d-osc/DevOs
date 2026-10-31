@@ -47,6 +47,7 @@ static void rd_snap(GtkButton *button,void *data) {
 }
 void rd_app_header_for(void *root,const char *title,const char *icons,const char *name,const char *icon) {
     GtkWidget *window=rd_window(root); gtk_widget_set_name(window,name);
+    if(!strcmp(name,"camera")||!strcmp(name,"microphone")) gtk_style_context_add_class(gtk_widget_get_style_context(window),"media-window"); /* the theme styles Camera and Microphone as .media-window */
     if(g_object_get_data(G_OBJECT(window),"rd-layer")) {gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(),icons); return;} /* a full-screen overlay has no title bar */
     gtk_style_context_add_class(gtk_widget_get_style_context(window),"devos-rounded-window");
     gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(),icons);

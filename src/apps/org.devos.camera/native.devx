@@ -39,6 +39,7 @@ fn pipeline(device:ui.Text, dir:ui.Text):ui.Text {
     return join(Vec<ui.Text>(source(device),plain(" ! videoconvert ! tee name=t t. ! queue ! gtksink name=sink t. ! queue leaky=downstream max-size-buffers=1 ! videorate drop-only=true ! video/x-raw,framerate=2/1 ! videoconvert ! jpegenc quality=85 ! multifilesink location="),dir,plain("/%05d.jpg max-files=3")))
 }
 
+fn mediaContent(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 12; options.margin = 18; options.expand = true; options.className = ui.text("media-content"); return ui.Box(options,children) }
 fn App(context:*ui.Context):ui.Node {
     let l = sp.link(context,"../org.devos.camera/service.dev","{\"action\":\"devices\"}")
     # asked: the kind of the last request (0 devices, 1 prepare, 2 photo, 3 cleanup); pipe and preview: pointers kept as numbers while the camera runs
@@ -117,7 +118,7 @@ fn App(context:*ui.Context):ui.Node {
         }),
         ui.Button(photoButton,"Take photo",fn() { asked.set(2); status.set(plain("Taking photo…")); sp.send(l,request("photo",framesDir.get())) }),
         ui.Button(folderButton,"Open photos",fn() { sp.send(l,plain("{\"action\":\"folder\"}")) }))))
-    return ext.column(10,nodes)
+    return mediaContent(nodes)
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.camera.Native" }

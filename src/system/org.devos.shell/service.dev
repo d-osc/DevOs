@@ -76,6 +76,20 @@ fn launch(role:str, command:str, path:str) {
     argv.push(native)
     for item in args { argv.push(item) }
     startProcess(argv,extra)
+    if needsReplay(command,path,background || panel) { replay(id,args) }
+}
+# A command that says more than "open the app" (a Settings page, a file to edit or install, the extension store) is not read from the argument list of a window that is just starting,
+# so it is sent over D-Bus as soon as the new window owns its name, the way a running window gets it.
+fn needsReplay(command:str, path:str, special:bool):bool {
+    if special { return false }
+    return !strings.equal(path,"") || strings.startsWith(command,"settings.") || strings.startsWith(command,"session.") || strings.equal(command,"app-store-extensions") || strings.equal(command,"extension-store")
+}
+fn variantText(value:str):str { return "'" + strings.replaceAll(strings.replaceAll(value,"\\","\\\\"),"'","\\'") + "'" }
+fn replay(id:str, args:Vec<str>) {
+    if testing() { note("replay " + id + " " + strings.join(args," ")); return }
+    let items = Vec<str>(); for item in args { items.push(variantText(item)) }
+    let objectPath = "/" + strings.replaceAll(id,".","/") + "/control"
+    hw.spawnDetached(Vec<str>("sh","-c","i=0; while [ \"$i\" -lt 60 ]; do gdbus call --session --dest \"$1\" --object-path \"$2\" --method org.devos.Shell.Control.Execute \"$3\" \"\" >/dev/null 2>&1 && exit 0; i=$((i+1)); sleep 0.25; done","sh",id,objectPath,"[" + strings.join(items,", ") + "]"))
 }
 fn shellRoleIs(list:Vec<str>, role:str):bool { return router.contains(list,role) }
 

@@ -86,6 +86,7 @@ fn pipeline(device:ui.Text, record:bool, path:ui.Text):ui.Text {
     return join(Vec<ui.Text>(source(device),plain(" ! audioconvert ! audioresample ! level name=meter interval=100000000 post-messages=true"),tail))
 }
 
+fn mediaContent(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = 12; options.margin = 18; options.expand = true; options.className = ui.text("media-content"); return ui.Box(options,children) }
 fn App(context:*ui.Context):ui.Node {
     let l = sp.link(context,"../org.devos.microphone/service.dev","{\"action\":\"devices\"}")
     # asked: kind of the last request (0 devices, 1 prepare, 2 discard, 3 folder); mode: 0 off, 1 level test, 2 recording, 3 finishing a recording
@@ -188,7 +189,7 @@ fn App(context:*ui.Context):ui.Node {
             else { want.set(2); path.set(ui.emptyText()); asked.set(1); sp.send(l,plain("{\"action\":\"prepare\"}")) }
         }),
         ui.Button(folderButton,"Open recordings",fn() { asked.set(3); sp.send(l,plain("{\"action\":\"folder\"}")) }))))
-    return ext.column(12,nodes)
+    return mediaContent(nodes)
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.microphone.Native" }
