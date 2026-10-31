@@ -9,8 +9,6 @@ extern fn rd_identity(id:str)
 extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
 extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
 extern fn rd_default_theme():str
-extern fn gtk_scrolled_window_set_policy(window:*void, horizontal:i32, vertical:i32)
-extern fn gtk_scrolled_window_set_propagate_natural_height(window:*void, propagate:i32)
 extern fn rd_clipboard(text:*u8)
 
 # Native Files window. The worker (service.dev) lists folders, creates a folder, renames, opens a file, searches (Quick Open), installs a package, opens a
@@ -232,12 +230,10 @@ fn App(context:*ui.Context):ui.Node {
         let toggle = ui.named("files-hidden"); toggle.valign = 3
         bottom.push(flat(8,"",Vec<ui.Node>(ext.expand(lab(plain("Hidden files"),"fl-muted",0.0,0)),ui.Switch(toggle,hiddenOn,fn(next:bool) { if next != hiddenOn { hidden.set(next ? 1 : 0); nav.set(2); asked.set(0); sp.send(l,listRequest(current,current,next)) } }))))
     }
-    # The path bar scrolls sideways and is one line high (every other scroller wraps to the window); the widget exists from the second render on.
-    unsafe { let crumbsBar = ui.find(context,"files-crumbs"); if crumbsBar != null { gtk_scrolled_window_set_policy(crumbsBar,0,2); gtk_scrolled_window_set_propagate_natural_height(crumbsBar,1) } }
     let sideScroll = ui.props(); sideScroll.expand = true; let sideInner = ui.props(); sideInner.spacing = 6
     let sideColumn = Vec<ui.Node>(ui.Scroll(sideScroll,ui.Box(sideInner,side))); for item in bottom { sideColumn.push(item) }
     let sideOptions = ui.props(); sideOptions.spacing = 8; sideOptions.className = ui.text("fl-side"); sideOptions.width = 210
-    let main = Vec<ui.Node>(ext.row(6,bar),ui.Scroll(ui.named("files-crumbs"),flat(3,"",crumbs)),heading)
+    let main = Vec<ui.Node>(ext.row(6,bar),ui.ScrollX(ui.props(),flat(3,"",crumbs)),heading)
     if inSearch {
         let box = ui.named("files-search"); box.expand = true; box.placeholder = plain("Search files in this folder and below")
         main.push(ui.SearchEntry(box,query.value,fn(value:ui.Text) { query.set(value); if has(value) { wanted.set(1) } else { results.set(ui.emptyText()) } }))

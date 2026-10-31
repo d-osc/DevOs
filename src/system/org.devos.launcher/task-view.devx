@@ -144,7 +144,7 @@ fn TaskView(context:*ui.Context):ui.Node {
         nodes.push(ext.row(10,Vec<ui.Node>(label(plain("YOUR DESKTOPS"),"rd-eyebrow",0.0,0),label(plain("${desks.len()}"),"rd-muted",0.0,0))))
         let strip = ui.props(); strip.vertical = false; strip.spacing = 16
         let stripScroll = ui.props(); stripScroll.height = 136
-        nodes.push(ui.Scroll(stripScroll,ui.Box(strip,chips)))
+        nodes.push(ui.ScrollX(stripScroll,ui.Box(strip,chips)))
     }
     let body = ui.props(); body.spacing = 18; body.margin = 0; body.expand = true; body.className = ui.text("rd-layer-panel")
     return ui.Box(body,nodes)

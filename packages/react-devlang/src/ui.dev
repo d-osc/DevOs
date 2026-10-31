@@ -138,6 +138,8 @@ fn Scale(options:Props,low:i64,high:i64,value:i64,changed:fn(i64):void):Node {
 # Shows only the child at `active` (0-based); the others stay mounted and keep their state.
 fn Stack(options:Props,active:i64,children:Vec<Node>):Node {let node=element(19,options,emptyText(),children);node.fraction=active as f64;return node}
 fn Scroll(options: Props, child: Node): Node { return element(5, options, emptyText(), Vec<Node>(child)) }
+# A strip that scrolls sideways (Scroll wraps its content to the window width instead) and is as high as its content.
+fn ScrollX(options: Props, child: Node): Node { return element(20, options, emptyText(), Vec<Node>(child)) }
 fn Progress(options: Props, fraction: f64): Node { let node = element(6, options, emptyText(), Vec<Node>()); node.fraction = fraction; return node }
 fn Separator(): Node { return element(7, props(), emptyText(), Vec<Node>()) }
 fn Fragment(options: Props, children: Vec<Node>): Node { return Box(options, children) }

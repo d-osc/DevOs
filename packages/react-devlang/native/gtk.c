@@ -275,6 +275,7 @@ void *rd_widget(void *data, int32_t kind) {
     case 3: widget = gtk_entry_new(); g_signal_connect(widget, "changed", G_CALLBACK(rd_changed), root); g_signal_connect(widget,"activate",G_CALLBACK(rd_clicked),root); break;
     case 4: widget = gtk_check_button_new(); g_signal_connect(widget, "toggled", G_CALLBACK(rd_toggled), root); break;
     case 5: widget = gtk_scrolled_window_new(NULL, NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(widget), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC); break; /* content wraps to the window instead of scrolling sideways */
+    case 20: widget = gtk_scrolled_window_new(NULL, NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(widget), GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER); gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(widget), TRUE); break; /* a strip that scrolls sideways and is as high as its content */
     case 6: widget = gtk_progress_bar_new(); break;
     case 7: widget = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL); break;
     case 8: widget = gtk_combo_box_text_new(); g_signal_connect(widget,"changed",G_CALLBACK(rd_combo_changed),root); break;
