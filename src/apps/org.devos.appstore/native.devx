@@ -50,7 +50,7 @@ fn navButton(name:str, icon:str, title:str, count:i64, current:i64, index:i64, p
 # A square tile holding a centred icon (.app-store-icon).
 fn tile(icon:str, size:i32, name:str):ui.Node {
     let options = ui.props(); options.className = ui.text(name); options.width = size; options.height = size; options.halign = 3; options.valign = 3
-    let image = ui.props(); image.iconSize = size / 2
+    let image = ui.props(); image.iconSize = size / 2; image.expand = true; image.halign = 3; image.valign = 3
     return ui.Box(options,Vec<ui.Node>(ui.Icon(image,icon)))
 }
 fn chip(value:ui.Text, name:str):ui.Node { let options = ui.props(); options.className = ui.text(name); options.halign = 1; options.valign = 3; return ui.withProps(ui.TextLabel(value),options) }
