@@ -1,0 +1,94 @@
+use "std/json"
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/test"
+use "schema.dev" as schema
+use "package_contract.dev" as contract
+
+fn main() i32 {
+    let root = path.dirname(path.dirname(path.resolve(process.cwd(), process.argv()[1])))
+    let definition = json.parse(fs.read_text(path.join(root, "schema/app.schema.json")))
+    let catalog = json.parse(fs.read_text(path.join(root, "apps/vscode/app.json")))
+    let example = json.parse(fs.read_text(path.join(root, "examples/example-app/app.json")))
+    test.case("existing manifest compatibility", fn() {
+        test.equal(schema.validate(definition, catalog, definition, "app"), "", "catalog")
+        test.equal(schema.validate(definition, example, definition, "app"), "", "installable example")
+    })
+    test.case("catalog cannot claim install support", fn() {
+        for field in ["channels", "releases"] {
+            let invalid = json.set(catalog, field, json.get(example, field))
+            test.equal(schema.validate(definition, invalid, definition, "app") != "", true, field)
+        }
+        let invalid = json.set(catalog, "status", "installable")
+        test.equal(schema.validate(definition, invalid, definition, "app") != "", true, "missing artifacts")
+        invalid = json.set(catalog, "launcher", json.object())
+        test.equal(schema.validate(definition, invalid, definition, "app") != "", true, "reject unsupported launcher contract")
+    })
+    test.case("reject malformed metadata and paths", fn() {
+        for value in ["../secret", "/absolute", "C:/secret", "assets/../../secret", "assets\\icon.png"] {
+            let invalid = json.set(catalog, "readme", value)
+            test.equal(schema.validate(definition, invalid, definition, "app") != "", true, value)
+        }
+        let invalid = json.set(catalog, "unexpected", true)
+        test.equal(schema.validate(definition, invalid, definition, "app") != "", true, "unknown property")
+        test.equal(schema.format_ok("date", "2026-02-30"), false, "invalid calendar date")
+        test.equal(schema.format_ok("uri", "https://"), false, "missing hostname")
+    })
+    test.case("direct download links retain catalog guard", fn() {
+        test.equal(json.len(json.get(catalog, "downloads")) as i64, 1, "Linux ARM64 download")
+        let downloads = json.get(catalog, "downloads")
+        let download = json.at(downloads, 0)
+        test.equal(json.string(json.get(download, "platform")), "linux", "target platform")
+        test.equal(json.string(json.get(download, "arch")), "arm64", "target architecture")
+        test.equal(json.string(json.get(download, "format")), "deb", "upstream package format")
+        download = json.set(download, "file_url", "http://example.com/setup.exe")
+        let changed = json.array()
+        changed = json.push(changed, download)
+        let invalid = json.set(catalog, "downloads", changed)
+        test.equal(schema.validate(definition, invalid, definition, "app") != "", true, "reject insecure URL")
+        invalid = json.set(catalog, "status", "installable")
+        test.equal(schema.validate(definition, invalid, definition, "app") != "", true, "URL alone cannot enable installation")
+    })
+    test.case("PM package identity, commands and formats", fn() {
+        let release = json.at(json.get(example, "releases"), 0)
+        let artifact = json.at(json.get(release, "artifacts"), 0)
+        test.equal(contract.artifact_error(artifact, "1.0.0"), "", "expected package contract")
+        test.equal(contract.artifact_error(artifact, "2.0.0") != "", true, "installed version mismatch")
+        let invalid = json.set(artifact, "format", "zip")
+        let artifacts = json.array()
+        artifacts = json.push(artifacts, invalid)
+        let changed = json.set(release, "artifacts", artifacts)
+        let releases = json.array()
+        releases = json.push(releases, changed)
+        changed = json.set(example, "releases", releases)
+        test.equal(schema.validate(definition, changed, definition, "app") != "", true, "ZIP is unsupported by PM")
+        invalid = json.set(artifact, "url", "https://example.com/latest/redirect")
+        test.equal(contract.artifact_error(invalid, "1.0.0") != "", true, "suffix gate")
+        let package = json.get(artifact, "package")
+        package = json.set(package, "bin", json.parse("{\"Bad Command\":\"bin/app\"}"))
+        test.equal(contract.package_error(package) != "", true, "invalid command")
+    })
+    test.case("PM display, context menu and local asset roots", fn() {
+        let artifact = json.at(json.get(json.at(json.get(example, "releases"), 0), "artifacts"), 0)
+        let package = json.get(artifact, "package")
+        let page = json.get(package, "storepage")
+        page = json.set(page, "index", "store/missing.md")
+        let invalid = json.set(package, "storepage", page)
+        test.equal(contract.package_error(invalid) != "", true, "storepage membership")
+        invalid = json.set(package, "icon", "https://example.com/icon.svg")
+        test.equal(contract.package_error(invalid) != "", true, "package icon cannot be registry URL")
+        invalid = json.set(package, "contextmenu", json.parse("[{\"id\":\"open\",\"label\":\"Open\",\"command\":\"not-exported\",\"targets\":[\"file\"]}]"))
+        test.equal(contract.package_error(invalid) != "", true, "menu must reference bin")
+        invalid = json.set(package, "bin", json.parse("{\"app\":\"../outside\"}"))
+        let definition_package = json.get(json.get(definition, "$defs"), "packageManifest")
+        test.equal(schema.validate(definition_package, invalid, definition, "package") != "", true, "dictionary paths are validated")
+        invalid = json.set(package, "version", "1.2.3-1.u1")
+        test.equal(schema.validate(definition_package, invalid, definition, "package"), "", "PM version is not restricted to SemVer")
+    })
+    let report = test.run()
+    print("Registry tests: ${report.passed} passed, ${report.failed} failed.")
+    if report.failed > 0 { return 1 }
+    return 0
+}
+return main()

@@ -1,0 +1,242 @@
+{
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "required": [
+    "schema_version",
+    "kind",
+    "id",
+    "status",
+    "name",
+    "summary",
+    "publisher",
+    "license",
+    "categories",
+    "tags",
+    "readme",
+    "manifest",
+    "target",
+    "delivery"
+  ],
+  "properties": {
+    "target": {
+      "required": [
+        "platform",
+        "arch",
+        "apiVersion"
+      ],
+      "type": "object",
+      "properties": {
+        "apiVersion": {
+          "const": 1
+        },
+        "arch": {
+          "const": "arm64"
+        },
+        "platform": {
+          "const": "linux"
+        }
+      },
+      "additionalProperties": false
+    },
+    "readme": {
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[:\\\\]).+$",
+      "type": "string",
+      "minLength": 1
+    },
+    "publisher": {
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "published"
+      ]
+    },
+    "summary": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+    },
+    "tags": {
+      "minItems": 0,
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "manifest": {
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[:\\\\]).+$",
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "icon": {
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[:\\\\]).+$",
+      "type": "string",
+      "minLength": 1
+    },
+    "categories": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "kind": {
+      "const": "extension"
+    },
+    "license": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "delivery": {
+      "required": [
+        "backend",
+        "scope",
+        "source",
+        "assets"
+      ],
+      "type": "object",
+      "properties": {
+        "backend": {
+          "const": "devos-extension-store"
+        },
+        "scope": {
+          "const": "user"
+        },
+        "source": {
+          "required": [
+            "type"
+          ],
+          "type": "object",
+          "properties": {
+            "directory": {
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[:\\\\]).+$",
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "enum": [
+                "local-example",
+                "github"
+              ]
+            },
+            "repository": {
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$",
+              "type": "string"
+            }
+          },
+          "allOf": [
+            {
+              "then": {
+                "not": {
+                  "required": [
+                    "directory"
+                  ]
+                },
+                "required": [
+                  "repository"
+                ]
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "repository"
+                  ]
+                },
+                "required": [
+                  "directory"
+                ]
+              },
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "github"
+                  }
+                }
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "assets": {
+          "required": [
+            "manifest",
+            "archive",
+            "checksums"
+          ],
+          "type": "object",
+          "properties": {
+            "archive": {
+              "const": "dev-os-extension.tar.gz"
+            },
+            "checksums": {
+              "const": "SHA256SUMS"
+            },
+            "manifest": {
+              "const": "extension.json"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "then": {
+        "properties": {
+          "delivery": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "type": {
+                    "const": "github"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "published"
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "title": "DevOs unified App Store extension listing v2"
+}

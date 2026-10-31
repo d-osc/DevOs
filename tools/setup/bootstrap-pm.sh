@@ -2,7 +2,7 @@
 # Keep DevOsPM's dev CLI in the project runtime, separate from DevLang's dev alias.
 set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-source_root=${DEV_OS_PM_SOURCE:-"$project_root/../DevOsPM"}
+source_root=${DEV_OS_PM_SOURCE:-"$project_root/packages/devospm"}
 prefix="$project_root/build/wsl/bin"
 if [ -x "$prefix/dev" ] && "$prefix/dev" --version 2>/dev/null | grep -Eq '^dev [0-9]+\.[0-9]+\.[0-9]+'; then
     if [ ! -d "$source_root/src" ] || ! find "$source_root/src" "$source_root/Cargo.toml" "$source_root/Cargo.lock" -type f -newer "$prefix/dev" -print -quit | grep -q .; then exit 0; fi

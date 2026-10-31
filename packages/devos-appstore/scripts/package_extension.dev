@@ -1,0 +1,88 @@
+// Build the settings-only example release using DevLang (no Python/Node/tar).
+use "std/json"
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/strings"
+use "std/archive"
+use "std/compression"
+use "std/crypto"
+use "std/encoding"
+use "std/result"
+use "extension_contract.dev" as contract
+use "schema.dev" as schema
+
+fn sha256(bytes Vec<u8>) str {
+    let digest = crypto.hash("sha256", bytes)
+    let hex = "0123456789abcdef"
+    let text = ""
+    for byte in digest {
+        let number = byte as i64
+        text = text + strings.charAt(hex, number / 16) + strings.charAt(hex, number % 16)
+    }
+    return text
+}
+
+fn collect(source str, relative str) Vec<archive.Entry> {
+    let entries = Vec<archive.Entry>()
+    for name in fs.readdirSync(path.join(source, relative)) {
+        contract.require(schema.matches("^[A-Za-z0-9._-]+$", name) && name != "." && name != "..", "Unsafe extension filename")
+        let child = name
+        if relative != "" { child = relative + "/" + name }
+        let full = path.join(source, child)
+        if fs.is_dir(full) {
+            for entry in collect(source, child) { entries.push(entry) }
+        } else {
+            contract.require(fs.is_file(full), "Unsupported source entry")
+            contract.require(child != "store-install.json", "Package cannot supply installation history")
+            entries.push(archive.Entry("extension/" + child, fs.read_bytes(full)))
+        }
+        contract.require(entries.len() <= 4000, "Too many extension entries")
+    }
+    return entries
+}
+
+fn package(root str, id str) {
+    contract.require(schema.matches("^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$", id), "Invalid extension ID")
+    let folder = path.join(path.join(root, "extensions"), id)
+    let entry = contract.load(root, folder)
+    let manifest = json.get(entry, "extension_manifest")
+    contract.require(json.string(json.get(manifest, "kind")) == "settings", "This packager supports settings extensions; build UI extensions with the DevOs toolkit")
+    let source = json.get(json.get(entry, "delivery"), "source")
+    contract.require(json.string(json.get(source, "type")) == "local-example", "Only local example sources can be packaged here")
+    let directory = path.join(folder, json.string(json.get(source, "directory")))
+    let entries = collect(directory, "")
+    let license = path.join(folder, "LICENSE")
+    if fs.is_file(license) { entries.push(archive.Entry("extension/LICENSE", fs.read_bytes(license))) }
+    let expanded = 0
+    for file in entries { expanded += file.data.len() as i64 }
+    contract.require(expanded <= 128 * 1024 * 1024 && entries.len() <= 4000, "Extension exceeds consumer limits")
+    let tar = archive.writeTAR(entries)
+    let packed = compression.gzip(tar, 6)
+    contract.require(packed.len() <= 32 * 1024 * 1024, "Archive exceeds the extension download limit")
+    let version = json.string(json.get(manifest, "version"))
+    let destination = path.join(path.join(path.join(root, "dist/extensions"), id), version)
+    fs.mkdirSync(destination, true)
+    let archive_path = path.join(destination, "dev-os-extension.tar.gz")
+    let manifest_text = fs.read_text(path.join(directory, "extension.json"))
+    let manifest_path = path.join(destination, "extension.json")
+    let hash = sha256(packed)
+    if fs.existsSync(archive_path) { contract.require(sha256(fs.read_bytes(archive_path)) == hash, "Existing version has different bytes; use a new version") }
+    if fs.existsSync(manifest_path) { contract.require(fs.read_text(manifest_path) == manifest_text, "Existing manifest differs") }
+    fs.write_bytes(archive_path, packed)
+    fs.write_text(manifest_path, manifest_text)
+    fs.write_text(path.join(destination, "SHA256SUMS"), hash + "  dev-os-extension.tar.gz\n" + sha256(encoding.encode(manifest_text, "utf8")) + "  extension.json\n")
+    print("Packaged ${id} ${version}: ${destination}")
+    print("SHA-256: " + hash)
+    print("Local artifact only; no GitHub release was published or installed.")
+}
+
+fn main() i32 {
+    let args = process.argv()
+    if args.len() != 3 { print("Usage: d scripts/package_extension.dev -- EXTENSION_ID"); return 1 }
+    let root = path.dirname(path.dirname(path.resolve(process.cwd(), args[1])))
+    let outcome = result.run(fn() { package(root, args[2]) })
+    if result.isErr(outcome) { print("Extension error: " + result.message(outcome)); return 1 }
+    return 0
+}
+return main()

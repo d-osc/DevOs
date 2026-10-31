@@ -7,8 +7,9 @@ use "std/process"
 use "std/os"
 use "../lib/posix.dev" as posix
 use "../lib/devstr.dev" as devstr
+use "../lib/sources.dev" as sources
 
-fn defaultProject(): str { return "/mnt/c/Users/ondev/Projects/DevOsLinuxKernel" }
+fn defaultProject(): str { return sources.kernel() }
 
 fn sha256File(path: str): str {
     let output = child_process.execFileSync("sha256sum", Vec<str>(path), child_process.options())

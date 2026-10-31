@@ -1,0 +1,87 @@
+{
+  "schema_version": 2,
+  "id": "example-app",
+  "name": "Example App",
+  "aliases": [
+    "example"
+  ],
+  "summary": "แอปตัวอย่างสำหรับ DevOs",
+  "publisher": {
+    "id": "devos",
+    "name": "DevOs"
+  },
+  "license": "MIT",
+  "categories": [
+    "utilities"
+  ],
+  "tags": [
+    "example"
+  ],
+  "links": {
+    "homepage": "https://example.com"
+  },
+  "readme": "README.md",
+  "icon": "assets/icon.svg",
+  "screenshots": [],
+  "channels": {
+    "stable": "1.0.0"
+  },
+  "releases": [
+    {
+      "version": "1.0.0",
+      "published_at": "2026-10-27T00:00:00Z",
+      "artifacts": [
+        {
+          "platform": "linux",
+          "scope": "user",
+          "filename": "example-app-1.0.0-arm64.dpk",
+          "url": "https://example.com/releases/example-app-1.0.0-arm64.dpk",
+          "compatibility": {
+            "image_id": "example-image-id",
+            "profile": "devos-desktop-arm64",
+            "test_report": "TEST-REPORT.md",
+            "note": "SCHEMA EXAMPLE ONLY: not a real tested application.",
+            "display": "wayland",
+            "status": "verified",
+            "libc": "glibc"
+          },
+          "format": "dpk",
+          "backend": "devospm",
+          "arch": "arm64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "package": {
+            "description": "Example schema fixture",
+            "kind": "app",
+            "homepage": "https://example.com",
+            "fullname": "Example Application",
+            "version": "1.0.0",
+            "contextmenu": [],
+            "shortname": "Example",
+            "storepage": {
+              "index": "store/index.md",
+              "files": [
+                "store/index.md"
+              ]
+            },
+            "icon": "share/icon.svg",
+            "bin": {
+              "example-app": "bin/example-app"
+            },
+            "name": "example-app"
+          },
+          "size_bytes": 1024
+        }
+      ]
+    }
+  ],
+  "status": "installable",
+  "compatibility": {
+    "image_id": "example-image-id",
+    "profile": "devos-desktop-arm64",
+    "test_report": "TEST-REPORT.md",
+    "note": "SCHEMA EXAMPLE ONLY: not a real tested application.",
+    "display": "wayland",
+    "status": "verified",
+    "libc": "glibc"
+  }
+}

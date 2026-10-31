@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "id": "chrome",
+  "status": "catalog",
+  "name": "Google Chrome",
+  "aliases": [
+    "google-chrome"
+  ],
+  "summary": "Web browser by Google.",
+  "publisher": {
+    "id": "google",
+    "name": "Google"
+  },
+  "license": "LicenseRef-Google-Chrome",
+  "categories": [
+    "web-browsers"
+  ],
+  "tags": [
+    "browser",
+    "web"
+  ],
+  "links": {
+    "homepage": "https://www.google.com/chrome/"
+  },
+  "readme": "README.md",
+  "icon_fallback": {
+    "text": "CH",
+    "background": "#4285F4"
+  },
+  "screenshots": [],
+  "distribution": {
+    "type": "external-download",
+    "url": "https://www.google.com/chrome/",
+    "checked_on": "2026-10-27",
+    "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+  },
+  "downloads": [
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "format": "deb",
+      "file_url": "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb",
+      "version_policy": "rolling",
+      "source_url": "https://support.google.com/chrome/answer/95346?hl=en",
+      "checked_on": "2026-10-27",
+      "verification": "headers-checked",
+      "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution."
+    }
+  ],
+  "compatibility": {
+    "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+    "status": "untested",
+    "libc": "glibc",
+    "display": "wayland",
+    "profile": "devos-desktop-arm64"
+  },
+  "kind": "app"
+}

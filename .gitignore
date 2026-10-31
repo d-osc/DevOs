@@ -10,3 +10,10 @@ node_modules/
 
 
 *.whl
+
+# projects kept in packages/
+/packages/devospm/target/
+/packages/devospm/dist/
+/packages/devos-appstore/dist/
+/packages/devos-linux-kernel/output/
+/packages/devos-linux-kernel/work/

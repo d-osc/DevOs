@@ -1,0 +1,89 @@
+use "std/json"
+use "std/fs"
+use "std/path"
+use "std/strings"
+use "std/result"
+use "schema.dev" as schema
+
+fn require(ok bool, message str) { if !ok { result.raise(message) } }
+
+fn manifest_error(manifest json.Value) str {
+    let id = json.string(json.get(manifest, "id"))
+    if strings.startsWith(id, "org.devos.") { return "System extension namespace cannot be replaced" }
+    for key in ["name", "description"] {
+        if strings.trim(json.string(json.get(manifest, key))) == "" { return "Empty extension " + key }
+    }
+    if json.string(json.get(manifest, "kind")) == "ui" {
+        let entry = json.string(json.get(manifest, "entry"))
+        if schema.matches("^(react-gtk|core|extensions|updates|runtime|services|compat|config|shell|supervisor)(-|\\.js$)", entry) { return "UI entry uses a shared-runtime reserved name" }
+    }
+    let sections = json.get(manifest, "settings")
+    let section_ids = json.object()
+    let field_keys = json.object()
+    for i in 0..(json.len(sections) as i64) {
+        let section = json.at(sections, i)
+        let section_id = json.string(json.get(section, "id"))
+        if strings.trim(section_id) == "" || strings.trim(json.string(json.get(section, "title"))) == "" { return "Empty settings section ID/title" }
+        if json.has(section_ids, section_id) { return "Duplicate settings section ID" }
+        section_ids = json.set(section_ids, section_id, true)
+        let fields = json.get(section, "fields")
+        for j in 0..(json.len(fields) as i64) {
+            let field = json.at(fields, j)
+            let key = json.string(json.get(field, "key"))
+            if json.has(field_keys, key) { return "Duplicate settings key across sections" }
+            field_keys = json.set(field_keys, key, true)
+            if strings.trim(json.string(json.get(field, "title"))) == "" { return "Empty setting title" }
+            let kind = json.string(json.get(field, "type"))
+            if kind == "number" {
+                let value = json.float(json.get(field, "default"))
+                if json.has(field, "min") && value < json.float(json.get(field, "min")) { return "Default is below minimum" }
+                if json.has(field, "max") && value > json.float(json.get(field, "max")) { return "Default is above maximum" }
+                if json.has(field, "min") && json.has(field, "max") && json.float(json.get(field, "min")) > json.float(json.get(field, "max")) { return "Minimum exceeds maximum" }
+                if json.has(field, "integer") && json.bool(json.get(field, "integer")) && !schema.matches("^-?[0-9]+$", json.stringify(json.get(field, "default"))) { return "Default must be an integer" }
+            } else {
+                if json.has(field, "min") || json.has(field, "max") || json.has(field, "integer") { return "Only number settings can declare bounds" }
+            }
+        }
+    }
+    return ""
+}
+
+fn load(root str, folder str) json.Value {
+    let listing = json.parse(fs.read_text(path.join(folder, "listing.json")))
+    let listing_schema = json.parse(fs.read_text(path.join(root, "schema/extension.schema.json")))
+    let error = schema.validate(listing_schema, listing, listing_schema, folder)
+    require(error == "", error)
+    let id = json.string(json.get(listing, "id"))
+    require(id == path.basename(folder), "Extension ID does not match folder")
+    for key in ["readme", "manifest"] {
+        let file = json.string(json.get(listing, key))
+        require(schema.safe_path(file) && fs.is_file(path.join(folder, file)), "Missing extension " + key)
+    }
+    if json.has(listing, "icon") {
+        let icon = json.string(json.get(listing, "icon"))
+        require(schema.safe_path(icon) && fs.is_file(path.join(folder, icon)), "Missing extension icon")
+    }
+    let manifest = json.parse(fs.read_text(path.join(folder, json.string(json.get(listing, "manifest")))))
+    let definition = json.parse(fs.read_text(path.join(root, "schema/extension-manifest.schema.json")))
+    error = schema.validate(definition, manifest, definition, id)
+    require(error == "", error)
+    error = manifest_error(manifest)
+    require(error == "", error)
+    require(json.string(json.get(manifest, "id")) == id, "Listing and runtime extension IDs differ")
+    require(json.string(json.get(manifest, "name")) == json.string(json.get(listing, "name")), "Listing and runtime names differ")
+    let source = json.get(json.get(listing, "delivery"), "source")
+    if json.string(json.get(source, "type")) == "local-example" {
+        require(json.string(json.get(listing, "status")) == "draft", "Local example cannot claim a published release")
+        require(json.string(json.get(listing, "manifest")) == json.string(json.get(source, "directory")) + "/extension.json", "Source manifest must be directory/extension.json")
+    }
+    let entry = json.object()
+    for key in ["schema_version", "kind", "id", "status", "name", "summary", "publisher", "license", "categories", "tags", "target", "delivery"] { entry = json.set(entry, key, json.get(listing, key)) }
+    entry = json.set(entry, "listing", "extensions/" + id + "/listing.json")
+    entry = json.set(entry, "readme", "extensions/" + id + "/" + json.string(json.get(listing, "readme")))
+    if json.has(listing, "icon") { entry = json.set(entry, "icon", "extensions/" + id + "/" + json.string(json.get(listing, "icon"))) }
+    entry = json.set(entry, "extension_manifest", manifest)
+    entry = json.set(entry, "version", json.get(manifest, "version"))
+    entry = json.set(entry, "connectable", json.string(json.get(source, "type")) == "github" && json.string(json.get(listing, "status")) == "published")
+    // Live stable release + asset digest checks remain the consumer's job.
+    return json.set(entry, "installable", false)
+}

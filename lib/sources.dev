@@ -1,0 +1,24 @@
+# Where the projects that live inside this repository are: packages/devospm, packages/devos-linux-kernel and packages/devos-appstore.
+# An environment variable, when set, names another checkout instead (DEV_OS_PM_SOURCE, DEVOS_KERNEL_PROJECT).
+use "std/fs"
+use "std/module"
+use "std/strings"
+use "./hw.dev" as hw
+use "../distro/usb/hostio.dev" as io
+
+# The repository root: DEVOS_REPO_ROOT, else the first folder above the entry script that has packages/<name>.
+fn path(name: str, overrideVariable: str): str {
+    let override = hw.env(overrideVariable)
+    if strings.charLength(override) > 0 { return override }
+    let root = hw.env("DEVOS_REPO_ROOT")
+    if strings.charLength(root) > 0 { return root + "/packages/" + name }
+    let dir = hw.parentDir(io.resolve(module.entry()))
+    for level in 0..8 {
+        if fs.existsSync(dir + "/packages/" + name) { return dir + "/packages/" + name }
+        dir = hw.parentDir(dir)
+    }
+    return ""
+}
+fn pm(): str { return path("devospm","DEV_OS_PM_SOURCE") }
+fn kernel(): str { return path("devos-linux-kernel","DEVOS_KERNEL_PROJECT") }
+fn appstore(): str { return path("devos-appstore","DEVOS_APPSTORE_SOURCE") }

@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "id": "firefox",
+  "status": "catalog",
+  "name": "Mozilla Firefox",
+  "aliases": [
+    "mozilla-firefox"
+  ],
+  "summary": "Web browser by Mozilla.",
+  "publisher": {
+    "id": "mozilla",
+    "name": "Mozilla"
+  },
+  "license": "MPL-2.0",
+  "categories": [
+    "web-browsers"
+  ],
+  "tags": [
+    "browser",
+    "web"
+  ],
+  "links": {
+    "homepage": "https://www.mozilla.org/firefox/"
+  },
+  "readme": "README.md",
+  "icon_fallback": {
+    "text": "FF",
+    "background": "#C94D13"
+  },
+  "screenshots": [],
+  "distribution": {
+    "type": "external-download",
+    "url": "https://www.mozilla.org/firefox/new/",
+    "checked_on": "2026-10-27",
+    "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+  },
+  "downloads": [
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "format": "deb",
+      "file_url": "https://packages.mozilla.org/apt/pool/mozilla/firefox_158.0.1~build1_arm64_9cfb667797b45d588269f88a64e12d56.deb",
+      "version_policy": "versioned",
+      "source_url": "https://packages.mozilla.org/apt/dists/mozilla/main/binary-arm64/Packages",
+      "checked_on": "2026-10-27",
+      "verification": "source-only",
+      "note": "Listed in the official Mozilla ARM64 apt Packages index. HTTP HEAD returned 400; file availability and payload remain unverified. DevOs compatibility is untested.",
+      "version": "158.0.1~build1"
+    }
+  ],
+  "compatibility": {
+    "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+    "status": "untested",
+    "libc": "glibc",
+    "display": "wayland",
+    "profile": "devos-desktop-arm64"
+  },
+  "kind": "app"
+}

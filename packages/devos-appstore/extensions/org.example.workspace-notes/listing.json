@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "kind": "extension",
+  "id": "org.example.workspace-notes",
+  "status": "draft",
+  "name": "Workspace Notes",
+  "summary": "Example settings extension for a workspace note and personal preferences.",
+  "publisher": { "id": "devos-examples", "name": "DevOs Examples" },
+  "license": "MIT",
+  "categories": ["extensions", "productivity"],
+  "tags": ["example", "settings", "workspace"],
+  "readme": "README.md",
+  "icon": "package/icons/workspace-notes.svg",
+  "target": { "platform": "linux", "arch": "arm64", "apiVersion": 1 },
+  "manifest": "package/extension.json",
+  "delivery": {
+    "backend": "devos-extension-store",
+    "scope": "user",
+    "source": { "type": "local-example", "directory": "package" },
+    "assets": {
+      "manifest": "extension.json",
+      "archive": "dev-os-extension.tar.gz",
+      "checksums": "SHA256SUMS"
+    }
+  }
+}

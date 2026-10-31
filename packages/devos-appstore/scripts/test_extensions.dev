@@ -1,0 +1,92 @@
+use "std/json"
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/archive"
+use "std/compression"
+use "std/encoding"
+use "std/crypto"
+use "std/strings"
+use "std/test"
+use "schema.dev" as schema
+use "extension_contract.dev" as contract
+
+fn digest(bytes Vec<u8>) str {
+    let text = ""
+    let chars = "0123456789abcdef"
+    for byte in crypto.hash("sha256", bytes) {
+        let value = byte as i64
+        text = text + strings.charAt(chars, value / 16) + strings.charAt(chars, value % 16)
+    }
+    return text
+}
+
+fn main() i32 {
+    let root = path.dirname(path.dirname(path.resolve(process.cwd(), process.argv()[1])))
+    let folder = path.join(root, "extensions/org.example.workspace-notes")
+    let entry = contract.load(root, folder)
+    let manifest = json.get(entry, "extension_manifest")
+    let definition = json.parse(fs.read_text(path.join(root, "schema/extension-manifest.schema.json")))
+    let listing_definition = json.parse(fs.read_text(path.join(root, "schema/extension.schema.json")))
+    let listing = json.parse(fs.read_text(path.join(folder, "listing.json")))
+    test.case("draft extension remains unpublished", fn() {
+        test.equal(json.string(json.get(entry, "kind")), "extension", "listing kind")
+        test.equal(json.string(json.get(manifest, "kind")), "settings", "runtime kind")
+        test.equal(json.bool(json.get(entry, "connectable")), false, "no fictitious GitHub repository")
+        test.equal(json.bool(json.get(entry, "installable")), false, "local build does not imply released install")
+        let invalid = json.set(listing, "status", "published")
+        test.equal(schema.validate(listing_definition, invalid, listing_definition, "listing") != "", true, "local source cannot be published")
+    })
+    test.case("protect base extensions and runtime keys", fn() {
+        let invalid = json.set(manifest, "id", "org.devos.launcher")
+        test.equal(contract.manifest_error(invalid) != "", true, "base protection")
+        invalid = json.set(manifest, "publisher", "Registry only")
+        test.equal(schema.validate(definition, invalid, definition, "manifest") != "", true, "no registry keys in runtime manifest")
+        invalid = json.set(manifest, "system", true)
+        test.equal(schema.validate(definition, invalid, definition, "manifest") != "", true, "no system privilege")
+        invalid = json.set(manifest, "version", "1.0.0-beta")
+        test.equal(schema.validate(definition, invalid, definition, "manifest") != "", true, "stable release version required")
+    })
+    test.case("validate settings values and global key uniqueness", fn() {
+        let sections = json.get(manifest, "settings")
+        let section = json.at(sections, 0)
+        let fields = json.get(section, "fields")
+        let repeated = json.push(fields, json.at(fields, 0))
+        section = json.set(section, "fields", repeated)
+        let changed_sections = json.array()
+        changed_sections = json.push(changed_sections, section)
+        let invalid = json.set(manifest, "settings", changed_sections)
+        test.equal(contract.manifest_error(invalid) != "", true, "duplicate setting key")
+        let field = json.at(fields, 3)
+        field = json.set(field, "default", 999)
+        let changed_fields = json.array()
+        changed_fields = json.push(changed_fields, field)
+        section = json.set(json.at(sections, 0), "fields", changed_fields)
+        changed_sections = json.array()
+        changed_sections = json.push(changed_sections, section)
+        invalid = json.set(manifest, "settings", changed_sections)
+        test.equal(contract.manifest_error(invalid) != "", true, "numeric default bounds")
+    })
+    test.case("real packaged files and SHA256SUMS", fn() {
+        let output = path.join(root, "dist/extensions/org.example.workspace-notes/1.0.0")
+        let packed = fs.read_bytes(path.join(output, "dev-os-extension.tar.gz"))
+        let tar = compression.gunzip(packed)
+        let names = archive.listTAR(tar)
+        test.equal(names.len() as i64, 3, "exact payload file count")
+        let inside = json.parse(encoding.decode(archive.readTAR(tar, "extension/extension.json"), "utf8"))
+        let outside = json.parse(fs.read_text(path.join(output, "extension.json")))
+        let inside_text: str = json.stringify(inside)
+        let outside_text: str = json.stringify(outside)
+        let expected_text: str = json.stringify(manifest)
+        test.expect(inside_text == outside_text, "sidecar matches embedded manifest")
+        test.expect(inside_text == expected_text, "manifest matches registry source")
+        let sums = fs.read_text(path.join(output, "SHA256SUMS"))
+        test.equal(strings.contains(sums, digest(packed) + "  dev-os-extension.tar.gz"), true, "archive checksum")
+        test.equal(strings.contains(sums, digest(fs.read_bytes(path.join(output, "extension.json"))) + "  extension.json"), true, "manifest checksum")
+    })
+    let report = test.run()
+    print("Extension tests: ${report.passed} passed, ${report.failed} failed.")
+    if report.failed > 0 { return 1 }
+    return 0
+}
+return main()

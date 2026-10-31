@@ -1,0 +1,60 @@
+// Semantic checks against the current DevOsPM package contract.
+use "std/json"
+use "std/strings"
+use "std/url"
+use "schema.dev" as schema
+
+fn package_error(package json.Value) str {
+    let bin = json.get(package, "bin")
+    if json.len(bin) == 0 { return "An App Store app needs at least one launchable bin command" }
+    for command in json.keys(bin) {
+        if !schema.matches("^[a-z0-9][a-z0-9_-]{0,63}$", command) { return "Invalid PM bin command: " + command }
+        let file = json.string(json.get(bin, command))
+        if !schema.safe_path(file) || file == "." { return "Invalid PM bin path: " + file }
+    }
+    if json.has(package, "icon") {
+        let icon = json.string(json.get(package, "icon"))
+        if icon != "" && !schema.safe_path(icon) { return "Package icon must be package-local" }
+    }
+    if json.has(package, "storepage") {
+        let page = json.get(package, "storepage")
+        if json.kind(page) == "object" {
+            let index = json.string(json.get(page, "index"))
+            if !strings.endsWith(index, ".md") && !strings.endsWith(index, ".html") && !strings.endsWith(index, ".htm") { return "Invalid storepage index extension" }
+            let files = json.get(page, "files")
+            let found = false
+            let seen = json.object()
+            for i in 0..(json.len(files) as i64) {
+                let file = json.string(json.at(files, i))
+                let key = strings.toLowerCase(file)
+                if json.has(seen, key) { return "Duplicate storepage file" }
+                seen = json.set(seen, key, true)
+                if file == index { found = true }
+            }
+            if !found { return "storepage.files must include index" }
+        }
+    }
+    if json.has(package, "contextmenu") {
+        let menus = json.get(package, "contextmenu")
+        let ids = json.object()
+        for i in 0..(json.len(menus) as i64) {
+            let menu = json.at(menus, i)
+            let id = json.string(json.get(menu, "id"))
+            if json.has(ids, id) { return "Duplicate context menu ID" }
+            ids = json.set(ids, id, true)
+            if !json.has(bin, json.string(json.get(menu, "command"))) { return "Context menu command is missing from bin" }
+        }
+    }
+    return ""
+}
+
+fn artifact_error(artifact json.Value, version str) str {
+    let format = json.string(json.get(artifact, "format"))
+    let filename = json.string(json.get(artifact, "filename"))
+    if strings.contains(filename, "/") || strings.contains(filename, "\\") || strings.contains(filename, ":") || !strings.endsWith(filename, "." + format) { return "Artifact filename must match format" }
+    let address = url.parse(json.string(json.get(artifact, "url")))
+    if !strings.endsWith(address.pathname, "." + format) { return "Current DevOsPM requires a package suffix in the download URL path" }
+    let package = json.get(artifact, "package")
+    if json.string(json.get(package, "version")) != version { return "Release version must match the expected installed PM version" }
+    return package_error(package)
+}

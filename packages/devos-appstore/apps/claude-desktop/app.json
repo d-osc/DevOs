@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "id": "claude-desktop",
+  "status": "catalog",
+  "name": "Claude Desktop",
+  "aliases": [
+    "claude"
+  ],
+  "summary": "Desktop AI assistant by Anthropic.",
+  "publisher": {
+    "id": "anthropic",
+    "name": "Anthropic"
+  },
+  "license": "LicenseRef-Anthropic-Claude",
+  "categories": [
+    "productivity"
+  ],
+  "tags": [
+    "ai",
+    "assistant"
+  ],
+  "links": {
+    "homepage": "https://claude.com/"
+  },
+  "readme": "README.md",
+  "icon_fallback": {
+    "text": "CL",
+    "background": "#B45F44"
+  },
+  "screenshots": [],
+  "distribution": {
+    "type": "external-download",
+    "url": "https://claude.com/download",
+    "checked_on": "2026-10-27",
+    "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+  },
+  "downloads": [
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "format": "deb",
+      "file_url": "https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_3.6556.2_arm64.deb",
+      "version_policy": "versioned",
+      "source_url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-arm64/Packages",
+      "checked_on": "2026-10-27",
+      "verification": "headers-checked",
+      "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution.",
+      "version": "3.6556.2"
+    }
+  ],
+  "compatibility": {
+    "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+    "status": "untested",
+    "libc": "glibc",
+    "display": "wayland",
+    "profile": "devos-desktop-arm64"
+  },
+  "kind": "app"
+}

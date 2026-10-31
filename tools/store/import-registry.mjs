@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {validateManifest} from '../../packages/extensions/schema.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const source = realpathSync(resolve(process.argv[2] || resolve(root, '../DevOsAppStore')));
+const source = realpathSync(resolve(process.argv[2] || resolve(root, 'packages/devos-appstore')));
 function read(path) {
     const file = realpathSync(resolve(source, path)), child = relative(source, file);
     if (child.startsWith('..') || isAbsolute(child)) throw new Error('Registry path escapes its root');

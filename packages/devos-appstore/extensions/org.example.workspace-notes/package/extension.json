@@ -1,0 +1,23 @@
+{
+  "id": "org.example.workspace-notes",
+  "name": "Workspace Notes",
+  "description": "A declarative settings example for storing a workspace note. It does not modify the panel, launcher, wallpaper or system configuration.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "kind": "settings",
+  "settingsVersion": 1,
+  "enabledByDefault": true,
+  "settings": [
+    {
+      "id": "workspace",
+      "title": "Workspace Notes",
+      "description": "Example preferences saved by DevOs for this extension only.",
+      "fields": [
+        { "key": "note", "title": "Workspace note", "type": "string", "default": "Welcome to DevOs" },
+        { "key": "showNote", "title": "Keep note enabled", "description": "Example stored flag; this settings-only extension does not draw a desktop widget.", "type": "boolean", "default": true },
+        { "key": "accentColor", "title": "Preferred accent", "description": "Stored preference for the example; does not change the system theme.", "type": "color", "default": "#4F70E8" },
+        { "key": "focusMinutes", "title": "Focus duration", "type": "number", "default": 25, "min": 5, "max": 120, "integer": true }
+      ]
+    }
+  ]
+}

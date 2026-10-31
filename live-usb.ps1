@@ -4,7 +4,7 @@ param(
     [string]$OutputDirectory = '/var/tmp/devos-usb/x2-live',
     [string]$KernelBundle = '/var/tmp/devos-kernel-x2/bundle',
     [string]$FirmwareDirectory,
-    [string]$KernelProject = (Join-Path (Split-Path $PSScriptRoot -Parent) 'DevOsLinuxKernel')
+    [string]$KernelProject = (Join-Path $PSScriptRoot 'packages/devos-linux-kernel')
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = (& wsl -d $BuildDistribution --exec wslpath -a $PSScriptRoot).Trim()

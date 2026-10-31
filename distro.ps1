@@ -2,7 +2,7 @@ param(
     [ValidateSet('base', 'base-test', 'desktop-prepare', 'desktop-check', 'desktop-kernel-check', 'desktop-build')]
     [string]$Mode = 'base',
     [string]$BuildDistribution = 'Ubuntu',
-    [string]$KernelProject = (Join-Path (Split-Path $PSScriptRoot -Parent) 'DevOsLinuxKernel')
+    [string]$KernelProject = (Join-Path $PSScriptRoot 'packages/devos-linux-kernel')
 )
 $ErrorActionPreference = 'Stop'
 # This WSL distribution supplies build tools only. Its rootfs is never used as

@@ -1,0 +1,692 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevOs central app registry v2",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "maxLength": 64
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "maxLength": 100
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "maxLength": 100
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "maxLength": 100
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "homepage": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://[^/\\s]+(?:/.*)?$"
+        },
+        "source": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://[^/\\s]+(?:/.*)?$"
+        },
+        "support": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://[^/\\s]+(?:/.*)?$"
+        }
+      },
+      "required": []
+    },
+    "readme": {
+      "$ref": "#/$defs/path"
+    },
+    "icon": {
+      "$ref": "#/$defs/path"
+    },
+    "screenshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "src": {
+            "$ref": "#/$defs/path"
+          },
+          "alt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "src",
+          "alt"
+        ]
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "channels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stable": {
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "minLength": 1,
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "stable"
+      ]
+    },
+    "releases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/release"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "status": {
+      "enum": [
+        "catalog",
+        "installable"
+      ]
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "external-download"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "checked_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "url",
+        "checked_on",
+        "reason"
+      ]
+    },
+    "icon_fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3
+        },
+        "background": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      },
+      "required": [
+        "text",
+        "background"
+      ]
+    },
+    "downloads": {
+      "items": {
+        "properties": {
+          "arch": {
+            "const": "arm64"
+          },
+          "format": {
+            "enum": [
+              "dpk",
+              "dpkx",
+              "tar.gz",
+              "deb",
+              "rpm",
+              "appimage",
+              "tar.xz"
+            ]
+          },
+          "version_policy": {
+            "enum": [
+              "rolling",
+              "versioned"
+            ]
+          },
+          "verification": {
+            "enum": [
+              "headers-checked",
+              "source-only"
+            ]
+          },
+          "platform": {
+            "const": "linux"
+          },
+          "note": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "file_url": {
+            "pattern": "^https://",
+            "format": "uri",
+            "type": "string"
+          },
+          "source_url": {
+            "pattern": "^https://",
+            "format": "uri",
+            "type": "string"
+          },
+          "checked_on": {
+            "format": "date",
+            "type": "string"
+          },
+          "version": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "arch",
+          "format",
+          "file_url",
+          "version_policy",
+          "source_url",
+          "checked_on",
+          "verification"
+        ],
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "type": "array"
+    },
+    "compatibility": {
+      "properties": {
+        "libc": {
+          "const": "glibc"
+        },
+        "profile": {
+          "const": "devos-desktop-arm64"
+        },
+        "image_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "display": {
+          "const": "wayland"
+        },
+        "status": {
+          "enum": [
+            "untested",
+            "verified"
+          ]
+        },
+        "note": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "test_report": {
+          "$ref": "#/$defs/path"
+        }
+      },
+      "required": [
+        "profile",
+        "status",
+        "libc",
+        "display",
+        "note"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    },
+    "kind": {
+      "const": "app"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "aliases",
+    "summary",
+    "publisher",
+    "license",
+    "categories",
+    "tags",
+    "links",
+    "readme",
+    "screenshots",
+    "status",
+    "compatibility"
+  ],
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[:\\\\]).+$"
+    },
+    "artifact": {
+      "properties": {
+        "format": {
+          "enum": [
+            "dpk",
+            "dpkx",
+            "tar.gz",
+            "deb",
+            "rpm"
+          ]
+        },
+        "arch": {
+          "const": "arm64"
+        },
+        "filename": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "package": {
+          "$ref": "#/$defs/packageManifest"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "scope": {
+          "const": "user"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "compatibility": {
+          "properties": {
+            "libc": {
+              "const": "glibc"
+            },
+            "profile": {
+              "const": "devos-desktop-arm64"
+            },
+            "image_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "display": {
+              "const": "wayland"
+            },
+            "status": {
+              "const": "verified"
+            },
+            "note": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "test_report": {
+              "$ref": "#/$defs/path"
+            }
+          },
+          "required": [
+            "profile",
+            "status",
+            "libc",
+            "display",
+            "note",
+            "image_id",
+            "test_report"
+          ],
+          "type": "object",
+          "additionalProperties": false
+        },
+        "url": {
+          "format": "uri",
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "platform": {
+          "const": "linux"
+        },
+        "backend": {
+          "const": "devospm"
+        }
+      },
+      "required": [
+        "platform",
+        "arch",
+        "backend",
+        "scope",
+        "format",
+        "url",
+        "filename",
+        "sha256",
+        "size_bytes",
+        "compatibility",
+        "package"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "minLength": 1,
+          "type": "string",
+          "maxLength": 128
+        },
+        "published_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "version",
+        "published_at",
+        "artifacts"
+      ]
+    },
+    "packageManifest": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "contextmenu": {
+          "items": {
+            "properties": {
+              "command": {
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              "id": {
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "file",
+                    "directory",
+                    "background"
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "command",
+              "targets"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "app"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "shortname": {
+          "type": "string"
+        },
+        "fullname": {
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "type": "string"
+        },
+        "repository": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "properties": {
+                "directory": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "git"
+                },
+                "url": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "release": {
+                  "properties": {
+                    "filename": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "dpk",
+                        "tar.gz"
+                      ]
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "filename"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "type",
+                "url"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            }
+          ]
+        },
+        "icon": {
+          "type": "string"
+        },
+        "storepage": {
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "properties": {
+                "index": {
+                  "$ref": "#/$defs/path"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/path"
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "index",
+                "files"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            }
+          ]
+        },
+        "version": {
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "minLength": 1,
+          "type": "string",
+          "maxLength": 128
+        },
+        "bin": {
+          "additionalProperties": {
+            "$ref": "#/$defs/path"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "kind",
+        "bin"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "catalog"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "distribution",
+          "icon_fallback"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "channels"
+              ]
+            },
+            {
+              "required": [
+                "releases"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "icon",
+          "channels",
+          "releases"
+        ],
+        "properties": {
+          "compatibility": {
+            "properties": {
+              "status": {
+                "const": "verified"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

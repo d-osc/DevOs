@@ -1,0 +1,183 @@
+use "std/json"
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/strings"
+use "std/datetime"
+use "std/child_process"
+use "std/encoding"
+use "std/result"
+use "schema.dev" as schema
+use "package_contract.dev" as contract
+use "extension_contract.dev" as extensions
+
+fn require(ok bool, message str) {
+    if !ok { result.raise(message) }
+}
+
+fn local_file(folder str, relative str) {
+    require(schema.safe_path(relative), "Unsafe local path: " + relative)
+    require(fs.is_file(path.join(folder, relative)), "Missing local file: " + path.join(folder, relative))
+}
+
+fn pairs(items json.Value) json.Value {
+    let seen = json.object()
+    for i in 0..(json.len(items) as i64) {
+        let item = json.at(items, i)
+        let key = json.string(json.get(item, "platform")) + "/" + json.string(json.get(item, "arch"))
+        require(!json.has(seen, key), "Duplicate platform/architecture: " + key)
+        seen = json.set(seen, key, true)
+    }
+    return seen
+}
+
+fn index_entry(app json.Value, folder str) json.Value {
+    let id = json.string(json.get(app, "id"))
+    require(id == path.basename(folder), "ID does not match folder: " + folder)
+    local_file(folder, json.string(json.get(app, "readme")))
+    let entry = json.object()
+    for key in ["id", "name", "aliases", "summary", "categories", "tags"] { entry = json.set(entry, key, json.get(app, key)) }
+    entry = json.set(entry, "compatibility", json.get(app, "compatibility"))
+    entry = json.set(entry, "backend", "devospm")
+    entry = json.set(entry, "scope", "user")
+    entry = json.set(entry, "kind", "app")
+    entry = json.set(entry, "manifest", "apps/" + id + "/app.json")
+    if json.has(app, "downloads") {
+        let downloads = json.get(app, "downloads")
+        pairs(downloads)
+        for i in 0..(json.len(downloads) as i64) {
+            let download = json.at(downloads, i)
+            if json.string(json.get(download, "version_policy")) == "versioned" {
+                require(json.has(download, "version"), "Versioned download requires version: " + id)
+            }
+        }
+        entry = json.set(entry, "downloads", downloads)
+    }
+    if json.has(app, "icon") {
+        let icon = json.string(json.get(app, "icon"))
+        local_file(folder, icon)
+        entry = json.set(entry, "icon", "apps/" + id + "/" + icon)
+    }
+    if json.has(app, "icon_fallback") { entry = json.set(entry, "icon_fallback", json.get(app, "icon_fallback")) }
+    let screenshots = json.get(app, "screenshots")
+    for i in 0..(json.len(screenshots) as i64) { local_file(folder, json.string(json.get(json.at(screenshots, i), "src"))) }
+    let status = json.string(json.get(app, "status"))
+    entry = json.set(entry, "status", status)
+    entry = json.set(entry, "installable", status == "installable")
+    if status == "catalog" { return json.set(entry, "distribution", json.get(app, "distribution")) }
+    let releases = json.get(app, "releases")
+    let stable = json.string(json.get(json.get(app, "channels"), "stable"))
+    let versions = json.object()
+    let package_name = ""
+    for i in 0..(json.len(releases) as i64) {
+        let release = json.at(releases, i)
+        let version = json.string(json.get(release, "version"))
+        require(!json.has(versions, version), "Duplicate release: " + id + " " + version)
+        versions = json.set(versions, version, release)
+        let release_artifacts = json.get(release, "artifacts")
+        pairs(release_artifacts)
+        for j in 0..(json.len(release_artifacts) as i64) {
+            let artifact = json.at(release_artifacts, j)
+            let error = contract.artifact_error(artifact, version)
+            require(error == "", id + ": " + error)
+            let actual_name = json.string(json.get(json.get(artifact, "package"), "name"))
+            if package_name == "" { package_name = actual_name }
+            require(actual_name == package_name, "PM package identity changed across releases: " + id)
+            let proof = json.get(artifact, "compatibility")
+            local_file(folder, json.string(json.get(proof, "test_report")))
+        }
+    }
+    require(json.has(versions, stable), "Missing stable release: " + id)
+    let platforms = json.array()
+    let artifacts = json.get(json.get(versions, stable), "artifacts")
+    for i in 0..(json.len(artifacts) as i64) {
+        let artifact = json.at(artifacts, i)
+        let target = json.object()
+        target = json.set(target, "platform", json.get(artifact, "platform"))
+        target = json.set(target, "arch", json.get(artifact, "arch"))
+        platforms = json.push(platforms, target)
+    }
+    entry = json.set(entry, "stable_version", stable)
+    entry = json.set(entry, "package_name", package_name)
+    return json.set(entry, "platforms", platforms)
+}
+
+fn build(root str) {
+    let definition = json.parse(fs.read_text(path.join(root, "schema/app.schema.json")))
+    let manifests = json.array()
+    let names = json.object()
+    let package_names = json.object()
+    for name in fs.readdirSync(path.join(root, "apps")) {
+        let folder = path.join(path.join(root, "apps"), name)
+        let file = path.join(folder, "app.json")
+        if fs.is_dir(folder) && fs.is_file(file) {
+            let app = json.parse(fs.read_text(file))
+            let error = schema.validate(definition, app, definition, name)
+            require(error == "", error)
+            let id = json.string(json.get(app, "id"))
+            let aliases = json.push(json.get(app, "aliases"), id)
+            for i in 0..(json.len(aliases) as i64) {
+                let alias = json.string(json.at(aliases, i))
+                require(!json.has(names, alias), "Duplicate ID/alias: " + alias)
+                names = json.set(names, alias, id)
+            }
+            let entry = index_entry(app, folder)
+            if json.has(entry, "package_name") {
+                let package_name = json.string(json.get(entry, "package_name"))
+                require(!json.has(package_names, package_name), "Two registry apps map to the same PM package: " + package_name)
+                package_names = json.set(package_names, package_name, id)
+            }
+            manifests = json.push(manifests, entry)
+        }
+    }
+    let extension_entries = json.array()
+    let repositories = json.object()
+    if fs.is_dir(path.join(root, "extensions")) {
+        for name in fs.readdirSync(path.join(root, "extensions")) {
+            let folder = path.join(path.join(root, "extensions"), name)
+            if fs.is_file(path.join(folder, "listing.json")) {
+                let entry = extensions.load(root, folder)
+                let source = json.get(json.get(entry, "delivery"), "source")
+                if json.has(source, "repository") {
+                    let repo = strings.toLowerCase(json.string(json.get(source, "repository")))
+                    require(!json.has(repositories, repo), "One repository must map to one extension")
+                    repositories = json.set(repositories, repo, name)
+                }
+                extension_entries = json.push(extension_entries, entry)
+            }
+        }
+    }
+    let options = child_process.options()
+    options.cwd = root
+    let git_args = Vec<str>()
+    git_args.push("rev-parse")
+    git_args.push("HEAD")
+    let git = child_process.execFileSync("git", git_args, options)
+    let commit = json.null_value()
+    if git.success { commit = json.value(strings.trim(encoding.decode(git.stdout, "utf8"))) }
+    let status_args = Vec<str>()
+    status_args.push("status")
+    status_args.push("--porcelain")
+    let dirty = child_process.execFileSync("git", status_args, options)
+    require(dirty.success, "Cannot inspect Git working tree")
+    let output = json.object()
+    output = json.set(output, "schema_version", 2)
+    output = json.set(output, "generated_at", datetime.iso(datetime.now()))
+    output = json.set(output, "source_commit", commit)
+    output = json.set(output, "snapshot", false)
+    output = json.set(output, "working_tree_dirty", strings.trim(encoding.decode(dirty.stdout, "utf8")) != "")
+    output = json.set(output, "apps", manifests)
+    output = json.set(output, "extensions", extension_entries)
+    fs.mkdirSync(path.join(root, "dist"), true)
+    fs.write_text(path.join(root, "dist/index.json"), json.pretty(output) + "\n")
+    print("Validated ${json.len(manifests)} apps and ${json.len(extension_entries)} extensions; built dist/index.json (local preview only).")
+}
+
+fn main() i32 {
+    let args = process.argv()
+    let root = path.dirname(path.dirname(path.resolve(process.cwd(), args[1])))
+    let outcome = result.run(fn() { build(root) })
+    if result.isErr(outcome) { print("Registry error: " + result.message(outcome)); return 1 }
+    return 0
+}
+return main()

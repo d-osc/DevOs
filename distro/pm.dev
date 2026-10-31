@@ -7,6 +7,7 @@ use "std/strings"
 use "std/process"
 use "std/os"
 use "../lib/posix.dev" as posix
+use "../lib/sources.dev" as sources
 
 fn isArm64Elf(data: Vec<u8>): bool {
     if data.len() < 20 { return false }
@@ -25,9 +26,9 @@ fn hex(bytes: Vec<u8>): str {
 }
 
 fn snapshot(payload: str): json.Value {
-    let project = "/mnt/c/Users/ondev/Projects/DevOsPM"
+    let project = sources.pm()
     if !fs.existsSync(project + "/Cargo.lock") {
-        print("DevOsPM project with Cargo.lock is required beside DevOs.")
+        print("The DevOsPM project (packages/devospm, or DEV_OS_PM_SOURCE) with its Cargo.lock is required.")
         return json.null_value()
     }
     let home = os.homedir()

@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "id": "vscode",
+  "status": "catalog",
+  "name": "Visual Studio Code",
+  "aliases": [
+    "code",
+    "visual-studio-code"
+  ],
+  "summary": "Code editor with extensions, debugging, and Git integration.",
+  "publisher": {
+    "id": "microsoft",
+    "name": "Microsoft"
+  },
+  "license": "LicenseRef-Microsoft-VSCode",
+  "categories": [
+    "developer-tools"
+  ],
+  "tags": [
+    "editor",
+    "code"
+  ],
+  "links": {
+    "homepage": "https://code.visualstudio.com/"
+  },
+  "readme": "README.md",
+  "icon_fallback": {
+    "text": "VS",
+    "background": "#007ACC"
+  },
+  "screenshots": [],
+  "distribution": {
+    "type": "external-download",
+    "url": "https://code.visualstudio.com/download",
+    "checked_on": "2026-10-27",
+    "reason": "Catalog entry only; pinned artifacts, verified checksums, and a supported install recipe are required before PM installation."
+  },
+  "downloads": [
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "format": "deb",
+      "file_url": "https://update.code.visualstudio.com/latest/linux-deb-arm64/stable",
+      "version_policy": "rolling",
+      "source_url": "https://code.visualstudio.com/docs/setup/linux",
+      "checked_on": "2026-10-27",
+      "verification": "headers-checked",
+      "note": "Linux ARM64 upstream Debian package. HTTP HEAD checked only; payload, dependencies, executable paths, and DevOs compatibility remain untested. DevOsPM extracts deb without maintainer scripts or dependency resolution. Redirect URL has no .deb suffix; current DevOsPM URL precheck requires a supported suffix. Download to a .deb filename before passing the local file to PM."
+    }
+  ],
+  "compatibility": {
+    "note": "Upstream Linux ARM64 file only. Not tested with the DevOs desktop image or DevOsPM relocation, dependency, and launcher behavior.",
+    "status": "untested",
+    "libc": "glibc",
+    "display": "wayland",
+    "profile": "devos-desktop-arm64"
+  },
+  "kind": "app"
+}
