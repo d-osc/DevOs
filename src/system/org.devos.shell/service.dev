@@ -35,8 +35,8 @@ fn optIn(role:str):bool {
     if strings.equal(hw.env("DEVOS_NATIVE_" + strings.toUpperCase(role)),"1") { return true }
     return fs.existsSync(hw.configHome() + "/devos/native-" + role)
 }
-fn nativeRoles():Vec<str> { return Vec<str>("taskmanager","diskmanager","installer","files","terminal","settings","camera","microphone") }
-fn optInRoles():Vec<str> { return Vec<str>("browser","appstore","editor") }
+fn nativeRoles():Vec<str> { return Vec<str>("taskmanager","diskmanager","installer","files","terminal","settings","camera","microphone","editor") }
+fn optInRoles():Vec<str> { return Vec<str>("browser","appstore") }
 fn spawn(argv:Vec<str>, extra:Vec<str>) {
     let all = Vec<str>("env","DEV_OS_ROOT=" + root())
     for item in extra { all.push(item) }

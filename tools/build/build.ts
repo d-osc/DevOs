@@ -100,7 +100,7 @@ const options: BuildOptions = {
     absWorkingDir: root,
     entryPoints: {...libraryEntries(), ...uiEntries(), 'react-gtk': 'packages/core/compat.ts',
         
-        'app-service-client-test': 'tests/app-service-client.test.ts', 'app-service-host': 'src/services/app-service-host.ts', 'app-host': 'src/app-host.ts', 'services-host': 'src/services/services-host.ts',
+        'app-service-host': 'src/services/app-service-host.ts', 'app-host': 'src/app-host.ts', 'services-host': 'src/services/services-host.ts',
         'screenshot-live-test': 'tests/screenshot-live.test.ts',
         'browser-downloads-live-test': 'tests/browser-downloads-live.test.ts',
 
@@ -111,7 +111,7 @@ const options: BuildOptions = {
         
         
         'lid-test': 'tests/lid.test.ts', 'react-demo': 'examples/Counter.tsx', 'desktop-animation-native-test': 'tests/desktop-animation-native.test.ts',
-        'touchpad-live-test': 'tests/touchpad-live.test.ts', 'task-view-native-test': 'tests/task-view-native.test.ts', 'icons-settings-test': 'tests/icons-settings.test.tsx', 'devos-icon-test': 'tests/devos-icon.test.ts', 'fa-icons-test': 'tests/fa-icons.test.tsx', 'theme-settings-test': 'tests/theme-settings.test.tsx', 'theme-test': 'tests/theme.test.ts', 'theme-css-test': 'tests/theme-css.test.ts', 'clock-settings-test': 'tests/clock-settings.test.tsx', 'lock-test': 'tests/lock.test.ts', 'sleep-test': 'tests/sleep.test.ts', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'browser-live-test': 'tests/browser-live.test.ts', 'live-editor-test': 'tests/live-editor.test.ts', 'performance-test': 'tests/performance.test.tsx',
+        'touchpad-live-test': 'tests/touchpad-live.test.ts', 'task-view-native-test': 'tests/task-view-native.test.ts', 'icons-settings-test': 'tests/icons-settings.test.tsx', 'devos-icon-test': 'tests/devos-icon.test.ts', 'fa-icons-test': 'tests/fa-icons.test.tsx', 'theme-settings-test': 'tests/theme-settings.test.tsx', 'theme-test': 'tests/theme.test.ts', 'theme-css-test': 'tests/theme-css.test.ts', 'clock-settings-test': 'tests/clock-settings.test.tsx', 'lock-test': 'tests/lock.test.ts', 'sleep-test': 'tests/sleep.test.ts', 'renderer-test': 'tests/renderer.test.tsx', 'view-test': 'tests/view.test.tsx', 'core-test': 'tests/core.test.ts', 'supervisor-test': 'tests/supervisor.test.ts', 'browser-live-test': 'tests/browser-live.test.ts', 'performance-test': 'tests/performance.test.tsx',
         'app-store-test': 'tests/app-store.test.tsx', 'registry-pm-test': 'tests/registry-pm.test.tsx', 'package-install-test': 'tests/package-install.test.ts', 'package-install-ui-test': 'tests/package-install-ui.test.tsx', main: 'src/main.ts', supervisor: 'packages/supervisor/entry.ts', 'config-test': 'tests/config.test.ts',
         'extensions-test': 'tests/extensions.test.ts', 'screenshot-test': 'tests/screenshot.test.ts', 'updates-test': 'tests/updates.test.ts', 'updates-live-test': 'tests/updates-live.test.ts', 'store-test': 'tests/store.test.ts', 'version-request-test': 'tests/version-request.test.ts', 'updates-patch-test': 'tests/updates-patch.test.ts', 'update-package-test': 'tests/update-package.test.ts', 'make-patch': 'packages/updates/make-patch.ts', 'make-system-bundle': 'packages/updates/make-system-bundle.ts', 'system-update-test': 'tests/system-update.test.ts', },
     // Desktop UI tests use the same external React runtime as every view.

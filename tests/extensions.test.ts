@@ -7,7 +7,6 @@ import {ROOT, saveConfig, loadConfig} from '@dev-os/config';
 import {ExtensionManager, clockFormat, systemManifests, loadSystemExtensions} from '@dev-os/extensions';
 import {validateManifest, validateState, validateValues, validateExtensionId} from '@dev-os/extensions/schema';
 
-import {opensInEditor} from '../src/apps/org.devos.editor/associations.js';
 import {materialIcon, setMaterialIcons} from '../src/apps/org.devos.icons/material.js';
 import {packageCategory} from '../src/utils/package-category.js';
 
@@ -198,13 +197,6 @@ try {
             assert(GLib.file_test(`${ROOT}/data/icons/hicolor/scalable/apps/${icon}.svg`, GLib.FileTest.IS_REGULAR), `Asset exists for ${icon}`);
         setMaterialIcons(false); assert(materialIcon('/work/view.tsx') === undefined, 'Material toggle falls back to GTK icons');
         setMaterialIcons(true);
-    });
-    test('editor file associations match extensions and filenames without matching other files', () => {
-        for (const path of ['/work/view.TSX', '/work/a.ts', '/work/.env', '/work/Dockerfile', '/work/archive.tar.gz'])
-            assert(opensInEditor(path, '*.ts, .tsx, .env, Dockerfile, .tar.gz'), `Matches ${path}`);
-        for (const path of ['/work/a.ts.bak', '/work/photo.png', '/work/myDockerfile'])
-            assert(!opensInEditor(path, '.ts, Dockerfile'), `Does not match ${path}`);
-        assert(!opensInEditor('/work/a.ts', ''), 'Empty associations use default applications');
     });
 } finally { removeTree(temporary); }
 print(`${passed} extension tests passed`);
