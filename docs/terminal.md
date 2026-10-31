@@ -18,9 +18,8 @@ New tabs use a login Bash when the account shell is `/bin/sh`, with the standard
 `username@hostname:directory` prompt. Root uses `#`; normal accounts use `$`.
 Custom account shells are preserved, and user startup files can override the
 prompt. Live images use hostname `devos` and include Git, GitHub CLI and DevLang (no Node.js, nvm, Rust or Python toolchains) plus the local
-DevOsPM v0.6.4 CLI as `devospm` and `dev`. Package-manager payloads are built from the
-sibling DevOsPM project with its locked dependencies and carry source/binary
-checksums. Live home/profile changes remain in the RAM overlay.
+DevOsPM v0.7.0 CLI (`pm-cli`, DevLang) as `devospm` and `dev`. Package-manager payloads are the
+CLI's DevLang sources and carry their checksum. Live home/profile changes remain in the RAM overlay.
 
 Validation: `npm run build`, `gjs -m dist/terminal-settings-test.js` and
 `gjs -m dist/extensions-test.js` in a GTK/VTE-capable Linux session. The Terminal

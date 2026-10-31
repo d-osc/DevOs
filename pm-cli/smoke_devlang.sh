@@ -1,6 +1,6 @@
 #!/bin/sh
-# End-to-end smoke test for the DevLang port of dev (mirrors the Rust build's
-# scripts/smoke_linux.py happy path plus rollback/extension coverage).
+# End-to-end smoke test of dev: pack, install, run, upgrade, rollback,
+# extensions and tamper detection against a private store.
 set -e
 DEVDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$DEVDIR"

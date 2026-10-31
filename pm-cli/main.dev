@@ -1,5 +1,5 @@
-# dev — Dev OS Package Manager, DevLang port of the Rust CLI.
-# Usage mirrors the Rust build: dev [options] <command> [...].
+# dev - Dev OS Package Manager (DevLang).
+# Usage: dev [options] <command> [...].
 use "std/fs"
 use "std/json"
 use "std/strings"
@@ -29,7 +29,7 @@ fn usage(): str {
     text = text + "Usage: dev [OPTIONS] <COMMAND>\n"
     text = text + "\n"
     text = text + "Commands:\n"
-    text = text + "  install <archive>  Install a local file or HTTP(S) URL (.dpk, .dpkx, .tar.gz, .deb, or a Dev OS extension) [aliases: add, i]\n"
+    text = text + "  install <archive>  Install a local file or HTTP(S) URL (.dpk, .dpkx, .tar.gz, .deb, .rpm, or a Dev OS extension) [aliases: add, i]\n"
     text = text + "  list               Show installed packages and Dev OS extensions\n"
     text = text + "  info <name>        Show package or extension metadata and installation path\n"
     text = text + "  verify [name]      Check installed file hashes, sizes and executable permissions\n"

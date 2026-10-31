@@ -2,52 +2,23 @@
 
 ตัวอย่าง extension พร้อม `package.json`, `bin`, ไฟล์ประกอบ และ release ที่ผูกกับ version อยู่ใน `examples/greeting-extension` ติดตั้งแพ็กเกจตัวอย่างได้ด้วย `dev install https://github.com/d-osc/DevOsPM/releases/latest/download/greeting-extension-1.0.0.dpk` แล้วเรียก `dev run extension-hello "Dev OS"` ดูรายละเอียดใน `examples/greeting-extension/README.md`
 
-Package Manager สำหรับ **Linux** เขียนด้วย Rust ใช้คำสั่ง `dev` ติดตั้งแพ็กเกจจากไฟล์ **`.dpk` เป็นรูปแบบหลัก** รองรับ `.tar.gz` เดิม และติดตั้งจาก `.deb` / `.rpm` ได้ ไม่ต้องมี daemon หรือ runtime แยกตอนใช้งาน รุ่นนี้ยังเชื่อมกับ **Dev OS desktop** โดยตรง: ติดตั้งแพ็กเกจ extension ของ Extension Store, สร้างรายการแอปให้ Launcher และอัปเดตจาก GitHub Releases ด้วย `dev update` (ดูหัวข้อ "เชื่อมกับ Dev OS desktop")
+Package Manager สำหรับ **Linux** เขียนด้วย **DevLang ทั้งหมด** (รันด้วย runtime `d`) ใช้คำสั่ง `dev` ติดตั้งแพ็กเกจจากไฟล์ **`.dpk` เป็นรูปแบบหลัก** รองรับ `.tar.gz` เดิม และติดตั้งจาก `.deb` / `.rpm` ได้ ไม่ต้องมี daemon รุ่นนี้ยังเชื่อมกับ **Dev OS desktop** โดยตรง: ติดตั้งแพ็กเกจ extension ของ Extension Store, สร้างรายการแอปให้ Launcher และอัปเดตจาก GitHub Releases ด้วย `dev update` (ดูหัวข้อ "เชื่อมกับ Dev OS desktop")
 
 `.dpk` รุ่นนี้ใช้ tar + gzip ภายใน และใช้ `package.json` เป็น manifest เหมือนกันทั้งสองนามสกุล ระบบตรวจ archive, checksum, การอัปเดต และ rollback ใช้ร่วมกัน ไฟล์ที่เปลี่ยนนามสกุลเป็น `.dpk` ต้องมีเนื้อหาเป็น tar + gzip จริง
 
 ## เริ่มใช้งาน
 
-ดาวน์โหลดไบนารี static musl สำหรับ Linux **x86_64** หรือ **arm64** จาก [GitHub Releases](https://github.com/d-osc/DevOsPM/releases/latest) ใช้งานได้โดยไม่ต้องติดตั้ง Rust (`dist/` ใช้เก็บผล build ภายในเครื่องและไม่อยู่ใน Git):
+ต้องมี runtime DevLang `d` (≥ 0.5.5) บน PATH และเครื่องมือมาตรฐานของ Linux: `sh`, `tar`, `sha256sum`, `curl`, `find`, `cp`, `rm`, `chmod`, `realpath`
+สำหรับ `.deb` ต้องมี `ar` (binutils) และสำหรับ `.rpm` ต้องมี `cpio` กับตัวแตก payload (`gzip`/`xz`/`zstd`/`bzip2` ตามที่แพ็กเกจใช้)
 
 ```sh
-case "$(uname -m)" in aarch64) ARCH=arm64;; *) ARCH=x86_64;; esac
-curl -fL "https://github.com/d-osc/DevOsPM/releases/latest/download/dev-linux-$ARCH" -o dev
-mkdir -p "$HOME/.local/bin"
-install -m 755 dev "$HOME/.local/bin/dev"
-export PATH="$HOME/.local/bin:$PATH"
+sh install.sh            # ติดตั้งไป ~/.local (launcher `dev` บน PATH, ซอร์สใต้ ~/.local/share/devos/dev-cli)
 dev --help
+d main.dev -- <command>  # หรือรันตรงจากโฟลเดอร์นี้
 ```
 
-หรือติดตั้งด้วยแพ็กเกจ `.deb` / `.rpm` (ติดตั้งไบนารีที่ `/usr/bin/dev`):
-
-```sh
-# Debian / Ubuntu
-sudo apt install ./dev-os-package-manager_<version>_amd64.deb      # หรือ _arm64.deb
-# Fedora / RHEL / openSUSE
-sudo dnf install ./dev-os-package-manager-<version>-1.x86_64.rpm   # หรือ .aarch64.rpm
-```
-
-ผู้ดูแลสร้างแพ็กเกจได้ด้วย [nfpm](https://nfpm.goreleaser.com/install/): รัน `sh scripts/build_release.sh` แล้วตามด้วย `sh scripts/package_linux.sh` ผลลัพธ์อยู่ที่ `dist/packages/` (config อยู่ที่ `packaging/nfpm.yaml`) หมายเหตุ: `dev update` แทนที่ไบนารีที่รันอยู่ ถ้าติดตั้งที่ `/usr/bin` ต้องรันด้วยสิทธิ์ root หรืออัปเดตผ่าน package manager ของระบบ
-
-หรือ build จาก source ด้วย Rust/Cargo 1.88 ขึ้นไป:
-
-```sh
-cargo build --release --locked
-sh scripts/install.sh target/release/dev
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-### รุ่น DevLang
-
-นอกจากไบนารี Rust ยังมี **implementation ด้วย DevLang** อยู่ใน [`devlang/`](devlang/) ใช้ runtime `d` (≥ 0.5.5) แทนไบนารีแยก คำสั่ง ตำแหน่งไฟล์ registry และ layout ของ store เหมือนรุ่น Rust ทุกประการ ทั้งสองรุ่นอ่าน store ของกันและกันได้ (ทดสอบ cross-install ทั้งสองทิศทางแล้ว):
-
-```sh
-sh devlang/install.sh    # ต้องมี d บน PATH ก่อน; ติดตั้งไป ~/.local
-dev --help
-```
-
-รุ่นนี้ `dev self-update` สลับ **ชุด source `.dev`** จาก asset `dev-cli.tar.gz` ของ release ล่าสุด (ไม่ใช่ไบนารีเดี่ยวแบบรุ่น Rust) รายละเอียดความต่างอื่นๆ (เช่น `.rpm` ยังไม่รองรับในรุ่น DevLang, `dev run` แสดงผลหลังคำสั่งจบ) อยู่ใน [devlang/README.md](devlang/README.md)
+`dev self-update` สลับ **ชุดซอร์ส `.dev`** จาก asset `dev-cli.tar.gz` ของ release ล่าสุด หลังรัน `--version` ของชุดใหม่ก่อน ความต่างที่ตั้งใจไว้อยู่ใน [docs/devlang-build.md](docs/devlang-build.md)
+(เช่น `dev run` แสดงผลของคำสั่งหลังคำสั่งจบ ไม่ใช่แบบ stream, ล็อก store ใช้ไฟล์ `.dev-lock`)
 
 ติดตั้งแพ็กเกจ:
 
@@ -76,7 +47,7 @@ dev install legacy.tar.gz
 
 ## ติดตั้งจากไฟล์ .deb / .rpm
 
-`dev install` อ่านแพ็กเกจ Debian และ RPM ได้โดยตรง ไม่ต้องมี `dpkg`/`rpm` และไม่ต้องใช้ root:
+`dev install` อ่านแพ็กเกจ Debian และ RPM ได้โดยตรง ไม่ต้องมี `dpkg`/`rpm` และไม่ต้องใช้ root (ใช้ `ar` สำหรับ deb และ `cpio` สำหรับ rpm):
 
 ```sh
 dev install hello-tool_2.3_amd64.deb
@@ -88,7 +59,7 @@ dev run hello-tool
 
 - ชื่อ รุ่น และคำอธิบายอ่านจาก `control` ของ deb หรือ header ของ rpm (`--name` / `--version` ใช้แทนได้) รุ่นถูกแปลงให้ใช้ได้กับ Dev OS เช่น `1:2.3-1~u1` เป็น `1.2.3-1.u1` และ rpm ใช้ `version-release`
 - คำสั่งถูกสร้างอัตโนมัติจากไฟล์ที่รันได้ใน `usr/bin`, `usr/sbin`, `usr/local/bin`, `bin`, `sbin` (ชื่อที่ไม่ผ่านกติกาชื่อคำสั่งจะถูกข้าม)
-- รองรับ payload แบบ gzip, xz และ zstd (ไม่รองรับ bzip2)
+- รองรับ payload แบบ gzip, xz, zstd และ bzip2 (ตรวจชนิดจาก magic ของ payload; rpm ต้องมี `cpio`)
 - **ไม่** รัน maintainer scripts, ไม่แก้ dependency และไม่สร้าง symlink/hard link/ไฟล์พิเศษ (จะข้ามและแจ้งเตือนจำนวนที่ข้าม) ดังนั้นไบนารีที่ลิงก์แบบ dynamic ต้องมีไลบรารีในระบบอยู่แล้ว เหมาะกับแพ็กเกจแบบ self-contained หรือเครื่องมือ CLI ง่าย ๆ
 - ใช้ `--no-desktop` ถ้าไม่ต้องการสร้างรายการ launcher และ shim ให้ทุกคำสั่งที่ตรวจพบ
 
@@ -290,22 +261,13 @@ Checksum ช่วยตรวจว่าไฟล์ตรงกับ digest 
 
 ## ความเร็วและความเสถียร
 
-- แตก gzip และเขียนไฟล์แบบ streaming ด้วย buffer 128 KiB พร้อมคำนวณ SHA-256 ระหว่างเขียน
-- ติดตั้งใน staging แล้วสลับ `registry.json` แบบ atomic เมื่อไฟล์พร้อม ใช้ `fsync` บน Linux ก่อน commit
-- อัปเดตที่ล้มเหลวก่อน commit จะเก็บรุ่นเดิมไว้ หากโปรเซสถูก kill ระหว่างทำงาน อาจเหลือ staging/generation ที่ไม่ถูกอ้างอิง โดย registry ยังชี้รุ่นเดิมหรือรุ่นใหม่ที่ commit แล้ว
-- ล็อก store ป้องกัน writer ทำงานพร้อมกัน คำสั่งอ่านแชร์ล็อกได้ `dev run` ถือ read lock จนโปรแกรมจบ การ install/remove ระหว่างนั้นจะตอบว่า store busy ให้ลองอีกครั้ง
-- ป้องกัน path traversal, absolute paths, duplicate paths, symlink, hard link และ special files
-- จำกัด 100,000 entries, payload รวม 2 GiB และ manifest 1 MiB ต่อแพ็กเกจ ตรวจ gzip CRC/trailer ก่อน commit
-- รองรับ GNU long names และ local PAX metadata โดยจำกัด metadata 1 MiB; ไม่รองรับ global PAX, sparse files และ PAX size ที่ไม่ตรงกับ tar header
+- แตก archive ด้วย `tar` / `ar` / `cpio` แต่ **ตรวจชื่อสมาชิกทุกตัวก่อนแตก** (path traversal, absolute path, duplicate, case conflict, type, ขนาด/จำนวน) แล้วตรวจต้นไม้ที่แตกแล้วเทียบกับ listing อีกครั้ง; rpm ที่มีสมาชิกอยู่ใต้ symlink ของ archive เดียวกันถูกปฏิเสธ
+- ติดตั้งใน staging แล้วสลับ `registry.json` แบบ atomic (rename) เมื่อไฟล์พร้อม
+- อัปเดตที่ล้มเหลวก่อน commit จะเก็บรุ่นเดิมไว้ หากโปรเซสถูก kill ระหว่างทำงาน อาจเหลือ staging ที่ไม่ถูกอ้างอิง โดย registry ยังชี้รุ่นเดิมหรือรุ่นใหม่ที่ commit แล้ว
+- ล็อก store ด้วยไฟล์ `.dev-lock` ที่เก็บ pid (ล็อกที่โปรเซสตายแล้วถูกเก็บกวาด) ป้องกัน writer ทำงานพร้อมกัน คำสั่งอ่านไม่ล็อก
+- จำกัด 100,000 entries, payload รวม 2 GiB และ manifest 1 MiB ต่อแพ็กเกจ
 - `dev verify` ตรวจไฟล์หาย ไฟล์เพิ่ม ขนาด SHA-256 และ executable permissions; `dev run` ตรวจ SHA-256 ของไฟล์คำสั่งก่อนรัน
-
-ความเร็วขึ้นกับ CPU, filesystem, จำนวนไฟล์ และ `fsync` จึงมี benchmark ที่รันซ้ำได้:
-
-```sh
-python3 scripts/benchmark.py ./target/release/dev --payload-mib 64 --files 1000
-```
-
-ผลการวัดครั้งหนึ่งบน Ubuntu/WSL บนเครื่องพัฒนา: payload 64 MiB / 1,000 ไฟล์ ติดตั้ง 5.767 วินาที, verify 0.208 วินาที, list median 14.41 ms ตัวเลขนี้เป็นผลของ workload สังเคราะห์บนเครื่องนี้ ไม่ใช่การรับประกันความเร็วบนทุกเครื่อง
+- ไม่มี `fsync` (runtime ไม่มี API) แต่สถานะยัง commit ด้วย rename แบบ atomic
 
 ## ตำแหน่งเก็บข้อมูล
 
@@ -324,15 +286,9 @@ dev list --json
 ## ตรวจสอบโค้ด
 
 ```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo build --release --locked
-python3 scripts/smoke_linux.py ./target/release/dev
+d test_modules.dev                 # หน่วยย่อยของ util / archive / manifest
+sh smoke_devlang.sh                # end-to-end: pack → install → run → … → remove
+d ../tests/pm-cli.test.dev         # .rpm ทุก compression, ไอคอน launcher, previous/rollback/remove, การปฏิเสธ archive อันตราย
 ```
 
-มี tests สำหรับ install/remove, plain archive, checksum, gzip เสีย/ขาด, ไฟล์และ registry ที่ถูกแก้ไข, path traversal, links, command collision, locks, commit failure, upgrade/rollback และการส่ง arguments/exit code บน Linux รวมถึง extension ของ Dev OS, รายการ Launcher และการแยก asset ของ `dev update` โค้ด CLI คอมไพล์และทดสอบบน Windows ได้ด้วย แต่แพ็กเกจ executable และการ symlink ของ extension ต้องรันบน Linux
-
-ผลตรวจรุ่น 0.5.0 บน Ubuntu 24.04 / WSL2 (ARM64): unit tests ผ่าน 55 กรณี, formatting และ Clippy ผ่าน; smoke test ครอบคลุม .dpk, .dpkx, .tar.gz, checksum, upgrade/rollback, หลายโปรเซส, ตัวติดตั้งไบนารี, launcher entries, extension ของ Dev OS, `dev update` และ `dev self-update` ผ่าน API mirror ในเครื่อง
-
-URL installation regression test: `python3 scripts/smoke_download.py ./target/release/dev`.
+`tests/pm-cli.test.dev` สร้างไฟล์ .rpm จริงด้วย `tests/lib/make-rpm.sh` (ไม่ต้องมี rpmbuild) และรันกับ store แยกต่างหาก; `tests/appstore-native.test.dev` ใช้ CLI นี้ผ่าน App Store จริง

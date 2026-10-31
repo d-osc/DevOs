@@ -2,7 +2,7 @@
 # from `tar -tv` is validated (safe_path, types, duplicates, case conflicts,
 # size and count limits) BEFORE `tar -x` runs, and the extracted tree is
 # cross-checked against the validated listing afterwards. .deb packages are
-# unwrapped through ar(1); .rpm needs rpm2cpio and is not supported here.
+# unwrapped through ar(1); .rpm payloads stream through their decompressor into cpio(1).
 # File records are json.Value objects: { sha256, size, executable }.
 use "std/fs"
 use "std/json"
@@ -17,7 +17,7 @@ fn manifest_limit(): i64 {
 # package_stem: accepted archive suffixes ("" when unsupported).
 fn package_stem(path str): str {
     let name = util.file_name(path)
-    let suffixes = Vec<str>(".dpk", ".dpkx", ".tar.gz", ".deb")
+    let suffixes = Vec<str>(".dpk", ".dpkx", ".tar.gz", ".deb", ".rpm")
     for i in 0..suffixes.len() as i64 {
         if strings.endsWith(name, suffixes[i as usize]) {
             let cut = (strings.len(name) as i64) - (strings.len(suffixes[i as usize]) as i64)
@@ -176,6 +176,123 @@ fn deb_package_version(raw str): str {
     return out
 }
 
+# --- RPM -----------------------------------------------------------------------------------------------------------------------
+# An .rpm is a 96-byte lead, a signature header (padded to 8 bytes), a metadata header and a compressed newc cpio payload. The headers are read
+# a few hundred bytes at a time through `tail | head | od` (the runtime caps what it can hold in memory, and a package can be far larger); the
+# payload is never held: it streams through the decompressor into cpio(1), once to list it (validated like a tar listing) and once to extract it.
+fn is_rpm(path str): bool {
+    return strings.endsWith(util.file_name(path), ".rpm")
+}
+
+# Bytes [offset, offset + count) of a file as numbers.
+fn file_bytes(archive str, offset i64, count i64): Vec<i64> {
+    let script = "tail -c +${offset + 1} " + util.quote(archive) + " | head -c ${count} | od -An -v -tu1"
+    let text = util.capture(Vec<str>("sh", "-c", script), "", "reading ${archive}")
+    let out = Vec<i64>()
+    let tokens = strings.split(strings.replaceAll(text, "\n", " "), " ")
+    for i in 0..tokens.len() as i64 {
+        if strings.len(tokens[i as usize]) > 0 { out.push(util.parse_int(tokens[i as usize])) }
+    }
+    return out
+}
+
+fn be32(bytes Vec<i64>, at i64): i64 {
+    return bytes[at as usize] * 16777216 + bytes[(at + 1) as usize] * 65536 + bytes[(at + 2) as usize] * 256 + bytes[(at + 3) as usize]
+}
+
+struct RpmHeader { entries i64; data_size i64; total i64 }
+
+fn rpm_header_at(archive str, offset i64): RpmHeader {
+    let b = file_bytes(archive, offset, 16)
+    if b.len() < 16 || b[0] != 142 || b[1] != 173 || b[2] != 232 { result.raise("Corrupt RPM header") }
+    let entries = be32(b, 8)
+    let data_size = be32(b, 12)
+    if entries > 100000 || data_size > 64 * 1024 * 1024 { result.raise("Unsupported RPM header size") }
+    return RpmHeader(entries, data_size, 16 + entries * 16 + data_size)
+}
+
+struct RpmInfo { payload i64; compressor str; name str; version str; description str }
+
+# The tag's string value (STRING and I18NSTRING tags only), "" when absent.
+fn rpm_string(table Vec<i64>, entries i64, tag i64): str {
+    for i in 0..entries {
+        let at = i * 16
+        if be32(table, at) != tag { continue }
+        let kind = be32(table, at + 4)
+        if kind != 6 && kind != 9 { return "" }
+        let start = entries * 16 + be32(table, at + 8)
+        let bytes = Vec<u8>()
+        let k = start
+        while k < (table.len() as i64) && table[k as usize] != 0 {
+            bytes.push(table[k as usize] as u8)
+            k = k + 1
+        }
+        return util.decode(bytes)
+    }
+    return ""
+}
+
+fn rpm_info(archive str): RpmInfo {
+    let lead = file_bytes(archive, 0, 4)
+    if lead.len() < 4 || lead[0] != 237 || lead[1] != 171 || lead[2] != 238 || lead[3] != 219 { result.raise("Not an RPM package") }
+    let signature = rpm_header_at(archive, 96)
+    let main_at = 96 + signature.total + (8 - signature.total % 8) % 8
+    let main = rpm_header_at(archive, main_at)
+    let table = file_bytes(archive, main_at + 16, main.entries * 16 + main.data_size)
+    if (table.len() as i64) < main.entries * 16 + main.data_size { result.raise("Truncated RPM header") }
+    let payload = main_at + main.total
+    let format = rpm_string(table, main.entries, 1124)
+    if format != "" && format != "cpio" { result.raise("Unsupported RPM payload format (expected cpio)") }
+    let magic = file_bytes(archive, payload, 6)
+    let compressor = "cat"
+    if magic.len() >= 2 && magic[0] == 31 && magic[1] == 139 { compressor = "gzip -dc" }
+    else if magic.len() >= 6 && magic[0] == 253 && magic[1] == 55 && magic[2] == 122 && magic[3] == 88 && magic[4] == 90 { compressor = "xz -dc" }
+    else if magic.len() >= 4 && magic[0] == 40 && magic[1] == 181 && magic[2] == 47 && magic[3] == 253 { compressor = "zstd -dc" }
+    else if magic.len() >= 3 && magic[0] == 66 && magic[1] == 90 && magic[2] == 104 { compressor = "bzip2 -dc" }
+    else if magic.len() >= 5 && magic[0] == 48 && magic[1] == 55 && magic[2] == 48 && magic[3] == 55 && magic[4] == 48 { compressor = "cat" }
+    else { result.raise("Unsupported RPM payload compression") }
+    let name = deb_package_name(rpm_string(table, main.entries, 1000))
+    let version = deb_package_version(rpm_string(table, main.entries, 1001))
+    let description = rpm_string(table, main.entries, 1004)
+    return RpmInfo(payload, compressor, name, version, description)
+}
+
+# The shell fragment that writes the payload as a plain cpio stream.
+fn rpm_stream(archive str, info RpmInfo): str {
+    return "tail -c +${info.payload + 1} " + util.quote(archive) + " | " + info.compressor
+}
+
+fn ensure_rpm_tools(info RpmInfo) {
+    let needed = Vec<str>("cpio", "tail", "head")
+    if info.compressor != "cat" { needed.push(util.slice(info.compressor, 0, strings.indexOf(info.compressor, " "))) }
+    for i in 0..needed.len() as i64 {
+        if !util.run(Vec<str>("command", "-v", needed[i as usize]), "", 30000).success {
+            result.raise("Installing .rpm packages requires the ${needed[i as usize]}(1) tool")
+        }
+    }
+}
+
+# A row of `cpio -tv`: "-rwxr-xr-x   1 root root 1234 Jan  1 00:00 ./usr/bin/tool" (a link adds " -> target").
+fn parse_cpio_line(line str): ListingRow {
+    let fields = strings.split(strings.trim(line), " ")
+    let clean = Vec<str>()
+    for i in 0..fields.len() as i64 {
+        if strings.len(fields[i as usize]) > 0 { clean.push(fields[i as usize]) }
+    }
+    if clean.len() < 9 { result.raise("Corrupt RPM payload listing: ${line}") }
+    let name = ""
+    for i in 8..clean.len() as i64 {
+        if i > 8 { name = name + " " }
+        name = name + clean[i as usize]
+    }
+    if util.slice(clean[0], 0, 1) == "l" {
+        let arrow = util.rfind(name, " -> ")
+        if arrow >= 0 { name = util.slice(name, 0, arrow) }
+    }
+    while strings.startsWith(name, "/") { name = util.slice(name, 1, strings.charLength(name)) }
+    return ListingRow(clean[0], util.parse_int(clean[4]), util.slice(clean[0], 0, 1), name)
+}
+
 # strip_root mirrors manager.rs: entries recorded relative to a stripped root.
 fn strip_root(normalized str, prefix str, is_dir bool): str {
     if strings.startsWith(normalized, prefix) {
@@ -204,8 +321,16 @@ struct Extracted { files json.Value; bytes i64; native NativeMeta; skipped i64 }
 fn extract_archive(archive str, dest str, strip str, manifest_names Vec<str>, max_files i64, max_bytes i64): Extracted {
     ensure_deb_tools_if_needed(archive)
     let is_deb_archive = is_deb(archive)
+    let is_rpm_archive = is_rpm(archive)
+    let rpm = RpmInfo(0, "", "", "", "")
+    if is_rpm_archive {
+        rpm = rpm_info(archive)
+        ensure_rpm_tools(rpm)
+    }
     let text = ""
-    if is_deb_archive {
+    if is_rpm_archive {
+        text = util.capture(Vec<str>("sh", "-c", rpm_stream(archive, rpm) + " | cpio -itv --quiet"), "", "reading ${archive}")
+    } else if is_deb_archive {
         let data = deb_data_member(archive)
         text = util.capture(
             Vec<str>("sh", "-c", "ar p " + util.quote(archive) + " " + util.quote(data) + " | tar -tv"),
@@ -221,10 +346,14 @@ fn extract_archive(archive str, dest str, strip str, manifest_names Vec<str>, ma
     let skipped = 0
     let count = 0
     let expected = Map<str, bool>()
+    # Symlinks of an .rpm are dropped, but extraction must not be able to write through one: no member may sit below a symlink of the same archive.
+    let links = Map<str, bool>()
+    let paths_seen = Vec<str>()
     for i in 0..lines.len() as i64 {
         let line = strings.trim(lines[i as usize])
         if line == "" { continue }
-        let row = parse_listing_line(line)
+        let row = ListingRow("", 0, "", "")
+        if is_rpm_archive { row = parse_cpio_line(line) } else { row = parse_listing_line(line) }
         if strings.len(row.name) == 0 { continue }
         count = count + 1
         if count > max_files { result.raise("Archive has too many entries") }
@@ -235,7 +364,8 @@ fn extract_archive(archive str, dest str, strip str, manifest_names Vec<str>, ma
         let normalized = util.safe_path(base)
         let is_dir = row.kind == "d" || strings.endsWith(row.name, "/")
         if row.kind != "-" && row.kind != "d" {
-            if is_deb_archive {
+            if is_deb_archive || is_rpm_archive {
+                if row.kind == "l" { links.set(normalized, true) }
                 skipped = skipped + 1
                 continue
             }
@@ -250,6 +380,7 @@ fn extract_archive(archive str, dest str, strip str, manifest_names Vec<str>, ma
             if is_dir { continue }
             result.raise("Empty file path in archive")
         }
+        paths_seen.push(path)
         let folded = strings.toLowerCase(path)
         if seen.contains(folded) { result.raise("Duplicate archive path: ${path}") }
         seen.set(folded, true)
@@ -270,12 +401,26 @@ fn extract_archive(archive str, dest str, strip str, manifest_names Vec<str>, ma
         }
     }
     if expected.len() == 0 { result.raise("Archive contains no files") }
+    if links.len() > 0 {
+        for i in 0..paths_seen.len() as i64 {
+            let parts = strings.split(paths_seen[i as usize], "/")
+            let prefix = ""
+            for k in 0..(parts.len() as i64 - 1) {
+                prefix = k == 0 ? parts[0] : prefix + "/" + parts[k as usize]
+                if links.contains(prefix) { result.raise("Archive entry is below a symlink: ${paths_seen[i as usize]}") }
+            }
+        }
+    }
 
     # Extraction only runs after every member name passed validation. With a
     # strip prefix the tree is extracted without it, matching the Rust build's
     # destination.join(stripped_path) layout.
     fs.mkdirSync(dest, true)
-    if is_deb_archive {
+    if is_rpm_archive {
+        util.must(Vec<str>("sh", "-c", rpm_stream(archive, rpm) + " | (cd " + util.quote(dest) + " && cpio -idm --quiet --no-absolute-filenames --no-preserve-owner)"), "", "extracting ${archive}")
+        # links and special files are not part of a package (the listing skipped them)
+        util.must(Vec<str>("sh", "-c", "find " + util.quote(dest) + " ! -type f ! -type d -exec rm -f {} +"), "", "removing links from ${archive}")
+    } else if is_deb_archive {
         let data = deb_data_member(archive)
         util.must(
             Vec<str>("sh", "-c", "ar p " + util.quote(archive) + " " + util.quote(data) + " | tar -x -C " + util.quote(dest) + " -p --no-same-owner --numeric-owner"),
@@ -300,7 +445,12 @@ fn extract_archive(archive str, dest str, strip str, manifest_names Vec<str>, ma
     }
 
     let native = NativeMeta(false, "", "", "")
-    if is_deb_archive {
+    if is_rpm_archive {
+        native.present = true
+        native.name = rpm.name
+        native.version = rpm.version
+        native.description = rpm.description
+    } else if is_deb_archive {
         let meta = deb_control(archive, util.parent_dir(dest))
         native.present = true
         native.name = meta.name

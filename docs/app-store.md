@@ -80,7 +80,7 @@ The test stubs only network transport. It installs real dpkx and xz-compressed D
 
 ## WSL runtime setup
 
-`dev.ps1 run` prepares the package manager before staging the desktop, using `tools/setup/bootstrap-pm.sh`. The helper builds the sibling DevOsPM checkout with Cargo and its lockfile, then installs its `dev` binary privately at `build/wsl/bin/dev`. Set `DEV_OS_PM_SOURCE` to use another checkout. It skips rebuilding when the installed binary is current. It does not replace `~/.local/bin/dev`, which can be DevLang's alias.
+`dev.ps1 run` prepares the package manager before staging the desktop, using `tools/setup/bootstrap-pm.sh`. The helper writes a launcher at `build/wsl/bin/dev` that runs `pm-cli/main.dev` (the DevOsPM CLI, DevLang) with the DevLang runtime. Set `DEV_OS_PM_SOURCE` to use another checkout. It does not replace `~/.local/bin/dev`, which can be DevLang's alias.
 
 To prepare it explicitly:
 

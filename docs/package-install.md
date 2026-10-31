@@ -6,7 +6,7 @@ Double-clicking a package file in **Files**, or right-clicking it and choosing *
 
 | Piece | File | Role |
 | --- | --- | --- |
-| Package manager | `dev` / `dev` v0.6.4 (sibling project DevOsPM, recipe `devos-pm_0.6.4.bb`) | Does the actual extraction and registry work. Reads `.dpk`, `.tar.gz`, `.deb` (gzip/xz/zstd) and `.rpm` natively, with no `dpkg`, `rpm`, `ar`, `cpio` or Python in the image. |
+| Package manager | `dev` v0.7.0 (`pm-cli`, DevLang; recipe `devos-pm_0.7.0.bb`) | Does the actual extraction and registry work. Reads `.dpk`, `.tar.gz`, `.deb` and `.rpm` (gzip/xz/zstd/bzip2 payloads) with the standard tools `tar`, `ar` (binutils), `cpio` and the decompressors, which the image carries; no `dpkg`, `rpm` or Python. |
 | Inspection | `src/apps/org.devos.appstore/package-file.ts` | Read-only: lists archive entries and parses `package.json`, deb `control`, rpm headers. Uses only GLib/Gio (zlib). Never extracts, never runs anything. |
 | Backend bridge | `src/apps/org.devos.appstore/package-backend.ts` | Runs `dev install/list/remove/rollback` (override the binary with `DEV_OS_PM` for tests), streams its progress lines, parses its output. |
 | Install page | `package-view.tsx`, `extension.tsx` | `Install Package` window (`dev-os-shell package-install <files...>`), queue, Packages tab in the App Store, drag and drop. |

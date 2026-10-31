@@ -434,7 +434,7 @@ fn find_icon_by_stem(files json.Value, stem str): str {
 
 # Portable archives keep the main executable at their root.
 fn detect_root_executable(m manifest.Manifest, files json.Value): manifest.Manifest {
-    if json.len(m.bin) > 0 { return }
+    if json.len(m.bin) > 0 { return m }
     let keys = json.keys(files)
     for i in 0..keys.len() as i64 {
         let path = keys[i as usize]
@@ -447,9 +447,22 @@ fn detect_root_executable(m manifest.Manifest, files json.Value): manifest.Manif
     return m
 }
 
+# A package that exports commands without naming an image: prefer an image named like the package or one of its commands, then the generic
+# icon / logo names.
 fn detect_icon(m manifest.Manifest, files json.Value): manifest.Manifest {
     if m.icon != "" { return m }
-    m.icon = find_icon_by_stem(files, m.name)
+    let keys = json.keys(files)
+    for pass in 0..2 {
+        for i in 0..keys.len() as i64 {
+            let path = keys[i as usize]
+            let extension = util.file_extension(path)
+            if extension != "png" && extension != "svg" && extension != "xpm" { continue }
+            let stem = util.file_stem(path)
+            let wanted = false
+            if pass == 0 { wanted = stem == m.name || json.has(m.bin, stem) } else { wanted = stem == "icon" || stem == "logo" }
+            if wanted { m.icon = path; return m }
+        }
+    }
     return m
 }
 
@@ -536,9 +549,10 @@ fn install(store Store, archive_path str, opt_name str, opt_version str, opt_sha
         m.bin = detect_commands(files)
         m = scan_desktop_entries(m, files, stage)
         m = detect_root_executable(m, files)
-        m = detect_icon(m, files)
     }
     m = manifest.normalize_bin(m)
+    # A manifest may export commands without naming its image: look for one in the package (after the commands are known).
+    if m.icon == "" && m.kind == "app" { m = detect_icon(m, files) }
     let kind = m.kind
     if !json.has(files, "package.json") {
         let keys = json.keys(files)
@@ -596,6 +610,8 @@ fn install(store Store, archive_path str, opt_name str, opt_version str, opt_sha
 
     let packages = json.get(store.registry, "packages")
     let updated = json.set(json.object(), "active", snapshot)
+    # `previous` is always present (null when there is none), as in the Rust build's registry and `list --json`.
+    updated = json.set(updated, "previous", json.null_value())
     if !json.is_null(existing) {
         updated = json.set(updated, "previous", json.get(existing, "active"))
     }

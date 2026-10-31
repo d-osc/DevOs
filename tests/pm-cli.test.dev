@@ -1,0 +1,85 @@
+use "std/fs"
+use "std/test"
+use "std/json"
+use "std/child_process"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+# pm-cli (the dev package manager, DevLang) against private stores: .rpm in every compression, launcher icons, the registry's `previous`, replace / rollback / remove.
+fn dev():str { return t.root() + "/build/wsl/bin/dev" }
+fn temporary():str { return strings.trim(tool.exec(Vec<str>("mktemp","-d"))) }
+fn sh(script:str):str { return strings.trim(tool.exec(Vec<str>("sh","-c",script))) }
+fn env(home:str, store:str):Map<str,str> {
+    let e = Map<str,str>(); e.set("HOME",home); e.set("DEV_ROOT",store); e.set("XDG_DATA_HOME",home + "/.local/share"); e.set("PATH","/usr/local/bin:/usr/bin:/bin"); return e
+}
+fn run(home:str, store:str, args:Vec<str>):child_process.Output {
+    let argv = Vec<str>(dev()); for a in args { argv.push(a) }
+    return tool.run(argv,env(home,store),"",120000)
+}
+fn rpmTree(d:str):str {
+    let tree = d + "/tree"
+    sh("mkdir -p " + tree + "/usr/bin " + tree + "/usr/share/applications && printf '#!/bin/sh\\necho rpm-hello\\n' > " + tree + "/usr/bin/rpmtool && chmod 755 " + tree + "/usr/bin/rpmtool && ln -s rpmtool " + tree + "/usr/bin/rpmalias && printf '[Desktop Entry]\\nType=Application\\nName=Rpm Tool\\nExec=rpmtool\\n' > " + tree + "/usr/share/applications/rpmtool.desktop")
+    return tree
+}
+
+test.case("an .rpm installs whatever its payload compression: name and version from its header, links dropped, a launcher entry, run, verify",fn() {
+    let d = temporary(); let tree = rpmTree(d)
+    for compression in Vec<str>("gzip","xz","zstd","bzip2","none") {
+        let file = d + "/rpmtool-" + compression + ".rpm"
+        sh("sh " + t.root() + "/tests/lib/make-rpm.sh " + file + " " + tree + " rpm-tool 2.1.0 " + compression)
+        let home = d + "/home-" + compression; let store = d + "/store-" + compression
+        sh("mkdir -p " + home)
+        let installed = run(home,store,Vec<str>("install",file))
+        test.expect(installed.success && strings.contains(t.out(installed),"Installed rpm-tool 2.1.0"),compression + ": " + t.out(installed) + t.err(installed))
+        test.expect(strings.contains(t.err(installed),"skipped 1 symlink"),compression + ": the symlink was not reported as skipped: " + t.err(installed))
+        test.expect(strings.contains(t.out(run(home,store,Vec<str>("list"))),"rpm-tool\t2.1.0\t3 files"),compression + ": listing wrong: " + t.out(run(home,store,Vec<str>("list"))))
+        test.expect(run(home,store,Vec<str>("verify")).success,compression + ": verify failed")
+        test.expect(strings.contains(t.out(run(home,store,Vec<str>("run","rpmtool"))),"rpm-hello"),compression + ": the exported command did not run")
+        test.expect(fs.existsSync(home + "/.local/share/applications/dev-rpmtool.desktop"),compression + ": no launcher entry")
+    }
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("a corrupt .rpm and one that would write through its own symlink are refused before anything is extracted",fn() {
+    let d = temporary(); let tree = rpmTree(d)
+    sh("mkdir -p " + d + "/evil " + d + "/home && printf x > " + d + "/evil/pwn && ln -s " + d + "/evil " + tree + "/escape")
+    sh("RPM_LIST='./usr/bin/rpmtool\n./escape\n./escape/pwn' sh " + t.root() + "/tests/lib/make-rpm.sh " + d + "/trap.rpm " + tree + " trap 1.0 gzip")
+    let refused = run(d + "/home",d + "/store",Vec<str>("install",d + "/trap.rpm"))
+    test.expect(!refused.success && strings.contains(t.err(refused),"below a symlink"),"The traversal archive was accepted: " + t.out(refused) + t.err(refused))
+    sh("head -c 200 " + d + "/trap.rpm > " + d + "/short.rpm")
+    test.expect(!run(d + "/home",d + "/store",Vec<str>("install",d + "/short.rpm")).success,"A truncated .rpm was accepted")
+    test.expect(strings.contains(t.out(run(d + "/home",d + "/store",Vec<str>("list"))),"No packages installed"),"A refused archive left a package behind")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("an app that names no image gets the generic launcher icon file; one that ships an image named like its command gets that image",fn() {
+    let d = temporary()
+    sh("mkdir -p " + d + "/plain/bin " + d + "/pic/bin " + d + "/home && printf '{\"name\":\"plain\",\"version\":\"1.0.0\",\"bin\":{\"plain\":\"bin/plain\"}}' > " + d + "/plain/package.json && printf '#!/bin/sh\\n' > " + d + "/plain/bin/plain && chmod 755 " + d + "/plain/bin/plain")
+    sh("printf '{\"name\":\"pic\",\"version\":\"1.0.0\",\"bin\":{\"pic\":\"bin/pic\"}}' > " + d + "/pic/package.json && printf '#!/bin/sh\\n' > " + d + "/pic/bin/pic && chmod 755 " + d + "/pic/bin/pic && printf '<svg/>' > " + d + "/pic/pic.svg && printf '<svg/>' > " + d + "/pic/logo.svg")
+    sh("cd " + d + "/plain && tar -czf " + d + "/plain.dpk package.json bin && cd " + d + "/pic && tar -czf " + d + "/pic.dpk package.json bin pic.svg logo.svg")
+    test.expect(run(d + "/home",d + "/store",Vec<str>("install",d + "/plain.dpk")).success,"install plain failed")
+    test.expect(run(d + "/home",d + "/store",Vec<str>("install",d + "/pic.dpk")).success,"install pic failed")
+    let entries = d + "/home/.local/share/applications"
+    let plain = fs.readFileSync(entries + "/dev-plain.desktop","utf8"); let pic = fs.readFileSync(entries + "/dev-pic.desktop","utf8")
+    test.expect(strings.contains(plain,"devos-package-icons/application.svg") && fs.existsSync(entries + "/devos-package-icons/application.svg"),"No generic icon for an app without an image: " + plain)
+    test.expect(strings.contains(pic,"/pic.svg\n") && !strings.contains(pic,"logo.svg"),"The command-named image was not preferred: " + pic)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the registry always carries previous (null at first), replace keeps the old version, rollback swaps back, remove clears both",fn() {
+    let d = temporary()
+    sh("mkdir -p " + d + "/v1/bin " + d + "/v2/bin " + d + "/home")
+    for version in Vec<str>("1","2") {
+        sh("printf '{\"name\":\"ver\",\"version\":\"" + version + ".0.0\",\"bin\":{\"ver\":\"bin/ver\"}}' > " + d + "/v" + version + "/package.json && printf '#!/bin/sh\\necho v" + version + "\\n' > " + d + "/v" + version + "/bin/ver && chmod 755 " + d + "/v" + version + "/bin/ver && cd " + d + "/v" + version + " && tar -czf " + d + "/ver-" + version + ".dpk package.json bin")
+    }
+    let store = d + "/store"; let home = d + "/home"
+    test.expect(run(home,store,Vec<str>("install",d + "/ver-1.dpk")).success,"install 1 failed")
+    let first = json.parse(t.out(run(home,store,Vec<str>("list","--json"))))
+    test.expect(json.has(json.get(json.get(first,"packages"),"ver"),"previous") && json.is_null(json.get(json.get(json.get(first,"packages"),"ver"),"previous")),"previous must be present and null at first")
+    test.expect(run(home,store,Vec<str>("install","--replace",d + "/ver-2.dpk")).success,"replace failed")
+    let second = json.parse(t.out(run(home,store,Vec<str>("list","--json"))))
+    test.expect(!json.is_null(json.get(json.get(json.get(second,"packages"),"ver"),"previous")),"the replaced version was not kept")
+    test.expect(strings.contains(t.out(run(home,store,Vec<str>("run","ver"))),"v2"),"the replacement does not run")
+    test.expect(run(home,store,Vec<str>("rollback","ver")).success && strings.contains(t.out(run(home,store,Vec<str>("run","ver"))),"v1"),"rollback did not bring v1 back")
+    test.expect(run(home,store,Vec<str>("remove","ver")).success && strings.contains(t.out(run(home,store,Vec<str>("list"))),"No packages installed"),"remove left something")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

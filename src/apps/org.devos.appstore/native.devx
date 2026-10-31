@@ -88,6 +88,7 @@ fn App(context:*ui.Context):ui.Node {
         ui.onTick(context,100,fn() {
             ticks.set(ticks.get() + 1)
             if live.get() == 1 && replied.get() == 1 && ticks.get() - started.get() >= 7 { live.set(0); working.set(0) }
+            if smoke() && ticks.get() > 400 { print("FAIL native App Store timed out at step ${step.get()}: working ${live.get()}, replied ${replied.get()}, asked ${asked.get()}"); ui.close(context) }
         })
         let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
         if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
@@ -122,12 +123,12 @@ fn App(context:*ui.Context):ui.Node {
     # Smoke, second half: on the Installed tab, once the list shows the app and no change is running, remove it and check its progress stayed up at least 0.7 s.
     ui.useEffect(context,fn():fn():void {
         if !smoke() { return ui.noop }
-        if step.get() == 2 && tab.value == 1 && working.value == 0 && contains(installed.value,plain("hello-demo")) { step.set(3); ui.click(context,"installed-remove-0") }
+        if step.get() == 2 && tab.value == 1 && working.value == 0 && l.waiting.get() == 0 && contains(installed.value,plain("hello-demo")) { step.set(3); ui.click(context,"installed-remove-0") }
         else if step.get() == 3 && working.value == 0 && contains(message.value,plain("Removed hello-demo")) {
             print(ticks.get() - started.get() >= 7 ? "PASS native App Store showed its progress while removing an app" : "FAIL the removal progress was shown for under 0.7 s"); ui.close(context)
         }
         return ui.noop
-    },Vec<i64>(working.value,tab.value,installed.value.bytes.len() as i64,message.value.bytes.len() as i64))
+    },Vec<i64>(working.value,tab.value,l.waiting.get(),installed.value.bytes.len() as i64,message.value.bytes.len() as i64))
     if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
     let busy = l.waiting.get() != 0 || working.value == 1; let current = tab.value
     let catalogCount = 0; let installedCount = 0

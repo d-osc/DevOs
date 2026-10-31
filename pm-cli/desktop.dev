@@ -43,7 +43,11 @@ fn dev_executable(): str {
     return "dev"
 }
 
-fn entry_content(m manifest.Manifest, command str, package_root str): str {
+# The image of an app that names none: a small generic icon written next to the entries, so a desktop without an icon theme still shows something.
+fn fallback_svg(): str { return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\">\n  <rect x=\"8\" y=\"8\" width=\"112\" height=\"112\" rx=\"26\" fill=\"#2563eb\"/>\n  <rect x=\"30\" y=\"30\" width=\"28\" height=\"28\" rx=\"6\" fill=\"#fff\"/>\n  <rect x=\"70\" y=\"30\" width=\"28\" height=\"28\" rx=\"6\" fill=\"#fff\"/>\n  <rect x=\"30\" y=\"70\" width=\"28\" height=\"28\" rx=\"6\" fill=\"#fff\"/>\n  <rect x=\"70\" y=\"70\" width=\"28\" height=\"28\" rx=\"6\" fill=\"#fff\"/>\n</svg>\n" }
+fn fallback_icon(applications str): str { return util.path_join(applications, "devos-package-icons/application.svg") }
+
+fn entry_content(m manifest.Manifest, command str, package_root str, fallback str): str {
     let name = command
     if m.fullname != "" { name = m.fullname }
     else {
@@ -61,7 +65,7 @@ fn entry_content(m manifest.Manifest, command str, package_root str): str {
     if m.icon != "" {
         entry = entry + "Icon=${escape_value(util.path_join(package_root, m.icon))}\n"
     } else {
-        entry = entry + "Icon=application-x-executable\n"
+        entry = entry + "Icon=${escape_value(fallback)}\n"
     }
     entry = entry + "Terminal=false\n"
     entry = entry + "X-DevOS-Package=${m.name}\n"
@@ -72,9 +76,20 @@ fn write_entries(applications str, m manifest.Manifest, package_root str) {
     if m.kind != "app" { return }
     fs.mkdirSync(applications, true)
     let commands = manifest.bin_commands(m)
+    let fallback = fallback_icon(applications)
+    if m.icon == "" && commands.len() > 0 {
+        let directory = util.parent_dir(fallback)
+        fs.mkdirSync(directory, true)
+        let icon_temp = util.path_join(directory, ".dev-icon-" + util.to_hex(process.hrtime() % 1000000000, 8))
+        fs.writeFileSync(icon_temp, fallback_svg())
+        if !fs.renameSync(icon_temp, fallback) {
+            fs.unlinkSync(icon_temp)
+            result.raise("Cannot write the fallback launcher icon")
+        }
+    }
     for i in 0..commands.len() as i64 {
         let command = commands[i as usize]
-        let content = entry_content(m, command, package_root)
+        let content = entry_content(m, command, package_root, fallback)
         let temp = util.path_join(applications, ".dev-desktop-" + util.to_hex(process.hrtime() % 1000000000, 8))
         fs.writeFileSync(temp, content)
         if !fs.renameSync(temp, util.path_join(applications, entry_filename(command))) {
