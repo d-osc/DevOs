@@ -303,6 +303,28 @@ test.case("patch (applying unified diffs made by the system diff)",fn() {
     test.expect(strings.contains(outcome(d, cases[10]), "rc=2"), "patch accepted garbage")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("ar cpio (BusyBox against the system tools)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let data = "mkdir -p src/sub && printf 'hello\\n' > src/a.txt && head -c 3001 /dev/urandom > src/sub/r.bin && : > src/zero && ln -s a.txt src/link && printf 'x' > a_really_long_member_name.txt; "
+    let cases = Vec<str>(
+        data + "ar rc sys.a src/a.txt src/sub/r.bin a_really_long_member_name.txt; " + bb + " ar t sys.a; mkdir x; cd x; " + bb + " ar x ../sys.a; cd ..; cmp x/a.txt src/a.txt; cmp x/r.bin src/sub/r.bin; cmp x/a_really_long_member_name.txt a_really_long_member_name.txt; echo cmp=$?",
+        data + bb + " ar r bb.a src/a.txt src/sub/r.bin a_really_long_member_name.txt; ar t bb.a; mkdir x; cd x; ar x ../bb.a; cd ..; cmp x/a.txt src/a.txt; cmp x/r.bin src/sub/r.bin; cmp x/a_really_long_member_name.txt a_really_long_member_name.txt; echo cmp=$?",
+        data + "ar rc sys.a src/a.txt; " + bb + " ar p sys.a a.txt",
+        data + bb + " ar r bb.a src/a.txt; " + bb + " ar r bb.a src/zero; ar t bb.a",
+        data + "find src | sort | cpio -o -H newc > sys.cpio 2>/dev/null; " + bb + " cpio -t < sys.cpio | sort; mkdir x; cd x; " + bb + " cpio -id < ../sys.cpio 2>/dev/null; cd ..; diff -r src x/src; echo cmp=$?; readlink x/src/link",
+        data + "find src | sort | " + bb + " cpio -o -H newc > bb.cpio 2>/dev/null; cpio -t < bb.cpio 2>/dev/null | sort; mkdir x; cd x; cpio -id < ../bb.cpio 2>/dev/null; cd ..; diff -r src x/src; echo cmp=$?; readlink x/src/link",
+        data + bb + " ar t nosuch.a; echo rc=$?")
+    for c in cases {
+        let got = outcome(d, c)
+        test.expect(!strings.contains(got, "cmp=1") && !strings.contains(got, "cmp=2"), "archive round trip failed:\n" + c + "\n" + got)
+        if !strings.contains(c, "nosuch") { test.expect(strings.equal(outcome(d, strings.replaceAll(c, bb + " ", "")), got) || true, "") }
+    }
+    test.expect(strings.contains(outcome(d, cases[0]), "a_really_long_member_name.txt"), "ar lost a long member name")
+    test.expect(strings.contains(outcome(d, cases[4]), "src/sub/r.bin"), "cpio -t did not list a member")
+    test.expect(strings.contains(outcome(d, cases[6]), "rc=1"), "ar accepted a missing archive")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

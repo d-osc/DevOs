@@ -21,10 +21,11 @@ use "./applets/tar.dev" as tr
 use "./applets/misc.dev" as ms
 use "./applets/diff.dev" as df2
 use "./applets/patch.dev" as pt
+use "./applets/archive.dev" as ac
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cut", "date", "dd", "df", "diff", "dirname", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "install", "ionice", "kill", "killall", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mktemp", "more", "mountpoint", "mv", "nice", "nohup", "od", "patch", "pgrep", "pidof", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "runlevel", "sed", "seq", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "sync", "sysctl", "tac", "tail", "tar", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "which", "whoami", "xargs", "yes", "zcat")
+    return Vec<str>("[", "[[", "ar", "basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "cut", "date", "dd", "df", "diff", "dirname", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "install", "ionice", "kill", "killall", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mktemp", "more", "mountpoint", "mv", "nice", "nohup", "od", "patch", "pgrep", "pidof", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "runlevel", "sed", "seq", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "sync", "sysctl", "tac", "tail", "tar", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "which", "whoami", "xargs", "yes", "zcat")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -147,6 +148,8 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "ionice") { return ms.run_ionice(args) }
     if sys.same(name, "diff") { return df2.run_diff(args) }
     if sys.same(name, "patch") { return pt.run_patch(args) }
+    if sys.same(name, "ar") { return ac.run_ar(args) }
+    if sys.same(name, "cpio") { return ac.run_cpio(args) }
     sys.warn(name, "applet not found")
     return 127
 }

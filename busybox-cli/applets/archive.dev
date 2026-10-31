@@ -1,0 +1,190 @@
+# ar and cpio: the ar archive format (t x p r) and cpio in the newc format (-o -i -t).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "./files.dev" as files
+use "./gzip.dev" as gz
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn trim_right(text: str): str { let n = sys.length(text); while n > 0 && sys.at(text, n - 1) == 32 { n = n - 1 }; return sys.join2(sys.slice(text, 0, n), "") }
+fn number_in(b: *sys.Bytes, from: i64, width: i64, base: i64): i64 {
+    let v = 0
+    for i in 0..width {
+        let c = sys.bat(b, from + i)
+        let d = 0 - 1
+        if c >= 48 && c <= 57 { d = (c - 48) as i64 } else if c >= 97 && c <= 102 { d = (c - 87) as i64 } else if c >= 65 && c <= 70 { d = (c - 55) as i64 }
+        if d < 0 || d >= base { break }
+        v = v * base + d
+    }
+    return v
+}
+fn pad_field(b: *sys.Bytes, text: str, width: i64) { sys.bytes_str(b, text); for i in 0..(width - sys.length(text)) { sys.bytes_push(b, 32) } }
+fn write_all(path: str, b: *sys.Bytes): bool { return gz.write_file(path, b, 420) }
+
+// ---- ar ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+struct Member { name: str, mtime: i64, uid: i64, gid: i64, mode: i64, from: i64, size: i64 }
+fn read_members(b: *sys.Bytes): Vec<Member> {
+    let out = Vec<Member>(); let n = sys.blen(b); let pos = 8; let table = ""
+    while pos + 60 <= n {
+        let name = trim_right(copy_range(b, pos, pos + 16))
+        let size = number_in(b, pos + 48, 10, 10)
+        let m = Member(name, number_in(b, pos + 16, 12, 10), number_in(b, pos + 28, 6, 10), number_in(b, pos + 34, 6, 10), number_in(b, pos + 40, 8, 8), pos + 60, size)
+        pos = pos + 60 + size + size % 2
+        if sys.same(name, "//") { table = copy_range(b, m.from, m.from + size); continue }
+        if sys.same(name, "/") || sys.same(name, "/SYM64/") { continue }
+        if sys.length(name) > 1 && sys.at(name, 0) == 47 && sys.is_digit(sys.at(name, 1)) {
+            let off = sys.parse_number(sys.join2(sys.slice(name, 1, sys.length(name)), "")).value
+            let end = off; while end < sys.length(table) && sys.at(table, end) != 47 && sys.at(table, end) != 10 { end = end + 1 }
+            m.name = sys.join2(sys.slice(table, off, end), "")
+        } else if sys.ends(name, "/") { m.name = sys.join2(sys.slice(name, 0, sys.length(name) - 1), "") }
+        out.push(m)
+    }
+    return out
+}
+fn run_ar(args: Vec<str>): i64 {
+    if args.len() < 2 { sys.warn("ar", "invalid usage: ar [-o] [-v] [-p] [-t] [-x] ARCHIVE FILES"); return 1 }
+    let ops = args[0]; let first = 1
+    let mode = 0; let verbose = false
+    for i in 0..sys.length(ops) { let c = sys.at(ops, i); if c == 116 { mode = 1 } else if c == 120 { mode = 2 } else if c == 112 { mode = 3 } else if c == 114 { mode = 4 } else if c == 118 { verbose = true } }
+    if mode == 0 && sys.length(ops) > 0 && sys.at(ops, 0) == 45 && args.len() >= 3 { ops = args[1]; first = 2; for i in 0..sys.length(ops) { let c = sys.at(ops, i); if c == 116 { mode = 1 } else if c == 120 { mode = 2 } else if c == 112 { mode = 3 } else if c == 114 { mode = 4 } } }
+    if mode == 0 || first >= args.len() as i64 { sys.warn("ar", "no operation specified"); return 1 }
+    let archive = args[first]; let names = Vec<str>(); for k in (first + 1)..(args.len() as i64) { names.push(args[k]) }
+    let out = sys.out_new(1)
+    if mode == 4 {
+        let existing = sys.read_path(archive)
+        let members = Vec<Member>(); let data = sys.bytes_new()
+        if existing.ok && sys.blen(existing.bytes) > 8 { data = existing.bytes; members = read_members(data) }
+        let result = sys.bytes_new(); sys.bytes_str(result, "!<arch>\n")
+        let long_names = sys.bytes_new()
+        let order = Vec<str>(); for k in 0..(members.len() as i64) { order.push(members[k].name) }
+        for k in 0..(names.len() as i64) { let base = sys.base_name(names[k]); let seen = false; for q in 0..(order.len() as i64) { if sys.same(order[q], base) { seen = true } }; if !seen { order.push(base) } }
+        let body = sys.bytes_new()
+        for q in 0..(order.len() as i64) {
+            let name = order[q]; let replacement = ""
+            for k in 0..(names.len() as i64) { if sys.same(sys.base_name(names[k]), name) { replacement = names[k] } }
+            let content = sys.bytes_new(); let mtime = 0; let uid = 0; let gid = 0; let fmode = 420
+            if sys.length(replacement) > 0 {
+                let f = sys.read_path(replacement)
+                if !f.ok { sys.warn_path("ar", replacement); return 1 }
+                content = f.bytes; let info = sys.file_info(replacement, true); mtime = info.mtime; uid = info.uid; gid = info.gid; fmode = sys.permission_bits(info.mode)
+                if verbose { sys.out_str(out, sys.join2(sys.join2("a - ", name), "\n")) }
+            } else {
+                for k in 0..(members.len() as i64) { if sys.same(members[k].name, name) { content = sys.bytes_new(); sys.bytes_append(content, sys.bptr(data, members[k].from), members[k].size); mtime = members[k].mtime; uid = members[k].uid; gid = members[k].gid; fmode = members[k].mode } }
+            }
+            let stored = sys.join2(name, "/")
+            if sys.length(stored) > 16 { stored = sys.join2("/", decimal(sys.blen(long_names))); sys.bytes_str(long_names, name); sys.bytes_str(long_names, "/\n") }
+            pad_field(body, stored, 16); pad_field(body, decimal(mtime), 12); pad_field(body, decimal(uid), 6); pad_field(body, decimal(gid), 6)
+            pad_field(body, octal(fmode), 8); pad_field(body, decimal(sys.blen(content)), 10); sys.bytes_str(body, "`\n")
+            sys.bytes_append(body, sys.bdata(content), sys.blen(content)); if sys.blen(content) % 2 == 1 { sys.bytes_push(body, 10) }
+        }
+        if sys.blen(long_names) > 0 {
+            pad_field(result, "//", 16); pad_field(result, "", 12); pad_field(result, "", 6); pad_field(result, "", 6); pad_field(result, "", 8); pad_field(result, decimal(sys.blen(long_names)), 10); sys.bytes_str(result, "`\n")
+            sys.bytes_append(result, sys.bdata(long_names), sys.blen(long_names)); if sys.blen(long_names) % 2 == 1 { sys.bytes_push(result, 10) }
+        }
+        sys.bytes_append(result, sys.bdata(body), sys.blen(body))
+        if !write_all(archive, result) { sys.warn_write("ar", archive); return 1 }
+        sys.out_flush(out)
+        return 0
+    }
+    let input = sys.read_path(archive)
+    if !input.ok { sys.warn_path("ar", archive); return 1 }
+    if sys.blen(input.bytes) < 8 || !sys.same(copy_range(input.bytes, 0, 8), "!<arch>\n") { sys.warn("ar", sys.join2(archive, ": not an ar archive")); return 1 }
+    let members = read_members(input.bytes)
+    for k in 0..(members.len() as i64) {
+        let m = members[k]
+        let wanted = names.len() == 0
+        for q in 0..(names.len() as i64) { if sys.same(names[q], m.name) { wanted = true } }
+        if !wanted { continue }
+        if mode == 1 { sys.out_str(out, m.name); sys.out_byte(out, 10) }
+        else if mode == 3 { sys.out_data(out, sys.bptr(input.bytes, m.from), m.size) }
+        else {
+            if verbose { sys.out_str(out, sys.join2(sys.join2("x - ", m.name), "\n")) }
+            let data = sys.bytes_new(); sys.bytes_append(data, sys.bptr(input.bytes, m.from), m.size)
+            if !gz.write_file(m.name, data, m.mode % 4096) { sys.warn_write("ar", m.name); return 1 }
+            files.set_times(m.name, m.mtime, false)
+        }
+    }
+    sys.out_flush(out)
+    return 0
+}
+fn octal(v: i64): str {
+    if v == 0 { return "0" }
+    let digits = Vec<u8>(); let rest = v
+    while rest > 0 { digits.push((48 + rest % 8) as u8); rest = rest / 8 }
+    let b = sys.bytes_new(); let i = (digits.len() as i64) - 1
+    while i >= 0 { sys.bytes_push(b, digits[i]); i = i - 1 }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+
+// ---- cpio -------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn hex8(b: *sys.Bytes, v: i64) {
+    let digits = "0123456789abcdef"
+    for i in 0..8 { let p = 1; for k in 0..(7 - i) { p = p * 16 }; sys.bytes_push(b, sys.at(digits, (v / p) % 16)) }
+}
+fn align4(b: *sys.Bytes) { while sys.blen(b) % 4 != 0 { sys.bytes_push(b, 0) } }
+fn cpio_entry(out: *sys.Bytes, path: str, info: sys.Info, name: str) {
+    let kind = (info.mode / 4096) % 16
+    let data = sys.bytes_new(); let link = ""
+    if kind == 8 { let f = sys.read_path(path); if f.ok { data = f.bytes } } else if kind == 10 { link = fsx.read_link(path); sys.bytes_str(data, link) }
+    sys.bytes_str(out, "070701")
+    hex8(out, info.inode); hex8(out, info.mode); hex8(out, info.uid); hex8(out, info.gid); hex8(out, info.nlink); hex8(out, info.mtime); hex8(out, sys.blen(data))
+    hex8(out, (info.dev / 256) % 4096); hex8(out, info.dev % 256); hex8(out, (info.rdev / 256) % 4096); hex8(out, info.rdev % 256); hex8(out, sys.length(name) + 1); hex8(out, 0)
+    sys.bytes_str(out, name); sys.bytes_push(out, 0); align4(out)
+    sys.bytes_append(out, sys.bdata(data), sys.blen(data)); align4(out)
+}
+fn run_cpio(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "oitdvH:F:mu")
+    if o.bad != 0 || o.missing != 0 { sys.warn("cpio", "invalid usage: cpio -o|-i|-t [-dvm] [-H newc] [-F ARCHIVE]"); return 1 }
+    let out = sys.out_new(1)
+    if sys.has(o, 111) {
+        let list = sys.read_path("-")
+        let ls = lines.split_lines(list.bytes, 10); let archive = sys.bytes_new()
+        for k in 0..(ls.starts.len() as i64) {
+            let name = lines.text_of(list.bytes, ls.starts[k], ls.ends[k])
+            let info = sys.file_info(name, false)
+            if !info.ok { sys.warn_path("cpio", name); continue }
+            cpio_entry(archive, name, info, name)
+            if sys.has(o, 118) { sys.put_fd(2, sys.join2(name, "\n")) }
+        }
+        let trailer = sys.file_info("/", false); trailer.mode = 0; trailer.inode = 0; trailer.uid = 0; trailer.gid = 0; trailer.nlink = 1; trailer.mtime = 0; trailer.dev = 0; trailer.rdev = 0
+        cpio_entry(archive, "", trailer, "TRAILER!!!")
+        while sys.blen(archive) % 512 != 0 { sys.bytes_push(archive, 0) }
+        if sys.has(o, 70) { if !write_all(sys.val(o, 70), archive) { sys.warn_write("cpio", sys.val(o, 70)); return 1 } } else { sys.out_data(out, sys.bdata(archive), sys.blen(archive)) }
+        sys.out_flush(out)
+        return 0
+    }
+    if !sys.has(o, 105) && !sys.has(o, 116) { sys.warn("cpio", "one of -o, -i or -t is required"); return 1 }
+    let input = sys.read_path(sys.has(o, 70) ? sys.val(o, 70) : "-")
+    if !input.ok { sys.warn_path("cpio", sys.has(o, 70) ? sys.val(o, 70) : "-"); return 1 }
+    let b = input.bytes; let pos = 0; let n = sys.blen(b); let status = 0
+    while pos + 110 <= n {
+        if !sys.same(copy_range(b, pos, pos + 6), "070701") && !sys.same(copy_range(b, pos, pos + 6), "070702") { sys.warn("cpio", "invalid cpio header"); return 1 }
+        let mode = number_in(b, pos + 14, 8, 16); let uid = number_in(b, pos + 22, 8, 16); let gid = number_in(b, pos + 30, 8, 16)
+        let mtime = number_in(b, pos + 46, 8, 16); let size = number_in(b, pos + 54, 8, 16); let namesize = number_in(b, pos + 94, 8, 16)
+        let name = copy_range(b, pos + 110, pos + 110 + namesize - 1)
+        let data_at = (pos + 110 + namesize + 3) / 4 * 4
+        let next = (data_at + size + 3) / 4 * 4
+        if sys.same(name, "TRAILER!!!") { break }
+        if sys.has(o, 116) { sys.out_str(out, name); sys.out_byte(out, 10) }
+        else {
+            if sys.has(o, 118) { sys.out_str(out, name); sys.out_byte(out, 10) }
+            let slash = 0 - 1; for i in 0..sys.length(name) { if sys.at(name, i) == 47 { slash = i } }
+            if slash > 0 && sys.has(o, 100) { fsx.make_dirs(sys.join2(sys.slice(name, 0, slash), ""), 493) }
+            let kind = (mode / 4096) % 16
+            if kind == 4 { if !sys.is_dir(name) { fsx.make_dirs(name, mode % 4096) } }
+            else if kind == 10 { if fsx.do_symlink(copy_range(b, data_at, data_at + size), name) != 0 { sys.warn("cpio", sys.join2(name, ": cannot create symlink")); status = 1 } }
+            else if kind == 8 {
+                let data = sys.bytes_new(); sys.bytes_append(data, sys.bptr(b, data_at), size)
+                if !gz.write_file(name, data, mode % 4096) { sys.warn_write("cpio", name); status = 1 } else { fsx.do_chmod(name, mode % 4096); if sys.has(o, 109) { files.set_times(name, mtime, false) } }
+            }
+        }
+        pos = next
+    }
+    sys.out_flush(out)
+    return status
+}
