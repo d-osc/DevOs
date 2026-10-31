@@ -189,6 +189,13 @@ test.case("date",fn() {
         "@date -u -d @1700000000 '+%-d %_d %-m %k %l'","@date -u -d @1700000000 +%D","@date -u -d @1700000000 +%c","@date +%Y | wc -c","@date -u -d @1700000000 +%T%n%R","@date -u -d '1999-12-31 23:59:59' +%s","@date -u -d @4102444800 +%F"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("ls",fn() {
+    let d = sandbox()
+    let data = "export LC_ALL=C; mkdir -p t/sub t/.hid && printf 'x' > t/a.txt && printf 'hello world' > t/b.log && : > t/.dot && printf 'abc' > t/Zed.c && ln -s a.txt t/lnk && chmod 755 t/b.log && printf 'q' > t/sub/in.txt && touch -d '2001-02-03 04:05:06' t/a.txt && touch -d '2 years ago' t/Zed.c && touch -d '2020-01-02' t/sub && touch -d '2020-01-03' t/b.log; cd t; "
+    all_same(d, Vec<str>(data + "@ls",data + "@ls -a",data + "@ls -A",data + "@ls -1",data + "@ls -l",data + "@ls -la",data + "@ls -lh",data + "@ls -ld .",data + "@ls -ld sub a.txt",data + "@ls -d *",data + "@ls -F",data + "@ls -p",data + "@ls -r",data + "@ls -t",data + "@ls -tr",data + "@ls -S",data + "@ls -X",data + "@ls -i | cut -d' ' -f2",data + "@ls -s",data + "@ls -n",data + "@ls -R",data + "@ls -lR",data + "@ls sub",data + "@ls a.txt sub",data + "@ls nosuch; echo rc=$?",
+        data + "@ls -l a.txt lnk",data + "@ls -lL lnk",data + "@ls -l /dev/null",data + "@ls -lu a.txt | cut -c1-10",data + "@ls -lc a.txt | cut -c1-10",data + "@ls -ls",data + "@ls -lSr",data + "@ls -m | tr -d ' ' | head -c 5; echo",data + "@ls -l sub/",data + "@ls --nosuchoption; echo rc=$?"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
