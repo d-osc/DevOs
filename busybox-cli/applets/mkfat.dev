@@ -1,0 +1,95 @@
+# mkdosfs, mkfs.vfat [-F 12|16|32] [-n LABEL] [-i SERIAL] [-s SECTORS_PER_CLUSTER] [-S SECTOR_SIZE] DEVICE_OR_FILE [BLOCKS]: create a FAT file system.
+use "../lib/sys.dev" as sys
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn put_le(b: *sys.Bytes, off: i64, width: i64, v: i64) { let x = v; for i in 0..width { sys.bptr_set(b, off + i, (x % 256) as u8); x = x / 256 } }
+fn put_text(b: *sys.Bytes, off: i64, s: str, width: i64) { for i in 0..width { sys.bptr_set(b, off + i, i < sys.length(s) ? sys.at(s, i) : (32 as u8)) } }
+fn upper_text(s: str): str { let o = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); let v = c; if c >= 97 && c <= 122 { v = c - 32 }; sys.bytes_push(o, v) }; return sys.join2(sys.bytes_cstr(o), "") }
+fn zero_bytes(count: i64): *sys.Bytes { let b = sys.bytes_new(); for i in 0..count { sys.bytes_push(b, 0) }; return b }
+fn pad_pow2(v: i64): i64 { let r = 1; while r < v { r = r * 2 }; return r }
+fn write_at(fd: i64, offset: i64, data: *sys.Bytes) { sys.seek_fd(fd, offset, 0); sys.write_fd(fd, sys.bdata(data), sys.blen(data)) }
+fn run_mkfs_vfat(args: Vec<str>): i64 { return run_mkfat(args) }
+fn run_mkdosfs(args: Vec<str>): i64 { return run_mkfat(args) }
+fn run_mkfat(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "F:n:i:s:S:vcCfIr:R:m:M:h:b:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 1 || o.rest.len() > 2 { sys.warn("mkfs.vfat", "invalid usage: mkfs.vfat [-F 12|16|32] [-n LABEL] [-i SERIAL] [-s SECTORS_PER_CLUSTER] DEVICE [BLOCKS]"); return 1 }
+    let path = o.rest[0]
+    let bytes_per_sector = sys.has(o, 83) ? sys.parse_number(sys.val(o, 83)).value : 512
+    if bytes_per_sector != 512 && bytes_per_sector != 1024 && bytes_per_sector != 2048 && bytes_per_sector != 4096 { sys.warn("mkfs.vfat", "invalid sector size"); return 1 }
+    let info = sys.file_info(path, true)
+    let size = info.ok ? info.size : 0
+    if o.rest.len() == 2 { size = sys.parse_number(o.rest[1]).value * 1024 }
+    if size == 0 && info.ok { let probe = sys.open_fd(path, 0, 0); if probe >= 0 { size = sys.seek_fd(probe, 0, 2); sys.close_fd(probe) } }
+    if size <= 0 && !info.ok { sys.warn("mkfs.vfat", sys.join2(path, ": No such file or directory")); return 1 }
+    let total = size / bytes_per_sector
+    if total < 64 { sys.warn("mkfs.vfat", "the volume is too small for a FAT file system"); return 1 }
+    let fat_bits = sys.has(o, 70) ? sys.parse_number(sys.val(o, 70)).value : 0
+    if fat_bits == 0 { fat_bits = total * bytes_per_sector <= 8 * 1048576 ? 12 : (total * bytes_per_sector <= 512 * 1048576 ? 16 : 32) }
+    if fat_bits != 12 && fat_bits != 16 && fat_bits != 32 { sys.warn("mkfs.vfat", "FAT size must be 12, 16 or 32"); return 1 }
+    let reserved = fat_bits == 32 ? 32 : 1; let root_entries = fat_bits == 32 ? 0 : 512; let fats = 2
+    let root_sectors = (root_entries * 32 + bytes_per_sector - 1) / bytes_per_sector
+    let spc = sys.has(o, 115) ? sys.parse_number(sys.val(o, 115)).value : 1
+    let limit = fat_bits == 12 ? 4084 : (fat_bits == 16 ? 65524 : 268435444)
+    let fat_sectors = 1; let clusters = 0
+    if !sys.has(o, 115) { spc = 1 }
+    while true {
+        let data_sectors = total - reserved - root_sectors
+        for round in 0..6 {
+            clusters = (data_sectors - fats * fat_sectors) / spc
+            let fat_bytes = fat_bits == 12 ? ((clusters + 2) * 3 + 1) / 2 : (fat_bits == 16 ? (clusters + 2) * 2 : (clusters + 2) * 4)
+            fat_sectors = (fat_bytes + bytes_per_sector - 1) / bytes_per_sector
+        }
+        clusters = (data_sectors - fats * fat_sectors) / spc
+        if clusters <= limit || sys.has(o, 115) || spc >= 128 { break }
+        spc = spc * 2
+    }
+    let minimum = fat_bits == 12 ? 1 : (fat_bits == 16 ? 4085 : 65525)
+    if clusters < minimum && !sys.has(o, 70) == false && fat_bits != 12 { sys.warn("mkfs.vfat", sys.join2("not enough clusters for a ", sys.join2(decimal(fat_bits), "-bit FAT"))); return 1 }
+    if clusters < 1 { sys.warn("mkfs.vfat", "the volume is too small"); return 1 }
+    let serial = sys.has(o, 105) ? hex_value(sys.val(o, 105)) : (sys.blen(sys.bytes_new()) + now_serial())
+    let label = sys.has(o, 110) ? upper_text(sys.val(o, 110)) : "NO NAME"
+    if sys.length(label) > 11 { sys.warn("mkfs.vfat", "label can't be longer than 11 characters"); return 1 }
+    let fd = sys.open_fd(path, 2, 0)
+    if fd < 0 { sys.warn_write("mkfs.vfat", path); return 1 }
+    let boot = zero_bytes(bytes_per_sector)
+    sys.bptr_set(boot, 0, 235); sys.bptr_set(boot, 1, fat_bits == 32 ? 88 : 60); sys.bptr_set(boot, 2, 144)
+    put_text(boot, 3, "mkfs.fat", 8)
+    put_le(boot, 11, 2, bytes_per_sector); put_le(boot, 13, 1, spc); put_le(boot, 14, 2, reserved); put_le(boot, 16, 1, fats); put_le(boot, 17, 2, root_entries)
+    put_le(boot, 19, 2, total < 65536 ? total : 0); put_le(boot, 21, 1, 248); put_le(boot, 22, 2, fat_bits == 32 ? 0 : fat_sectors); put_le(boot, 24, 2, 32); put_le(boot, 26, 2, 64); put_le(boot, 28, 4, 0); put_le(boot, 32, 4, total < 65536 ? 0 : total)
+    if fat_bits == 32 {
+        put_le(boot, 36, 4, fat_sectors); put_le(boot, 40, 2, 0); put_le(boot, 42, 2, 0); put_le(boot, 44, 4, 2); put_le(boot, 48, 2, 1); put_le(boot, 50, 2, 6)
+        put_le(boot, 64, 1, 128); put_le(boot, 66, 1, 41); put_le(boot, 67, 4, serial); put_text(boot, 71, label, 11); put_text(boot, 82, "FAT32", 8)
+    } else {
+        put_le(boot, 36, 1, 128); put_le(boot, 38, 1, 41); put_le(boot, 39, 4, serial); put_text(boot, 43, label, 11); put_text(boot, 54, fat_bits == 12 ? "FAT12" : "FAT16", 8)
+    }
+    sys.bptr_set(boot, 510, 85); sys.bptr_set(boot, 511, 170)
+    # zero the metadata area, then write the structures
+    let meta = reserved + fats * fat_sectors + root_sectors + (fat_bits == 32 ? spc : 0)
+    let blank = zero_bytes(bytes_per_sector)
+    for s in 0..meta { write_at(fd, s * bytes_per_sector, blank) }
+    write_at(fd, 0, boot)
+    if fat_bits == 32 {
+        write_at(fd, 6 * bytes_per_sector, boot)
+        let fsinfo = zero_bytes(bytes_per_sector)
+        put_le(fsinfo, 0, 4, 1096897106); put_le(fsinfo, 484, 4, 1631679090); put_le(fsinfo, 488, 4, clusters - 1); put_le(fsinfo, 492, 4, 3); sys.bptr_set(fsinfo, 510, 85); sys.bptr_set(fsinfo, 511, 170); put_le(fsinfo, 508, 4, 2857697280)
+        write_at(fd, bytes_per_sector, fsinfo); write_at(fd, 7 * bytes_per_sector, fsinfo)
+    }
+    let table = zero_bytes(bytes_per_sector)
+    if fat_bits == 12 { put_le(table, 0, 3, 16777208) } else if fat_bits == 16 { put_le(table, 0, 4, 4294967288) } else { put_le(table, 0, 4, 268435448); put_le(table, 4, 4, 268435455); put_le(table, 8, 4, 268435455) }
+    for f in 0..fats { write_at(fd, (reserved + f * fat_sectors) * bytes_per_sector, table) }
+    if sys.has(o, 110) {
+        let entry = zero_bytes(32); put_text(entry, 0, label, 11); sys.bptr_set(entry, 11, 8)
+        let root_at = fat_bits == 32 ? (reserved + fats * fat_sectors) * bytes_per_sector : (reserved + fats * fat_sectors) * bytes_per_sector
+        write_at(fd, root_at, entry)
+    }
+    # make sure the file is as large as the file system when it is a regular file
+    if info.ok && sys.is_reg_mode(info.mode) && info.size < total * bytes_per_sector { sys.seek_fd(fd, total * bytes_per_sector - 1, 0); let z = zero_bytes(1); sys.write_fd(fd, sys.bdata(z), 1) }
+    sys.close_fd(fd)
+    return 0
+}
+fn hex_value(text: str): i64 {
+    let v = 0
+    for i in 0..sys.length(text) { let c = sys.at(text, i); let d = 0; if c >= 48 && c <= 57 { d = (c - 48) as i64 } else if c >= 97 && c <= 102 { d = (c - 87) as i64 } else if c >= 65 && c <= 70 { d = (c - 55) as i64 }; v = v * 16 + d }
+    return v % 4294967296
+}
+fn now_serial(): i64 { let fd = sys.open_fd("/dev/urandom", 0, 0); let b = zero_bytes(4); if fd >= 0 { sys.read_into(fd, sys.bdata(b), 4); sys.close_fd(fd) }; return (sys.bat(b, 0) as i64) + (sys.bat(b, 1) as i64) * 256 + (sys.bat(b, 2) as i64) * 65536 + (sys.bat(b, 3) as i64) * 16777216 }
