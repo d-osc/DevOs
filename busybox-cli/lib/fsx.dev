@@ -38,6 +38,8 @@ fn do_chown(path: str, owner: i64, group: i64): i64 { unsafe { return chown(path
 fn do_lchown(path: str, owner: i64, group: i64): i64 { unsafe { return lchown(path, owner, group) as i64 } }
 fn do_mkfifo(path: str, mode: i64): i64 { unsafe { return mkfifo(path, mode) as i64 } }
 fn do_sync() { unsafe { sync() } }
+extern fn chdir(path: str): i32
+fn change_dir(path: str): bool { unsafe { return chdir(path) == 0 } }
 
 fn join_path(dir: str, name: str): str {
     if sys.length(dir) == 0 { return name }

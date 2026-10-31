@@ -1,0 +1,317 @@
+# tar [-cxt] [-zOvhk] [-f ARCHIVE] [-C DIR] [--exclude PATTERN] [--strip-components N] [FILE]...: the tape archiver (ustar, GNU long names and pax headers on input).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/clock.dev" as clock
+use "../lib/glob.dev" as glob
+use "./files.dev" as files
+use "./gzip.dev" as gz
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+
+# ---- reading headers ---------------------------------------------------------------------------------------------------------------------------------------------
+fn field_text(b: *sys.Bytes, off: i64, width: i64): str {
+    let out = sys.bytes_new()
+    for i in 0..width { let c = sys.bat(b, off + i); if c == 0 { break }; sys.bytes_push(out, c) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn field_number(b: *sys.Bytes, off: i64, width: i64): i64 {
+    if sys.bat(b, off) >= 128 {
+        let v = (sys.bat(b, off) % 128) as i64
+        for i in 1..width { v = v * 256 + sys.bat(b, off + i) as i64 }
+        return v
+    }
+    let v = 0; let started = false
+    for i in 0..width {
+        let c = sys.bat(b, off + i)
+        if c >= 48 && c <= 55 { v = v * 8 + (c - 48) as i64; started = true } else if started || c == 0 { break }
+    }
+    return v
+}
+struct Header { ok: bool, end: bool, name: str, mode: i64, uid: i64, gid: i64, size: i64, mtime: i64, kind: u8, link: str, uname: str, gname: str, major: i64, minor: i64 }
+fn bad_header(): Header { return Header(false, false, "", 0, 0, 0, 0, 0, 0, "", "", "", 0, 0) }
+fn read_header(b: *sys.Bytes, off: i64): Header {
+    if off + 512 > sys.blen(b) {
+        let h = bad_header(); h.end = true
+        for i in off..sys.blen(b) { if sys.bat(b, i) != 0 { h.end = false } }
+        return h
+    }
+    let zero = true
+    for i in 0..512 { if sys.bat(b, off + i) != 0 { zero = false; break } }
+    if zero { let h = bad_header(); h.end = true; return h }
+    let sum = 0
+    for i in 0..512 { sum = sum + (i >= 148 && i < 156 ? 32 : sys.bat(b, off + i) as i64) }
+    if sum != field_number(b, off + 148, 8) { return bad_header() }
+    let name = field_text(b, off, 100)
+    let prefix = sys.same(field_text(b, off + 257, 5), "ustar") ? field_text(b, off + 345, 155) : ""
+    if sys.length(prefix) > 0 { name = sys.join2(sys.join2(prefix, "/"), name) }
+    return Header(true, false, name, field_number(b, off + 100, 8), field_number(b, off + 108, 8), field_number(b, off + 116, 8), field_number(b, off + 124, 12), field_number(b, off + 136, 12), sys.bat(b, off + 156), field_text(b, off + 157, 100), field_text(b, off + 265, 32), field_text(b, off + 297, 32), field_number(b, off + 329, 8), field_number(b, off + 337, 8))
+}
+# The value of `key` in a pax extended header holding records "LEN key=value\n" in b[from, to).
+fn pax_value(b: *sys.Bytes, from: i64, to: i64, key: str): str {
+    let r = from
+    while r < to {
+        let len = 0; let i = r
+        while i < to && sys.bat(b, i) >= 48 && sys.bat(b, i) <= 57 { len = len * 10 + (sys.bat(b, i) - 48) as i64; i = i + 1 }
+        if len < 4 || r + len > to { return "" }
+        let text = copy_range(b, i + 1, r + len - 1)
+        let eq = sys.find_char(text, 61)
+        if eq > 0 && sys.same(sys.join2(sys.slice(text, 0, eq), ""), key) { return sys.join2(sys.slice(text, eq + 1, sys.length(text)), "") }
+        r = r + len
+    }
+    return ""
+}
+
+// ---- writing headers --------------------------------------------------------------------------------------------------------------------------------------------
+fn put_text(h: *sys.Bytes, off: i64, text: str, width: i64) {
+    for i in 0..sys.length(text) { if i < width { sys.bptr_set(h, off + i, sys.at(text, i)) } }
+}
+fn put_octal(h: *sys.Bytes, off: i64, value: i64, width: i64) {
+    let digits = Vec<u8>(); let rest = value
+    if rest == 0 { digits.push(48) }
+    while rest > 0 { digits.push((48 + rest % 8) as u8); rest = rest / 8 }
+    let n = digits.len() as i64
+    if n >= width { sys.bptr_set(h, off, 128); let v = value; for i in 1..width { sys.bptr_set(h, off + width - i, (v % 256) as u8); v = v / 256 }; return }
+    for i in 0..(width - 1 - n) { sys.bptr_set(h, off + i, 48) }
+    for i in 0..n { sys.bptr_set(h, off + width - 2 - i, digits[i]) }
+}
+fn block(): *sys.Bytes { let b = sys.bytes_new(); for i in 0..512 { sys.bytes_push(b, 0) }; return b }
+fn make_header(name: str, mode: i64, uid: i64, gid: i64, size: i64, mtime: i64, kind: u8, link: str, uname: str, gname: str, major: i64, minor: i64): *sys.Bytes {
+    let h = block()
+    let prefix = ""; let base = name
+    if sys.length(name) > 100 {
+        let cut = 0 - 1
+        for i in 0..sys.length(name) { if sys.at(name, i) == 47 && i <= 155 && sys.length(name) - i - 1 <= 100 { cut = i } }
+        if cut > 0 { prefix = sys.join2(sys.slice(name, 0, cut), ""); base = sys.join2(sys.slice(name, cut + 1, sys.length(name)), "") }
+    }
+    put_text(h, 0, base, 100); put_octal(h, 100, mode % 4096, 8); put_octal(h, 108, uid, 8); put_octal(h, 116, gid, 8); put_octal(h, 124, size, 12); put_octal(h, 136, mtime, 12)
+    sys.bptr_set(h, 156, kind); put_text(h, 157, link, 100); put_text(h, 257, "ustar", 6); sys.bptr_set(h, 263, 48); sys.bptr_set(h, 264, 48)
+    put_text(h, 265, uname, 32); put_text(h, 297, gname, 32); put_octal(h, 329, major, 8); put_octal(h, 337, minor, 8); put_text(h, 345, prefix, 155)
+    for i in 148..156 { sys.bptr_set(h, i, 32) }
+    let sum = 0; for i in 0..512 { sum = sum + sys.bat(h, i) as i64 }
+    put_octal(h, 148, sum, 7); sys.bptr_set(h, 154, 0); sys.bptr_set(h, 155, 32)
+    return h
+}
+fn add_padded(out: *sys.Bytes, data: *u8, n: i64) {
+    sys.bytes_append(out, data, n)
+    for i in 0..((512 - n % 512) % 512) { sys.bytes_push(out, 0) }
+}
+# Appends the entry for `path` stored under `name` to the archive buffer; true when it is a directory to descend into.
+struct Added { ok: bool, dir: bool }
+fn add_entry(out: *sys.Bytes, path: str, name: str, follow: bool): Added {
+    let info = sys.file_info(path, follow)
+    if !info.ok { sys.warn("tar", sys.join2(sys.join2(path, ": "), "Cannot stat: No such file or directory")); return Added(false, false) }
+    let kind = (info.mode / 4096) % 16
+    let uname = fsx.user_name(info.uid); let gname = fsx.group_name(info.gid)
+    let stored = name
+    let link = ""
+    let type_flag = 48
+    let size = 0
+    if kind == 4 { type_flag = 53; if !sys.ends(stored, "/") { stored = sys.join2(stored, "/") } }
+    else if kind == 10 { type_flag = 50; link = fsx.read_link(path) }
+    else if kind == 1 { type_flag = 54 }
+    else if kind == 2 { type_flag = 51 }
+    else if kind == 6 { type_flag = 52 }
+    else if kind == 8 { size = info.size }
+    else { sys.warn("tar", sys.join2(path, ": socket ignored")); return Added(false, false) }
+    if sys.length(stored) > 100 && !split_ok(stored) {
+        let data = sys.bytes_new(); sys.bytes_str(data, stored); sys.bytes_push(data, 0)
+        sys.bytes_append(out, sys.bdata(make_header("././@LongLink", 0, 0, 0, sys.blen(data), 0, 76, "", "root", "root", 0, 0)), 512)
+        add_padded(out, sys.bdata(data), sys.blen(data))
+        stored = sys.join2(sys.slice(stored, 0, 100), "")
+    }
+    if sys.length(link) > 100 {
+        let data = sys.bytes_new(); sys.bytes_str(data, link); sys.bytes_push(data, 0)
+        sys.bytes_append(out, sys.bdata(make_header("././@LongLink", 0, 0, 0, sys.blen(data), 0, 75, "", "root", "root", 0, 0)), 512)
+        add_padded(out, sys.bdata(data), sys.blen(data))
+        link = sys.join2(sys.slice(link, 0, 100), "")
+    }
+    let hdr = make_header(stored, info.mode, info.uid, info.gid, size, info.mtime, type_flag as u8, link, uname, gname, (info.rdev / 256) % 4096, info.rdev % 256)
+    sys.bytes_append(out, sys.bdata(hdr), 512)
+    if type_flag == 48 && size > 0 {
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn_path("tar", path); return Added(true, false) }
+        add_padded(out, sys.bdata(input.bytes), sys.blen(input.bytes))
+    }
+    return Added(true, kind == 4)
+}
+fn split_ok(name: str): bool {
+    for i in 0..sys.length(name) { if sys.at(name, i) == 47 && i <= 155 && sys.length(name) - i - 1 <= 100 && i > 0 { return true } }
+    return false
+}
+fn excluded(patterns: Vec<str>, name: str): bool {
+    for k in 0..(patterns.len() as i64) { if glob.matches(patterns[k], name, false, false) || glob.matches(patterns[k], sys.base_name(name), false, false) { return true } }
+    return false
+}
+fn archive_tree(out: *sys.Bytes, path: str, name: str, follow: bool, verbose: bool, vout: *sys.Out, patterns: Vec<str>) {
+    if excluded(patterns, name) { return }
+    let a = add_entry(out, path, name, follow)
+    if !a.ok { return }
+    if verbose { sys.out_str(vout, a.dir && !sys.ends(name, "/") ? sys.join2(name, "/") : name); sys.out_byte(vout, 10) }
+    if a.dir {
+        let l = fsx.list_dir(path)
+        for k in 0..(l.names.len() as i64) { archive_tree(out, fsx.join_path(path, l.names[k]), fsx.join_path(name, l.names[k]), follow, verbose, vout, patterns) }
+    }
+}
+
+// ---- extraction and listing ------------------------------------------------------------------------------------------------------------------------------------
+fn clean_name(name: str, strip: i64): str {
+    let parts = Vec<str>(); let n = sys.length(name); let from = 0
+    for i in 0..(n + 1) { if i == n || sys.at(name, i) == 47 { if i > from { parts.push(sys.join2(sys.slice(name, from, i), "")) }; from = i + 1 } }
+    let out = ""; let kept = 0
+    for k in 0..(parts.len() as i64) {
+        if k < strip { continue }
+        if sys.same(parts[k], "..") { return "" }
+        if sys.same(parts[k], ".") && parts.len() > 1 { continue }
+        out = kept == 0 ? parts[k] : sys.join2(sys.join2(out, "/"), parts[k]); kept = kept + 1
+    }
+    return out
+}
+fn long_listing(h: Header, name: str): str {
+    let kind = h.kind
+    let type_char = kind == 53 ? 100 : (kind == 50 ? 108 : (kind == 52 ? 98 : (kind == 51 ? 99 : (kind == 54 ? 112 : 45))))
+    let t = sys.bytes_new(); sys.bytes_push(t, type_char as u8); sys.bytes_str(t, fsx.mode_string(h.mode)); sys.bytes_push(t, 32)
+    let who = sys.join2(sys.join2(sys.length(h.uname) > 0 ? h.uname : decimal(h.uid), "/"), sys.length(h.gname) > 0 ? h.gname : decimal(h.gid))
+    sys.bytes_str(t, who)
+    let size = decimal(h.size)
+    let gap = 19 - sys.length(who) - sys.length(size); if gap < 1 { gap = 1 }
+    for i in 0..gap { sys.bytes_push(t, 32) }
+    sys.bytes_str(t, size); sys.bytes_push(t, 32)
+    sys.bytes_str(t, clock.format("%Y-%m-%d %H:%M", clock.fields(h.mtime, false), h.mtime, false)); sys.bytes_push(t, 32)
+    sys.bytes_str(t, name)
+    if kind == 50 { sys.bytes_str(t, " -> "); sys.bytes_str(t, h.link) } else if kind == 49 { sys.bytes_str(t, " link to "); sys.bytes_str(t, h.link) }
+    return sys.join2(sys.bytes_cstr(t), "")
+}
+struct Pending { path: str, mode: i64, mtime: i64 }
+fn extract_entry(h: Header, name: str, data: *sys.Bytes, off: i64, keep_old: bool, set_mtime: bool, dirs: Vec<Pending>): bool {
+    let parent_end = 0 - 1
+    for i in 0..sys.length(name) { if sys.at(name, i) == 47 { parent_end = i } }
+    if parent_end > 0 { fsx.make_dirs(sys.join2(sys.slice(name, 0, parent_end), ""), 493) }
+    let kind = h.kind
+    if kind == 53 {
+        if !sys.is_dir(name) { fsx.make_dirs(name, 493) }
+        dirs.push(Pending(name, h.mode, h.mtime))
+        return true
+    }
+    if sys.exists(name) { if keep_old { return true }; if !sys.is_dir(name) { fsx.do_unlink(name) } }
+    if kind == 50 { return fsx.do_symlink(h.link, name) == 0 }
+    if kind == 49 { return fsx.do_link(clean_name(h.link, 0), name) == 0 }
+    if kind == 54 { return fsx.do_mkfifo(name, h.mode % 4096) == 0 }
+    if kind == 51 || kind == 52 { return true }
+    let fd = sys.open_fd(name, 577, h.mode % 4096)
+    if fd < 0 { return false }
+    let done = 0
+    while done < h.size { let w = sys.write_fd(fd, sys.bptr(data, off + done), h.size - done); if w <= 0 { break }; done = done + w }
+    sys.close_fd(fd)
+    fsx.do_chmod(name, h.mode % 4096)
+    if set_mtime { files.set_times(name, h.mtime, false) }
+    return done == h.size
+}
+fn run_tar(args: Vec<str>): i64 {
+    # the first word may be a bundle of letters without a dash (tar xzf FILE)
+    let words = Vec<str>(); let n = args.len() as i64
+    if n > 0 && sys.length(args[0]) > 0 && sys.at(args[0], 0) != 45 && sys.find_char(args[0], 61) < 0 {
+        let letters = args[0]; let expand = sys.bytes_new(); sys.bytes_push(expand, 45); sys.bytes_str(expand, letters)
+        words.push(sys.join2(sys.bytes_cstr(expand), ""))
+        for i in 1..n { words.push(args[i]) }
+    } else { for i in 0..n { words.push(args[i]) } }
+    let mode = 0; let archive = "-"; let verbose = false; let gzipped = false; let to_stdout = false; let dir = ""; let follow = false; let keep_old = false; let set_mtime = true
+    let strip = 0; let patterns = Vec<str>(); let operands = Vec<str>(); let i = 0; let ended = false
+    while i < (words.len() as i64) {
+        let a = words[i]
+        if ended || sys.length(a) < 2 || sys.at(a, 0) != 45 { operands.push(a); i = i + 1; continue }
+        if sys.same(a, "--") { ended = true; i = i + 1; continue }
+        if sys.starts(a, "--exclude=") { patterns.push(sys.join2(sys.slice(a, 10, sys.length(a)), "")); i = i + 1; continue }
+        if sys.same(a, "--exclude") && i + 1 < (words.len() as i64) { i = i + 1; patterns.push(words[i]); i = i + 1; continue }
+        if sys.starts(a, "--strip-components=") { strip = sys.parse_number(sys.join2(sys.slice(a, 19, sys.length(a)), "")).value; i = i + 1; continue }
+        if sys.same(a, "--strip-components") && i + 1 < (words.len() as i64) { i = i + 1; strip = sys.parse_number(words[i]).value; i = i + 1; continue }
+        if sys.same(a, "--gzip") || sys.same(a, "--gunzip") { gzipped = true; i = i + 1; continue }
+        let k = 1; let len = sys.length(a)
+        while k < len {
+            let c = sys.at(a, k)
+            if c == 99 { mode = 1 } else if c == 120 { mode = 2 } else if c == 116 { mode = 3 } else if c == 118 { verbose = true } else if c == 122 { gzipped = true }
+            else if c == 79 { to_stdout = true } else if c == 104 { follow = true } else if c == 107 { keep_old = true } else if c == 109 { set_mtime = false } else if c == 112 || c == 111 || c == 80 { }
+            else if c == 102 || c == 67 {
+                let value = ""
+                if k + 1 < len { value = sys.join2(sys.slice(a, k + 1, len), ""); k = len } else if i + 1 < (words.len() as i64) { i = i + 1; value = words[i] } else { sys.warn("tar", "option requires an argument"); return 1 }
+                if c == 102 { archive = value } else { dir = value }
+            } else { sys.warn("tar", sys.join2("unrecognized option: ", sys.join2(sys.slice(a, k, k + 1), ""))); return 1 }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    if mode == 0 { sys.warn("tar", "you must specify one of -c, -t or -x"); return 1 }
+    let out = sys.out_new(1)
+    let verbose_out = archive_is_stdout(archive) ? sys.out_new(2) : out
+    if sys.length(archive) > 0 && sys.at(archive, 0) != 47 && !sys.same(archive, "-") { archive = fsx.join_path(sys.current_dir(), archive) }
+    if sys.length(dir) > 0 && !fsx.change_dir(dir) { sys.warn("tar", sys.join2("can't change directory to ", dir)); return 1 }
+    if mode == 1 {
+        if operands.len() == 0 { sys.warn("tar", "empty archive refused"); return 1 }
+        let blob = sys.bytes_new()
+        for k in 0..(operands.len() as i64) {
+            let p = operands[k]
+            if sys.length(p) > 1 && sys.at(p, 0) == 47 { sys.warn("tar", "removing leading '/' from member names") }
+            let name = sys.length(p) > 1 && sys.at(p, 0) == 47 ? clean_name(p, 0) : p
+            while sys.length(name) > 1 && sys.ends(name, "/") { name = sys.join2(sys.slice(name, 0, sys.length(name) - 1), "") }
+            archive_tree(blob, p, name, follow, verbose, verbose_out, patterns)
+        }
+        for k in 0..1024 { sys.bytes_push(blob, 0) }
+        while sys.blen(blob) % 10240 != 0 { sys.bytes_push(blob, 0) }
+        let payload = gzipped ? gz.compress(blob, "", 0) : blob
+        if archive_is_stdout(archive) { sys.out_data(out, sys.bdata(payload), sys.blen(payload)); sys.out_flush(out); sys.out_flush(verbose_out); return 0 }
+        if !gz.write_file(archive, payload, 420) { sys.warn_write("tar", archive); return 1 }
+        sys.out_flush(out)
+        return 0
+    }
+    let input = sys.read_path(archive)
+    if !input.ok { sys.warn_path("tar", archive); return 2 }
+    let data = input.bytes
+    if sys.blen(data) >= 2 && sys.bat(data, 0) == 31 && sys.bat(data, 1) == 139 {
+        let r = gz.decompress(data)
+        if !r.ok { sys.warn("tar", r.message); return 1 }
+        data = r.bytes
+    } else if gzipped { sys.warn("tar", "not in gzip format"); return 1 }
+    let off = 0; let status = 0; let long_name = ""; let long_link = ""; let dirs = Vec<Pending>()
+    while true {
+        let h = read_header(data, off)
+        if h.end { break }
+        if !h.ok { sys.warn("tar", "invalid tar header"); status = 2; break }
+        let body = off + 512; let padded = (h.size + 511) / 512 * 512
+        if h.kind == 76 { long_name = copy_range(data, body, body + h.size - 1); off = body + padded; continue }
+        if h.kind == 75 { long_link = copy_range(data, body, body + h.size - 1); off = body + padded; continue }
+        if h.kind == 120 || h.kind == 103 {
+            if h.kind == 120 { let p = pax_value(data, body, body + h.size, "path"); if sys.length(p) > 0 { long_name = p }; let l = pax_value(data, body, body + h.size, "linkpath"); if sys.length(l) > 0 { long_link = l } }
+            off = body + padded; continue
+        }
+        if sys.length(long_name) > 0 { h.name = long_name }
+        if sys.length(long_link) > 0 { h.link = long_link }
+        long_name = ""; long_link = ""
+        if excluded(patterns, h.name) { off = body + padded; continue }
+        let wanted = operands.len() == 0
+        for k in 0..(operands.len() as i64) { let op = operands[k]; if sys.same(h.name, op) || sys.starts(h.name, sys.ends(op, "/") ? op : sys.join2(op, "/")) { wanted = true } }
+        if wanted {
+            let shown = h.name
+            if mode == 3 {
+                sys.out_str(out, verbose ? long_listing(h, shown) : shown); sys.out_byte(out, 10)
+            } else {
+                let name = clean_name(h.name, strip)
+                if sys.length(name) == 0 { off = body + padded; continue }
+                if to_stdout { if h.kind == 48 || h.kind == 0 { sys.out_data(out, sys.bptr(data, body), h.size) } }
+                else {
+                    if verbose { sys.out_str(out, h.name); sys.out_byte(out, 10) }
+                    if !extract_entry(h, name, data, body, keep_old, set_mtime, dirs) { sys.warn("tar", sys.join2(name, ": Cannot extract")); status = 1 }
+                }
+            }
+        }
+        off = body + padded
+    }
+    let d = (dirs.len() as i64) - 1
+    while d >= 0 { fsx.do_chmod(dirs[d].path, dirs[d].mode % 4096); if set_mtime { files.set_times(dirs[d].path, dirs[d].mtime, false) }; d = d - 1 }
+    sys.out_flush(out)
+    return status
+}
+fn archive_is_stdout(archive: str): bool { return sys.same(archive, "-") }
