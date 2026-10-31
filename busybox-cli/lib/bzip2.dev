@@ -1,0 +1,285 @@
+# bzip2: decompression of every block and compression with a Burrows-Wheeler transform (two identical Huffman tables).
+use "./sys.dev" as sys
+
+fn cells(n: i64): *i64 { unsafe { return sys.calloc(n as usize, 8) as *i64 } }
+fn cg(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cs(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn dec(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn pow2(n: i64): i64 { let r = 1; for i in 0..n { r = r * 2 }; return r }
+
+// CRC-32 as bzip2 computes it (polynomial 0x04c11db7, most significant bit first).
+fn crc_table(): *i64 {
+    let t = cells(256)
+    for i in 0..256 {
+        let c = i * 16777216
+        for k in 0..8 { if c >= 2147483648 { c = ((c % 2147483648) * 2) ^ 79764919 } else { c = c * 2 } }
+        cs(t, i, c % 4294967296)
+    }
+    return t
+}
+fn crc_update(t: *i64, crc: i64, byte: i64): i64 { return (((crc % 16777216) * 256) ^ cg(t, (crc / 16777216) ^ byte)) % 4294967296 }
+
+// ---- decoding ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// reader state s: 0 byte position, 1 bit buffer, 2 bit count, 3 length, 4 error
+struct Reader { data: *u8, s: *i64 }
+fn bits(r: Reader, need: i64): i64 { unsafe {
+    let buf = cg(r.s, 1); let cnt = cg(r.s, 2)
+    while cnt < need {
+        let pos = cg(r.s, 0)
+        if pos >= cg(r.s, 3) { cs(r.s, 4, 1); return 0 }
+        buf = buf * 256 + (r.data[pos] as i64); cs(r.s, 0, pos + 1); cnt = cnt + 8
+    }
+    let rest = cnt - need; let p = pow2(rest)
+    let value = buf / p
+    cs(r.s, 1, buf % p); cs(r.s, 2, rest)
+    return value
+} }
+struct Table { min: i64, max: i64, limit: *i64, base: *i64, perm: *i64 }
+fn make_table(lengths: *i64, n: i64): Table {
+    let minl = 32; let maxl = 0
+    for i in 0..n { let l = cg(lengths, i); if l > maxl { maxl = l }; if l < minl { minl = l } }
+    let perm = cells(n + 1); let pp = 0
+    for l in minl..(maxl + 1) { for i in 0..n { if cg(lengths, i) == l { cs(perm, pp, i); pp = pp + 1 } } }
+    let count = cells(34); for i in 0..n { cs(count, cg(lengths, i), cg(count, cg(lengths, i)) + 1) }
+    let limit = cells(34); let base = cells(34)
+    let code = 0; let index = 0
+    for l in minl..(maxl + 1) {
+        # codes of length l are [code, code + count) and use perm[index ..]
+        cs(base, l, index - code); code = code + cg(count, l); index = index + cg(count, l)
+        cs(limit, l, code - 1)
+        code = code * 2
+    }
+    return Table(minl, maxl, limit, base, perm)
+}
+fn decode_symbol(r: Reader, t: Table): i64 {
+    let len = t.min; let code = bits(r, len)
+    while len <= t.max {
+        if code <= cg(t.limit, len) { return cg(t.perm, code + cg(t.base, len)) }
+        code = code * 2 + bits(r, 1); len = len + 1
+        if cg(r.s, 4) != 0 { return 0 - 1 }
+    }
+    return 0 - 1
+}
+struct Unpacked { ok: bool, bytes: *sys.Bytes, message: str }
+fn bad(out: *sys.Bytes, message: str): Unpacked { return Unpacked(false, out, message) }
+fn decompress(input: *sys.Bytes): Unpacked {
+    let out = sys.bytes_new(); let n = sys.blen(input)
+    if n < 4 || sys.bat(input, 0) != 66 || sys.bat(input, 1) != 90 || sys.bat(input, 2) != 104 { return bad(out, "not in bzip2 format") }
+    let r = Reader(sys.bdata(input), cells(6)); cs(r.s, 3, n); cs(r.s, 0, 4)
+    let table = crc_table(); let block_max = ((sys.bat(input, 3) as i64) - 48) * 100000
+    if block_max < 100000 || block_max > 900000 { return bad(out, "bad block size") }
+    let combined = 0
+    while true {
+        let m1 = bits(r, 24); let m2 = bits(r, 24)
+        if cg(r.s, 4) != 0 { return bad(out, "unexpected end of file") }
+        if m1 == 1536581 && m2 == 3690640 { break }
+        if m1 != 3227993 || m2 != 2511705 { return bad(out, sys.join2(sys.join2("bad block header ", dec(m1)), sys.join2(" ", dec(m2)))) }
+        let expected_crc = bits(r, 16) * 65536 + bits(r, 16)
+        if bits(r, 1) != 0 { return bad(out, "randomised blocks are not supported") }
+        let orig = bits(r, 24)
+        let used_groups = bits(r, 16); let seq = cells(256); let in_use = 0
+        for g in 0..16 { if (used_groups / pow2(15 - g)) % 2 == 1 { let m = bits(r, 16); for k in 0..16 { if (m / pow2(15 - k)) % 2 == 1 { cs(seq, in_use, g * 16 + k); in_use = in_use + 1 } } } }
+        if in_use == 0 { return bad(out, "empty symbol map") }
+        let alpha = in_use + 2
+        let groups = bits(r, 3); let selectors = bits(r, 15)
+        if groups < 2 || groups > 6 || selectors < 1 { return bad(out, "bad table header") }
+        let sel = cells(selectors + 1); let mtf = cells(8); for i in 0..groups { cs(mtf, i, i) }
+        for i in 0..selectors {
+            let j = 0; while bits(r, 1) == 1 { j = j + 1; if j >= groups { return bad(out, "bad selector") } }
+            let v = cg(mtf, j); for k in 0..j { cs(mtf, j - k, cg(mtf, j - k - 1)) }; cs(mtf, 0, v); cs(sel, i, v)
+        }
+        let tables = Vec<Table>()
+        for g in 0..groups {
+            let lengths = cells(alpha + 1); let len = bits(r, 5)
+            for s in 0..alpha {
+                while true {
+                    if len < 1 || len > 20 || cg(r.s, 4) != 0 { return bad(out, "bad code lengths") }
+                    if bits(r, 1) == 0 { break }
+                    if bits(r, 1) == 0 { len = len + 1 } else { len = len - 1 }
+                }
+                cs(lengths, s, len)
+            }
+            tables.push(make_table(lengths, alpha))
+        }
+        # symbols -> move-to-front -> block
+        let order = cells(256); for i in 0..256 { cs(order, i, i) }
+        let block = cells(block_max + 1); let size = 0; let run = 0; let run_weight = 1; let used = 0
+        let counts = cells(256)
+        let eob = in_use + 1; let group_pos = 0; let sel_index = 0; let current = tables[0]
+        while true {
+            if group_pos == 0 { if sel_index >= selectors { return bad(out, "ran out of selectors") }; current = tables[cg(sel, sel_index)]; sel_index = sel_index + 1; group_pos = 50 }
+            group_pos = group_pos - 1
+            let sym = decode_symbol(r, current)
+            if sym < 0 { return bad(out, "bad Huffman code") }
+            if sym <= 1 { run = run + run_weight * (sym + 1); run_weight = run_weight * 2; continue }
+            if run > 0 {
+                let b = cg(seq, cg(order, 0))
+                if size + run > block_max { return bad(out, "block overflow") }
+                for k in 0..run { cs(block, size, b); size = size + 1 }
+                cs(counts, b, cg(counts, b) + run); run = 0; run_weight = 1
+            }
+            if sym == eob { break }
+            let idx = sym - 1
+            let v = cg(order, idx); for k in 0..idx { cs(order, idx - k, cg(order, idx - k - 1)) }; cs(order, 0, v)
+            let b = cg(seq, v)
+            if size >= block_max { return bad(out, "block overflow") }
+            cs(block, size, b); size = size + 1; cs(counts, b, cg(counts, b) + 1)
+        }
+        if orig >= size { return bad(out, "bad origin pointer") }
+        # inverse Burrows-Wheeler transform
+        let starts = cells(257); let total = 0
+        for i in 0..256 { cs(starts, i, total); total = total + cg(counts, i) }
+        let next = cells(size + 1)
+        for i in 0..size { let b = cg(block, i); cs(next, cg(starts, b), i); cs(starts, b, cg(starts, b) + 1) }
+        let p = cg(next, orig); let crc = 4294967295
+        let last = 0 - 1; let same = 0; let k = 0
+        let block_start = sys.blen(out)
+        while k < size {
+            let ch = cg(block, p); p = cg(next, p); k = k + 1
+            if same == 4 {
+                for q in 0..ch { sys.bytes_push(out, last as u8); crc = crc_update(table, crc, last) }
+                same = 0; last = 0 - 1; continue
+            }
+            if ch == last { same = same + 1 } else { same = 1; last = ch }
+            sys.bytes_push(out, ch as u8); crc = crc_update(table, crc, ch)
+        }
+        crc = crc ^ 4294967295
+        if crc != expected_crc { return bad(out, "block CRC error") }
+        combined = ((((combined % 2147483648) * 2) + combined / 2147483648) ^ crc) % 4294967296
+    }
+    let stored = bits(r, 16) * 65536 + bits(r, 16)
+    if stored != combined { return bad(out, "stream CRC error") }
+    return Unpacked(true, out, "")
+}
+
+// ---- encoding -----------------------------------------------------------------------------------------------------------------------------------------------------------------
+struct Writer { out: *sys.Bytes, s: *i64 }
+fn put(w: Writer, value: i64, count: i64) {
+    let buf = cg(w.s, 0) * pow2(count) + value; let cnt = cg(w.s, 1) + count
+    while cnt >= 8 { let p = pow2(cnt - 8); sys.bytes_push(w.out, ((buf / p) % 256) as u8); buf = buf % p; cnt = cnt - 8 }
+    cs(w.s, 0, buf); cs(w.s, 1, cnt)
+}
+fn flush_bits(w: Writer) { if cg(w.s, 1) > 0 { put(w, 0, 8 - cg(w.s, 1)) } }
+// Sorts the rotations of data[0, n) with prefix doubling; returns the sorted start offsets.
+fn sort_rotations(data: *i64, n: i64): *i64 {
+    let rank = cells(n + 1); let tmp = cells(n + 1); let sa = cells(n + 1)
+    for i in 0..n { cs(rank, i, cg(data, i)); cs(sa, i, i) }
+    let k = 1
+    while true {
+        # sort sa by (rank[i], rank[(i + k) % n])
+        sa = merge_sort(sa, n, rank, k)
+        cs(tmp, cg(sa, 0), 0)
+        for i in 1..n {
+            let a = cg(sa, i - 1); let b = cg(sa, i)
+            let same = cg(rank, a) == cg(rank, b) && cg(rank, (a + k) % n) == cg(rank, (b + k) % n)
+            cs(tmp, b, cg(tmp, a) + (same ? 0 : 1))
+        }
+        for i in 0..n { cs(rank, i, cg(tmp, i)) }
+        if cg(rank, cg(sa, n - 1)) == n - 1 || k >= n { break }
+        k = k * 2
+    }
+    return sa
+}
+fn less(rank: *i64, n: i64, k: i64, a: i64, b: i64): bool {
+    let ra = cg(rank, a); let rb = cg(rank, b)
+    if ra != rb { return ra < rb }
+    return cg(rank, (a + k) % n) < cg(rank, (b + k) % n)
+}
+fn merge_sort(sa: *i64, n: i64, rank: *i64, k: i64): *i64 {
+    let src = sa; let dst = cells(n + 1); let width = 1
+    while width < n {
+        let i = 0
+        while i < n {
+            let mid = i + width < n ? i + width : n; let hi = i + 2 * width < n ? i + 2 * width : n
+            let a = i; let b = mid; let o = i
+            while a < mid && b < hi { if less(rank, n, k, cg(src, b), cg(src, a)) { cs(dst, o, cg(src, b)); b = b + 1 } else { cs(dst, o, cg(src, a)); a = a + 1 }; o = o + 1 }
+            while a < mid { cs(dst, o, cg(src, a)); a = a + 1; o = o + 1 }
+            while b < hi { cs(dst, o, cg(src, b)); b = b + 1; o = o + 1 }
+            i = i + 2 * width
+        }
+        let swap = src; src = dst; dst = swap
+        width = width * 2
+    }
+    return src
+}
+// Huffman code lengths (at most 17 bits) for the frequencies freq[0, n).
+fn code_lengths(freq: *i64, n: i64): *i64 {
+    let lengths = cells(n + 1); let scale = 1
+    while true {
+        let weight = cells(2 * n + 2); let parent = cells(2 * n + 2); let alive = cells(2 * n + 2)
+        for i in 0..n { cs(weight, i, (cg(freq, i) + scale - 1) / scale); if cg(weight, i) < 1 { cs(weight, i, 1) }; cs(alive, i, 1) }
+        let nodes = n
+        for round in 0..(n - 1) {
+            let a = 0 - 1; let b = 0 - 1
+            for i in 0..nodes { if cg(alive, i) == 1 { if a < 0 || cg(weight, i) < cg(weight, a) { b = a; a = i } else if b < 0 || cg(weight, i) < cg(weight, b) { b = i } } }
+            cs(alive, a, 0); cs(alive, b, 0); cs(weight, nodes, cg(weight, a) + cg(weight, b)); cs(alive, nodes, 1); cs(parent, a, nodes); cs(parent, b, nodes); nodes = nodes + 1
+        }
+        let deepest = 0
+        for i in 0..n { let d = 0; let p = i; while p != nodes - 1 { p = cg(parent, p); d = d + 1 }; cs(lengths, i, d == 0 ? 1 : d); if d > deepest { deepest = d } }
+        if deepest <= 17 { return lengths }
+        scale = scale * 2
+    }
+    return lengths
+}
+fn compress(input: *sys.Bytes, level: i64): *sys.Bytes {
+    let out = sys.bytes_new(); let w = Writer(out, cells(2)); let table = crc_table()
+    sys.bytes_str(out, "BZh"); sys.bytes_push(out, (48 + level) as u8)
+    let limit = level * 100000 - 19; let n = sys.blen(input); let pos = 0; let combined = 0
+    while pos < n {
+        # run-length encode (RLE1) up to one block, tracking the CRC of the original bytes
+        let rle = cells(limit + 300); let size = 0; let crc = 4294967295
+        while pos < n && size < limit - 5 {
+            let b = sys.bat(input, pos) as i64; let run = 1
+            while pos + run < n && run < 255 && (sys.bat(input, pos + run) as i64) == b { run = run + 1 }
+            for q in 0..run { crc = crc_update(table, crc, b) }
+            pos = pos + run
+            if run >= 4 { for q in 0..4 { cs(rle, size, b); size = size + 1 }; cs(rle, size, run - 4); size = size + 1 }
+            else { for q in 0..run { cs(rle, size, b); size = size + 1 } }
+        }
+        crc = crc ^ 4294967295
+        combined = ((((combined % 2147483648) * 2) + combined / 2147483648) ^ crc) % 4294967296
+        let sa = sort_rotations(rle, size)
+        let last = cells(size + 1); let orig = 0
+        for i in 0..size { let s = cg(sa, i); if s == 0 { orig = i }; cs(last, i, cg(rle, (s + size - 1) % size)) }
+        let present = cells(256); for i in 0..size { cs(present, cg(last, i), 1) }
+        let seq = cells(256); let in_use = 0; let index_of = cells(256)
+        for b in 0..256 { if cg(present, b) == 1 { cs(seq, in_use, b); cs(index_of, b, in_use); in_use = in_use + 1 } }
+        # move-to-front and zero-run coding
+        let symbols = cells(size + 2 * 8 + 4); let count = 0; let order = cells(256); for i in 0..in_use { cs(order, i, i) }
+        let zeros = 0; let freq = cells(in_use + 3)
+        for i in 0..size {
+            let v = cg(index_of, cg(last, i)); let j = 0; while cg(order, j) != v { j = j + 1 }
+            for q in 0..j { cs(order, j - q, cg(order, j - q - 1)) }; cs(order, 0, v)
+            if j == 0 { zeros = zeros + 1; continue }
+            if zeros > 0 { let z = zeros; while z > 0 { if z % 2 == 1 { cs(symbols, count, 0); z = (z - 1) / 2 } else { cs(symbols, count, 1); z = (z - 2) / 2 }; cs(freq, cg(symbols, count), cg(freq, cg(symbols, count)) + 1); count = count + 1 }; zeros = 0 }
+            cs(symbols, count, j + 1); cs(freq, j + 1, cg(freq, j + 1) + 1); count = count + 1
+        }
+        if zeros > 0 { let z = zeros; while z > 0 { if z % 2 == 1 { cs(symbols, count, 0); z = (z - 1) / 2 } else { cs(symbols, count, 1); z = (z - 2) / 2 }; cs(freq, cg(symbols, count), cg(freq, cg(symbols, count)) + 1); count = count + 1 } }
+        let alpha = in_use + 2
+        cs(symbols, count, in_use + 1); cs(freq, in_use + 1, cg(freq, in_use + 1) + 1); count = count + 1
+        let lengths = code_lengths(freq, alpha)
+        # canonical codes
+        let codes = cells(alpha + 1); let code = 0
+        for l in 1..18 { for s in 0..alpha { if cg(lengths, s) == l { cs(codes, s, code); code = code + 1 } }; code = code * 2 }
+        put(w, 3227993, 24); put(w, 2511705, 24); put(w, crc / 65536, 16); put(w, crc % 65536, 16); put(w, 0, 1); put(w, orig, 24)
+        let groups_used = 0; for g in 0..16 { let any = false; for k in 0..16 { if cg(present, g * 16 + k) == 1 { any = true } }; if any { groups_used = groups_used + pow2(15 - g) } }
+        put(w, groups_used, 16)
+        for g in 0..16 { if (groups_used / pow2(15 - g)) % 2 == 1 { let m = 0; for k in 0..16 { if cg(present, g * 16 + k) == 1 { m = m + pow2(15 - k) } }; put(w, m, 16) } }
+        let selectors = (count + 49) / 50
+        put(w, 2, 3); put(w, selectors, 15)
+        for i in 0..selectors { put(w, 0, 1) }
+        for t in 0..2 {
+            let len = cg(lengths, 0); put(w, len, 5)
+            for s in 0..alpha {
+                let target = cg(lengths, s)
+                while len < target { put(w, 2, 2); len = len + 1 }
+                while len > target { put(w, 3, 2); len = len - 1 }
+                put(w, 0, 1)
+            }
+        }
+        for i in 0..count { let s = cg(symbols, i); put(w, cg(codes, s), cg(lengths, s)) }
+    }
+    put(w, 1536581, 24); put(w, 3690640, 24); put(w, combined / 65536, 16); put(w, combined % 65536, 16)
+    flush_bits(w)
+    return out
+}

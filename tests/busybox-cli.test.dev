@@ -469,6 +469,19 @@ test.case("rpm2cpio fuser lsattr",fn() {
     all_same(d, Vec<str>("@lsattr a.txt","@lsattr -d dir","@lsattr nosuch 2>/dev/null; echo rc=$?"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("bzip2 bunzip2 bzcat (BusyBox against the system bzip2)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let data = "head -c 50000 /dev/urandom > rnd.bin; yes 'the quick brown fox' | head -c 70000 > txt.dat; : > empty.dat; printf 'x' > one.dat; seq 1 20000 > seq.dat; head -c 5000 /dev/zero > zeros.dat; cat rnd.bin txt.dat seq.dat zeros.dat > mix.dat; "
+    for f in Vec<str>("rnd.bin","txt.dat","empty.dat","one.dat","seq.dat","zeros.dat","mix.dat","a.txt") {
+        test.expect(strings.contains(outcome(d, data + "bzip2 -c " + f + " > sys.bz2; " + bb + " bzcat sys.bz2 | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "busybox bzcat failed to read bzip2 output of " + f + ":\n" + outcome(d, data + "bzip2 -c " + f + " > sys.bz2; " + bb + " bzcat sys.bz2 | cmp - " + f + "; echo cmp=$?"))
+        test.expect(strings.contains(outcome(d, data + bb + " bzip2 -c " + f + " > bb.bz2; bzip2 -dc bb.bz2 | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "bzip2 failed to read busybox bzip2 output of " + f + ":\n" + outcome(d, data + bb + " bzip2 -c " + f + " > bb.bz2; bzip2 -dc bb.bz2 | cmp - " + f + "; echo cmp=$?"))
+    }
+    test.expect(strings.contains(outcome(d, data + "cp a.txt q.txt; " + bb + " bzip2 q.txt; ls q.txt*; " + bb + " bunzip2 q.txt.bz2; cmp q.txt a.txt; echo cmp=$?"), "cmp=0"), "in-place bzip2/bunzip2 failed")
+    test.expect(strings.contains(outcome(d, data + "printf plain > p.bz2; " + bb + " bunzip2 -c p.bz2; echo rc=$?"), "rc=2"), "bunzip2 accepted data that is not bzip2")
+    test.expect(strings.contains(outcome(d, data + "bzip2 -c a.txt > t.bz2; head -c 30 t.bz2 > cut.bz2; " + bb + " bunzip2 -c cut.bz2; echo rc=$?"), "rc=2"), "bunzip2 accepted a truncated file")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

@@ -1,0 +1,52 @@
+# bzip2, bunzip2, bzcat: compress and decompress files in the bzip2 format.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/bzip2.dev" as bz
+use "./gzip.dev" as gz
+
+fn stripped(path: str): str {
+    if sys.ends(path, ".bz2") { return sys.join2(sys.slice(path, 0, sys.length(path) - 4), "") }
+    if sys.ends(path, ".tbz2") { return sys.join2(sys.join2(sys.slice(path, 0, sys.length(path) - 5), ".tar"), "") }
+    if sys.ends(path, ".tbz") { return sys.join2(sys.join2(sys.slice(path, 0, sys.length(path) - 4), ".tar"), "") }
+    if sys.ends(path, ".bz") { return sys.join2(sys.slice(path, 0, sys.length(path) - 3), "") }
+    return ""
+}
+fn run_mode(args: Vec<str>, prog: str, decode_mode: bool, to_stdout: bool): i64 {
+    let o = sys.parse_opts(args, "cdfkvtqzs123456789")
+    if o.bad != 0 { sys.warn(prog, "invalid usage: bzip2 [-cdfkt123456789] [FILE]..."); return 1 }
+    let decode = decode_mode || sys.has(o, 100) || sys.has(o, 116)
+    let stdout_mode = to_stdout || sys.has(o, 99); let test_only = sys.has(o, 116)
+    let level = 9; for d in 1..10 { if sys.has(o, (48 + d) as u8) { level = d } }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let path = files[k]; let from_stdin = sys.same(path, "-")
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn_path(prog, path); status = 1; continue }
+        let info = sys.file_info(path, true)
+        if decode {
+            let r = bz.decompress(input.bytes)
+            if !r.ok { sys.warn(prog, sys.join2(sys.join2(from_stdin ? "stdin" : path, ": "), r.message)); status = 2; continue }
+            if test_only { continue }
+            if stdout_mode || from_stdin { sys.out_data(out, sys.bdata(r.bytes), sys.blen(r.bytes)); continue }
+            let target = stripped(path)
+            if sys.length(target) == 0 { sys.warn(prog, sys.join2(path, ": unknown suffix -- ignored")); status = 1; continue }
+            if sys.exists(target) && !sys.has(o, 102) { sys.warn(prog, sys.join2(target, " already exists; not overwritten")); status = 1; continue }
+            if !gz.write_file(target, r.bytes, sys.permission_bits(info.mode)) { sys.warn_write(prog, target); status = 1; continue }
+            if !sys.has(o, 107) { fsx.do_unlink(path) }
+        } else {
+            let packed = bz.compress(input.bytes, level)
+            if stdout_mode || from_stdin { sys.out_data(out, sys.bdata(packed), sys.blen(packed)); continue }
+            let target = sys.join2(path, ".bz2")
+            if sys.ends(path, ".bz2") { sys.warn(prog, sys.join2(path, " already has .bz2 suffix -- unchanged")); status = 1; continue }
+            if sys.exists(target) && !sys.has(o, 102) { sys.warn(prog, sys.join2(target, " already exists; not overwritten")); status = 1; continue }
+            if !gz.write_file(target, packed, sys.permission_bits(info.mode)) { sys.warn_write(prog, target); status = 1; continue }
+            if !sys.has(o, 107) { fsx.do_unlink(path) }
+        }
+    }
+    sys.out_flush(out)
+    return status
+}
+fn run_bzip2(args: Vec<str>): i64 { return run_mode(args, "bzip2", false, false) }
+fn run_bunzip2(args: Vec<str>): i64 { return run_mode(args, "bunzip2", true, false) }
+fn run_bzcat(args: Vec<str>): i64 { return run_mode(args, "bzcat", true, true) }
