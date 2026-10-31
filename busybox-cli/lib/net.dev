@@ -202,3 +202,13 @@ fn accept_ready(fd: i64): i64 { unsafe {
     if !ready { return 0 - 1 }
     return accept(fd as i32, 0 as *void, 0 as *void) as i64
 } }
+
+extern fn getsockname(fd: i32, address: *void, length: *void): i32
+// The local port of a bound socket.
+fn socket_port(fd: i64): i64 { unsafe {
+    let a = sys.calloc(16, 1) as *u8; let l = sys.calloc(4, 1) as *u8; l[0] = 16
+    let r = getsockname(fd as i32, a as *void, l as *void)
+    let port = r == 0 ? (a[2] as i64) * 256 + (a[3] as i64) : 0 - 1
+    sys.free(a as *void); sys.free(l as *void)
+    return port
+} }

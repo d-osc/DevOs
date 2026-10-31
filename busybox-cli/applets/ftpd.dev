@@ -1,0 +1,167 @@
+# ftpd [-w] [-v] [DIRECTORY], dnsd [-c CONFFILE] [-p PORT] [-t TTL]: an FTP server for inetd-style use (the connection is standard input and output) and a small DNS server.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/clock.dev" as clock
+use "./gzip.dev" as gz
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn reply(code: i64, text: str) { let b = sys.bytes_new(); sys.bytes_str(b, sys.join2(sys.join2(decimal(code), " "), sys.join2(text, "\r\n"))); sys.write_fd(1, sys.bdata(b), sys.blen(b)) }
+fn read_command(): str {
+    let b = sys.bytes_new(); let c = sys.bytes_new(); sys.bytes_push(c, 0)
+    while true { let n = sys.read_into(0, sys.bdata(c), 1); if n <= 0 { return sys.length(sys.join2(sys.bytes_cstr(b), "")) > 0 ? sys.join2(sys.bytes_cstr(b), "") : "#EOF#" }; if sys.bat(c, 0) == 10 { break }; if sys.bat(c, 0) != 13 { sys.bytes_push(b, sys.bat(c, 0)) } }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+// The real path for a client path ("/a/b") below the root; "" if it would leave the root.
+fn resolve(root: str, cwd: str, arg: str): str {
+    let full = sys.length(arg) > 0 && sys.at(arg, 0) == 47 ? arg : sys.join2(sys.join2(cwd, sys.ends(cwd, "/") ? "" : "/"), arg)
+    let parts = Vec<str>(); let n = sys.length(full); let from = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(full, i) == 47 {
+            let part = sys.join2(sys.slice(full, from, i), ""); from = i + 1
+            if sys.length(part) == 0 || sys.same(part, ".") { continue }
+            if sys.same(part, "..") { if parts.len() == 0 { return "" }; let shorter = Vec<str>(); for k in 0..((parts.len() as i64) - 1) { shorter.push(parts[k]) }; parts = shorter; continue }
+            parts.push(part)
+        }
+    }
+    let path = root; for k in 0..(parts.len() as i64) { path = fsx.join_path(path, parts[k]) }
+    return path
+}
+fn client_path(root: str, real: str): str { let rest = sys.join2(sys.slice(real, sys.length(root), sys.length(real)), ""); return sys.length(rest) == 0 ? "/" : rest }
+fn listing_line(path: str, name: str, info: sys.Info): str {
+    let kind = (info.mode / 4096) % 16; let t = kind == 4 ? "d" : (kind == 10 ? "l" : "-")
+    let owner = fsx.user_name(info.uid); if sys.length(owner) == 0 { owner = decimal(info.uid) }
+    let group = fsx.group_name(info.gid); if sys.length(group) == 0 { group = decimal(info.gid) }
+    let when = clock.format("%b %e %H:%M", clock.fields(info.mtime, false), info.mtime, false)
+    return sys.join2(sys.join2(sys.join2(t, fsx.mode_string(info.mode)), sys.join2(" 1 ", sys.join2(owner, sys.join2(" ", group)))), sys.join2(sys.join2(" ", decimal(info.size)), sys.join2(sys.join2(" ", when), sys.join2(" ", name))))
+}
+fn run_ftpd(args: Vec<str>): i64 {
+    let words = Vec<str>(); for k in 0..(args.len() as i64) { if !sys.starts(args[k], "-") { words.push(args[k]) } }
+    let root = words.len() > 0 ? words[0] : "."
+    if !sys.is_dir(root) { sys.warn("ftpd", sys.join2(root, ": not a directory")); return 1 }
+    let abs = sys.starts(root, "/") ? root : fsx.join_path(sys.current_dir(), root)
+    while sys.length(abs) > 1 && sys.ends(abs, "/") { abs = sys.join2(sys.slice(abs, 0, sys.length(abs) - 1), "") }
+    let allow_write = false; for k in 0..(args.len() as i64) { if sys.same(args[k], "-w") { allow_write = true } }
+    let cwd = "/"; let pasv = 0 - 1; let rename_from = ""; let local_ip = proc.lookup(proc.environment(), "TCPLOCALIP")
+    reply(220, "Operation successful")
+    while true {
+        let line = read_command()
+        if sys.same(line, "#EOF#") { break }
+        let space = sys.find_char(line, 32)
+        let cmd = upper(space < 0 ? line : sys.join2(sys.slice(line, 0, space), "")); let arg = space < 0 ? "" : sys.join2(sys.slice(line, space + 1, sys.length(line)), "")
+        if sys.same(cmd, "USER") { reply(331, "Password required") }
+        else if sys.same(cmd, "PASS") { reply(230, "Login successful") }
+        else if sys.same(cmd, "SYST") { reply(215, "UNIX Type: L8") }
+        else if sys.same(cmd, "FEAT") { reply(211, "No features") }
+        else if sys.same(cmd, "NOOP") { reply(200, "Operation successful") }
+        else if sys.same(cmd, "TYPE") { reply(200, "Operation successful") }
+        else if sys.same(cmd, "MODE") || sys.same(cmd, "STRU") { reply(200, "Operation successful") }
+        else if sys.same(cmd, "PWD") || sys.same(cmd, "XPWD") { reply(257, sys.join2(sys.join2("\"", cwd), "\"")) }
+        else if sys.same(cmd, "CWD") || sys.same(cmd, "CDUP") {
+            let target = resolve(abs, cwd, sys.same(cmd, "CDUP") ? ".." : arg)
+            if sys.length(target) == 0 || !sys.is_dir(target) { reply(550, "No such directory") } else { cwd = client_path(abs, target); reply(250, "Operation successful") }
+        }
+        else if sys.same(cmd, "SIZE") { let p = resolve(abs, cwd, arg); let info = sys.file_info(p, true); if sys.length(p) > 0 && info.ok && sys.is_reg_mode(info.mode) { reply(213, decimal(info.size)) } else { reply(550, "No such file") } }
+        else if sys.same(cmd, "PASV") {
+            if pasv >= 0 { sys.close_fd(pasv) }
+            pasv = net.listen_on(0)
+            if pasv < 0 { reply(425, "Can't open data connection") } else {
+                let port = net.socket_port(pasv); let ip = local_ip.found ? local_ip.value : "127.0.0.1"
+                let commas = sys.bytes_new(); for i in 0..sys.length(ip) { sys.bytes_push(commas, sys.at(ip, i) == 46 ? (44 as u8) : sys.at(ip, i)) }
+                reply(227, sys.join2(sys.join2("Entering Passive Mode (", sys.join2(sys.join2(sys.bytes_cstr(commas), ","), sys.join2(decimal(port / 256), sys.join2(",", decimal(port % 256))))), ")"))
+            }
+        }
+        else if sys.same(cmd, "LIST") || sys.same(cmd, "NLST") || sys.same(cmd, "RETR") || sys.same(cmd, "STOR") || sys.same(cmd, "APPE") {
+            if pasv < 0 { reply(425, "Use PASV first"); continue }
+            let isdata = sys.same(cmd, "RETR") || sys.same(cmd, "STOR") || sys.same(cmd, "APPE")
+            let skip_flags = arg; if !isdata && sys.starts(arg, "-") { let sp = sys.find_char(arg, 32); skip_flags = sp < 0 ? "" : sys.join2(sys.slice(arg, sp + 1, sys.length(arg)), "") }
+            let target = resolve(abs, cwd, isdata ? arg : skip_flags)
+            if sys.length(target) == 0 { reply(550, "Permission denied"); sys.close_fd(pasv); pasv = 0 - 1; continue }
+            if sys.same(cmd, "RETR") && (!sys.exists(target) || sys.is_dir(target)) { reply(550, "No such file"); sys.close_fd(pasv); pasv = 0 - 1; continue }
+            if (sys.same(cmd, "STOR") || sys.same(cmd, "APPE")) && !allow_write { reply(550, "Permission denied"); sys.close_fd(pasv); pasv = 0 - 1; continue }
+            reply(150, "Opening data connection")
+            let client = net.accept_one(pasv); sys.close_fd(pasv); pasv = 0 - 1
+            if client < 0 { reply(425, "Can't open data connection"); continue }
+            if sys.same(cmd, "RETR") { let f = sys.read_path(target); net.send_all(client, sys.bdata(f.bytes), sys.blen(f.bytes)) }
+            else if sys.same(cmd, "STOR") || sys.same(cmd, "APPE") {
+                let data = sys.bytes_new(); let chunk = sys.bytes_new(); for i in 0..16384 { sys.bytes_push(chunk, 0) }
+                while true { let n = sys.read_into(client, sys.bdata(chunk), 16384); if n <= 0 { break }; sys.bytes_append(data, sys.bdata(chunk), n) }
+                if sys.same(cmd, "APPE") && sys.exists(target) { let old = sys.read_path(target); sys.bytes_append(old.bytes, sys.bdata(data), sys.blen(data)); data = old.bytes }
+                gz.write_file(target, data, 420)
+            } else {
+                let out = sys.bytes_new()
+                if sys.is_dir(target) {
+                    let l = fsx.list_dir(target)
+                    for k in 0..(l.names.len() as i64) {
+                        if sys.at(l.names[k], 0) == 46 && sys.same(cmd, "NLST") { continue }
+                        let info = sys.file_info(fsx.join_path(target, l.names[k]), false)
+                        sys.bytes_str(out, sys.same(cmd, "NLST") ? l.names[k] : listing_line(target, l.names[k], info)); sys.bytes_push(out, 13); sys.bytes_push(out, 10)
+                    }
+                } else if sys.exists(target) { sys.bytes_str(out, sys.same(cmd, "NLST") ? sys.base_name(target) : listing_line(target, sys.base_name(target), sys.file_info(target, false))); sys.bytes_push(out, 13); sys.bytes_push(out, 10) }
+                net.send_all(client, sys.bdata(out), sys.blen(out))
+            }
+            sys.close_fd(client)
+            reply(226, "Operation successful")
+        }
+        else if sys.same(cmd, "MKD") || sys.same(cmd, "XMKD") { let p = resolve(abs, cwd, arg); if allow_write && sys.length(p) > 0 && fsx.make_dir(p, 493) { reply(257, sys.join2(sys.join2("\"", client_path(abs, p)), "\"")) } else { reply(550, "Can't create directory") } }
+        else if sys.same(cmd, "RMD") || sys.same(cmd, "XRMD") { let p = resolve(abs, cwd, arg); if allow_write && sys.length(p) > 0 && fsx.do_rmdir(p) == 0 { reply(250, "Operation successful") } else { reply(550, "Can't remove directory") } }
+        else if sys.same(cmd, "DELE") { let p = resolve(abs, cwd, arg); if allow_write && sys.length(p) > 0 && fsx.do_unlink(p) == 0 { reply(250, "Operation successful") } else { reply(550, "Can't delete") } }
+        else if sys.same(cmd, "RNFR") { let p = resolve(abs, cwd, arg); if allow_write && sys.length(p) > 0 && sys.exists(p) { rename_from = p; reply(350, "Ready for RNTO") } else { reply(550, "No such file") } }
+        else if sys.same(cmd, "RNTO") { let p = resolve(abs, cwd, arg); if sys.length(rename_from) > 0 && sys.length(p) > 0 && fsx.do_rename(rename_from, p) == 0 { reply(250, "Operation successful") } else { reply(550, "Rename failed") }; rename_from = "" }
+        else if sys.same(cmd, "QUIT") { reply(221, "Goodbye"); break }
+        else { reply(500, "Unknown command") }
+    }
+    return 0
+}
+fn upper(s: str): str { let b = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); let v = c; if c >= 97 && c <= 122 { v = c - 32 }; sys.bytes_push(b, v) }; return sys.join2(sys.bytes_cstr(b), "") }
+
+// ---- dnsd [-c CONFFILE] [-p PORT] [-t TTL]: answers A queries from "name address" lines ------------------------------------------------------------------------------------------------------
+fn run_dnsd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "c:p:t:i:dvs")
+    if o.bad != 0 || o.missing != 0 { sys.warn("dnsd", "invalid usage: dnsd [-c CONFFILE] [-p PORT] [-t TTL]"); return 1 }
+    let conf = sys.has(o, 99) ? sys.val(o, 99) : "/etc/dnsd.conf"; let port = sys.has(o, 112) ? sys.parse_number(sys.val(o, 112)).value : 53
+    let ttl = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)).value : 120
+    let input = sys.read_path(conf); if !input.ok { sys.warn_path("dnsd", conf); return 1 }
+    let ls = lines.split_lines(input.bytes, 10); let names = Vec<str>(); let addrs = Vec<i64>()
+    for k in 0..(ls.starts.len() as i64) { let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])); if parts.len() >= 2 && !sys.starts(parts[0], "#") { let ip = net.parse_ip(parts[1]); if ip >= 0 { names.push(lower(parts[0])); addrs.push(ip) } } }
+    let fd = net.udp_bind(port); if fd < 0 { sys.warn("dnsd", "can't bind the port"); return 1 }
+    let buffer = sys.bytes_new(); for i in 0..512 { sys.bytes_push(buffer, 0) }
+    while true {
+        let peer = net.make_address(0, 0)
+        let n = net.receive_from(fd, sys.bdata(buffer), 512, peer)
+        if n < 17 { continue }
+        # read the question name
+        let qname = ""; let pos = 12; let first = true
+        while pos < n && sys.bat(buffer, pos) != 0 { let len = sys.bat(buffer, pos) as i64; if pos + len >= n { break }; qname = sys.join2(sys.join2(qname, first ? "" : "."), lines.text_of(buffer, pos + 1, pos + 1 + len)); first = false; pos = pos + len + 1 }
+        let qend = pos + 1 + 4; if qend > n { continue }
+        let qtype = (sys.bat(buffer, pos + 1) as i64) * 256 + (sys.bat(buffer, pos + 2) as i64)
+        let found = 0 - 1; let lowered = lower(qname)
+        for k in 0..(names.len() as i64) { if sys.same(names[k], lowered) { found = k } }
+        let reply_bytes = sys.bytes_new()
+        sys.bytes_push(reply_bytes, sys.bat(buffer, 0)); sys.bytes_push(reply_bytes, sys.bat(buffer, 1))
+        let ok = found >= 0 && qtype == 1
+        sys.bytes_push(reply_bytes, 132 + (sys.bat(buffer, 2) % 2 == 1 ? 1 : 0)); sys.bytes_push(reply_bytes, found >= 0 ? 0 : 3)
+        sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 1); sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, ok ? 1 : 0); sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 0)
+        sys.bytes_append(reply_bytes, sys.bptr(buffer, 12), qend - 12)
+        if ok {
+            sys.bytes_push(reply_bytes, 192); sys.bytes_push(reply_bytes, 12); sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 1); sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 1)
+            for i in 0..4 { sys.bytes_push(reply_bytes, ((ttl / pow256(3 - i)) % 256) as u8) }
+            sys.bytes_push(reply_bytes, 0); sys.bytes_push(reply_bytes, 4)
+            let ip = addrs[found]; for i in 0..4 { sys.bytes_push(reply_bytes, ((ip / pow256(3 - i)) % 256) as u8) }
+        }
+        net.send_peer(fd, sys.bdata(reply_bytes), sys.blen(reply_bytes), peer)
+    }
+    return 0
+}
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+fn lower(s: str): str { let b = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); let v = c; if c >= 65 && c <= 90 { v = c + 32 }; sys.bytes_push(b, v) }; return sys.join2(sys.bytes_cstr(b), "") }

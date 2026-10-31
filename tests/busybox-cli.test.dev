@@ -641,6 +641,29 @@ test.case("runsv runsvdir sv svlogd (BusyBox only)",fn() {
     test.expect(strings.contains(outcome(d, "mkdir lg; printf 's50\\nn3\\n' > lg/config; for i in 1 2 3 4 5 6 7 8; do printf 'a line that is long enough to rotate the log %s\\n' $i | " + bb + " svlogd lg; done; ls lg | grep -c '^@'"), "3") || strings.contains(outcome(d, "mkdir lg; printf 's50\\nn3\\n' > lg/config; for i in 1 2 3 4 5 6 7 8; do printf 'a line that is long enough to rotate the log %s\\n' $i | " + bb + " svlogd lg; done; ls lg | grep -c '^@'"), "2"), "svlogd rotation")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("ftpd dnsd (Python ftplib and a raw DNS query as clients)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let site = "mkdir -p pub/sub && printf 'remote text\\n' > pub/hello.txt && head -c 5000 /dev/urandom > pub/blob.bin && printf 'inner\\n' > pub/sub/in.txt; "
+    let start = site + bb + " tcpsvd 127.0.0.1 18850 " + bb + " ftpd -w pub & echo $! > s.pid; sleep 1; "
+    let stop = "; kill $(cat s.pid) 2>/dev/null; sleep 1"
+    let ftp = "python3 -c \"import ftplib,io,sys\nf=ftplib.FTP(); f.connect('127.0.0.1',18850); f.login('anonymous','a@b')\n"
+    test.expect(strings.contains(outcome(d, start + ftp + "print(f.pwd()); print(sorted(f.nlst()))\nf.quit()\"" + stop), "['blob.bin', 'hello.txt', 'sub']"), "ftpd NLST/PWD:\n" + outcome(d, start + ftp + "print(f.pwd()); print(sorted(f.nlst()))\nf.quit()\"" + stop))
+    test.expect(strings.contains(outcome(d, start + ftp + "b=io.BytesIO(); f.retrbinary('RETR hello.txt', b.write); print(b.getvalue().decode())\nf.quit()\"" + stop), "remote text"), "ftpd RETR")
+    test.expect(strings.contains(outcome(d, start + ftp + "b=io.BytesIO(); f.retrbinary('RETR blob.bin', b.write); open('got.bin','wb').write(b.getvalue())\nf.quit()\"; cmp got.bin pub/blob.bin; echo cmp=$?" + stop), "cmp=0"), "ftpd RETR of a binary file")
+    test.expect(strings.contains(outcome(d, start + ftp + "f.cwd('sub'); print(f.pwd()); b=io.BytesIO(); f.retrbinary('RETR in.txt', b.write); print(b.getvalue().decode()); f.cwd('..'); print(f.pwd())\nf.quit()\"" + stop), "/sub\ninner\n\n/\n"), "ftpd CWD")
+    test.expect(strings.contains(outcome(d, start + ftp + "f.storbinary('STOR up.txt', io.BytesIO(b'uploaded data'))\nf.quit()\"; cat pub/up.txt" + stop), "uploaded data"), "ftpd STOR with -w")
+    test.expect(strings.contains(outcome(d, start + ftp + "print(f.size('hello.txt')); f.delete('hello.txt'); print(sorted(f.nlst()))\nf.quit()\"" + stop), "12\n['blob.bin', 'sub']"), "ftpd SIZE and DELE")
+    test.expect(strings.contains(outcome(d, start + ftp + "try:\n  f.cwd('../..')\nexcept Exception as e: print('refused')\nf.quit()\"" + stop), "refused") || strings.contains(outcome(d, start + ftp + "f.cwd('../..'); print(f.pwd())\nf.quit()\"" + stop), "/\n"), "ftpd must stay inside its directory")
+    test.expect(strings.contains(outcome(d, start + ftp + "try:\n  f.retrbinary('RETR nosuch', lambda x: None)\nexcept Exception as e: print('550' in str(e))\nf.quit()\"" + stop), "True"), "ftpd RETR of a missing file")
+    test.expect(strings.contains(outcome(d, site + bb + " tcpsvd 127.0.0.1 18851 " + bb + " ftpd pub & echo $! > s.pid; sleep 1; python3 -c \"import ftplib,io\nf=ftplib.FTP(); f.connect('127.0.0.1',18851); f.login()\ntry:\n  f.storbinary('STOR x.txt', io.BytesIO(b'x'))\nexcept Exception as e: print('denied')\nf.quit()\"" + stop), "denied"), "ftpd without -w must refuse uploads")
+    let dns = "printf 'www.example.test 10.1.2.3\\nmail.example.test 10.9.8.7\\n' > dns.conf; " + bb + " dnsd -c dns.conf -p 18852 & echo $! > s.pid; sleep 1; "
+    let query = "python3 -c \"import socket,struct\ndef ask(n):\n  s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3)\n  q=b'\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00'+b''.join(bytes([len(p)])+p.encode() for p in n.split('.'))+b'\\x00\\x00\\x01\\x00\\x01'\n  s.sendto(q,('127.0.0.1',18852)); r=s.recv(512); return r\n"
+    test.expect(strings.contains(outcome(d, dns + query + "r=ask('www.example.test'); print('.'.join(str(b) for b in r[-4:]), r[3] & 15)\"" + stop), "10.1.2.3 0"), "dnsd answer:\n" + outcome(d, dns + query + "r=ask('www.example.test'); print('.'.join(str(b) for b in r[-4:]), r[3] & 15)\"" + stop))
+    test.expect(strings.contains(outcome(d, dns + query + "r=ask('MAIL.example.test'); print('.'.join(str(b) for b in r[-4:]))\"" + stop), "10.9.8.7"), "dnsd is case-insensitive")
+    test.expect(strings.contains(outcome(d, dns + query + "r=ask('nosuch.example.test'); print(r[3] & 15)\"" + stop), "3"), "dnsd NXDOMAIN")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
