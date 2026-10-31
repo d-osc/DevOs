@@ -1,5 +1,5 @@
 {
-  "entry": "org.devos.microphone.js",
+  "native": "microphone",
   "name": "Microphone",
   "settings": [],
   "order": 28,

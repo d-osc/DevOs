@@ -3,8 +3,6 @@ import {ExtensionManager} from '@dev-os/extensions';
 import {AppUpdates as Updates} from './app-data.js';
 import {sendCommand, processApplicationId, missingProcess} from '@dev-os/runtime/processes';
 import {UpdatesView} from './apps/org.devos.updates/view.js';
-import {CameraSettings} from './apps/org.devos.camera/settings-view.js';
-import {MicrophoneSettings} from './apps/org.devos.microphone/settings-view.js';
 import {TaskManagerSettings} from './apps/org.devos.taskmanager/settings.js';
 import {DiskManagerSettings} from './apps/org.devos.diskmanager/settings.js';
 import {AppStoreSettings} from './apps/org.devos.appstore/settings.js';
@@ -17,8 +15,6 @@ export function registerAppSettings(context: UIContext): () => void {
     });};
     const updater = new Updates();
     const pages = {
-        camera: () => <CameraSettings open={() => context.invoke('camera')}/>,
-        microphone: () => <MicrophoneSettings open={() => context.invoke('microphone')}/>,
         taskmanager: () => <TaskManagerSettings openManager={() => context.invoke('task-manager')}/>,
         diskmanager: () => <DiskManagerSettings openManager={() => context.invoke('disk-manager')}/>,
         appstore: () => <AppStoreSettings openStore={() => context.invoke('app-store')} openExtensions={openExtensions}/>,

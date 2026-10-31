@@ -1,5 +1,5 @@
 {
-  "entry": "org.devos.camera.js",
+  "native": "camera",
   "name": "Camera",
   "settings": [],
   "order": 28,

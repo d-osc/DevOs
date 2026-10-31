@@ -1,4 +1,3 @@
-import {MediaData} from '../src/apps/org.devos.camera/capture.js';
 import {Gio, GLib} from '@dev-os/core/base';
 import {appService, closeAppService} from '@dev-os/runtime/app-service';
 import {EditorDocument} from '../src/apps/org.devos.editor/document.js';
@@ -31,21 +30,6 @@ async function run() {
         assert(document.dirty && document.content === 'edited', 'Typing updates the view immediately');
         assert(await document.save(), 'Saving runs in the data service');
         assert(new TextDecoder().decode(GLib.file_get_contents(path)[1]) === 'edited', 'Saved bytes match the edit');
-        // Exercise real GStreamer streams in the worker without opening physical hardware.
-        const until = async (ready: () => boolean) => {for (let attempt = 0; attempt < 100; attempt++) {if (ready()) return; await wait(50);} throw new Error('Media service did not respond');};
-        let frames = 0, photo = '', recording = '', peaks = 0;
-        const camera = new MediaData('camera', message => {if (message.startsWith('Saved · ')) photo = message.slice(8);}, () => {}, () => {}, jpeg => {assert(jpeg.startsWith('/9j/'), 'Preview is JPEG data'); frames++;});
-        const microphone = new MediaData('microphone', message => {if (message.startsWith('Saved · ')) recording = message.slice(8);}, level => {if (level > 0) peaks++;}, () => {}, () => {});
-        try {
-            await camera.start(-1, false, true); await until(() => frames > 0);
-            camera.photo(); await until(() => !!photo);
-            assert(photo.startsWith(directory + '/'), 'Camera writes only inside the disposable home');
-            assert(GLib.file_get_contents(photo)[1][0] === 255, 'Worker produced a photo');
-            await microphone.start(-1, true, true); await until(() => peaks > 0);
-            microphone.stop(); await until(() => !!recording);
-            assert(recording.startsWith(directory + '/'), 'Microphone writes only inside the disposable home');
-            assert(new TextDecoder().decode(GLib.file_get_contents(recording)[1].slice(0, 4)) === 'RIFF', 'Worker finalized WAV audio');
-        } finally {camera.destroy(); microphone.destroy();}
         signal(identity.pid, 'STOP');
         await wait(80);
         const before = ticks;
