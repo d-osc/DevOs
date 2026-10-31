@@ -17,6 +17,8 @@ sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.files
 install -m0755 "$root/build/react-devlang/apps/files" "$root/dist/native/files"
 sh "$root/packages/react-devlang/tools/build.sh" "$root/src/apps/org.devos.appstore/native-main.devx" "$root/build/react-devlang/apps/appstore"
 install -m0755 "$root/build/react-devlang/apps/appstore" "$root/dist/native/appstore"
+sh "$root/packages/react-devlang/tools/build.sh" "$root/src/system/org.devos.shell/native-main.devx" "$root/build/react-devlang/apps/shell"
+install -m0755 "$root/build/react-devlang/apps/shell" "$root/dist/native/shell"
 sh "$root/packages/react-devlang/tools/build.sh" "$root/src/system/org.devos.launcher/native-main.devx" "$root/build/react-devlang/apps/launcher"
 install -m0755 "$root/build/react-devlang/apps/launcher" "$root/dist/native/launcher"
 sh "$root/packages/react-devlang/tools/build.sh" "$root/src/system/org.devos.launcher/task-view-main.devx" "$root/build/react-devlang/apps/task-view"

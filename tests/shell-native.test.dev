@@ -1,0 +1,64 @@
+use "std/fs"
+use "std/test"
+use "std/strings"
+use "std/encoding"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+use "../src/system/org.devos.shell/router.dev" as router
+
+# The native shell: the command router (what each command asks for), the worker that carries the steps out, and the program that owns the shell's D-Bus
+# name without a window. Nothing is started: DEVOS_SHELL_TEST makes the worker log what it would do.
+fn us():str { return encoding.decode(Vec<u8>(31),"utf8") }
+fn kinds(steps:Vec<router.Step>):str { let out = Vec<str>(); for s in steps { out.push(s.kind + ":" + s.role + ":" + s.command + ":" + s.path) }; return strings.join(out,"|") }
+test.case("commands are routed to the app that owns them, settings pages to Settings, and overlays close the others",fn() {
+    t.equal(kinds(router.route(Vec<str>("settings"),"/")),"launch:settings:settings:")
+    t.equal(kinds(router.route(Vec<str>("wifi"),"/")),"launch:settings:settings.wifi:")
+    t.equal(kinds(router.route(Vec<str>("task-manager"),"/")),"launch:taskmanager:task-manager:")
+    t.equal(kinds(router.route(Vec<str>("switch-user","alice"),"/")),"launch:settings:session.switch-user:alice")
+    t.equal(kinds(router.route(Vec<str>("settings.panel"),"/")),"launch:settings:settings.panel:")
+    t.equal(kinds(router.route(Vec<str>("launcher"),"/")),"overlay:task-view:task-view hide:close|overlay:snap-panel:snap-layouts hide:close|overlay:launcher:launcher:open")
+    t.equal(kinds(router.route(Vec<str>("task-view-hide"),"/")),"overlay:task-view:task-view hide:close")
+    t.equal(kinds(router.route(Vec<str>("overlays-hide"),"/")),"overlay:launcher:launcher hide:close|overlay:task-view:task-view hide:close|overlay:snap-panel:snap-layouts hide:close")
+    t.equal(kinds(router.route(Vec<str>("session.quit"),"/")),"quit:::")
+    t.equal(kinds(router.route(Vec<str>("terminal"),"/home/u")),"run::terminal:/home/u")
+    t.equal(kinds(router.route(Vec<str>("lock"),"/")),"run::lock:/")
+    t.equal(kinds(router.route(Vec<str>("window-next"),"/")),"gesture::window-next:")
+    t.equal(kinds(router.route(Vec<str>("nothing-here"),"/")),"none:::")
+    t.equal(kinds(router.route(Vec<str>(),"/")),"none:::")
+})
+test.case("editor and package paths are made absolute against the caller's folder, file: URIs are read, and no path opens the app",fn() {
+    t.equal(kinds(router.route(Vec<str>("editor"),"/w")),"launch:editor:editor:")
+    t.equal(kinds(router.route(Vec<str>("editor","a.txt","../b.txt","/c/./d","file:///e/f"),"/w/x")),"launch:editor:editor:/w/x/a.txt|launch:editor:editor:/w/b.txt|launch:editor:editor:/c/d|launch:editor:editor:/e/f")
+    t.equal(kinds(router.route(Vec<str>("package-install","p.dpk"),"/w")),"launch:appstore:package-install:/w/p.dpk")
+    t.equal(kinds(router.route(Vec<str>("package-install"),"/w")),"launch:appstore:package-install:")
+    t.equal(router.appFor("settings.bluetooth"),"settings")
+    t.equal(router.appFor("app-store-extensions"),"appstore")
+    t.equal(router.appFor("launcher"),"")
+})
+fn worker(lines:str, log:str):str {
+    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_SHELL_TEST","1"); env.set("DEVOS_SHELL_LOG",log); env.set("XDG_RUNTIME_DIR","/nonexistent-devos"); env.set("WAYLAND_DISPLAY","wayland-test")
+    return t.out(tool.run(Vec<str>("d",t.root() + "/src/system/org.devos.shell/service.dev"),env,lines,120000))
+}
+test.case("the worker answers one line per command and logs what it would start",fn() {
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d"))); let log = d + "/log"
+    let answer = worker("/w" + us() + "settings.x\n/w" + us() + "settings" + us() + "\n/w" + us() + "logout\n/w" + us() + "editor" + us() + "a.txt\n/w" + us() + "session.quit\n",log)
+    let lines = strings.split(strings.trim(answer),"\n")
+    test.expect(lines.len() == 5 && strings.equal(lines[0],"V") && strings.equal(lines[1],"V") && strings.equal(lines[4],"Q"),"answers: " + answer)
+    let seen = fs.readFileSync(log,"utf8")
+    test.expect(strings.contains(seen,"launch settings settings\n") && strings.contains(seen,"launch editor editor /w/a.txt") && strings.contains(seen,"overlay launcher launcher logout open") && strings.contains(seen,"overlay task-view task-view hide close"),"log: " + seen)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("the program owns the shell's D-Bus name without a window: commands arrive, an unknown one is refused, and session.quit ends it",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/shell-native"
+    tool.checked(Vec<str>("sh",t.root() + "/packages/react-devlang/tools/build.sh",t.root() + "/src/system/org.devos.shell/native-main.devx",executable),Map<str,str>(),"",180000)
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d"))); let log = d + "/log"
+    let done = tool.run(Vec<str>("dbus-run-session","--","xvfb-run","-a","sh",t.root() + "/tests/lib/shell-route.sh",executable,t.root(),log),Map<str,str>(),"",120000)
+    let out = t.out(done)
+    test.expect(strings.contains(out,"ROUTE shell: (0, '')"),"the shell answers: " + out + t.err(done))
+    test.expect(strings.contains(out,"ROUTE unknown:") && strings.contains(out,"Unsupported app command"),"an unknown command is refused: " + out)
+    test.expect(strings.contains(out,"ROUTE still running") && strings.contains(out,"ROUTE quit ended the shell"),"lifetime: " + out)
+    let seen = fs.existsSync(log) ? fs.readFileSync(log,"utf8") : ""
+    test.expect(strings.contains(seen,"launch settings settings.wifi") && strings.contains(seen,"overlay launcher launcher open") && strings.contains(seen,"launch editor editor /work/a.txt") && strings.contains(seen,"launch editor editor /tmp/b%20c"),"worker log: " + seen)
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+return t.finish()

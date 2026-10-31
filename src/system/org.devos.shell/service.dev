@@ -1,0 +1,157 @@
+#!/usr/bin/env d
+# Worker of the native shell: carries out the steps router.dev makes of a command line. One request per line on stdin (the caller's folder first, then the
+# command and its arguments, separated by ASCII 31) and exactly one answer line: "V" (done), "Q" (the session ends) or "E<TAB>message".
+# Apps are started the way packages/shell/app-processes.ts starts them: a running one gets the command over D-Bus, a missing one is spawned
+# (dist/native/<app> when there is one, else the JS app host). DEVOS_SHELL_TEST=1 appends what would be done to DEVOS_SHELL_LOG and starts nothing.
+use "std/io"
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/encoding"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/config.dev" as config
+use "../../../lib/shell-command.dev" as shell
+use "./router.dev" as router
+
+fn us():str { return encoding.decode(Vec<u8>(31),"utf8") }
+fn testing():bool { return !strings.equal(hw.env("DEVOS_SHELL_TEST"),"") }
+fn root():str { return hw.envOr("DEV_OS_ROOT",".") }
+fn shellId():str { return shell.applicationId(hw.env("XDG_RUNTIME_DIR"),hw.envOr("WAYLAND_DISPLAY","default")) }
+fn note(line:str) { if testing() && !strings.equal(hw.env("DEVOS_SHELL_LOG"),"") { fs.appendFileSync(hw.env("DEVOS_SHELL_LOG"),line + "\n") } }
+fn say(message:str) {
+    hw.stderr("Dev OS: " + message)
+    if testing() { note("message " + message); return }
+    hw.run(Vec<str>("gdbus","emit","--session","--object-path","/org/devos/Panel","--signal","org.devos.Panel.Message",message),5000)
+}
+
+# The D-Bus identity of an app process: org.devos.App.<name>.<shell id>.
+fn identity(name:str):str { return strings.replaceAll(shellId(),"org.devos.Shell.","org.devos.App." + name + ".") }
+fn optIn(role:str):bool {
+    if strings.equal(hw.env("DEVOS_NATIVE_" + strings.toUpperCase(role)),"1") { return true }
+    return fs.existsSync(hw.configHome() + "/devos/native-" + role)
+}
+fn nativeRoles():Vec<str> { return Vec<str>("taskmanager","diskmanager","installer","files") }
+fn optInRoles():Vec<str> { return Vec<str>("settings","terminal","browser","camera","microphone","appstore","editor") }
+fn spawn(argv:Vec<str>, extra:Vec<str>) {
+    let all = Vec<str>("env","DEV_OS_ROOT=" + root())
+    for item in extra { all.push(item) }
+    for item in argv { all.push(item) }
+    hw.spawnDetached(all)
+}
+fn isExecutable(path:str):bool { return hw.isExecutable(path) }
+
+# Starts a process of `role` for `command` (a running one is asked over D-Bus first).
+fn launch(role:str, command:str, path:str) {
+    let args = Vec<str>(command)
+    if !strings.equal(path,"") { args.push(path) }
+    let background = strings.equal(command,"settings.background")
+    let panel = strings.equal(command,"settings.panel")
+    let name = background ? "backgroundsettings" : panel ? "panelsettings" : strings.equal(role,"services") ? "services" : role
+    let id = strings.equal(role,"services") ? strings.replaceAll(shellId(),"org.devos.Shell.","org.devos.Services.") : identity(name)
+    note("launch " + role + " " + strings.join(args," "))
+    if testing() { return }
+    let status = shell.remoteTo(id,args,"/")
+    if status == 0 { return }
+    if status != -1 { say(command + ": the process answered an error"); return }
+    let executable = ""
+    if background { executable = "background-settings" }
+    else if panel { executable = "panel-settings" }
+    else if shellRoleIs(optInRoles(),role) && optIn(role) && isExecutable(root() + "/dist/native/" + role) { executable = role }
+    else if shellRoleIs(nativeRoles(),role) { executable = role }
+    let extra = Vec<str>()
+    let argv = Vec<str>()
+    if !strings.equal(executable,"") {
+        let native = root() + "/dist/native/" + executable
+        if !isExecutable(native) { say("Native " + executable + " is missing. Run sh tools/build/native-apps.sh."); return }
+        extra.push("DEV_OS_NATIVE_ID=" + id); extra.push("DEV_OS_SHELL_ID=" + shellId())
+        if background { extra.push("DEVOS_BACKGROUND_ROLE=settings") }
+        if panel { extra.push("DEVOS_PANEL_ROLE=settings") }
+        for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
+        argv.push(native)
+    } else if strings.equal(role,"services") { argv.push("gjs"); argv.push("-m"); argv.push(root() + "/dist/services-host.js") }
+    else { argv.push("gjs"); argv.push("-m"); argv.push(root() + "/dist/app-host.js"); argv.push(role) }
+    for item in args { argv.push(item) }
+    spawn(argv,extra)
+}
+fn shellRoleIs(list:Vec<str>, role:str):bool { return router.contains(list,role) }
+
+# The native Launcher, Task View and Snap windows: a running one gets the command (a toggle), a missing one is started when `open`.
+fn overlayName(role:str):str { return strings.equal(role,"task-view") ? "taskview" : strings.equal(role,"snap-panel") ? "snap" : "launcher" }
+fn overlay(role:str, command:str, open:bool) {
+    let args = strings.split(command," ")
+    note("overlay " + role + " " + command + (open ? " open" : " close"))
+    if testing() { return }
+    let id = identity(overlayName(role))
+    let status = shell.remoteTo(id,args,"/")
+    if status == 0 { return }
+    if status != -1 { say(command + ": the window answered an error"); return }
+    if !open { return }
+    let extra = Vec<str>("DEV_OS_NATIVE_ID=" + id,"DEV_OS_SHELL_ID=" + shellId())
+    if strings.equal(args.len() > 1 ? args[1] : "","logout") { extra.push("DEVOS_LAUNCHER_LOGOUT=1") }
+    for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
+    let executable = root() + "/dist/native/" + role
+    if !isExecutable(executable) { say("Native " + role + " is missing. Run sh tools/build/native-apps.sh."); return }
+    spawn(Vec<str>(executable),extra)
+}
+
+fn configured(key:str):Vec<str> {
+    let loaded = result.attempt(fn():json.Value { return config.load(config.configPath()) })
+    let out = Vec<str>()
+    if result.isErr(loaded) { say(result.message(loaded)); return out }
+    let list = json.get(result.unwrap(loaded),key)
+    for i in 0..(json.len(list) as i64) { out.push(config.expandHome(json.string(json.at(list,i)))) }
+    return out
+}
+# terminal, files and lock: the Dev OS program when the config names it, else the configured command.
+fn runCommand(command:str, folder:str):bool {
+    if strings.equal(command,"files") { launch("files","files",""); return true }
+    let args = configured(command)
+    if args.len() == 0 { return false }
+    if strings.equal(command,"lock") {
+        let program = args.len() == 1 && strings.equal(args[0],"dev-os-lock") ? "swaylock" : args[0]
+        if !testing() && strings.equal(hw.which(program),"") { say("Install " + program + " or change 'lock' in config.json."); return false }
+        launch("services","lock",""); return true
+    }
+    if args.len() == 1 && (strings.equal(args[0],"dev-os-terminal") || strings.equal(args[0],"foot")) { launch("terminal","terminal.native",folder); return true }
+    if !testing() && strings.equal(hw.which(args[0]),"") { say("Install " + args[0] + " or change '" + command + "' in config.json."); return false }
+    note("run " + strings.join(args," "))
+    if testing() { return true }
+    let argv = Vec<str>("sh","-c","cd \"$1\" 2>/dev/null || cd /; shift; exec \"$@\"","sh",folder)
+    for item in args { argv.push(item) }
+    hw.spawnDetached(argv)
+    return true
+}
+
+# Carries out one command line; returns the answer line.
+fn handle(line:str):str {
+    let parts = strings.split(line,us())
+    let cwd = parts[0]
+    let args = Vec<str>()
+    for i in 1..(parts.len() as i64) { args.push(parts[i]) }
+    let quit = false
+    let failed = ""
+    for s in router.route(args,cwd) {
+        if strings.equal(s.kind,"launch") { launch(s.role,s.command,s.path) }
+        else if strings.equal(s.kind,"overlay") { overlay(s.role,s.command,strings.equal(s.path,"open")) }
+        else if strings.equal(s.kind,"run") { if !runCommand(s.command,strings.equal(s.path,"") ? cwd : s.path) { failed = "Could not run " + s.command + "." } }
+        else if strings.equal(s.kind,"message") { say(s.path) }
+        else if strings.equal(s.kind,"reload") { say("Configuration reloaded") }
+        else if strings.equal(s.kind,"quit") { quit = true }
+        else if strings.equal(s.kind,"gesture") { note("gesture " + s.command) }
+    }
+    if !strings.equal(failed,"") { return "E\t" + failed }
+    return quit ? "Q" : "V"
+}
+fn splash(step:str) { if !testing() && !strings.equal(hw.which("devos-splash"),"") { hw.spawnDetached(Vec<str>("devos-splash","--step",step)) } }
+fn main():i32 {
+    splash("shell")
+    if !testing() && !strings.equal(hw.which("devos-splash"),"") { hw.spawnDetached(Vec<str>("sh","-c","sleep 0.7; exec devos-splash --step ready")) }
+    while true {
+        let line = io.read_line(); if strings.equal(line,"") { break }
+        let done = result.attempt(fn():str { return handle(line) })
+        print(result.isErr(done) ? "E\t" + hw.clean(result.message(done)) : result.unwrap(done))
+    }
+    return 0
+}
+return main()

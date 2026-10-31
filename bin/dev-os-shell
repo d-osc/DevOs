@@ -31,6 +31,13 @@ if [ "$native_client" = yes ]; then
         exit "$status"
     fi
 fi
+# The native shell (DevLang, dist/native/shell) is opt-in until it has been tried on a real session: DEVOS_NATIVE_SHELL=1 or a file at ~/.config/devos/native-shell.
+if [ "${1:-shell}" = shell ] && [ -x "$root/dist/native/shell" ] && { [ "${DEVOS_NATIVE_SHELL:-}" = 1 ] || [ -e "${XDG_CONFIG_HOME:-$HOME/.config}/devos/native-shell" ]; }; then
+    id=$(printf "%s" "${XDG_RUNTIME_DIR:-}/${WAYLAND_DISPLAY:-default}" | sha256sum | cut -c1-16)
+    DEV_OS_NATIVE_ID="org.devos.Shell.s$id"
+    export DEV_OS_NATIVE_ID
+    exec "$root/dist/native/shell"
+fi
 if [ ! -f "$root/dist/main.js" ]; then
     printf '%s\n' 'TypeScript build missing. Run npm ci and npm run build.' >&2
     exit 1

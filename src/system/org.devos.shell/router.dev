@@ -1,0 +1,81 @@
+# The command router of the native shell: what each `dev-os-shell <command>` asks for. Pure rules (no GTK, no D-Bus, no processes), so they can be
+# tested alone; service.dev carries the steps out. It follows packages/shell/index.ts (`handleArguments`) and packages/runtime/processes.ts.
+use "std/strings"
+
+# kind: launch (role, command, path) | overlay (role = launcher|task-view|snap-panel, command = its arguments joined by a space, path = "open" or "close")
+#       | run (command = terminal|files|lock, path = folder) | quit | message (path = the text) | reload | gesture (command) | none
+struct Step { kind: str, role: str, command: str, path: str }
+
+fn step(kind:str, role:str, command:str, path:str):Step { return Step(kind,role,command,path) }
+fn contains(values:Vec<str>, value:str):bool { for item in values { if strings.equal(item,value) { return true } }; return false }
+
+# The app process that owns a command ("" when the shell handles it itself).
+fn appFor(command:str):str {
+    if strings.equal(command,"settings") || strings.equal(command,"session.switch-user") { return "settings" }
+    if strings.equal(command,"files") { return "files" }
+    if strings.equal(command,"terminal") || strings.equal(command,"terminal.native") { return "terminal" }
+    if strings.equal(command,"editor") { return "editor" }
+    if strings.equal(command,"camera") { return "camera" }
+    if strings.equal(command,"microphone") { return "microphone" }
+    if strings.equal(command,"task-manager") { return "taskmanager" }
+    if strings.equal(command,"browser") { return "browser" }
+    if strings.equal(command,"disk-manager") { return "diskmanager" }
+    if contains(Vec<str>("app-store","app-store-extensions","extension-store","settings.store","package-install"),command) { return "appstore" }
+    if strings.equal(command,"installer") { return "installer" }
+    if strings.equal(command,"screenshot") || strings.equal(command,"screenshot-app") { return "screenshot" }
+    if strings.startsWith(command,"settings.") { return "settings" }
+    return ""
+}
+# A local path from a path or a file: URI, made absolute against `cwd` with . and .. folded.
+fn canonical(path:str, cwd:str):str {
+    let plain = strings.startsWith(path,"file://") ? strings.substring(path,7,strings.charLength(path)) : path
+    let full = strings.startsWith(plain,"/") ? plain : (strings.equal(cwd,"") ? "/" : cwd) + "/" + plain
+    let kept = Vec<str>()
+    for part in strings.split(full,"/") {
+        if strings.equal(part,"") || strings.equal(part,".") { continue }
+        if strings.equal(part,"..") { if kept.len() > 0 { kept.pop() }; continue }
+        kept.push(part)
+    }
+    return "/" + strings.join(kept,"/")
+}
+fn settingsPage(command:str):bool {
+    return contains(Vec<str>("vpn","hotspot","airplane","proxy","advanced","mouse","keyboard","bluetooth-add","printers","touchpad","system","display","sound","power","storage","about","wifi","network","language","time","accounts"),command)
+}
+fn overlayHides(keep:str):Vec<Step> {
+    let out = Vec<Step>()
+    if !strings.equal(keep,"launcher") { out.push(step("overlay","launcher","launcher hide","close")) }
+    if !strings.equal(keep,"task-view") { out.push(step("overlay","task-view","task-view hide","close")) }
+    if !strings.equal(keep,"snap") { out.push(step("overlay","snap-panel","snap-layouts hide","close")) }
+    return out
+}
+fn overlay(keep:str, role:str, args:str):Vec<Step> { let out = overlayHides(keep); out.push(step("overlay",role,args,"open")); return out }
+
+# The steps of one command line (`args[0]` is the command, the rest its arguments); `cwd` is where the caller was.
+fn route(args:Vec<str>, cwd:str):Vec<Step> {
+    let out = Vec<Step>()
+    let command = args.len() > 0 ? args[0] : "shell"
+    let app = appFor(command)
+    if !strings.equal(app,"") && !contains(Vec<str>("terminal","files","editor","package-install"),command) { out.push(step("launch",app,command,"")); return out }
+    if strings.equal(command,"session.restart") || strings.equal(command,"session.quit") { out.push(step("quit","","","")); return out }
+    if strings.equal(command,"services.message") { out.push(step("message","","",args.len() > 1 ? args[1] : "")); return out }
+    if strings.equal(command,"window-next") || strings.equal(command,"window-previous") || strings.equal(command,"window-restore") { out.push(step("gesture","",command,"")); return out }
+    if strings.equal(command,"launcher") { return overlay("launcher","launcher","launcher") }
+    if strings.equal(command,"logout") { return overlay("launcher","launcher","launcher logout") }
+    if strings.equal(command,"task-view") { return overlay("task-view","task-view","task-view") }
+    if strings.equal(command,"task-view-show") { return overlay("task-view","task-view","task-view show") }
+    if strings.equal(command,"task-view-hide") { out.push(step("overlay","task-view","task-view hide","close")); return out }
+    if strings.equal(command,"snap-layouts") { return overlay("snap","snap-panel","snap-layouts") }
+    if strings.equal(command,"overlays-hide") { return overlayHides("") }
+    if settingsPage(command) { out.push(step("launch","settings","settings." + command,"")); return out }
+    if strings.equal(command,"switch-user") { out.push(step("launch","settings","session.switch-user",args.len() > 1 ? args[1] : "")); return out }
+    if strings.equal(command,"reload") { out.push(step("reload","","","")); return out }
+    if strings.equal(command,"terminal") || strings.equal(command,"lock") || strings.equal(command,"files") { out.push(step("run","",command,cwd)); return out }
+    if strings.equal(command,"package-install") || strings.equal(command,"editor") {
+        let role = strings.equal(command,"editor") ? "editor" : "appstore"
+        if args.len() < 2 { out.push(step("launch",role,command,"")); return out }
+        for i in 1..(args.len() as i64) { out.push(step("launch",role,command,canonical(args[i],cwd))) }
+        return out
+    }
+    out.push(step("none","","",""))
+    return out
+}

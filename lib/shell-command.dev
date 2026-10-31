@@ -31,3 +31,12 @@ fn remote(args:Vec<str>,runtime:str,display:str,cwd:str):i32 {
     unsafe {status=sr_remote(name,path,"org.devos.Shell.Control","Execute",builder,cwd)}
     return status
 }
+# Execute(ass) on any Dev OS process (an app, an overlay or the shell): -1 when nothing owns the name, -2 on another error, else the status it answered.
+fn remoteTo(name:str,args:Vec<str>,cwd:str):i32 {
+    let path="/"+strings.replaceAll(name,".","/")+"/control"
+    let builder:*void=null;let status:i32=0
+    unsafe {builder=sp_builder()}
+    for arg in args {unsafe {sp_arg(builder,arg)}}
+    unsafe {status=sr_remote(name,path,"org.devos.Shell.Control","Execute",builder,cwd)}
+    return status
+}

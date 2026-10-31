@@ -183,7 +183,9 @@ void rd_identity(const char *id) { g_set_prgname(id); gdk_set_program_class(id);
 void rd_callback(void *data, RdDispatch dispatch, void *context) { RdRoot *root = data; root->dispatch = dispatch; root->data = context; }
 void rd_schedule(void *data) { RdRoot *root = data; if (!root->closed && !root->idle) root->idle = g_idle_add(rd_idle, root); }
 void rd_applying(void *data, int32_t applying) { ((RdRoot *)data)->applying = applying != 0; }
-void rd_run(void *data) { RdRoot *root = data; if (!root->closed) {gtk_widget_show(root->window); gtk_widget_show(root->host); gtk_main();} }
+/* RD_HIDDEN=1: a program with no window (the shell) that only answers the D-Bus control interface; its window is never shown. */
+static gboolean rd_hidden(void) { const char *mode = g_getenv("RD_HIDDEN"); return mode && *mode; }
+void rd_run(void *data) { RdRoot *root = data; if (!root->closed) {if (!rd_hidden()) {gtk_widget_show(root->window); gtk_widget_show(root->host);} gtk_main();} }
 void rd_close(void *data) {
     RdRoot *root = data; if (root->closed) return;
     if (root->layer && !root->closing && gtk_widget_get_mapped(root->window)) { root->closing = TRUE; root->fade_start = 0; root->fade_from = gtk_widget_get_opacity(root->window); gtk_widget_add_tick_callback(root->window, rd_fade_out, root, NULL); return; }
@@ -225,9 +227,11 @@ static void rd_execute(GDBusConnection *connection, const char *sender, const ch
     g_variant_get(parameters, "(^as&s)", &args, &cwd); (void)cwd;
     gboolean valid = args && args[0] && (g_str_equal(args[0], root->command) || rd_prefixed(root, args[0]));
     if (valid && !root->closed) {
-        gtk_window_present(GTK_WINDOW(root->window));
-        /* The whole command line reaches the app as event kind 7, arguments separated by ASCII 31. */
-        char *line = g_strjoinv("\037", args); rd_emit(root, 7, NULL, line); g_free(line);
+        /* The whole command line reaches the app as event kind 7, arguments separated by ASCII 31 (a hidden program gets the caller's folder first). */
+        char *joined = g_strjoinv("\037", args);
+        if (rd_hidden()) { char *line = g_strdup_printf("%s\037%s", cwd, joined); rd_emit(root, 7, NULL, line); g_free(line); }
+        else { gtk_window_present(GTK_WINDOW(root->window)); rd_emit(root, 7, NULL, joined); }
+        g_free(joined);
     }
     g_dbus_method_invocation_return_value(invocation, g_variant_new("(is)", valid ? 0 : 1, valid ? "" : "Unsupported app command"));
     g_strfreev(args);

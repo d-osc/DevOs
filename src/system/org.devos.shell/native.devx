@@ -1,0 +1,33 @@
+use "react_devlang/ui" as ui
+use "react_devlang/channel" as channel
+extern fn rc_env(name:str):str
+extern fn setenv(name:str,value:str,overwrite:i32):i32
+extern fn rd_control(root:*void,id:str,command:str):i32
+extern fn rd_identity(id:str)
+
+# The native Dev OS shell. A program without a window (RD_HIDDEN=1) that owns the shell's D-Bus name and answers org.devos.Shell.Control.Execute, like the
+# GJS shell it replaces (packages/shell). It forwards every command line (the caller's folder first, then the arguments, joined by ASCII 31) to its worker,
+# service.dev, which routes it (router.dev) and starts or asks the apps. The worker answers "Q" for session.quit / session.restart, and the program ends.
+fn environment(name:str):str { unsafe { return rc_env(name) } }
+# Every command the shell answers; the control interface accepts a command by its prefix.
+fn commands():str {
+    return "shell,accounts,switch-user,browser,camera,microphone,screenshot,window-,launcher,overlays-hide,snap-layouts,task-,disk-manager,installer,app-store,extension-store,settings,package-install,terminal,files,editor,lock,logout,reload,language,time,system,display,sound,power,storage,about,network,wifi,touchpad,mouse,keyboard,bluetooth-add,printers,vpn,hotspot,airplane,proxy,advanced,session.,services."
+}
+fn App(context:*ui.Context):ui.Node {
+    let pipe = ui.useRef(context,0)
+    ui.useEffect(context,fn():fn():void {
+        let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
+        let stop = channel.connectWithLibrary(context,runner,"${root}/src/system/org.devos.shell/service.dev",root,"${root}/dist/native/libsupervisor.so",fn(value:ui.Text) {
+            if value.bytes.len() > 0 && value.bytes[0] == 81 { ui.close(context) }
+        },fn(value:i64) { pipe.set(value) })
+        unsafe { rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"shell") }
+        ui.onCommand(context,commands(),fn(line:ui.Text) { channel.command(pipe.get(),line) })
+        return stop
+    },Vec<i64>())
+    return ui.Box(ui.props(),Vec<ui.Node>())
+}
+fn run():i32 {
+    let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { return 2 }
+    unsafe { rd_identity(id); setenv("RD_HIDDEN","1",0) }
+    return ui.run("Dev OS shell",1,1,App) ? 0 : 1
+}
