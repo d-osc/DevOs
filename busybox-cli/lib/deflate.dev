@@ -1,0 +1,208 @@
+# DEFLATE (RFC 1951) and CRC-32: inflate for every block type, and a compressor using LZ77 matches with the fixed Huffman code.
+use "./sys.dev" as sys
+
+fn cells(count: i64): *i64 { unsafe { return sys.calloc(count as usize, 8) as *i64 } }
+fn cget(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cset(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+
+# ---- CRC-32 ------------------------------------------------------------------------------------------------------------------------------------------------------
+fn crc_table(): *i64 {
+    let t = cells(256)
+    for i in 0..256 {
+        let c = i
+        for k in 0..8 { if c % 2 == 1 { c = 3988292384 ^ (c / 2) } else { c = c / 2 } }
+        cset(t, i, c)
+    }
+    return t
+}
+# Updates a running CRC (start with 0) over data[from, to).
+fn crc32(table: *i64, crc: i64, data: *u8, from: i64, to: i64): i64 { unsafe {
+    let c = crc ^ 4294967295
+    for i in from..to { c = cget(table, (c ^ (data[i] as i64)) % 256) ^ (c / 256) }
+    return c ^ 4294967295
+} }
+
+# ---- inflate ------------------------------------------------------------------------------------------------------------------------------------------------------
+# state s: 0 position, 1 bit buffer, 2 bit count, 3 length, 4 error
+struct Reader { data: *u8, s: *i64 }
+fn need_bits(r: Reader, need: i64): i64 { unsafe {
+    let buf = cget(r.s, 1); let cnt = cget(r.s, 2)
+    while cnt < need {
+        let pos = cget(r.s, 0)
+        if pos >= cget(r.s, 3) { cset(r.s, 4, 1); return 0 }
+        buf = buf + (r.data[pos] as i64) * pow2(cnt)
+        cset(r.s, 0, pos + 1); cnt = cnt + 8
+    }
+    let value = buf % pow2(need)
+    cset(r.s, 1, buf / pow2(need)); cset(r.s, 2, cnt - need)
+    return value
+} }
+fn pow2(n: i64): i64 { let r = 1; for i in 0..n { r = r * 2 }; return r }
+# A canonical Huffman table: h[0..16) counts per length, h[16..) symbols.
+fn build_table(lengths: *i64, n: i64): *i64 {
+    let h = cells(16 + n + 1)
+    for i in 0..n { cset(h, cget(lengths, i), cget(h, cget(lengths, i)) + 1) }
+    let offs = cells(17)
+    for len in 1..16 { cset(offs, len + 1, cget(offs, len) + cget(h, len)) }
+    for i in 0..n { let l = cget(lengths, i); if l != 0 { cset(h, 16 + cget(offs, l), i); cset(offs, l, cget(offs, l) + 1) } }
+    return h
+}
+fn decode_symbol(r: Reader, h: *i64): i64 {
+    let code = 0; let first = 0; let index = 0
+    for len in 1..16 {
+        code = code + need_bits(r, 1)
+        let count = cget(h, len)
+        if code - count < first { return cget(h, 16 + index + (code - first)) }
+        index = index + count; first = (first + count) * 2; code = code * 2
+        if cget(r.s, 4) != 0 { return 0 - 1 }
+    }
+    return 0 - 1
+}
+fn length_base(): *i64 { return numbers("3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258") }
+fn length_extra(): *i64 { return numbers("0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0") }
+fn dist_base(): *i64 { return numbers("1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577") }
+fn dist_extra(): *i64 { return numbers("0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13") }
+fn numbers(text: str): *i64 {
+    let n = 1; for i in 0..sys.length(text) { if sys.at(text, i) == 44 { n = n + 1 } }
+    let out = cells(n); let v = 0; let k = 0
+    for i in 0..(sys.length(text) + 1) {
+        if i == sys.length(text) || sys.at(text, i) == 44 { cset(out, k, v); k = k + 1; v = 0 } else { v = v * 10 + (sys.at(text, i) - 48) as i64 }
+    }
+    return out
+}
+fn fixed_tables(): *i64 {
+    # returns 2 tables joined: lit table pointer at [0], dist table pointer at [1]
+    let lens = cells(288)
+    for i in 0..144 { cset(lens, i, 8) } for i in 144..256 { cset(lens, i, 9) } for i in 256..280 { cset(lens, i, 7) } for i in 280..288 { cset(lens, i, 8) }
+    let d = cells(30); for i in 0..30 { cset(d, i, 5) }
+    let out = cells(2)
+    unsafe { cset(out, 0, build_table(lens, 288) as i64); cset(out, 1, build_table(d, 30) as i64) }
+    return out
+}
+fn table_ptr(v: i64): *i64 { unsafe { return v as *i64 } }
+# Decodes the compressed blocks of one stream into `out`; returns 0 on success, 1 for a data error.
+fn inflate_codes(r: Reader, out: *sys.Bytes, lit: *i64, dist: *i64): i64 {
+    let lb = length_base(); let le = length_extra(); let db = dist_base(); let de = dist_extra()
+    while true {
+        let sym = decode_symbol(r, lit)
+        if sym < 0 || cget(r.s, 4) != 0 { return 1 }
+        if sym < 256 { sys.bytes_push(out, sym as u8) }
+        else if sym == 256 { return 0 }
+        else {
+            sym = sym - 257
+            if sym >= 29 { return 1 }
+            let len = cget(lb, sym) + need_bits(r, cget(le, sym))
+            let ds = decode_symbol(r, dist)
+            if ds < 0 || ds >= 30 { return 1 }
+            let d = cget(db, ds) + need_bits(r, cget(de, ds))
+            if d > sys.blen(out) { return 1 }
+            let from = sys.blen(out) - d
+            for k in 0..len { sys.bytes_push(out, sys.bat(out, from + k)) }
+        }
+    }
+    return 1
+}
+fn inflate_dynamic(r: Reader, out: *sys.Bytes): i64 {
+    let nlen = need_bits(r, 5) + 257; let ndist = need_bits(r, 5) + 1; let ncode = need_bits(r, 4) + 4
+    if nlen > 286 || ndist > 30 { return 1 }
+    let order = numbers("16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15")
+    let lengths = cells(320)
+    for i in 0..ncode { cset(lengths, cget(order, i), need_bits(r, 3)) }
+    let lencode = build_table(lengths, 19)
+    let index = 0
+    let all = cells(320)
+    while index < nlen + ndist {
+        let sym = decode_symbol(r, lencode)
+        if sym < 0 { return 1 }
+        if sym < 16 { cset(all, index, sym); index = index + 1 }
+        else {
+            let len = 0; let rep = 0
+            if sym == 16 { if index == 0 { return 1 }; len = cget(all, index - 1); rep = 3 + need_bits(r, 2) }
+            else if sym == 17 { rep = 3 + need_bits(r, 3) } else { rep = 11 + need_bits(r, 7) }
+            if index + rep > nlen + ndist { return 1 }
+            for k in 0..rep { cset(all, index, len); index = index + 1 }
+        }
+    }
+    let ll = cells(288); for i in 0..nlen { cset(ll, i, cget(all, i)) }
+    let dl = cells(30); for i in 0..ndist { cset(dl, i, cget(all, nlen + i)) }
+    return inflate_codes(r, out, build_table(ll, nlen), build_table(dl, ndist))
+}
+# Inflates data[from, len) into out; `used` (cells) receives the number of input bytes consumed. 0 = ok, 1 = corrupt data.
+fn inflate(data: *u8, from: i64, len: i64, out: *sys.Bytes, used: *i64): i64 { unsafe {
+    let s = cells(6); cset(s, 0, from); cset(s, 3, len)
+    let r = Reader(data, s)
+    let last = 0
+    let fixed = fixed_tables()
+    while last == 0 {
+        last = need_bits(r, 1)
+        let kind = need_bits(r, 2)
+        if cget(s, 4) != 0 { return 1 }
+        let status = 0
+        if kind == 0 {
+            cset(s, 1, 0); cset(s, 2, 0)
+            let pos = cget(s, 0)
+            if pos + 4 > len { return 1 }
+            let n = (data[pos] as i64) + (data[pos + 1] as i64) * 256
+            if pos + 4 + n > len { return 1 }
+            sys.bytes_append(out, &data[pos + 4], n)
+            cset(s, 0, pos + 4 + n)
+        } else if kind == 1 { status = inflate_codes(r, out, table_ptr(cget(fixed, 0)), table_ptr(cget(fixed, 1))) }
+        else if kind == 2 { status = inflate_dynamic(r, out) }
+        else { return 1 }
+        if status != 0 { return 1 }
+    }
+    cset(used, 0, cget(s, 0))
+    return 0
+} }
+
+# ---- deflate (fixed Huffman code, hash-chain LZ77) -------------------------------------------------------------------------------------------------------
+struct Writer { out: *sys.Bytes, s: *i64 }
+fn put_bits(w: Writer, value: i64, count: i64) {
+    let buf = cget(w.s, 0) + value * pow2(cget(w.s, 1)); let cnt = cget(w.s, 1) + count
+    while cnt >= 8 { sys.bytes_push(w.out, (buf % 256) as u8); buf = buf / 256; cnt = cnt - 8 }
+    cset(w.s, 0, buf); cset(w.s, 1, cnt)
+}
+fn reverse_bits(v: i64, n: i64): i64 { let r = 0; let x = v; for i in 0..n { r = r * 2 + x % 2; x = x / 2 }; return r }
+fn put_code(w: Writer, code: i64, n: i64) { put_bits(w, reverse_bits(code, n), n) }
+fn put_literal(w: Writer, sym: i64) {
+    if sym < 144 { put_code(w, 48 + sym, 8) } else if sym < 256 { put_code(w, 400 + sym - 144, 9) } else if sym < 280 { put_code(w, sym - 256, 7) } else { put_code(w, 192 + sym - 280, 8) }
+}
+fn code_for_length(lb: *i64, len: i64): i64 { let k = 28; while k > 0 && cget(lb, k) > len { k = k - 1 }; return k }
+fn code_for_dist(db: *i64, d: i64): i64 { let k = 29; while k > 0 && cget(db, k) > d { k = k - 1 }; return k }
+# Compresses data[0, n) into a raw DEFLATE stream appended to out.
+fn deflate(data: *u8, n: i64, out: *sys.Bytes) { unsafe {
+    let w = Writer(out, cells(2))
+    let lb = length_base(); let le = length_extra(); let db = dist_base(); let de = dist_extra()
+    put_bits(w, 1, 1); put_bits(w, 1, 2)
+    let head = cells(32768); for i in 0..32768 { cset(head, i, 0 - 1) }
+    let prev = cells(n + 1)
+    let i = 0
+    while i < n {
+        let best = 0; let best_d = 0
+        if i + 2 < n {
+            let h = (((data[i] as i64) * 1021 + (data[i + 1] as i64)) * 1021 + (data[i + 2] as i64)) % 32768
+            let cand = cget(head, h); let tries = 0
+            while cand >= 0 && i - cand <= 32768 && tries < 64 {
+                let l = 0
+                while l < 258 && i + l < n && data[cand + l] == data[i + l] { l = l + 1 }
+                if l > best { best = l; best_d = i - cand }
+                cand = cget(prev, cand); tries = tries + 1
+            }
+            cset(prev, i, cget(head, h)); cset(head, h, i)
+        }
+        if best >= 3 {
+            let lc = code_for_length(lb, best)
+            put_literal(w, 257 + lc); put_bits(w, best - cget(lb, lc), cget(le, lc))
+            let dc = code_for_dist(db, best_d)
+            put_code(w, dc, 5); put_bits(w, best_d - cget(db, dc), cget(de, dc))
+            for k in 1..best {
+                let p = i + k
+                if p + 2 < n { let h2 = (((data[p] as i64) * 1021 + (data[p + 1] as i64)) * 1021 + (data[p + 2] as i64)) % 32768; cset(prev, p, cget(head, h2)); cset(head, h2, p) }
+            }
+            i = i + best
+        } else { put_literal(w, data[i] as i64); i = i + 1 }
+    }
+    put_literal(w, 256)
+    if cget(w.s, 1) > 0 { put_bits(w, 0, 8 - cget(w.s, 1)) }
+    sys.free(head as *void); sys.free(prev as *void)
+} }

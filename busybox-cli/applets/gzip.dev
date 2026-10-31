@@ -1,0 +1,106 @@
+# gzip, gunzip, zcat: compress and decompress files in the gzip format.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/deflate.dev" as df
+
+fn push_le32(b: *sys.Bytes, v: i64) { for i in 0..4 { sys.bytes_push(b, ((v / pow256(i)) % 256) as u8) } }
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+fn read_le32(p: *u8, off: i64): i64 { unsafe { return (p[off] as i64) + (p[off + 1] as i64) * 256 + (p[off + 2] as i64) * 65536 + (p[off + 3] as i64) * 16777216 } }
+
+# Compresses a buffer into a gzip member (with the file name and modification time in the header when given).
+fn compress(input: *sys.Bytes, name: str, mtime: i64): *sys.Bytes {
+    let out = sys.bytes_new()
+    sys.bytes_push(out, 31); sys.bytes_push(out, 139); sys.bytes_push(out, 8)
+    sys.bytes_push(out, sys.length(name) > 0 ? 8 : 0)
+    push_le32(out, mtime)
+    sys.bytes_push(out, 0); sys.bytes_push(out, 3)
+    if sys.length(name) > 0 { sys.bytes_str(out, name); sys.bytes_push(out, 0) }
+    let n = sys.blen(input)
+    df.deflate(sys.bdata(input), n, out)
+    push_le32(out, df.crc32(df.crc_table(), 0, sys.bdata(input), 0, n))
+    push_le32(out, n % 4294967296)
+    return out
+}
+struct Unpacked { ok: bool, bytes: *sys.Bytes, message: str }
+# Decompresses every gzip member in the buffer.
+fn decompress(input: *sys.Bytes): Unpacked {
+    let out = sys.bytes_new(); let data = sys.bdata(input); let n = sys.blen(input); let pos = 0; let members = 0
+    let table = df.crc_table()
+    while pos < n {
+        if members > 0 && pos + 2 <= n && (sys.bat(input, pos) != 31 || sys.bat(input, pos + 1) != 139) { break }
+        if pos + 18 > n || sys.bat(input, pos) != 31 || sys.bat(input, pos + 1) != 139 || sys.bat(input, pos + 2) != 8 { return Unpacked(false, out, "not in gzip format") }
+        let flags = sys.bat(input, pos + 3) as i64
+        let p = pos + 10
+        if (flags / 4) % 2 == 1 { if p + 2 > n { return Unpacked(false, out, "unexpected end of file") }; let extra = (sys.bat(input, p) as i64) + (sys.bat(input, p + 1) as i64) * 256; p = p + 2 + extra }
+        if (flags / 8) % 2 == 1 { while p < n && sys.bat(input, p) != 0 { p = p + 1 }; p = p + 1 }
+        if (flags / 16) % 2 == 1 { while p < n && sys.bat(input, p) != 0 { p = p + 1 }; p = p + 1 }
+        if (flags / 2) % 2 == 1 { p = p + 2 }
+        if p >= n { return Unpacked(false, out, "unexpected end of file") }
+        let start = sys.blen(out)
+        let used = df.cells(1)
+        if df.inflate(data, p, n, out, used) != 0 { return Unpacked(false, out, "invalid compressed data--format violated") }
+        let end = df.cget(used, 0)
+        if end + 8 > n { return Unpacked(false, out, "unexpected end of file") }
+        let crc = df.crc32(table, 0, sys.bdata(out), start, sys.blen(out))
+        if crc != read_le32(data, end) { return Unpacked(false, out, "invalid compressed data--crc error") }
+        if (sys.blen(out) - start) % 4294967296 != read_le32(data, end + 4) { return Unpacked(false, out, "invalid compressed data--length error") }
+        pos = end + 8; members = members + 1
+    }
+    return Unpacked(true, out, "")
+}
+# The name a file decompresses to ("" when the suffix is not a known one).
+fn stripped(path: str): str {
+    if sys.ends(path, ".gz") { return sys.join2(sys.slice(path, 0, sys.length(path) - 3), "") }
+    if sys.ends(path, ".tgz") { return sys.join2(sys.join2(sys.slice(path, 0, sys.length(path) - 4), ".tar"), "") }
+    if sys.ends(path, ".z") || sys.ends(path, ".Z") { return sys.join2(sys.slice(path, 0, sys.length(path) - 2), "") }
+    return ""
+}
+fn write_file(path: str, data: *sys.Bytes, mode: i64): bool {
+    let fd = sys.open_fd(path, 577, mode)
+    if fd < 0 { return false }
+    let n = sys.blen(data); let done = 0
+    while done < n { let w = sys.write_fd(fd, sys.bptr(data, done), n - done); if w <= 0 { break }; done = done + w }
+    sys.close_fd(fd)
+    return done == n
+}
+fn run_mode(args: Vec<str>, prog: str, decompress_mode: bool, to_stdout: bool): i64 {
+    let o = sys.parse_opts(args, "cdfkvtqnN123456789S:")
+    if o.bad != 0 { sys.warn(prog, "invalid usage: gzip [-cfkdtv123456789] [FILE]..."); return 1 }
+    let decode = decompress_mode || sys.has(o, 100) || sys.has(o, 116)
+    let stdout_mode = to_stdout || sys.has(o, 99); let test_only = sys.has(o, 116)
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let path = files[k]
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn_path(prog, path); status = 1; continue }
+        let from_stdin = sys.same(path, "-")
+        if decode {
+            let r = decompress(input.bytes)
+            if !r.ok { sys.warn(prog, sys.join2(sys.join2(from_stdin ? "stdin" : path, ": "), r.message)); status = 1; continue }
+            if test_only { continue }
+            if stdout_mode || from_stdin { sys.out_data(out, sys.bdata(r.bytes), sys.blen(r.bytes)); continue }
+            let target = stripped(path)
+            if sys.length(target) == 0 { sys.warn(prog, sys.join2(path, ": unknown suffix -- ignored")); status = 1; continue }
+            if sys.exists(target) && !sys.has(o, 102) { sys.warn(prog, sys.join2(target, " already exists; not overwritten")); status = 1; continue }
+            let info = sys.file_info(path, true)
+            if !write_file(target, r.bytes, sys.permission_bits(info.mode)) { sys.warn_write(prog, target); status = 1; continue }
+            if !sys.has(o, 107) { fsx.do_unlink(path) }
+        } else {
+            let info = sys.file_info(path, true)
+            let packed = compress(input.bytes, from_stdin || sys.has(o, 110) ? "" : fsx_base(path), from_stdin ? 0 : info.mtime)
+            if stdout_mode || from_stdin { sys.out_data(out, sys.bdata(packed), sys.blen(packed)); continue }
+            if sys.ends(path, ".gz") { sys.warn(prog, sys.join2(path, " already has .gz suffix -- unchanged")); status = 1; continue }
+            let target = sys.join2(path, ".gz")
+            if sys.exists(target) && !sys.has(o, 102) { sys.warn(prog, sys.join2(target, " already exists; not overwritten")); status = 1; continue }
+            if !write_file(target, packed, sys.permission_bits(info.mode)) { sys.warn_write(prog, target); status = 1; continue }
+            if !sys.has(o, 107) { fsx.do_unlink(path) }
+        }
+    }
+    sys.out_flush(out)
+    return status
+}
+fn fsx_base(path: str): str { return sys.base_name(path) }
+fn run_gzip(args: Vec<str>): i64 { return run_mode(args, "gzip", false, false) }
+fn run_gunzip(args: Vec<str>): i64 { return run_mode(args, "gunzip", true, false) }
+fn run_zcat(args: Vec<str>): i64 { return run_mode(args, "zcat", true, true) }

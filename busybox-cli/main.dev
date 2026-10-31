@@ -16,10 +16,11 @@ use "./applets/find.dev" as fd
 use "./applets/date.dev" as dt
 use "./applets/ls.dev" as ls
 use "./applets/diskinfo.dev" as di
+use "./applets/gzip.dev" as gz
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "basename", "cat", "chgrp", "chmod", "chown", "cksum", "cmp", "comm", "cp", "cut", "date", "df", "dirname", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "grep", "hd", "head", "hexdump", "hostname", "id", "install", "kill", "killall", "length", "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mktemp", "mountpoint", "mv", "nice", "nohup", "od", "pgrep", "pidof", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "rm", "rmdir", "sed", "seq", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "sync", "tac", "tail", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "watch", "wc", "which", "whoami", "xargs", "yes")
+    return Vec<str>("[", "[[", "basename", "cat", "chgrp", "chmod", "chown", "cksum", "cmp", "comm", "cp", "cut", "date", "df", "dirname", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostname", "id", "install", "kill", "killall", "length", "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mktemp", "mountpoint", "mv", "nice", "nohup", "od", "pgrep", "pidof", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "rm", "rmdir", "sed", "seq", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "sync", "tac", "tail", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "watch", "wc", "which", "whoami", "xargs", "yes", "zcat")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -118,6 +119,9 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "stat") { return di.run_stat(args) }
     if sys.same(name, "du") { return di.run_du(args) }
     if sys.same(name, "df") { return di.run_df(args) }
+    if sys.same(name, "gzip") { return gz.run_gzip(args) }
+    if sys.same(name, "gunzip") { return gz.run_gunzip(args) }
+    if sys.same(name, "zcat") { return gz.run_zcat(args) }
     sys.warn(name, "applet not found")
     return 127
 }

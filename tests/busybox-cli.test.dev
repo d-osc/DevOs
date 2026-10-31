@@ -204,6 +204,25 @@ test.case("stat du df",fn() {
         "@df -P / | head -1 | tr -s ' '","@df -k / | head -1 | wc -w","@df -h / | head -1 | tr -s ' '","@df -T / | head -1 | wc -w","@df / | wc -l","@df -P . | wc -l","@df -i / | head -1 | tr -s ' '","@df nosuch; echo rc=$?"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("gzip gunzip zcat (BusyBox against the system gzip)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let data = "head -c 100000 /dev/urandom > rnd.bin; yes 'the quick brown fox' | head -c 70000 > txt.dat; : > empty.dat; printf 'x' > one.dat; seq 1 20000 > seq.dat; cat rnd.bin txt.dat seq.dat > mix.dat; "
+    let files = Vec<str>("rnd.bin","txt.dat","empty.dat","one.dat","seq.dat","mix.dat","a.txt")
+    for f in files {
+        test.expect(strings.contains(outcome(d, data + "gzip -c " + f + " > sys.gz; " + bb + " gunzip -c sys.gz | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "busybox gunzip failed to read gzip output of " + f)
+        test.expect(strings.contains(outcome(d, data + bb + " gzip -c " + f + " > bb.gz; gunzip -c bb.gz | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "gunzip failed to read busybox gzip output of " + f)
+        test.expect(strings.contains(outcome(d, data + bb + " gzip -c " + f + " | " + bb + " zcat | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "busybox round trip failed for " + f)
+        test.expect(strings.contains(outcome(d, data + "gzip -9 -c " + f + " > s9.gz; " + bb + " zcat s9.gz | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "zcat of gzip -9 output failed for " + f)
+    }
+    test.expect(strings.contains(outcome(d, data + "cp a.txt q.txt; " + bb + " gzip q.txt; ls q.txt* ; " + bb + " gunzip q.txt.gz; cmp q.txt a.txt; echo cmp=$?"), "cmp=0"), "in-place gzip/gunzip failed")
+    test.expect(strings.contains(outcome(d, data + "cp a.txt q.txt; " + bb + " gzip -k q.txt; ls q.txt*"), "q.txt\nq.txt.gz"), "gzip -k removed the input")
+    test.expect(strings.contains(outcome(d, data + "printf 'plain' > p.gz; " + bb + " gunzip -c p.gz; echo rc=$?"), "rc=1"), "gunzip accepted data that is not gzip")
+    test.expect(strings.contains(outcome(d, data + "gzip -c a.txt > t.gz; head -c 20 t.gz > cut.gz; " + bb + " gunzip -c cut.gz; echo rc=$?"), "rc=1"), "gunzip accepted a truncated file")
+    test.expect(strings.contains(outcome(d, data + "gzip -c a.txt > t.gz; cat t.gz t.gz | " + bb + " zcat | wc -c; cat a.txt a.txt | wc -c"), ""), "multi-member")
+    test.expect(strings.equal(outcome(d, data + "gzip -c a.txt > t.gz; cat t.gz t.gz | " + bb + " zcat | wc -c"), outcome(d, "cat a.txt a.txt | wc -c")), "concatenated members were not both decoded")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
