@@ -11,6 +11,7 @@ use "./applets/expr.dev" as xp
 use "./applets/printf.dev" as pf
 use "./applets/grep.dev" as gr
 use "./applets/sed.dev" as sd
+use "./applets/hash.dev" as hs
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
@@ -101,6 +102,12 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "egrep") { return gr.run_egrep(args) }
     if sys.same(name, "fgrep") { return gr.run_fgrep(args) }
     if sys.same(name, "sed") { return sd.run_sed(args) }
+    if sys.same(name, "md5sum") { return hs.run_md5sum(args) }
+    if sys.same(name, "sha1sum") { return hs.run_sha1sum(args) }
+    if sys.same(name, "sha256sum") { return hs.run_sha256sum(args) }
+    if sys.same(name, "sha512sum") { return hs.run_sha512sum(args) }
+    if sys.same(name, "cksum") { return hs.run_cksum(args) }
+    if sys.same(name, "sum") { return hs.run_sum(args) }
     sys.warn(name, "applet not found")
     return 127
 }

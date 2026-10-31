@@ -1,0 +1,283 @@
+# md5sum, sha1sum, sha256sum, sha512sum, cksum, sum: checksums of files.
+use "../lib/sys.dev" as sys
+use "../lib/lines.dev" as lines
+
+fn m32(): u64 { return 4294967295 as u64 }
+fn all64(): u64 { return (m32() << (32 as u64)) | m32() }
+fn hex_digit(c: u8): u64 {
+    if c >= 48 && c <= 57 { return (c - 48) as u64 }
+    if c >= 97 && c <= 102 { return (c - 87) as u64 }
+    return 0 as u64
+}
+# A table of constants written as hex text, `width` hex digits per entry.
+fn table(text: str, width: i64): *u64 { unsafe {
+    let n = sys.length(text) / width
+    let t = sys.calloc(n as usize, 8) as *u64
+    for i in 0..n {
+        let v = 0 as u64
+        for k in 0..width { v = v * (16 as u64) + hex_digit(sys.at(text, i * width + k)) }
+        t[i] = v
+    }
+    return t
+} }
+fn rol32(x: u64, n: i64): u64 { return ((x << (n as u64)) | (x >> ((32 - n) as u64))) & m32() }
+fn ror32(x: u64, n: i64): u64 { return ((x >> (n as u64)) | (x << ((32 - n) as u64))) & m32() }
+fn ror64(x: u64, n: i64): u64 { return (x >> (n as u64)) | (x << ((64 - n) as u64)) }
+
+# The message padded to a multiple of `block` bytes with the bit length in the last `lenbytes` bytes.
+fn padded(b: *sys.Bytes, block: i64, lenbytes: i64, big: bool): *sys.Bytes {
+    let n = sys.blen(b)
+    let out = sys.bytes_new()
+    sys.bytes_append(out, sys.bdata(b), n)
+    sys.bytes_push(out, 128)
+    while (sys.blen(out) + lenbytes) % block != 0 { sys.bytes_push(out, 0) }
+    let bits = n * 8
+    let tail = sys.bytes_new()
+    for i in 0..lenbytes { sys.bytes_push(tail, 0) }
+    for i in 0..8 {
+        let byte = ((bits / pow256(i)) % 256) as u8
+        sys.bptr_set(tail, big ? lenbytes - 1 - i : i, byte)
+    }
+    sys.bytes_append(out, sys.bdata(tail), lenbytes)
+    return out
+}
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+fn word32(p: *u8, off: i64, big: bool): u64 { unsafe {
+    let a = p[off] as u64; let b = p[off + 1] as u64; let c = p[off + 2] as u64; let d = p[off + 3] as u64
+    if big { return (a << (24 as u64)) | (b << (16 as u64)) | (c << (8 as u64)) | d }
+    return a | (b << (8 as u64)) | (c << (16 as u64)) | (d << (24 as u64))
+} }
+fn word64(p: *u8, off: i64): u64 { return (word32(p, off, true) << (32 as u64)) | word32(p, off + 4, true) }
+
+fn hex_of(words: *u64, count: i64, bytes_per_word: i64, big: bool): str { unsafe {
+    let b = sys.bytes_new()
+    let digits = "0123456789abcdef"
+    for i in 0..count {
+        for k in 0..bytes_per_word {
+            let shift = big ? (bytes_per_word - 1 - k) * 8 : k * 8
+            let byte = ((words[i] >> (shift as u64)) & (255 as u64)) as i64
+            sys.bytes_push(b, sys.at(digits, byte / 16)); sys.bytes_push(b, sys.at(digits, byte % 16))
+        }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+} }
+
+fn md5(b: *sys.Bytes): str { unsafe {
+    let k = table("d76aa478e8c7b756242070dbc1bdceeef57c0faf4787c62aa8304613fd469501698098d88b44f7afffff5bb1895cd7be6b901122fd987193a679438e49b40821f61e2562c040b340265e5a51e9b6c7aad62f105d02441453d8a1e681e7d3fbc821e1cde6c33707d6f4d50d87455a14eda9e3e905fcefa3f8676f02d98d2a4c8afffa39428771f6816d9d6122fde5380ca4beea444bdecfa9f6bb4b60bebfbc70289b7ec6eaa127fad4ef308504881d05d9d4d039e6db99e51fa27cf8c4ac5665f4292244432aff97ab9423a7fc93a039655b59c38f0ccc92ffeff47d85845dd16fa87e4ffe2ce6e0a30143144e0811a1f7537e82bd3af2352ad7d2bbeb86d391", 8)
+    let shifts = md5_shifts()
+    let m = padded(b, 64, 8, false); let data = sys.bdata(m); let blocks = sys.blen(m) / 64
+    let h = sys.calloc(4, 8) as *u64
+    h[0] = 1732584193 as u64; h[1] = 4023233417 as u64; h[2] = 2562383102 as u64; h[3] = 271733878 as u64
+    let w = sys.calloc(16, 8) as *u64
+    for blk in 0..blocks {
+        for i in 0..16 { w[i] = word32(data, blk * 64 + i * 4, false) }
+        let a = h[0]; let bb = h[1]; let c = h[2]; let d = h[3]
+        for i in 0..64 {
+            let f = 0 as u64; let g = 0
+            if i < 16 { f = (bb & c) | ((m32() - bb) & d); g = i }
+            else if i < 32 { f = (d & bb) | ((m32() - d) & c); g = (5 * i + 1) % 16 }
+            else if i < 48 { f = bb ^ c ^ d; g = (3 * i + 5) % 16 }
+            else { f = c ^ (bb | (m32() - d)); g = (7 * i) % 16 }
+            let sum = (a + f + k[i] + w[g]) & m32()
+            a = d; d = c; c = bb
+            bb = (bb + rol32(sum, shifts[i])) & m32()
+        }
+        h[0] = (h[0] + a) & m32(); h[1] = (h[1] + bb) & m32(); h[2] = (h[2] + c) & m32(); h[3] = (h[3] + d) & m32()
+    }
+    return hex_of(h, 4, 4, false)
+} }
+fn md5_shifts(): *i64 { unsafe {
+    let s = sys.calloc(64, 8) as *i64
+    let groups = Vec<i64>(7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21)
+    for i in 0..64 { s[i] = groups[(i / 16) * 4 + i % 4] }
+    return s
+} }
+
+fn sha1(b: *sys.Bytes): str { unsafe {
+    let m = padded(b, 64, 8, true); let data = sys.bdata(m); let blocks = sys.blen(m) / 64
+    let h = sys.calloc(5, 8) as *u64
+    h[0] = 1732584193 as u64; h[1] = 4023233417 as u64; h[2] = 2562383102 as u64; h[3] = 271733878 as u64; h[4] = 3285377520 as u64
+    let w = sys.calloc(80, 8) as *u64
+    for blk in 0..blocks {
+        for i in 0..16 { w[i] = word32(data, blk * 64 + i * 4, true) }
+        for i in 16..80 { w[i] = rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1) }
+        let a = h[0]; let bb = h[1]; let c = h[2]; let d = h[3]; let e = h[4]
+        for i in 0..80 {
+            let f = 0 as u64; let k = 0 as u64
+            if i < 20 { f = (bb & c) | ((m32() - bb) & d); k = 1518500249 as u64 }
+            else if i < 40 { f = bb ^ c ^ d; k = 1859775393 as u64 }
+            else if i < 60 { f = (bb & c) | (bb & d) | (c & d); k = 2400959708 as u64 }
+            else { f = bb ^ c ^ d; k = 3395469782 as u64 }
+            let t = (rol32(a, 5) + f + e + k + w[i]) & m32()
+            e = d; d = c; c = rol32(bb, 30); bb = a; a = t
+        }
+        h[0] = (h[0] + a) & m32(); h[1] = (h[1] + bb) & m32(); h[2] = (h[2] + c) & m32(); h[3] = (h[3] + d) & m32(); h[4] = (h[4] + e) & m32()
+    }
+    return hex_of(h, 5, 4, true)
+} }
+
+fn sha256(b: *sys.Bytes): str { unsafe {
+    let k = table("428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca635114292967" + "27b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa07019a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2", 8)
+    let m = padded(b, 64, 8, true); let data = sys.bdata(m); let blocks = sys.blen(m) / 64
+    let h = table("6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19", 8)
+    let w = sys.calloc(64, 8) as *u64
+    for blk in 0..blocks {
+        for i in 0..16 { w[i] = word32(data, blk * 64 + i * 4, true) }
+        for i in 16..64 {
+            let s0 = ror32(w[i - 15], 7) ^ ror32(w[i - 15], 18) ^ (w[i - 15] >> (3 as u64))
+            let s1 = ror32(w[i - 2], 17) ^ ror32(w[i - 2], 19) ^ (w[i - 2] >> (10 as u64))
+            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & m32()
+        }
+        let a = h[0]; let bb = h[1]; let c = h[2]; let d = h[3]; let e = h[4]; let f = h[5]; let g = h[6]; let hh = h[7]
+        for i in 0..64 {
+            let s1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25)
+            let ch = (e & f) ^ ((m32() - e) & g)
+            let t1 = (hh + s1 + ch + k[i] + w[i]) & m32()
+            let s0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22)
+            let maj = (a & bb) ^ (a & c) ^ (bb & c)
+            let t2 = (s0 + maj) & m32()
+            hh = g; g = f; f = e; e = (d + t1) & m32(); d = c; c = bb; bb = a; a = (t1 + t2) & m32()
+        }
+        h[0] = (h[0] + a) & m32(); h[1] = (h[1] + bb) & m32(); h[2] = (h[2] + c) & m32(); h[3] = (h[3] + d) & m32()
+        h[4] = (h[4] + e) & m32(); h[5] = (h[5] + f) & m32(); h[6] = (h[6] + g) & m32(); h[7] = (h[7] + hh) & m32()
+    }
+    return hex_of(h, 8, 4, true)
+} }
+
+fn sha512(b: *sys.Bytes): str { unsafe {
+    let k = table("428a2f98d728ae227137449123ef65cdb5c0fbcfec4d3b2fe9b5dba58189dbbc3956c25bf348b53859f111f1b605d019923f82a4af194f9bab1c5ed5da6d8118d807aa98a303024212835b0145706fbe243185be4ee4b28c550c7dc3d5ffb4e272be5d74f27b896f80deb1fe3b1696b19bdc06a725c71235c19bf174cf692694e49b69c19ef14ad2efbe4786384f25e30fc19dc68b8cd5b5240ca1cc77ac9c652de92c6f592b02754a7484aa6ea6e4835cb0a9dcbd41fbd476f988da831153b5983e5152ee66dfaba831c66d2db43210b00327c898fb213fbf597fc7beef0ee4c6e00bf33da88fc2d5a79147930aa72506ca6351e003826f142929670a0e6e7027b70a8546d22ffc2e1b21385c26c9264d2c6dfc5ac42aed53380d139d95b3df650a73548baf63de766a0abb3c77b2a881c2c92e47edaee692722c851482353ba2bfe8a14cf10364a81a664bbc423001c24b8b70d0f89791c76c51a30654be30d192e819d6ef5218d69906245565a910f40e35855771202a106aa07032bbd1b819a4c116b8d2d0c81e376c085141ab532748774cdf8eeb9934b0bcb5e19b48a8391c0cb3c5c95a634ed8aa4ae3418acb5b9cca4f7763e373682e6ff3d6b2b8a3748f82ee5defb2fc78a5636f43172f6084c87814a1f0ab728cc702081a6439ec90befffa23631e28a4506cebde82bde9bef9a3f7b2c67915c67178f2e372532bca273eceea26619cd186b8c721c0c207eada7dd6cde0eb1ef57d4f7fee6ed17806f067aa72176fba0a637dc5a2c898a6113f9804bef90dae1b710b35131c471b28db77f523047d8432caab7b40c724933c9ebe0a15c9bebc431d67c49c100d4c4cc5d4becb3e42b6597f299cfc657e2a5fcb6fab3ad6faec6c44198c4a475817", 16)
+    let m = padded(b, 128, 16, true); let data = sys.bdata(m); let blocks = sys.blen(m) / 128
+    let h = table("6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179", 16)
+    let w = sys.calloc(80, 8) as *u64
+    for blk in 0..blocks {
+        for i in 0..16 { w[i] = word64(data, blk * 128 + i * 8) }
+        for i in 16..80 {
+            let s0 = ror64(w[i - 15], 1) ^ ror64(w[i - 15], 8) ^ (w[i - 15] >> (7 as u64))
+            let s1 = ror64(w[i - 2], 19) ^ ror64(w[i - 2], 61) ^ (w[i - 2] >> (6 as u64))
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1
+        }
+        let a = h[0]; let bb = h[1]; let c = h[2]; let d = h[3]; let e = h[4]; let f = h[5]; let g = h[6]; let hh = h[7]
+        for i in 0..80 {
+            let s1 = ror64(e, 14) ^ ror64(e, 18) ^ ror64(e, 41)
+            let ch = (e & f) ^ ((e ^ all64()) & g)
+            let t1 = hh + s1 + ch + k[i] + w[i]
+            let s0 = ror64(a, 28) ^ ror64(a, 34) ^ ror64(a, 39)
+            let maj = (a & bb) ^ (a & c) ^ (bb & c)
+            let t2 = s0 + maj
+            hh = g; g = f; f = e; e = d + t1; d = c; c = bb; bb = a; a = t1 + t2
+        }
+        h[0] = h[0] + a; h[1] = h[1] + bb; h[2] = h[2] + c; h[3] = h[3] + d; h[4] = h[4] + e; h[5] = h[5] + f; h[6] = h[6] + g; h[7] = h[7] + hh
+    }
+    return hex_of(h, 8, 8, true)
+} }
+
+# ---- cksum (POSIX CRC) and sum ---------------------------------------------------------------------------------------------------------------------
+fn crc_table(): *u64 { unsafe {
+    let t = sys.calloc(256, 8) as *u64
+    for i in 0..256 {
+        let c = (i as u64) << (24 as u64)
+        for k in 0..8 { if (c & (2147483648 as u64)) != (0 as u64) { c = ((c << (1 as u64)) ^ (79764919 as u64)) & m32() } else { c = (c << (1 as u64)) & m32() } }
+        t[i] = c
+    }
+    return t
+} }
+fn posix_crc(b: *sys.Bytes): u64 { unsafe {
+    let t = crc_table(); let crc = 0 as u64; let n = sys.blen(b)
+    for i in 0..n { let idx = ((crc >> (24 as u64)) ^ (sys.bat(b, i) as u64)) & (255 as u64); crc = ((crc << (8 as u64)) & m32()) ^ t[idx as i64] }
+    let len = n
+    while len > 0 { let idx = ((crc >> (24 as u64)) ^ ((len % 256) as u64)) & (255 as u64); crc = ((crc << (8 as u64)) & m32()) ^ t[idx as i64]; len = len / 256 }
+    return (m32() - crc) & m32()
+} }
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+
+fn digest_of(kind: i64, b: *sys.Bytes): str {
+    if kind == 0 { return md5(b) }
+    if kind == 1 { return sha1(b) }
+    if kind == 2 { return sha256(b) }
+    return sha512(b)
+}
+fn sum_files(kind: i64, args: Vec<str>, prog: str): i64 {
+    let o = sys.parse_opts(args, "bctwsq")
+    if o.bad != 0 { sys.warn(prog, "invalid usage"); return 1 }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    if sys.has(o, 99) {
+        let failures = 0; let unreadable = 0; let formatted = 0
+        for k in 0..(files.len() as i64) {
+            let list = sys.read_path(files[k])
+            if !list.ok { sys.warn_path(prog, files[k]); status = 1; continue }
+            let ls = lines.split_lines(list.bytes, 10)
+            for q in 0..(ls.starts.len() as i64) {
+                let line = lines.text_of(list.bytes, ls.starts[q], ls.ends[q])
+                let space = sys.find_char(line, 32)
+                if space < 0 { continue }
+                formatted = formatted + 1
+                let expected = sys.join2(sys.slice(line, 0, space), "")
+                let name = sys.join2(sys.slice(line, space + 2, sys.length(line)), "")
+                let data = sys.read_path(name)
+                if !data.ok { sys.warn_path(prog, name); sys.out_str(out, name); sys.out_str(out, ": FAILED open or read\n"); unreadable = unreadable + 1; continue }
+                if sys.same(digest_of(kind, data.bytes), expected) { sys.out_str(out, name); sys.out_str(out, ": OK\n") } else { sys.out_str(out, name); sys.out_str(out, ": FAILED\n"); failures = failures + 1 }
+            }
+        }
+        sys.out_flush(out)
+        if formatted == 0 { sys.warn(prog, "no properly formatted checksum lines found"); return 1 }
+        if failures > 0 || unreadable > 0 { sys.warn(prog, "WARNING: some checksums did not match"); return 1 }
+        return status
+    }
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path(prog, files[k]); status = 1; continue }
+        sys.out_str(out, digest_of(kind, input.bytes)); sys.out_str(out, sys.has(o, 98) ? " *" : "  "); sys.out_str(out, files[k]); sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return status
+}
+fn run_md5sum(args: Vec<str>): i64 { return sum_files(0, args, "md5sum") }
+fn run_sha1sum(args: Vec<str>): i64 { return sum_files(1, args, "sha1sum") }
+fn run_sha256sum(args: Vec<str>): i64 { return sum_files(2, args, "sha256sum") }
+fn run_sha512sum(args: Vec<str>): i64 { return sum_files(3, args, "sha512sum") }
+fn run_cksum(args: Vec<str>): i64 {
+    let files = args; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("cksum", files[k]); status = 1; continue }
+        sys.out_num(out, posix_crc(input.bytes) as i64); sys.out_byte(out, 32); sys.out_num(out, sys.blen(input.bytes))
+        if !sys.same(files[k], "-") { sys.out_byte(out, 32); sys.out_str(out, files[k]) }
+        sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return status
+}
+# sum [-rs]: the BSD checksum (default / -r) or the System V one (-s), with the size in 1024-byte blocks.
+fn run_sum(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "rs")
+    if o.bad != 0 { sys.warn("sum", "invalid usage: sum [-rs] [FILE]..."); return 1 }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0; let sysv = sys.has(o, 115)
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("sum", files[k]); status = 1; continue }
+        let b = input.bytes; let n = sys.blen(b)
+        let blocks = (n + (sysv ? 511 : 1023)) / (sysv ? 512 : 1024)
+        let total = 0
+        if sysv {
+            let s = 0; for i in 0..n { s = s + sys.bat(b, i) as i64 }
+            let r = (s % 65536) + (s / 65536 % 65536)
+            total = (r % 65536) + r / 65536
+            sys.out_num(out, total); sys.out_byte(out, 32); sys.out_num(out, blocks)
+        } else {
+            let c = 0; for i in 0..n { c = (c / 2) + (c % 2) * 32768; c = (c + sys.bat(b, i) as i64) % 65536 }
+            let text = decimal(c); let pad = 5 - sys.length(text)
+            for q in 0..(pad > 0 ? pad : 0) { sys.out_byte(out, 48) }
+            sys.out_str(out, text); sys.out_byte(out, 32)
+            let bt = decimal(blocks); let bp = 5 - sys.length(bt)
+            for q in 0..(bp > 0 ? bp : 0) { sys.out_byte(out, 32) }
+            sys.out_str(out, bt)
+        }
+        if !sys.same(files[k], "-") || files.len() > 1 { sys.out_byte(out, 32); sys.out_str(out, files[k]) }
+        sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return status
+}
