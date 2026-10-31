@@ -38,6 +38,13 @@ fn size(bytes:i64):ui.Text {
     if bytes < 1048576 { return plain("${(bytes + 512) / 1024} KB") }
     return plain("${(bytes * 10 + 524288) / 1048576 / 10}.${(bytes * 10 + 524288) / 1048576 % 10} MB")
 }
+fn busyText(kind:i64):str {
+    if kind == 2 { return "Downloading and installing… this can take a few minutes." }
+    if kind == 3 { return "Installing…" }
+    if kind == 4 { return "Removing…" }
+    if kind == 5 { return "Rolling back to the previous version…" }
+    return "Working…"
+}
 fn boxed(name:str, vertical:bool, spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = vertical; options.spacing = spacing; if name != "" { options.className = ui.text(name) }; return ui.Box(options,children) }
 fn label(value:ui.Text, name:str):ui.Node { return k.caption(value,name) }
 # A sidebar entry: icon, title and a count; the selected one carries the old store's `selected` class.
@@ -73,7 +80,15 @@ fn App(context:*ui.Context):ui.Node {
     # asked: kind of the last request (0 catalog, 1 installed, 2 installApp, 3 another change); tab: 0 store, 1 installed, 2 file
     let asked = ui.useRef(context,0); let catalog = ui.useText(context,ui.emptyText()); let installed = ui.useText(context,ui.emptyText()); let message = ui.useText(context,ui.emptyText())
     let tab = ui.useState(context,0); let query = ui.useText(context,ui.emptyText()); let filePath = ui.useText(context,ui.emptyText()); let step = ui.useRef(context,0)
+    # A change that finishes in a blink (remove, roll back) still shows its progress for about 0.7 s: working stays on until the reply is in and 7 ticks (100 ms) passed.
+    let working = ui.useState(context,0); let ticks = ui.useRef(context,0); let started = ui.useRef(context,0); let replied = ui.useRef(context,1)
+    let live = ui.useRef(context,0)
+    let begin = fn(kind:i64) { asked.set(kind); message.set(ui.emptyText()); live.set(1); working.set(1); started.set(ticks.get()); replied.set(0) }
     ui.useEffect(context,fn():fn():void {
+        ui.onTick(context,100,fn() {
+            ticks.set(ticks.get() + 1)
+            if live.get() == 1 && replied.get() == 1 && ticks.get() - started.get() >= 7 { live.set(0); working.set(0) }
+        })
         let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
         if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
         if ui.text(family).bytes.len() == 0 { family = "vscode" }
@@ -93,17 +108,28 @@ fn App(context:*ui.Context):ui.Node {
         let f = l.frame.value
         if f.bytes.len() == 0 { return ui.noop }
         let kind = asked.get()
+        replied.set(1)
         if kind == 0 { catalog.set(f); asked.set(1); sp.send(l,plain("{\"action\":\"installed\"}")) }
         else {
-            installed.set(f); message.set(field(f,1))
+            # kind 1 is the list that follows a catalog reload: it has no message of its own and must not wipe the one the change just reported
+            installed.set(f); if kind != 1 { message.set(field(f,1)) }
             if kind == 2 { asked.set(0); sp.send(l,plain("{\"action\":\"catalog\"}")) }
-            if smoke() && step.get() == 1 && kind == 2 && contains(field(f,1),plain("Installed hello-demo")) { print("PASS native App Store installed a catalog app"); ui.close(context) }
+            if smoke() && step.get() == 1 && kind == 2 && contains(field(f,1),plain("Installed hello-demo")) { print("PASS native App Store installed a catalog app"); step.set(2); tab.set(1) }
         }
         if smoke() && step.get() == 0 && kind == 1 { step.set(1); asked.set(2); ui.click(context,"store-install-0") }
         return ui.noop
     },Vec<i64>(l.replies.value))
+    # Smoke, second half: on the Installed tab, once the list shows the app and no change is running, remove it and check its progress stayed up at least 0.7 s.
+    ui.useEffect(context,fn():fn():void {
+        if !smoke() { return ui.noop }
+        if step.get() == 2 && tab.value == 1 && working.value == 0 && contains(installed.value,plain("hello-demo")) { step.set(3); ui.click(context,"installed-remove-0") }
+        else if step.get() == 3 && working.value == 0 && contains(message.value,plain("Removed hello-demo")) {
+            print(ticks.get() - started.get() >= 7 ? "PASS native App Store showed its progress while removing an app" : "FAIL the removal progress was shown for under 0.7 s"); ui.close(context)
+        }
+        return ui.noop
+    },Vec<i64>(working.value,tab.value,installed.value.bytes.len() as i64,message.value.bytes.len() as i64))
     if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
-    let busy = l.waiting.get() != 0; let current = tab.value
+    let busy = l.waiting.get() != 0 || working.value == 1; let current = tab.value
     let catalogCount = 0; let installedCount = 0
     for record in sp.records(catalog.value) { if sp.kindOf(record,65) { catalogCount = catalogCount + 1 } }
     for record in sp.records(installed.value) { if sp.kindOf(record,80) { installedCount = installedCount + 1 } }
@@ -114,7 +140,7 @@ fn App(context:*ui.Context):ui.Node {
     if has(l.failure.value) { content.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"store-error")) }
     else if busy {
         let bar = ui.named("store-progress"); bar.className = ui.text("app-store-progress")
-        content.push(ext.named(boxed("app-store-notice",true,10,Vec<ui.Node>(k.note(asked.get() == 2 ? "Downloading and installing… this can take a few minutes." : "Working…","app-store-working-text"),ui.Progress(bar,0.0 - 1.0))),"store-working"))
+        content.push(ext.named(boxed("app-store-notice",true,10,Vec<ui.Node>(k.note(busyText(asked.get()),"app-store-working-text"),ui.Progress(bar,0.0 - 1.0))),"store-working"))
     }
     else if has(message.value) { content.push(ext.named(k.caption(message.value,"app-store-notice"),"store-message")) }
     let search = ui.named("store-search"); search.expand = true; search.placeholder = plain("Search apps")
@@ -138,7 +164,7 @@ fn App(context:*ui.Context):ui.Node {
             cards.push(card(boxed("",true,12,Vec<ui.Node>(
                 ext.row(14,Vec<ui.Node>(tile("application-x-executable-symbolic",48,"app-store-icon"),ext.expand(ext.column(2,Vec<ui.Node>(label(sp.cell(a,2),"app-store-app-name"),label(who,"app-store-app-category")))))),
                 label(has(sp.cell(a,5)) ? sp.cell(a,5) : plain("No description."),"app-store-app-description"),
-                ext.row(8,Vec<ui.Node>(ext.expand(ext.row(6,tags)),ui.Button(primary(install),bound ? "Reinstall" : "Install",fn() { asked.set(2); message.set(ui.emptyText()); sp.send(l,idRequest("installApp",sp.cell(a,1))) })))))))
+                ext.row(8,Vec<ui.Node>(ext.expand(ext.row(6,tags)),ui.Button(primary(install),bound ? "Reinstall" : "Install",fn() { begin(2); sp.send(l,idRequest("installApp",sp.cell(a,1))) })))))))
         }
         if cards.len() == 0 { content.push(ext.named(k.note("No apps match.","app-store-empty"),"store-empty")) } else { content.push(grid(cards)) }
     } else if current == 1 {
@@ -150,8 +176,8 @@ fn App(context:*ui.Context):ui.Node {
             let rollback = ui.named("installed-rollback-${index}"); rollback.sensitive = !busy && has(sp.cell(p,6))
             let detail = join(Vec<ui.Text>(plain("Version "),sp.cell(p,2),has(sp.cell(p,6)) ? join(Vec<ui.Text>(plain(" · previous "),sp.cell(p,6))) : ui.emptyText(),plain(" · "),sp.cell(p,3),plain(" · "),size(sp.number(sp.cell(p,5)))))
             content.push(card(ext.row(14,Vec<ui.Node>(tile("application-x-executable-symbolic",48,"app-store-icon"),ext.expand(ext.column(3,Vec<ui.Node>(label(sp.cell(p,8),"app-store-app-name"),label(detail,"app-store-app-category"),label(sp.cell(p,9),"app-store-app-description")))),
-                ui.Button(rollback,"Roll back",fn() { asked.set(3); sp.send(l,idRequest("rollback",sp.cell(p,1))) }),
-                ui.Button(remove,"Remove",fn() { asked.set(3); sp.send(l,idRequest("remove",sp.cell(p,1))) })))))
+                ui.Button(rollback,"Roll back",fn() { begin(5); sp.send(l,idRequest("rollback",sp.cell(p,1))) }),
+                ui.Button(remove,"Remove",fn() { begin(4); sp.send(l,idRequest("remove",sp.cell(p,1))) })))))
         }
         if shown == 0 { content.push(ext.named(k.note("Nothing is installed yet.","app-store-empty"),"installed-empty")) }
     } else {
@@ -160,7 +186,7 @@ fn App(context:*ui.Context):ui.Node {
         content.push(card(boxed("",true,14,Vec<ui.Node>(
             k.note("Choose a package file by its full path. DevOsPM checks it before anything is installed; a package with the same name is replaced and the old version can be rolled back.","app-store-app-description"),
             ext.row(10,Vec<ui.Node>(ui.Entry(path,filePath.value,fn(value:ui.Text) { filePath.set(value) }),
-                ui.Button(primary(install),"Install",fn() { asked.set(3); message.set(ui.emptyText()); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"installFile\",\"path\":"),channel.quote(filePath.get()),plain("}")))) })))))))
+                ui.Button(primary(install),"Install",fn() { begin(3); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"installFile\",\"path\":"),channel.quote(filePath.get()),plain("}")))) })))))))
     }
     let top = Vec<ui.Node>(tile("system-software-install-symbolic",34,"app-store-brand-mark"),label(plain("App Store"),"app-store-brand"))
     if current == 0 { top.push(ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) })) } else { let gap = ui.props(); gap.expand = true; top.push(ui.Box(gap,Vec<ui.Node>())) }

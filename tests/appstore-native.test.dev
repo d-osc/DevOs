@@ -115,9 +115,10 @@ test.case("the native App Store window installs a catalog app through DevOsPM un
     let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("DEVOS_APPSTORE_TEST","1"); env.set("DEV_OS_PM",dev()); env.set("DEV_ROOT",d + "/store"); env.set("HOME",d + "/home"); env.set("XDG_DATA_HOME",d + "/home/.local/share")
     env.set("DEVOS_APPSTORE_REGISTRY",d + "/registry.json"); env.set("DEVOS_APPSTORE_CURL",d + "/curl"); env.set("DEVOS_APPSTORE_ARCH","aarch64"); env.set("DEVOS_APPSTORE_TMP",d + "/tmp"); env.set("DEVOS_FAKE_PACKAGE",fs.readFileSync(d + "/demo-path","utf8")); env.set("DEVOS_APPSTORE_SMOKE","1")
     let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","appstore-native","xvfb-run","-a",executable),env,"",120000)
-    test.expect(done.success && strings.contains(t.out(done),"PASS native App Store installed a catalog app"),"App Store: " + t.out(done) + " / " + t.err(done))
+    test.expect(done.success && strings.contains(t.out(done),"PASS native App Store installed a catalog app") && strings.contains(t.out(done),"PASS native App Store showed its progress while removing an app"),"App Store: " + t.out(done) + " / " + t.err(done))
     let installed = Map<str,str>(); installed.set("DEV_ROOT",d + "/store"); installed.set("HOME",d + "/home")
-    test.expect(strings.contains(tool.exec(Vec<str>(dev(),"list","--json")),"hello-demo") || strings.contains(t.out(tool.run(Vec<str>(dev(),"list","--json"),installed,"",30000)),"hello-demo"),"DevOsPM does not list the app the window installed")
+    # the window installed the app and then removed it again, so DevOsPM must not list it any more
+    test.expect(!strings.contains(t.out(tool.run(Vec<str>(dev(),"list","--json"),installed,"",30000)),"hello-demo"),"DevOsPM still lists the app the window removed")
     tool.exec(Vec<str>("rm","-rf",d))
 })
 return t.finish()
