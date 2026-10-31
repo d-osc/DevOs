@@ -4,6 +4,7 @@ use "./applets/basic.dev" as basic
 use "./applets/text.dev" as text
 use "./applets/files.dev" as files
 use "./applets/sort.dev" as sorts
+use "./applets/filters.dev" as filt
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
@@ -46,6 +47,19 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "cut") { return sorts.run_cut(args) }
     if sys.same(name, "tac") { return sorts.run_tac(args) }
     if sys.same(name, "tr") { return sorts.run_tr(args) }
+    if sys.same(name, "fold") { return filt.run_fold(args) }
+    if sys.same(name, "expand") { return filt.run_expand(args) }
+    if sys.same(name, "unexpand") { return filt.run_unexpand(args) }
+    if sys.same(name, "comm") { return filt.run_comm(args) }
+    if sys.same(name, "cmp") { return filt.run_cmp(args) }
+    if sys.same(name, "split") { return filt.run_split(args) }
+    if sys.same(name, "dos2unix") { return filt.run_dos2unix(args) }
+    if sys.same(name, "unix2dos") { return filt.run_unix2dos(args) }
+    if sys.same(name, "length") { return filt.run_length(args) }
+    if sys.same(name, "strings") { return filt.run_strings(args) }
+    if sys.same(name, "od") { return filt.run_od(args) }
+    if sys.same(name, "hexdump") { return filt.run_hexdump(args) }
+    if sys.same(name, "hd") { return filt.run_hd(args) }
     sys.warn(name, "applet not found")
     return 127
 }

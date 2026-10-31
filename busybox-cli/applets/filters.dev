@@ -1,0 +1,502 @@
+# fold expand unexpand comm cmp split dos2unix unix2dos length strings od hexdump hd.
+use "../lib/sys.dev" as sys
+use "../lib/lines.dev" as ln
+use "../lib/fsx.dev" as fsx
+
+fn number_option(prog: str, text: str, fallback: i64): i64 {
+    let n = sys.parse_number(text)
+    if !n.ok || n.value < 0 { sys.warn(prog, sys.join2("invalid number ", text)); return 0 - 1 }
+    return n.value
+}
+fn out_decimal(o: *sys.Out, n: i64) { sys.out_num(o, n) }
+
+# ---- fold [-bs] [-w WIDTH] [FILE] ------------------------------------------------------------------------------------------------------------
+fn run_fold(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "bsw:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("fold", "invalid option"); return 1 }
+    let width = 80
+    if sys.has(o, 119) { width = number_option("fold", sys.val(o, 119), 80); if width <= 0 { return 1 } }
+    let by_bytes = sys.has(o, 98); let at_spaces = sys.has(o, 115)
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("fold", files[k]); status = 1; continue }
+        let b = input.bytes; let n = sys.blen(b)
+        let line = sys.bytes_new(); let column = 0
+        for p in 0..n {
+            let c = sys.bat(b, p)
+            if c == 10 { sys.out_data(out, sys.bdata(line), sys.blen(line)); sys.out_byte(out, 10); sys.bclear(line); column = 0; continue }
+            let next = column
+            if c == 13 { next = 0 } else if c == 8 { next = column > 0 ? column - 1 : 0 } else if c == 9 && !by_bytes { next = column + 8 - column % 8 } else { next = column + 1 }
+            if column > 0 && c != 13 && c != 8 && next > width {
+                if at_spaces {
+                    # break after the last blank on the line, when there is one
+                    let cut = 0 - 1
+                    for q in 0..sys.blen(line) { if ln.is_blank(sys.bat(line, q)) { cut = q } }
+                    if cut >= 0 {
+                        sys.out_data(out, sys.bdata(line), cut + 1); sys.out_byte(out, 10)
+                        let rest = sys.bytes_new(); for q in (cut + 1)..sys.blen(line) { sys.bytes_push(rest, sys.bat(line, q)) }
+                        sys.bclear(line); sys.bytes_append(line, sys.bdata(rest), sys.blen(rest))
+                        column = 0
+                        for q in 0..sys.blen(line) { let d = sys.bat(line, q); column = d == 9 && !by_bytes ? column + 8 - column % 8 : column + 1 }
+                        next = c == 9 && !by_bytes ? column + 8 - column % 8 : column + 1
+                    } else { sys.out_data(out, sys.bdata(line), sys.blen(line)); sys.out_byte(out, 10); sys.bclear(line); column = 0; next = c == 9 && !by_bytes ? 8 : 1 }
+                } else { sys.out_data(out, sys.bdata(line), sys.blen(line)); sys.out_byte(out, 10); sys.bclear(line); column = 0; next = c == 9 && !by_bytes ? 8 : 1 }
+            }
+            sys.bytes_push(line, c); column = next
+        }
+        sys.out_data(out, sys.bdata(line), sys.blen(line))
+    }
+    sys.out_flush(out)
+    return status
+}
+
+# ---- expand [-i] [-t NUM] / unexpand [-fa] [-t NUM] -------------------------------------------------------------------------------------------
+
+fn run_expand(args: Vec<str>): i64 {
+    let fixed = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        if sys.same(a, "--initial") { fixed.push("-i") } else if sys.starts(a, "--tabs=") { fixed.push("-t"); fixed.push(sys.slice(a, 7, sys.length(a))) } else { fixed.push(a) }
+    }
+    let o = sys.parse_opts(fixed, "it:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("expand", "invalid option"); return 1 }
+    let tab = 8
+    if sys.has(o, 116) { tab = number_option("expand", sys.val(o, 116), 8); if tab <= 0 { sys.warn("expand", "tab size cannot be 0"); return 1 } }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("expand", files[k]); status = 1; continue }
+        let b = input.bytes; let column = 0; let leading = true
+        for p in 0..sys.blen(b) {
+            let c = sys.bat(b, p)
+            if c == 10 { sys.out_byte(out, 10); column = 0; leading = true; continue }
+            if c == 9 && (!sys.has(o, 105) || leading) { let spaces = tab - column % tab; for s in 0..spaces { sys.out_byte(out, 32) }; column = column + spaces; continue }
+            if c != 32 && c != 9 { leading = false }
+            sys.out_byte(out, c)
+            if c == 8 { column = column > 0 ? column - 1 : 0 } else { column = column + 1 }
+        }
+    }
+    sys.out_flush(out)
+    return status
+}
+fn run_unexpand(args: Vec<str>): i64 {
+    let fixed = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        if sys.same(a, "--all") { fixed.push("-a") } else if sys.same(a, "--first-only") { fixed.push("-f") } else if sys.starts(a, "--tabs=") { fixed.push("-t"); fixed.push(sys.slice(a, 7, sys.length(a))) } else { fixed.push(a) }
+    }
+    let o = sys.parse_opts(fixed, "aft:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("unexpand", "invalid option"); return 1 }
+    let tab = 8
+    if sys.has(o, 116) { tab = number_option("unexpand", sys.val(o, 116), 8); if tab <= 0 { sys.warn("unexpand", "tab size cannot be 0"); return 1 } }
+    let all = sys.has(o, 97) || sys.has(o, 116)
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("unexpand", files[k]); status = 1; continue }
+        let b = input.bytes; let n = sys.blen(b); let p = 0; let column = 0; let leading = true
+        while p < n {
+            let c = sys.bat(b, p)
+            if c == 10 { sys.out_byte(out, 10); column = 0; leading = true; p = p + 1; continue }
+            if (c == 32 || c == 9) && (all || leading) {
+                # a run of blanks: spaces that end on a tab stop become one tab
+                let start_col = column; let q = p; let col = column; let blanks = 0
+                while q < n && (sys.bat(b, q) == 32 || sys.bat(b, q) == 9) {
+                    let d = sys.bat(b, q)
+                    col = d == 9 ? col + tab - col % tab : col + 1; blanks = blanks + 1; q = q + 1
+                }
+                let cur = start_col
+                while cur / tab < col / tab && (blanks > 1 || sys.bat(b, p) == 9) { sys.out_byte(out, 9); cur = (cur / tab + 1) * tab }
+                if cur / tab >= col / tab && cur < col || (blanks == 1 && sys.bat(b, p) == 32) { for s in cur..col { sys.out_byte(out, 32) } }
+                column = col; p = q; continue
+            }
+            if c != 32 && c != 9 { leading = false }
+            sys.out_byte(out, c); column = c == 8 ? (column > 0 ? column - 1 : 0) : column + 1; p = p + 1
+        }
+    }
+    sys.out_flush(out)
+    return status
+}
+
+# ---- comm [-123] FILE1 FILE2 ------------------------------------------------------------------------------------------------------------------
+fn run_comm(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "123")
+    if o.bad != 0 || o.rest.len() != 2 { sys.warn("comm", "invalid usage: comm [-123] FILE1 FILE2"); return 1 }
+    let a = sys.read_path(o.rest[0]); let c = sys.read_path(o.rest[1])
+    if !a.ok { sys.warn_path("comm", o.rest[0]); return 1 }
+    if !c.ok { sys.warn_path("comm", o.rest[1]); return 1 }
+    let la = ln.split_lines(a.bytes, 10); let lb = ln.split_lines(c.bytes, 10)
+    let out = sys.out_new(1); let i = 0; let j = 0; let na = la.starts.len() as i64; let nb = lb.starts.len() as i64
+    let show1 = !sys.has(o, 49); let show2 = !sys.has(o, 50); let show3 = !sys.has(o, 51)
+    while i < na || j < nb {
+        let r = 0
+        if i >= na { r = 1 } else if j >= nb { r = 0 - 1 } else { r = ln.compare_ranges(a.bytes, la.starts[i], la.ends[i], c.bytes, lb.starts[j], lb.ends[j]) }
+        if r < 0 {
+            if show1 { sys.out_data(out, sys.bptr(a.bytes, la.starts[i]), la.ends[i] - la.starts[i]); sys.out_byte(out, 10) }
+            i = i + 1
+        } else if r > 0 {
+            if show2 { if show1 { sys.out_byte(out, 9) }; sys.out_data(out, sys.bptr(c.bytes, lb.starts[j]), lb.ends[j] - lb.starts[j]); sys.out_byte(out, 10) }
+            j = j + 1
+        } else {
+            if show3 { if show1 { sys.out_byte(out, 9) }; if show2 { sys.out_byte(out, 9) }; sys.out_data(out, sys.bptr(a.bytes, la.starts[i]), la.ends[i] - la.starts[i]); sys.out_byte(out, 10) }
+            i = i + 1; j = j + 1
+        }
+    }
+    sys.out_flush(out)
+    return 0
+}
+
+# ---- cmp [-l] [-s] FILE1 [FILE2 [SKIP1 [SKIP2]]] -----------------------------------------------------------------------------------------------
+fn octal_text(v: i64): str {
+    let b = sys.bytes_new(); let digits = Vec<u8>(); let m = v
+    if m == 0 { digits.push(48) }
+    while m > 0 { digits.push((48 + m % 8) as u8); m = m / 8 }
+    let k = digits.len() as i64 - 1
+    while k >= 0 { sys.bytes_push(b, digits[k]); k = k - 1 }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_cmp(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "ls")
+    if o.bad != 0 || o.rest.len() < 1 || o.rest.len() > 4 { sys.warn("cmp", "invalid usage: cmp [-l] [-s] FILE1 [FILE2 [SKIP1 [SKIP2]]]"); return 2 }
+    let name1 = o.rest[0]; let name2 = o.rest.len() > 1 ? o.rest[1] : "-"
+    let skip1 = 0; let skip2 = 0
+    if o.rest.len() > 2 { let v = sys.parse_number(o.rest[2]); if !v.ok { sys.warn("cmp", sys.join2("invalid number ", o.rest[2])); return 2 }; skip1 = v.value }
+    if o.rest.len() > 3 { let v = sys.parse_number(o.rest[3]); if !v.ok { sys.warn("cmp", sys.join2("invalid number ", o.rest[3])); return 2 }; skip2 = v.value }
+    let a = sys.read_path(name1); let c = sys.read_path(name2)
+    if !a.ok { if !sys.has(o, 115) { sys.warn_path("cmp", name1) }; return 2 }
+    if !c.ok { if !sys.has(o, 115) { sys.warn_path("cmp", name2) }; return 2 }
+    let la = sys.blen(a.bytes) - skip1; let lb = sys.blen(c.bytes) - skip2
+    let n = la < lb ? la : lb; let line = 1; let different = false
+    let out = sys.out_new(1)
+    for i in 0..n {
+        let x = sys.bat(a.bytes, skip1 + i); let y = sys.bat(c.bytes, skip2 + i)
+        if x != y {
+            different = true
+            if sys.has(o, 115) { return 1 }
+            if sys.has(o, 108) {
+                let digits = sys.length(decimal_text(n))
+                sys.out_str(out, pad_left(decimal_text(i + 1), digits, 32)); sys.out_byte(out, 32); sys.out_str(out, pad_left(octal_text(x as i64), 3, 32)); sys.out_byte(out, 32); sys.out_str(out, pad_left(octal_text(y as i64), 3, 32)); sys.out_byte(out, 10); continue
+            }
+            sys.out_flush(out)
+            let m = sys.bytes_new(); sys.bytes_str(m, name1); sys.bytes_push(m, 32); sys.bytes_str(m, name2); sys.bytes_str(m, " differ: char "); sys.bytes_num(m, i + 1); sys.bytes_str(m, ", line "); sys.bytes_num(m, line); sys.bytes_push(m, 10)
+            sys.put_fd(1, sys.bytes_cstr(m)); return 1
+        }
+        if x == 10 { line = line + 1 }
+    }
+    sys.out_flush(out)
+    if la != lb {
+        if !sys.has(o, 115) { sys.put_fd(2, "cmp: EOF on "); sys.put_fd(2, la < lb ? name1 : name2); sys.put_fd(2, " after byte "); let m = sys.bytes_new(); sys.bytes_num(m, n + (la < lb ? skip1 : skip2)); sys.put_fd(2, sys.bytes_cstr(m)); sys.put_fd(2, "\n") }
+        return 1
+    }
+    return different ? 1 : 0
+}
+
+# ---- split [-b n[k|m]] [-l n] [-a n] [INPUT [PREFIX]] ----------------------------------------------------------------------------------------------
+fn suffix_name(index: i64, length: i64): str {
+    let out = sys.bytes_new(); let digits = Vec<u8>(); let m = index
+    for i in 0..length { digits.push((97 + m % 26) as u8); m = m / 26 }
+    let k = length - 1
+    while k >= 0 { sys.bytes_push(out, digits[k]); k = k - 1 }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn run_split(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "b:l:a:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() > 2 { sys.warn("split", "invalid usage: split [OPTIONS] [INPUT [PREFIX]]"); return 1 }
+    let by_bytes = 0; let by_lines = 1000; let suffix = 2
+    if sys.has(o, 98) {
+        let t = sys.val(o, 98); let n = sys.length(t); let unit = 1; let digits = n
+        let last = n > 0 ? sys.at(t, n - 1) : 0
+        if last == 107 { unit = 1024; digits = n - 1 } else if last == 109 { unit = 1048576; digits = n - 1 }
+        let v = sys.parse_number(sys.slice(t, 0, digits)); if !v.ok || v.value <= 0 { sys.warn("split", sys.join2("invalid number ", t)); return 1 }
+        by_bytes = v.value * unit
+    }
+    if sys.has(o, 108) { let v = sys.parse_number(sys.val(o, 108)); if !v.ok || v.value <= 0 { sys.warn("split", sys.join2("invalid number ", sys.val(o, 108))); return 1 }; by_lines = v.value }
+    if sys.has(o, 97) { let v = sys.parse_number(sys.val(o, 97)); if !v.ok || v.value <= 0 { sys.warn("split", sys.join2("invalid number ", sys.val(o, 97))); return 1 }; suffix = v.value }
+    let path = o.rest.len() > 0 ? o.rest[0] : "-"; let prefix = o.rest.len() > 1 ? o.rest[1] : "x"
+    let input = sys.read_path(path)
+    if !input.ok { sys.warn_path("split", path); return 1 }
+    let b = input.bytes; let n = sys.blen(b); let start = 0; let index = 0
+    while start < n {
+        let end = start
+        if by_bytes > 0 { end = start + by_bytes < n ? start + by_bytes : n }
+        else { let seen = 0; end = start; while end < n && seen < by_lines { if sys.bat(b, end) == 10 { seen = seen + 1 }; end = end + 1 } }
+        let name = sys.join2(prefix, suffix_name(index, suffix))
+        let fd = sys.open_fd(name, 577, 438)
+        if fd < 0 { sys.warn_write("split", name); return 1 }
+        let done = 0
+        while done < end - start { let w = sys.write_fd(fd, sys.bptr(b, start + done), end - start - done); if w <= 0 { break }; done = done + w }
+        sys.close_fd(fd)
+        start = end; index = index + 1
+    }
+    return 0
+}
+
+# ---- dos2unix / unix2dos [-ud] [FILE] --------------------------------------------------------------------------------------------------------
+fn convert_newlines(prog: str, args: Vec<str>, to_unix: bool): i64 {
+    let o = sys.parse_opts(args, "ud")
+    if o.bad != 0 || o.rest.len() > 1 { sys.warn(prog, sys.join2("invalid usage: ", prog)); return 1 }
+    let unix = to_unix
+    if sys.has(o, 117) { unix = true } else if sys.has(o, 100) { unix = false }
+    let path = o.rest.len() == 1 ? o.rest[0] : "-"
+    let input = sys.read_path(path)
+    if !input.ok { sys.warn_path(prog, path); return 1 }
+    let b = input.bytes; let out = sys.bytes_new(); let n = sys.blen(b)
+    for p in 0..n {
+        let c = sys.bat(b, p)
+        if unix { if c == 13 && p + 1 < n && sys.bat(b, p + 1) == 10 { continue }; sys.bytes_push(out, c) }
+        else { if c == 10 && !(p > 0 && sys.bat(b, p - 1) == 13) { sys.bytes_push(out, 13) }; sys.bytes_push(out, c) }
+    }
+    if o.rest.len() == 1 {
+        let temp = sys.join2(path, ".bbtmp")
+        let fd = sys.open_fd(temp, 577, sys.permission_bits(sys.file_info(path, true).mode))
+        if fd < 0 { sys.warn_write(prog, path); return 1 }
+        sys.write_fd(fd, sys.bdata(out), sys.blen(out)); sys.close_fd(fd)
+        fsx.do_rename(temp, path)
+        return 0
+    }
+    let o2 = sys.out_new(1); sys.out_data(o2, sys.bdata(out), sys.blen(out)); sys.out_flush(o2)
+    return 0
+}
+fn run_dos2unix(args: Vec<str>): i64 { return convert_newlines("dos2unix", args, true) }
+fn run_unix2dos(args: Vec<str>): i64 { return convert_newlines("unix2dos", args, false) }
+
+# ---- length STRING -------------------------------------------------------------------------------------------------------------------------------
+fn run_length(args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn("length", "invalid usage: length STRING"); return 1 }
+    let o = sys.out_new(1); sys.out_num(o, sys.length(args[0])); sys.out_byte(o, 10); sys.out_flush(o)
+    return 0
+}
+
+# ---- strings [-afo] [-n LEN] [FILE]... -------------------------------------------------------------------------------------------------------------
+fn run_strings(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "afon:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("strings", "invalid option"); return 1 }
+    let minimum = 4
+    if sys.has(o, 110) { let v = sys.parse_number(sys.val(o, 110)); if !v.ok || v.value < 1 { sys.warn("strings", sys.join2("invalid minimum string length ", sys.val(o, 110))); return 1 }; minimum = v.value }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("strings", files[k]); status = 1; continue }
+        let b = input.bytes; let n = sys.blen(b); let start = 0 - 1
+        for p in 0..(n + 1) {
+            let c = p < n ? sys.bat(b, p) : 0
+            let printable = p < n && (ln.is_print(c) || c == 9)
+            if printable { if start < 0 { start = p } }
+            else {
+                if start >= 0 && p - start >= minimum {
+                    if sys.has(o, 102) { sys.out_str(out, files[k]); sys.out_str(out, ": ") }
+                    if sys.has(o, 111) { let t = sys.bytes_new(); sys.bytes_num(t, start); let text = sys.bytes_cstr(t); for pad in sys.length(text)..7 { sys.out_byte(out, 32) }; sys.out_str(out, text); sys.out_byte(out, 32) }
+                    sys.out_data(out, sys.bptr(b, start), p - start); sys.out_byte(out, 10)
+                }
+                start = 0 - 1
+            }
+        }
+    }
+    sys.out_flush(out)
+    return status
+}
+
+# ---- od / hexdump -------------------------------------------------------------------------------------------------------------------------------------
+fn hex_digits(v: i64, width: i64): str {
+    let b = sys.bytes_new(); let digits = Vec<u8>(); let m = v
+    for i in 0..width { let d = m % 16; digits.push(d < 10 ? (48 + d) as u8 : (87 + d) as u8); m = m / 16 }
+    let k = width - 1
+    while k >= 0 { sys.bytes_push(b, digits[k]); k = k - 1 }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn pad_left(text: str, width: i64, fill: u8): str {
+    let b = sys.bytes_new()
+    for i in sys.length(text)..width { sys.bytes_push(b, fill) }
+    sys.bytes_str(b, text)
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn decimal_text(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn read_word(b: *sys.Bytes, at: i64, size: i64, limit: i64): i64 {
+    let v = 0; let k = size - 1
+    while k >= 0 { v = v * 256 + (at + k < limit ? sys.bat(b, at + k) as i64 : 0); k = k - 1 }
+    return v
+}
+fn char_name(c: i64): str {
+    if c == 0 { return "\\0" } else if c == 7 { return "\\a" } else if c == 8 { return "\\b" } else if c == 9 { return "\\t" } else if c == 10 { return "\\n" } else if c == 11 { return "\\v" } else if c == 12 { return "\\f" } else if c == 13 { return "\\r" }
+    if c >= 32 && c < 127 { let b = sys.bytes_new(); sys.bytes_push(b, c as u8); return sys.join2(sys.bytes_cstr(b), "") }
+    return pad_left(octal_text(c), 3, 48)
+}
+fn named_ascii(c: i64): str {
+    let names = "nul soh stx etx eot enq ack bel bs ht nl vt ff cr so si dle dc1 dc2 dc3 dc4 nak syn etb can em sub esc fs gs rs us sp"
+    let c7 = c % 128
+    if c7 == 127 { return "del" }
+    if c7 < 33 { let start = 0; let index = 0; let n = sys.length(names); for i in 0..(n + 1) { if i == n || sys.at(names, i) == 32 { if index == c7 { return sys.slice(names, start, i) }; index = index + 1; start = i + 1 } } }
+    let b = sys.bytes_new(); sys.bytes_push(b, c7 as u8); return sys.join2(sys.bytes_cstr(b), "")
+}
+# One formatted field: kind a/c/o/d/u/x of `size` bytes at offset `at`.
+fn field_text(kind: i64, size: i64, b: *sys.Bytes, at: i64, limit: i64): str {
+    let v = read_word(b, at, size, limit)
+    if kind == 97 { return pad_left(named_ascii(v), 3, 32) }
+    if kind == 99 { return pad_left(char_name(v), 3, 32) }
+    if kind == 111 { return pad_left(octal_text(v), size == 1 ? 3 : (size == 2 ? 6 : (size == 4 ? 11 : 22)), 48) }
+    if kind == 120 { return pad_left(hex_digits(v, size * 2), size * 2, 48) }
+    if kind == 117 { return pad_left(decimal_text(v), size == 1 ? 3 : (size == 2 ? 5 : (size == 4 ? 10 : 20)), 32) }
+    # d: signed
+    let bits = size * 8; let limit_value = 1; for i in 0..bits { limit_value = limit_value * 2 }
+    let signed = size < 8 && v >= limit_value / 2 ? v - limit_value : v
+    return pad_left(decimal_text(signed), size == 1 ? 4 : (size == 2 ? 6 : (size == 4 ? 11 : 20)), 32)
+}
+fn address_text(radix: i64, v: i64): str {
+    if radix == 110 { return "" }
+    if radix == 100 { return pad_left(decimal_text(v), 7, 48) }
+    if radix == 120 { return hex_digits(v, 6) }
+    return pad_left(octal_text(v), 7, 48)
+}
+struct Format { kind: u8, size: i64 }
+fn parse_type(text: str, formats: Vec<Format>): Vec<Format> {
+    let i = 0; let n = sys.length(text)
+    while i < n {
+        let k = sys.at(text, i); i = i + 1
+        let size = k == 97 || k == 99 ? 1 : 2
+        let d = 0
+        if i < n && sys.is_digit(sys.at(text, i)) { d = 0; while i < n && sys.is_digit(sys.at(text, i)) { d = d * 10 + (sys.at(text, i) - 48) as i64; i = i + 1 }; size = d }
+        else if k == 100 || k == 117 || k == 120 || k == 111 { size = 4 }
+        if k == 111 && d == 0 { size = 2 }
+        formats.push(Format(k, size))
+    }
+    return formats
+}
+fn run_od(args: Vec<str>): i64 {
+    # the short aliases of -t
+    let fixed = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]; let n = sys.length(a)
+        if n == 2 && sys.at(a, 0) == 45 {
+            let c = sys.at(a, 1)
+            if c == 98 { fixed.push("-t"); fixed.push("o1"); continue } if c == 99 { fixed.push("-t"); fixed.push("c"); continue } if c == 97 { fixed.push("-t"); fixed.push("a"); continue }
+            if c == 100 { fixed.push("-t"); fixed.push("u2"); continue } if c == 111 { fixed.push("-t"); fixed.push("o2"); continue } if c == 120 { fixed.push("-t"); fixed.push("x2"); continue }
+            if c == 66 { fixed.push("-t"); fixed.push("o2"); continue } if c == 68 { fixed.push("-t"); fixed.push("u4"); continue } if c == 72 || c == 88 { fixed.push("-t"); fixed.push("x4"); continue }
+        }
+        fixed.push(a)
+    }
+    let o = sys.parse_opts(fixed, "A:t:j:N:v")
+    if o.bad != 0 || o.missing != 0 { sys.warn("od", "invalid option"); return 1 }
+    let formats = Vec<Format>()
+    let i = 0; let n = fixed.len() as i64
+    while i < n { let a = fixed[i]; if sys.same(a, "-t") && i + 1 < n { i = i + 1; formats = parse_type(fixed[i], formats) } else if sys.length(a) > 2 && sys.starts(a, "-t") { formats = parse_type(sys.slice(a, 2, sys.length(a)), formats) }; i = i + 1 }
+    if formats.len() == 0 { formats.push(Format(111, 2)) }
+    let radix = sys.has(o, 65) && sys.length(sys.val(o, 65)) > 0 ? (sys.at(sys.val(o, 65), 0) as i64) : 111
+    let skip = 0; let limit = 0 - 1
+    if sys.has(o, 106) { let v = sys.parse_number(sys.val(o, 106)); if v.ok { skip = v.value } }
+    if sys.has(o, 78) { let v = sys.parse_number(sys.val(o, 78)); if v.ok { limit = v.value } }
+    let all = sys.bytes_new(); let files = o.rest; if files.len() == 0 { files.push("-") }
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path("od", files[k]); return 1 }
+        sys.bytes_append(all, sys.bdata(input.bytes), sys.blen(input.bytes))
+    }
+    let total = sys.blen(all)
+    let first = skip > total ? total : skip
+    let end = limit >= 0 && first + limit < total ? first + limit : total
+    let width = 16
+    let out = sys.out_new(1)
+    let previous = sys.bytes_new(); let repeated = false
+    let at = first
+    while at < end {
+        let chunk_end = at + width < end ? at + width : end
+        # a line equal to the one before it prints as "*" (unless -v)
+        let same_as_before = false
+        if !sys.has(o, 118) && at > first && chunk_end - at == width && sys.blen(previous) == width {
+            same_as_before = true
+            for q in 0..width { if sys.bat(all, at + q) != sys.bat(previous, q) { same_as_before = false } }
+        }
+        if same_as_before { if !repeated { sys.out_str(out, "*\n"); repeated = true } }
+        else {
+            repeated = false
+            for f in 0..(formats.len() as i64) {
+                let format = formats[f]
+                sys.out_str(out, f == 0 ? address_text(radix, at) : (radix == 110 ? "" : "       "))
+                let p = at
+                while p < chunk_end {
+                    sys.out_byte(out, 32)
+                    sys.out_str(out, field_text(format.kind as i64, format.size, all, p, chunk_end))
+                    p = p + format.size
+                }
+                sys.out_byte(out, 10)
+            }
+        }
+        sys.bclear(previous); sys.bytes_append(previous, sys.bptr(all, at), chunk_end - at)
+        at = chunk_end
+    }
+    if radix != 110 { sys.out_str(out, address_text(radix, end)); sys.out_byte(out, 10) }
+    sys.out_flush(out)
+    return 0
+}
+
+# hexdump [-bcCdefnosvxR] FILE...  (-e / -f format strings and -R are not supported)
+fn run_hexdump(args: Vec<str>): i64 { return hexdump_with("hexdump", args, false) }
+fn run_hd(args: Vec<str>): i64 { return hexdump_with("hd", args, true) }
+fn hexdump_with(prog: str, args: Vec<str>, canonical: bool): i64 {
+    let o = sys.parse_opts(args, "bcCdn:os:vxe:f:R")
+    if o.bad != 0 || o.missing != 0 { sys.warn(prog, "invalid option"); return 1 }
+    if sys.has(o, 101) || sys.has(o, 102) || sys.has(o, 82) { sys.warn(prog, "format strings (-e, -f) and -R are not supported"); return 1 }
+    let skip = 0; let limit = 0 - 1
+    if sys.has(o, 115) { let v = sys.parse_number(sys.val(o, 115)); if v.ok { skip = v.value } }
+    if sys.has(o, 110) { let v = sys.parse_number(sys.val(o, 110)); if v.ok { limit = v.value } }
+    let all = sys.bytes_new(); let files = o.rest; if files.len() == 0 { files.push("-") }
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k])
+        if !input.ok { sys.warn_path(prog, files[k]); return 1 }
+        sys.bytes_append(all, sys.bdata(input.bytes), sys.blen(input.bytes))
+    }
+    let total = sys.blen(all); let first = skip > total ? total : skip
+    let end = limit >= 0 && first + limit < total ? first + limit : total
+    let out = sys.out_new(1)
+    let use_canonical = canonical || sys.has(o, 67)
+    let kind = 120; let size = 2; let explicit_x = sys.has(o, 120)
+    if sys.has(o, 98) { kind = 111; size = 1 } else if sys.has(o, 99) { kind = 99; size = 1 } else if sys.has(o, 100) { kind = 117; size = 2 } else if sys.has(o, 111) { kind = 111; size = 2 }
+    let at = first; let previous = sys.bytes_new(); let star = false
+    while at < end {
+        let chunk_end = at + 16 < end ? at + 16 : end
+        let same_as_before = false
+        if !sys.has(o, 118) && at > first && chunk_end - at == 16 && sys.blen(previous) == 16 {
+            same_as_before = true
+            for q in 0..16 { if sys.bat(all, at + q) != sys.bat(previous, q) { same_as_before = false } }
+        }
+        if same_as_before { if !star { sys.out_str(out, "*\n"); star = true } }
+        else {
+            star = false
+            if use_canonical {
+                sys.out_str(out, hex_digits(at, 8)); sys.out_str(out, "  ")
+                for q in 0..16 {
+                    if at + q < chunk_end { sys.out_str(out, hex_digits(sys.bat(all, at + q) as i64, 2)); sys.out_byte(out, 32) } else { sys.out_str(out, "   ") }
+                    if q == 7 { sys.out_byte(out, 32) }
+                }
+                sys.out_str(out, " |")
+                for q in at..chunk_end { let c = sys.bat(all, q); sys.out_byte(out, ln.is_print(c) ? c : 46) }
+                sys.out_str(out, "|\n")
+            } else {
+                sys.out_str(out, hex_digits(at, 7))
+                let p = at
+                while p < chunk_end {
+                    sys.out_byte(out, 32)
+                    let text = field_text(kind, size, all, p, chunk_end)
+                    if kind == 117 { text = sys.join2("  ", pad_left(decimal_text(read_word(all, p, size, chunk_end)), 5, 48)) }
+                    else if kind == 120 && explicit_x { text = sys.join2("   ", text) }
+                    else if kind == 111 && size == 2 { text = sys.join2(" ", text) }
+                    sys.out_str(out, text)
+                    p = p + size
+                }
+                # the missing fields of a short last line are blank (the columns stay aligned)
+                let fieldwidth = kind == 120 ? (explicit_x ? 7 : 4) : (kind == 111 && size == 1 ? 3 : (kind == 111 ? 7 : (kind == 99 ? 3 : (kind == 117 ? 7 : 3))))
+                while p < at + 16 { for s in 0..(fieldwidth + 1) { sys.out_byte(out, 32) }; p = p + size }
+                sys.out_byte(out, 10)
+            }
+        }
+        sys.bclear(previous); sys.bytes_append(previous, sys.bptr(all, at), chunk_end - at)
+        at = chunk_end
+    }
+    sys.out_str(out, use_canonical ? hex_digits(end, 8) : hex_digits(end, 7)); sys.out_byte(out, 10)
+    sys.out_flush(out)
+    return 0
+}

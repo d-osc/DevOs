@@ -97,6 +97,28 @@ test.case("sort uniq cut tac tr",fn() {
         "echo hello | @tr a-z A-Z","echo hello | @tr -d l","echo aabbcc | @tr -s ab","echo hello | @tr -c 'a-z\\n' X","echo 'a b' | @tr -cd 'a-z'","echo abc | @tr abc xy","echo 'Hello World' | @tr '[:lower:]' '[:upper:]'","printf 'a\\tb\\n' | @tr '\\t' ' '","echo hello | @tr a-y b-z","echo hello | @tr -d '[:alpha:]'","echo 'a  b   c' | @tr -s ' '","echo abc | @tr 'a-c' '\\n'"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("fold expand unexpand comm cmp split strings od hexdump",fn() {
+    let d = sandbox()
+    tool.exec(Vec<str>("sh","-c","cd " + d + " && printf 'a\\nb\\nc\\nd\\n' > s1.txt && printf 'b\\nd\\ne\\n' > s2.txt && printf 'ab\\000hello\\001world!\\000x\\n' > bin.dat"))
+    all_same(d, Vec<str>("@fold -w 5 a.txt","@fold -s -w 10 a.txt","@fold -b -w 4 b.txt","@fold -w 3 c.txt","@fold a.txt","@fold -w 4 tabs.txt","@fold -s -w 8 a.txt b.txt",
+        "@expand tabs.txt","@expand -t 4 tabs.txt","@expand -i tabs.txt","printf ' \\tx\\ty\\n' | @expand -i","printf 'ab\\tc\\n' | @expand -t 3",
+        "printf '        x\\n' | @unexpand","printf 'a       b\\n' | @unexpand -a","printf '    x\\n' | @unexpand -t 4","printf 'a  b\\n' | @unexpand -a","printf '        x        y\\n' | @unexpand","printf '        x        y\\n' | @unexpand -a",
+        "@comm s1.txt s2.txt","@comm -12 s1.txt s2.txt","@comm -3 s1.txt s2.txt","@comm -1 s1.txt s2.txt","@comm -23 s1.txt s2.txt","@comm s1.txt nosuch",
+        "@cmp a.txt a.txt","@cmp a.txt b.txt","@cmp -s a.txt b.txt; echo rc","@cmp -l a.txt b.txt","@cmp a.txt empty.txt","@cmp a.txt a.txt 2 2","@cmp nosuch a.txt",
+        "@split -l 1 b.txt; cat xaa xab","@split -b 4 a.txt pre; cat prea* | wc -c; ls pre*","@split -a 3 -l 1 b.txt; ls x*","@split -l 2 a.txt; cat xaa",
+        "@strings bin.dat","@strings -n 3 bin.dat","@strings -f bin.dat","@strings -n 6 bin.dat","@strings nosuch",
+        "@od a.txt","@od -c a.txt","@od -An -tx1 b.txt","@od -b b.txt","@od -x b.txt","@od -A d -t u1 b.txt","@od -j 2 -N 5 -c a.txt","@od -An -c bin.dat","@od -t o1 b.txt","@od -d b.txt","@od -An -t x2 a.txt",
+        "@hexdump -C a.txt","@hexdump a.txt","@hexdump -b b.txt","@hexdump -c b.txt","@hexdump -x b.txt","@hexdump -n 5 -C a.txt","@hexdump -s 3 -C b.txt","@hexdump -d b.txt","@hexdump -o b.txt"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("dos2unix unix2dos length (BusyBox only)",fn() {
+    let d = sandbox()
+    test.expect(strings.contains(outcome(d, "printf 'a\\r\\nb\\r\\n' | " + busybox() + " dos2unix | od -An -c"), "a  \\n   b  \\n"), "dos2unix did not strip the carriage returns")
+    test.expect(strings.contains(outcome(d, "printf 'a\\nb\\n' | " + busybox() + " unix2dos | od -An -c"), "a  \\r  \\n   b  \\r  \\n"), "unix2dos did not add them")
+    test.expect(strings.contains(outcome(d, "printf 'x\\r\\ny\\r\\n' > f.txt; " + busybox() + " dos2unix f.txt; od -An -c f.txt"), "x  \\n   y  \\n"), "dos2unix in place failed")
+    test.expect(strings.contains(outcome(d, busybox() + " length hello; " + busybox() + " length ''"), "5\n0\n"), "length is wrong")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("cat passes binary data through untouched and yes stops when its reader does",fn() {
     let d = sandbox()
     tool.exec(Vec<str>("sh","-c","head -c 3000000 /dev/urandom > " + d + "/r.bin"))
