@@ -1,0 +1,171 @@
+# unlzma, lzmacat: decompress .lzma files (the LZMA "alone" format).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "./gzip.dev" as gz
+
+fn cells(n: i64): *i64 { unsafe { return sys.calloc(n as usize, 8) as *i64 } }
+fn cg(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cs(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn pow2(n: i64): i64 { let r = 1; for i in 0..n { r = r * 2 }; return r }
+
+// Range decoder state r: 0 range, 1 code, 2 input position, 3 input length, 4 error
+struct Dec { data: *u8, r: *i64, probs: *i64 }
+fn next_byte(d: Dec): i64 { unsafe {
+    let pos = cg(d.r, 2)
+    if pos >= cg(d.r, 3) { cs(d.r, 4, 1); return 0 }
+    cs(d.r, 2, pos + 1)
+    return d.data[pos] as i64
+} }
+fn normalize(d: Dec) {
+    if cg(d.r, 0) < 16777216 { cs(d.r, 0, cg(d.r, 0) * 256); cs(d.r, 1, (cg(d.r, 1) * 256 + next_byte(d)) % 4294967296) }
+}
+fn bit(d: Dec, index: i64): i64 {
+    let p = cg(d.probs, index); let bound = (cg(d.r, 0) / 2048) * p
+    let result = 0
+    if cg(d.r, 1) < bound { cs(d.r, 0, bound); cs(d.probs, index, p + (2048 - p) / 32); result = 0 }
+    else { cs(d.r, 0, cg(d.r, 0) - bound); cs(d.r, 1, cg(d.r, 1) - bound); cs(d.probs, index, p - p / 32); result = 1 }
+    normalize(d)
+    return result
+}
+fn direct_bits(d: Dec, count: i64): i64 {
+    let v = 0
+    for i in 0..count {
+        cs(d.r, 0, cg(d.r, 0) / 2)
+        let b = 0; if cg(d.r, 1) >= cg(d.r, 0) { cs(d.r, 1, cg(d.r, 1) - cg(d.r, 0)); b = 1 }
+        v = v * 2 + b
+        normalize(d)
+    }
+    return v
+}
+fn bit_tree(d: Dec, base: i64, bits: i64): i64 {
+    let m = 1
+    for i in 0..bits { m = m * 2 + bit(d, base + m) }
+    return m - pow2(bits)
+}
+fn bit_tree_reverse(d: Dec, base: i64, bits: i64): i64 {
+    let m = 1; let v = 0
+    for i in 0..bits { let b = bit(d, base + m); m = m * 2 + b; v = v + b * pow2(i) }
+    return v
+}
+// layout of the probability array
+fn IS_MATCH(): i64 { return 0 }
+fn IS_REP(): i64 { return 192 }
+fn IS_REP_G0(): i64 { return 204 }
+fn IS_REP_G1(): i64 { return 216 }
+fn IS_REP_G2(): i64 { return 228 }
+fn IS_REP0_LONG(): i64 { return 240 }
+fn POS_SLOT(): i64 { return 432 }
+fn SPEC_POS(): i64 { return 688 }
+fn ALIGN(): i64 { return 803 }
+fn LEN(): i64 { return 819 }
+fn REP_LEN(): i64 { return 1333 }
+fn LITERAL(): i64 { return 1847 }
+fn decode_len(d: Dec, base: i64, pos_state: i64): i64 {
+    if bit(d, base) == 0 { return bit_tree(d, base + 2 + pos_state * 8, 3) }
+    if bit(d, base + 1) == 0 { return 8 + bit_tree(d, base + 130 + pos_state * 8, 3) }
+    return 16 + bit_tree(d, base + 258, 8)
+}
+struct Unpacked { ok: bool, bytes: *sys.Bytes, message: str }
+fn unlzma(input: *sys.Bytes): Unpacked {
+    let out = sys.bytes_new(); let n = sys.blen(input)
+    if n < 14 { return Unpacked(false, out, "not in lzma format") }
+    let props = sys.bat(input, 0) as i64
+    if props >= 225 { return Unpacked(false, out, "bad lzma properties") }
+    let lc = props % 9; let rest = props / 9; let lp = rest % 5; let pb = rest / 5
+    let size = 0; let unknown = true
+    for i in 0..8 { size = size + (sys.bat(input, 5 + i) as i64) * pow2(i * 8) }
+    for i in 0..8 { if sys.bat(input, 5 + i) != 255 { unknown = false } }
+    let total_probs = 1847 + 768 * pow2(lc + lp)
+    let probs = cells(total_probs + 1); for i in 0..total_probs { cs(probs, i, 1024) }
+    let d = Dec(sys.bptr(input, 0), cells(6), probs)
+    cs(d.r, 3, n); cs(d.r, 2, 13)
+    if next_byte(d) != 0 { return Unpacked(false, out, "bad lzma header") }
+    let code = 0; for i in 0..4 { code = code * 256 + next_byte(d) }
+    cs(d.r, 0, 4294967295); cs(d.r, 1, code)
+    let state = 0; let rep0 = 0; let rep1 = 0; let rep2 = 0; let rep3 = 0
+    let pb_mask = pow2(pb) - 1; let lp_mask = pow2(lp) - 1
+    while unknown || sys.blen(out) < size {
+        if cg(d.r, 4) != 0 { return Unpacked(false, out, "unexpected end of data") }
+        let pos = sys.blen(out); let pos_state = pos % (pb_mask + 1)
+        if bit(d, IS_MATCH() + state * 16 + pos_state) == 0 {
+            let prev = pos > 0 ? (sys.bat(out, pos - 1) as i64) : 0
+            let base = LITERAL() + 768 * (((pos % (lp_mask + 1)) * pow2(lc)) + prev / pow2(8 - lc))
+            let symbol = 1
+            if state >= 7 {
+                let match_byte = (sys.bat(out, pos - rep0 - 1) as i64)
+                while symbol < 256 {
+                    let match_bit = (match_byte / 128) % 2; match_byte = (match_byte * 2) % 256
+                    let b = bit(d, base + (1 + match_bit) * 256 + symbol)
+                    symbol = symbol * 2 + b
+                    if match_bit != b { break }
+                }
+            }
+            while symbol < 256 { symbol = symbol * 2 + bit(d, base + symbol) }
+            sys.bytes_push(out, (symbol - 256) as u8)
+            state = state < 4 ? 0 : (state < 10 ? state - 3 : state - 6)
+            continue
+        }
+        let len = 0
+        if bit(d, IS_REP() + state) == 0 {
+            rep3 = rep2; rep2 = rep1; rep1 = rep0
+            len = decode_len(d, LEN(), pos_state)
+            state = state < 7 ? 7 : 10
+            let len_state = len < 4 ? len : 3
+            let slot = bit_tree(d, POS_SLOT() + len_state * 64, 6)
+            if slot < 4 { rep0 = slot }
+            else {
+                let direct = slot / 2 - 1; let dist = (2 + slot % 2) * pow2(direct)
+                if slot < 14 { dist = dist + bit_tree_reverse(d, SPEC_POS() + dist - slot, direct) }
+                else { dist = dist + direct_bits(d, direct - 4) * 16; dist = dist + bit_tree_reverse(d, ALIGN(), 4) }
+                rep0 = dist
+            }
+            if rep0 == 4294967295 { break }
+        } else {
+            if bit(d, IS_REP_G0() + state) == 0 {
+                if bit(d, IS_REP0_LONG() + state * 16 + pos_state) == 0 {
+                    state = state < 7 ? 9 : 11
+                    if pos < rep0 + 1 { return Unpacked(false, out, "corrupt data") }
+                    sys.bytes_push(out, sys.bat(out, pos - rep0 - 1))
+                    continue
+                }
+            } else {
+                let dist = 0
+                if bit(d, IS_REP_G1() + state) == 0 { dist = rep1 } else {
+                    if bit(d, IS_REP_G2() + state) == 0 { dist = rep2 } else { dist = rep3; rep3 = rep2 }
+                    rep2 = rep1
+                }
+                rep1 = rep0; rep0 = dist
+            }
+            len = decode_len(d, REP_LEN(), pos_state)
+            state = state < 7 ? 8 : 11
+        }
+        len = len + 2
+        if pos < rep0 + 1 { return Unpacked(false, out, "corrupt data") }
+        for q in 0..len { if !unknown && sys.blen(out) >= size { break }; sys.bytes_push(out, sys.bat(out, sys.blen(out) - rep0 - 1)) }
+    }
+    return Unpacked(true, out, "")
+}
+fn run_mode(args: Vec<str>, prog: str, to_stdout: bool): i64 {
+    let o = sys.parse_opts(args, "cfkvt")
+    if o.bad != 0 { sys.warn(prog, "invalid usage: unlzma [-cfk] [FILE]..."); return 1 }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let path = files[k]; let from_stdin = sys.same(path, "-")
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn_path(prog, path); status = 1; continue }
+        let r = unlzma(input.bytes)
+        if !r.ok { sys.warn(prog, sys.join2(sys.join2(from_stdin ? "stdin" : path, ": "), r.message)); status = 1; continue }
+        if to_stdout || sys.has(o, 99) || from_stdin { sys.out_data(out, sys.bdata(r.bytes), sys.blen(r.bytes)); continue }
+        if !sys.ends(path, ".lzma") { sys.warn(prog, sys.join2(path, ": unknown suffix -- ignored")); status = 1; continue }
+        let target = sys.join2(sys.slice(path, 0, sys.length(path) - 5), "")
+        if sys.exists(target) && !sys.has(o, 102) { sys.warn(prog, sys.join2(target, " already exists; not overwritten")); status = 1; continue }
+        let info = sys.file_info(path, true)
+        if !gz.write_file(target, r.bytes, sys.permission_bits(info.mode)) { sys.warn_write(prog, target); status = 1; continue }
+        if !sys.has(o, 107) { fsx.do_unlink(path) }
+    }
+    sys.out_flush(out)
+    return status
+}
+fn run_unlzma(args: Vec<str>): i64 { return run_mode(args, "unlzma", false) }
+fn run_lzmacat(args: Vec<str>): i64 { return run_mode(args, "lzmacat", true) }

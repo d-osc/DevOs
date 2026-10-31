@@ -609,6 +609,20 @@ test.case("mkfs.vfat mkdosfs (checked with fsck.vfat and blkid)",fn() {
     test.expect(strings.contains(outcome(d, "truncate -s 10K tiny.img; " + bb + " mkfs.vfat tiny.img; echo rc=$?"), "rc=1"), "mkfs.vfat of a tiny file")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("unlzma lzmacat (files made by xz --format=lzma)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let data = "head -c 100000 /dev/urandom > rnd.bin; yes 'the quick brown fox' | head -c 70000 > txt.dat; : > empty.dat; printf 'x' > one.dat; seq 1 30000 > seq.dat; head -c 9000 /dev/zero > zeros.dat; cat rnd.bin txt.dat seq.dat > mix.dat; "
+    for f in Vec<str>("rnd.bin", "txt.dat", "empty.dat", "one.dat", "seq.dat", "zeros.dat", "mix.dat", "a.txt") {
+        for opts in Vec<str>("", "--lzma1=lc=4,lp=0,pb=0", "--lzma1=lc=0,lp=2,pb=1") {
+            let make = data + "xz --format=lzma " + opts + " -c " + f + " > t.lzma; "
+            test.expect(strings.contains(outcome(d, make + bb + " lzmacat t.lzma | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "lzmacat differs for " + f + " " + opts + ":\n" + outcome(d, make + bb + " lzmacat t.lzma | cmp - " + f + "; echo cmp=$?"))
+        }
+    }
+    test.expect(strings.contains(outcome(d, "xz --format=lzma -c a.txt > q.lzma; " + bb + " unlzma q.lzma; cmp q a.txt; echo cmp=$?"), "cmp=0"), "in-place unlzma")
+    test.expect(strings.contains(outcome(d, "printf plain > p.lzma; " + bb + " unlzma -c p.lzma; echo rc=$?"), "rc=1"), "unlzma accepted garbage")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
