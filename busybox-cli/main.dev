@@ -23,10 +23,11 @@ use "./applets/diff.dev" as df2
 use "./applets/patch.dev" as pt
 use "./applets/archive.dev" as ac
 use "./applets/sysops.dev" as so
+use "./applets/unzip.dev" as uz
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "ar", "basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "cut", "date", "dd", "df", "diff", "dirname", "dmesg", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "insmod", "install", "ionice", "kill", "killall", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mktemp", "more", "mount", "mountpoint", "mv", "nice", "nohup", "od", "patch", "pgrep", "pidof", "pivot_root", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "runlevel", "sed", "seq", "setarch", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "swapoff", "swapon", "sync", "sysctl", "tac", "tail", "tar", "taskset", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "umount", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "which", "who", "whoami", "xargs", "yes", "zcat")
+    return Vec<str>("[", "[[", "ar", "basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "cut", "date", "dd", "df", "diff", "dirname", "dmesg", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "insmod", "install", "ionice", "kill", "killall", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mktemp", "more", "mount", "mountpoint", "mv", "nice", "nohup", "od", "patch", "pgrep", "pidof", "pivot_root", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "runlevel", "sed", "seq", "setarch", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "swapoff", "swapon", "sync", "sysctl", "tac", "tail", "tar", "taskset", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "umount", "uname", "unexpand", "uniq", "unix2dos", "unzip", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "which", "who", "whoami", "xargs", "yes", "zcat")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -162,6 +163,7 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "rmmod") { return so.run_rmmod(args) }
     if sys.same(name, "pivot_root") { return so.run_pivot_root(args) }
     if sys.same(name, "who") { return so.run_who(args) }
+    if sys.same(name, "unzip") { return uz.run_unzip(args) }
     sys.warn(name, "applet not found")
     return 127
 }

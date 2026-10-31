@@ -1,0 +1,100 @@
+# unzip [-lopqnt] [-d DIR] ARCHIVE [FILE]...: extract files from a zip archive (stored and deflated entries).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/clock.dev" as clock
+use "../lib/deflate.dev" as df
+use "./files.dev" as files
+use "./gzip.dev" as gz
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn u16(b: *sys.Bytes, off: i64): i64 { return (sys.bat(b, off) as i64) + (sys.bat(b, off + 1) as i64) * 256 }
+fn u32(b: *sys.Bytes, off: i64): i64 { return u16(b, off) + u16(b, off + 2) * 65536 }
+fn text_at(b: *sys.Bytes, off: i64, n: i64): str {
+    let out = sys.bytes_new()
+    for i in 0..n { sys.bytes_push(out, sys.bat(b, off + i)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn pad_left(text: str, width: i64): str { let b = sys.bytes_new(); for i in 0..(width - sys.length(text)) { sys.bytes_push(b, 32) }; sys.bytes_str(b, text); return sys.join2(sys.bytes_cstr(b), "") }
+fn two(v: i64): str { return v < 10 ? sys.join2("0", decimal(v)) : decimal(v) }
+struct Entry { name: str, method: i64, flags: i64, crc: i64, packed: i64, size: i64, offset: i64, dos_time: i64, dos_date: i64, mode: i64 }
+fn read_entries(b: *sys.Bytes): Vec<Entry> {
+    let out = Vec<Entry>(); let n = sys.blen(b)
+    let eocd = 0 - 1; let i = n - 22
+    while i >= 0 && i > n - 65600 { if u32(b, i) == 101010256 { eocd = i; break }; i = i - 1 }
+    if eocd < 0 { return out }
+    let count = u16(b, eocd + 10); let pos = u32(b, eocd + 16)
+    for k in 0..count {
+        if pos + 46 > n || u32(b, pos) != 33639248 { break }
+        let name_len = u16(b, pos + 28); let extra = u16(b, pos + 30); let comment = u16(b, pos + 32)
+        let external = u32(b, pos + 38)
+        out.push(Entry(text_at(b, pos + 46, name_len), u16(b, pos + 10), u16(b, pos + 8), u32(b, pos + 16), u32(b, pos + 20), u32(b, pos + 24), u32(b, pos + 42), u16(b, pos + 12), u16(b, pos + 14), external / 65536))
+        pos = pos + 46 + name_len + extra + comment
+    }
+    return out
+}
+// The uncompressed bytes of an entry; ok is false on a data error.
+struct Data { ok: bool, bytes: *sys.Bytes, message: str }
+fn entry_data(b: *sys.Bytes, e: Entry): Data {
+    let out = sys.bytes_new(); let pos = e.offset
+    if pos + 30 > sys.blen(b) || u32(b, pos) != 67324752 { return Data(false, out, "bad local header") }
+    if e.flags % 2 == 1 { return Data(false, out, "encrypted entries are not supported") }
+    let start = pos + 30 + u16(b, pos + 26) + u16(b, pos + 28)
+    if e.method == 0 { sys.bytes_append(out, sys.bptr(b, start), e.size) }
+    else if e.method == 8 {
+        let used = df.cells(1)
+        if df.inflate(sys.bdata(b), start, start + e.packed, out, used) != 0 { return Data(false, out, "invalid compressed data") }
+    } else { return Data(false, out, "unsupported compression method") }
+    if sys.blen(out) != e.size { return Data(false, out, "size mismatch") }
+    if df.crc32(df.crc_table(), 0, sys.bdata(out), 0, sys.blen(out)) != e.crc { return Data(false, out, "bad CRC") }
+    return Data(true, out, "")
+}
+fn run_unzip(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "lopqntxd:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() == 0 { sys.warn("unzip", "invalid usage: unzip [-lopqnt] [-d DIR] FILE [FILE...]"); return 1 }
+    let input = sys.read_path(o.rest[0])
+    if !input.ok { sys.warn_path("unzip", o.rest[0]); return 9 }
+    let entries = read_entries(input.bytes)
+    if entries.len() == 0 { sys.warn("unzip", sys.join2("cannot find zipfile directory in ", o.rest[0])); return 9 }
+    let wanted = Vec<str>(); let excluded = Vec<str>(); let after_x = false
+    for k in 1..(o.rest.len() as i64) { wanted.push(o.rest[k]) }
+    let out = sys.out_new(1); let status = 0
+    if sys.has(o, 108) {
+        sys.out_str(out, "Archive:  "); sys.out_str(out, o.rest[0]); sys.out_str(out, "\n  Length      Date    Time    Name\n---------  ---------- -----   ----\n")
+        let total = 0
+        for k in 0..(entries.len() as i64) {
+            let e = entries[k]
+            let year = 1980 + e.dos_date / 512; let mon = (e.dos_date / 32) % 16; let day = e.dos_date % 32
+            sys.out_str(out, pad_left(decimal(e.size), 9)); sys.out_str(out, "  "); sys.out_str(out, sys.join2(decimal(year), sys.join2("-", sys.join2(two(mon), sys.join2("-", two(day))))))
+            sys.out_str(out, " "); sys.out_str(out, sys.join2(two(e.dos_time / 2048), sys.join2(":", two((e.dos_time / 32) % 64)))); sys.out_str(out, "   "); sys.out_str(out, e.name); sys.out_byte(out, 10)
+            total = total + e.size
+        }
+        sys.out_str(out, "---------                     -------\n"); sys.out_str(out, pad_left(decimal(total), 9)); sys.out_str(out, "                     "); sys.out_str(out, decimal(entries.len() as i64)); sys.out_str(out, sys.join2(entries.len() == 1 ? " file" : " files", "\n"))
+        sys.out_flush(out)
+        return 0
+    }
+    if sys.has(o, 100) { if !sys.is_dir(sys.val(o, 100)) { fsx.make_dirs(sys.val(o, 100), 493) }; if !fsx.change_dir(sys.val(o, 100)) { sys.warn("unzip", "cannot change directory"); return 1 } }
+    for k in 0..(entries.len() as i64) {
+        let e = entries[k]
+        if wanted.len() > 0 { let hit = false; for q in 0..(wanted.len() as i64) { if sys.same(wanted[q], e.name) { hit = true } }; if !hit { continue } }
+        if sys.has(o, 120) { }
+        let bad_path = sys.starts(e.name, "/") || sys.find_char(e.name, 0) >= 0
+        for i in 0..(sys.length(e.name) - 1) { if sys.at(e.name, i) == 46 && sys.at(e.name, i + 1) == 46 && (i == 0 || sys.at(e.name, i - 1) == 47) && (i + 2 >= sys.length(e.name) || sys.at(e.name, i + 2) == 47) { bad_path = true } }
+        if bad_path { sys.warn("unzip", sys.join2("skipping unsafe path ", e.name)); status = 1; continue }
+        let is_dir = sys.ends(e.name, "/")
+        let data = entry_data(input.bytes, e)
+        if !data.ok { sys.warn("unzip", sys.join2(sys.join2(e.name, ": "), data.message)); status = 3; continue }
+        if sys.has(o, 112) { sys.out_data(out, sys.bdata(data.bytes), sys.blen(data.bytes)); continue }
+        if sys.has(o, 116) { continue }
+        if !sys.has(o, 113) { sys.out_str(out, is_dir ? "   creating: " : "  inflating: "); sys.out_str(out, e.name); sys.out_byte(out, 10) }
+        if is_dir { fsx.make_dirs(e.name, 493); continue }
+        let slash = 0 - 1; for i in 0..sys.length(e.name) { if sys.at(e.name, i) == 47 { slash = i } }
+        if slash > 0 { fsx.make_dirs(sys.join2(sys.slice(e.name, 0, slash), ""), 493) }
+        if sys.exists(e.name) && sys.has(o, 110) { continue }
+        let perms = e.mode % 4096; if perms == 0 { perms = 420 }
+        let link = (e.mode / 4096) % 16 == 10
+        if link { fsx.do_unlink(e.name); fsx.do_symlink(text_at(data.bytes, 0, sys.blen(data.bytes)), e.name); continue }
+        if !gz.write_file(e.name, data.bytes, perms) { sys.warn_write("unzip", e.name); status = 1 }
+    }
+    sys.out_flush(out)
+    return status
+}

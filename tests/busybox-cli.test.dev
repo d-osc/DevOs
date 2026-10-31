@@ -334,6 +334,22 @@ test.case("mount umount swapon dmesg setarch taskset who",fn() {
     test.expect(strings.contains(outcome(d, bb + " dmesg >/dev/null 2>&1; echo rc=$?"), "rc="), "dmesg did not run")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("unzip (archives made by Python's zipfile)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let make = "mkdir -p src/sub && printf 'hello\\n' > src/a.txt && head -c 5000 /dev/urandom > src/sub/r.bin && seq 1 5000 > src/sub/seq.txt && : > src/zero; python3 - <<'EOF'\nimport zipfile,os\nfor name,mode in (('def.zip',zipfile.ZIP_DEFLATED),('sto.zip',zipfile.ZIP_STORED)):\n    z=zipfile.ZipFile(name,'w',mode)\n    for root,dirs,files in os.walk('src'):\n        for f in files: z.write(os.path.join(root,f))\n    z.close()\nEOF\n"
+    for z in Vec<str>("def.zip", "sto.zip") {
+        let got = outcome(d, make + "mkdir x; cd x; " + bb + " unzip -q ../" + z + "; cd ..; diff -r src x/src; echo cmp=$?")
+        test.expect(strings.contains(got, "cmp=0"), "unzip of " + z + " differs:\n" + got)
+    }
+    test.expect(strings.contains(outcome(d, make + bb + " unzip -p def.zip src/a.txt"), "hello"), "unzip -p failed")
+    test.expect(strings.contains(outcome(d, make + bb + " unzip -l def.zip | tail -1"), "4 files"), "unzip -l count is wrong")
+    test.expect(strings.contains(outcome(d, make + bb + " unzip -d out -q def.zip; ls out/src"), "a.txt"), "unzip -d failed")
+    test.expect(strings.contains(outcome(d, make + bb + " unzip -q def.zip src/a.txt -d only; find only -type f"), "only/src/a.txt"), "unzip of one member failed")
+    test.expect(strings.contains(outcome(d, bb + " unzip nosuch.zip; echo rc=$?"), "rc=9"), "unzip missing file status")
+    test.expect(strings.contains(outcome(d, make + "printf garbage > bad.zip; " + bb + " unzip bad.zip; echo rc=$?"), "rc=9"), "unzip accepted garbage")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
