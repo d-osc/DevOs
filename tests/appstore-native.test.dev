@@ -66,6 +66,11 @@ test.case("a catalog app is downloaded, installed by DevOsPM, remembered, replac
     let p = cells(records(first)[1])
     test.expect(strings.equal(p[2],"1.0.0") && strings.equal(p[3],"app") && strings.equal(p[7],"hello-demo") && strings.equal(p[8],"hello-demo") && strings.equal(p[9],"A demo"),"Installed entry wrong: " + records(first)[1])
     test.expect(strings.equal(cells(records(worker(d,"{\"action\":\"catalog\"}\n"))[1])[8],"hello-demo"),"The catalog does not show which package the app is")
+    # the Launcher lists desktop entries, so an installed app must leave one behind whose Icon= file exists
+    let entry = d + "/home/.local/share/applications/dev-hello-demo.desktop"
+    test.expect(fs.existsSync(entry),"No launcher entry was written for the installed app")
+    let icon = strings.trim(tool.exec(Vec<str>("sh","-c","sed -n 's/^Icon=//p' " + entry)))
+    test.expect(strings.startsWith(icon,"/") && fs.existsSync(icon),"The launcher entry's icon is not an existing file: " + icon)
     test.expect(strings.equal(strings.trim(tool.exec(Vec<str>("sh","-c","ls " + d + "/tmp | wc -l"))),"0"),"The download folder was not removed")
     let v2 = package(d,"hello-demo","1.1.0")
     let replaced = worker(d,"{\"action\":\"installFile\",\"path\":\"" + v2 + "\"}\n")
