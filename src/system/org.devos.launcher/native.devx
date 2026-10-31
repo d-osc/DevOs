@@ -121,6 +121,8 @@ fn App(context:*ui.Context):ui.Node {
         if l.failure.value.bytes.len() > 0 { message.set(l.failure.value); return ui.noop }
         if asked.get() == 1 || asked.get() == 2 || asked.get() == 3 {
             if asked.get() == 1 { message.set(field(f,1)); if smoke() && step.get() == 1 { step.set(2); ui.click(context,"launcher-view-grid") } }
+            # An application or shell window has been asked for: get out of its way (the overlay would cover it).
+            if (asked.get() == 1 || asked.get() == 3) && !smoke() { ui.close(context) }
             return ui.noop
         }
         if smoke() && step.get() == 0 && apps.len() > 0 { step.set(1); ui.change(context,"launcher-search",environment("DEVOS_LAUNCHER_QUERY")) }
