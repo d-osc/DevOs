@@ -13,6 +13,10 @@ use "../../../lib/hw.dev" as hw
 use "../../../lib/config.dev" as config
 use "../../../lib/shell-command.dev" as shell
 use "./router.dev" as router
+use "./gestures.dev" as gestures
+use "./theme.dev" as theme
+use "../../../lib/ext-prefs.dev" as prefs
+use "../../services/window-state.dev" as tracking
 
 fn us():str { return encoding.decode(Vec<u8>(31),"utf8") }
 fn testing():bool { return !strings.equal(hw.env("DEVOS_SHELL_TEST"),"") }
@@ -123,10 +127,61 @@ fn runCommand(command:str, folder:str):bool {
     return true
 }
 
+# --- window gestures: ask the tracker for the windows, bring the one the gesture names forward ---
+fn trackerPath():str {
+    if !strings.equal(hw.env("DEVOS_SHELL_TRACKER"),"") { return hw.env("DEVOS_SHELL_TRACKER") }
+    for path in Vec<str>(root() + "/build/native/dev-os-window-tracker",root() + "/native/dev-os-window-tracker") { if isExecutable(path) { return path } }
+    return hw.which("dev-os-window-tracker")
+}
+fn trackerState(tracker:str):tracking.Snapshot {
+    let ran = hw.run(Vec<str>("sh","-c","sleep 0.5 | \"$1\"","sh",tracker),8000)
+    let state = tracking.empty()
+    for line in strings.split(ran.out,"\n") {
+        if strings.equal(strings.trim(line),"") { continue }
+        let parsed = result.attempt(fn():json.Value { return json.parse(line) })
+        if result.isOk(parsed) { state = tracking.consume(state,result.unwrap(parsed)) }
+    }
+    return state
+}
+fn gesture(action:str) {
+    let tracker = trackerPath()
+    if strings.equal(tracker,"") { say("Build the window tracker with tools/setup/bootstrap-window-tracker.sh"); return }
+    let id = gestures.target(trackerState(tracker),action)
+    note("gesture " + action + " " + (id > 0 ? "activate " + "${id}" : "none"))
+    if id <= 0 { return }
+    hw.run(Vec<str>("sh","-c","{ printf '%s\n' \"$2\"; sleep 0.4; } | \"$1\" > /dev/null","sh",tracker,"activate " + "${id}"),8000)
+}
+
+# --- theme: the Theme extension's choice (auto follows the clock) becomes $XDG_RUNTIME_DIR/devos-native-theme.css, which every native window follows ---
+fn themeValues():json.Value {
+    let read = result.attempt(fn():json.Value {
+        let manifest = json.parse(fs.readFileSync(root() + "/src/apps/org.devos.theme/extension.json","utf8"))
+        let directory = testing() && !strings.equal(hw.env("DEVOS_PREFERENCES_DIR"),"") ? hw.env("DEVOS_PREFERENCES_DIR") : hw.configHome() + "/dev-os/extensions"
+        return hw.jget(prefs.read(directory,"org.devos.theme",manifest),"values")
+    })
+    return result.isErr(read) ? json.object() : result.unwrap(read)
+}
+fn clock():str { return !strings.equal(hw.env("DEVOS_SHELL_CLOCK"),"") ? hw.env("DEVOS_SHELL_CLOCK") : strings.trim(hw.run(Vec<str>("date","+%H:%M"),5000).out) }
+fn syncTheme() {
+    let runtime = hw.env("XDG_RUNTIME_DIR")
+    if strings.equal(runtime,"") { return }
+    let choice = theme.choice(themeValues())
+    let name = theme.resolve(choice,clock())
+    let source = root() + "/dist/native/theme." + choice.family + "." + name + ".css"
+    if !fs.existsSync(source) { return }
+    let next = fs.readFileSync(source,"utf8")
+    let target = runtime + "/devos-native-theme.css"
+    if fs.existsSync(target) && strings.equal(fs.readFileSync(target,"utf8"),next) { return }
+    let temporary = target + ".tmp"
+    fs.writeFileSync(temporary,next); fs.renameSync(temporary,target)
+    note("theme " + choice.family + " " + name)
+}
+
 # Carries out one command line; returns the answer line.
 fn handle(line:str):str {
     let parts = strings.split(line,us())
     let cwd = parts[0]
+    if parts.len() > 1 && strings.equal(parts[1],"devos.theme-sync") { syncTheme(); return "V" }
     let args = Vec<str>()
     for i in 1..(parts.len() as i64) { args.push(parts[i]) }
     let quit = false
@@ -136,9 +191,9 @@ fn handle(line:str):str {
         else if strings.equal(s.kind,"overlay") { overlay(s.role,s.command,strings.equal(s.path,"open")) }
         else if strings.equal(s.kind,"run") { if !runCommand(s.command,strings.equal(s.path,"") ? cwd : s.path) { failed = "Could not run " + s.command + "." } }
         else if strings.equal(s.kind,"message") { say(s.path) }
-        else if strings.equal(s.kind,"reload") { say("Configuration reloaded") }
+        else if strings.equal(s.kind,"reload") { syncTheme(); say("Configuration reloaded") }
         else if strings.equal(s.kind,"quit") { quit = true }
-        else if strings.equal(s.kind,"gesture") { note("gesture " + s.command) }
+        else if strings.equal(s.kind,"gesture") { gesture(strings.substring(s.command,7,strings.charLength(s.command))) }
     }
     if !strings.equal(failed,"") { return "E\t" + failed }
     return quit ? "Q" : "V"

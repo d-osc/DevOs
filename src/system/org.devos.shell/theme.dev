@@ -1,0 +1,37 @@
+# The Theme rules of the native shell: which theme to show (the Theme extension's saved values, src/apps/org.devos.theme/extension.json) and the
+# schedule of Auto. Same rules as resolveTheme and themeSettings in packages/core/theme.ts. Pure; service.dev copies the matching
+# dist/native/theme.<family>.<name>.css to $XDG_RUNTIME_DIR/devos-native-theme.css, which every native window follows.
+use "std/json"
+use "std/strings"
+use "../../../lib/hw.dev" as hw
+
+struct Choice { mode:str, family:str, lightFrom:str, darkFrom:str }
+fn text(values:json.Value, key:str):str {
+    if !strings.equal(json.kind(values),"object") || !json.has(values,key) { return "" }
+    let value = json.get(values,key)
+    return strings.equal(json.kind(value),"string") ? strings.toLowerCase(strings.trim(json.string(value))) : ""
+}
+# "HH:MM" as minutes of the day, -1 when it is not a time.
+fn minutes(value:str):i64 {
+    let parts = strings.split(value,":")
+    if parts.len() != 2 || !hw.isInt(parts[0]) || !hw.isInt(parts[1]) || strings.charLength(parts[1]) != 2 { return 0 - 1 }
+    let hours = hw.toInt(parts[0],0 - 1); let mins = hw.toInt(parts[1],0 - 1)
+    if hours < 0 || hours > 23 || mins < 0 || mins > 59 { return 0 - 1 }
+    return hours * 60 + mins
+}
+# The saved values, validated; anything unrecognised is Auto (the old Ocean and Plum palettes were dark choices).
+fn choice(values:json.Value):Choice {
+    let raw = strings.equal(text(values,"mode"),"") ? text(values,"theme") : text(values,"mode")
+    let mode = strings.equal(raw,"dark") || strings.equal(raw,"light") || strings.equal(raw,"auto") ? raw : (strings.equal(raw,"ocean") || strings.equal(raw,"plum") ? "dark" : "auto")
+    let family = strings.equal(text(values,"family"),"github") ? "github" : "vscode"
+    let light = minutes(text(values,"lightFrom")) >= 0 && minutes(text(values,"darkFrom")) >= 0 && minutes(text(values,"lightFrom")) != minutes(text(values,"darkFrom")) ? text(values,"lightFrom") : "07:00"
+    let dark = light == text(values,"lightFrom") ? text(values,"darkFrom") : "19:00"
+    return Choice(mode,family,light,dark)
+}
+# "dark" or "light" for a choice at `now` ("HH:MM").
+fn resolve(choice:Choice, now:str):str {
+    if strings.equal(choice.mode,"dark") || strings.equal(choice.mode,"light") { return choice.mode }
+    let light = minutes(choice.lightFrom); let dark = minutes(choice.darkFrom); let minute = minutes(now)
+    let lit = light < dark ? minute >= light && minute < dark : minute >= light || minute < dark
+    return lit ? "light" : "dark"
+}

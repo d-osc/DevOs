@@ -13,15 +13,18 @@ fn environment(name:str):str { unsafe { return rc_env(name) } }
 fn commands():str {
     return "shell,accounts,switch-user,browser,camera,microphone,screenshot,window-,launcher,overlays-hide,snap-layouts,task-,disk-manager,installer,app-store,extension-store,settings,package-install,terminal,files,editor,lock,logout,reload,language,time,system,display,sound,power,storage,about,network,wifi,touchpad,mouse,keyboard,bluetooth-add,printers,vpn,hotspot,airplane,proxy,advanced,session.,services."
 }
+# The worker answers this internal line by bringing the shared theme file up to date (at start, and every few seconds for Auto and for a changed choice).
+fn syncLine():ui.Text { let out = Vec<u8>(); out.push(47); out.push(31); for byte in ui.text("devos.theme-sync").bytes { out.push(byte) }; return ui.Text(out) }
 fn App(context:*ui.Context):ui.Node {
     let pipe = ui.useRef(context,0)
     ui.useEffect(context,fn():fn():void {
         let root = environment("DEV_OS_ROOT"); let runner = environment("DEVLANG_RUN"); if ui.text(runner).bytes.len() == 0 { runner = "d" }
         let stop = channel.connectWithLibrary(context,runner,"${root}/src/system/org.devos.shell/service.dev",root,"${root}/dist/native/libsupervisor.so",fn(value:ui.Text) {
             if value.bytes.len() > 0 && value.bytes[0] == 81 { ui.close(context) }
-        },fn(value:i64) { pipe.set(value) })
+        },fn(value:i64) { pipe.set(value); channel.command(value,syncLine()) })
         unsafe { rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"shell") }
         ui.onCommand(context,commands(),fn(line:ui.Text) { channel.command(pipe.get(),line) })
+        ui.onTick(context,5000,fn() { channel.command(pipe.get(),syncLine()) })
         return stop
     },Vec<i64>())
     return ui.Box(ui.props(),Vec<ui.Node>())

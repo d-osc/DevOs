@@ -1,0 +1,32 @@
+# The window gestures of the native shell (window-next, window-previous, window-restore): which window to bring forward, from the tracker's state.
+# Same rule as gestureWindowTarget in packages/services/windows.ts. Pure rules; service.dev reads the tracker and sends it `activate <id>`.
+use "std/json"
+use "std/strings"
+use "../../services/window-state.dev" as tracking
+
+fn field(window:json.Value, key:str):json.Value { return tracking.get(window,key) }
+fn flag(window:json.Value, key:str):bool { let value = field(window,key); return strings.equal(json.kind(value),"bool") && json.bool(value) }
+fn number(window:json.Value, key:str):i64 { return tracking.num(field(window,key)) as i64 }
+# The id of the window of the current desktop (windows without a desktop and sticky ones count everywhere) the gesture brings forward, 0 for none.
+fn target(snapshot:tracking.Snapshot, action:str):i64 {
+    let desktop = 0
+    for i in 0..(json.len(snapshot.desktops) as i64) { let item = json.at(snapshot.desktops,i); if flag(item,"active") { desktop = number(item,"id") } }
+    let ids = Vec<i64>(); let active = Vec<bool>(); let minimized = Vec<bool>()
+    let all = tracking.windows(snapshot)
+    for w in 0..(json.len(all) as i64) {
+        let window = json.at(all,w)
+        let own = number(window,"desktop")
+        if desktop == 0 || flag(window,"sticky") || own == 0 || own == desktop { ids.push(number(window,"id")); active.push(flag(window,"active")); minimized.push(flag(window,"minimized")) }
+    }
+    let count = ids.len() as i64
+    if count == 0 { return 0 }
+    # sorted by id
+    for a in 0..count { for b in (a + 1)..count { if ids[b] < ids[a] { let t = ids[a]; ids[a] = ids[b]; ids[b] = t; let u = active[a]; active[a] = active[b]; active[b] = u; let v = minimized[a]; minimized[a] = minimized[b]; minimized[b] = v } } }
+    if strings.equal(action,"restore") {
+        let found = 0; for i in 0..count { if minimized[i] { found = ids[i] } }
+        return found
+    }
+    let at = 0 - 1; for i in 0..count { if active[i] { at = i } }
+    let next = at < 0 ? (strings.equal(action,"next") ? 0 : count - 1) : at + (strings.equal(action,"next") ? 1 : count - 1)
+    return ids[(next % count) as usize]
+}
