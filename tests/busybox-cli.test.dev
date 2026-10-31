@@ -695,6 +695,28 @@ test.case("modprobe (dry run) and the device tools' error paths",fn() {
     test.expect(strings.contains(outcome(d, bb + " adjtimex | head -1"), "mode: ") || strings.contains(outcome(d, bb + " adjtimex; echo rc=$?"), "rc=1"), "adjtimex")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("dpkg rpm (packages built by dpkg-deb and make-rpm.sh)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let deb = "mkdir -p pk/DEBIAN pk/usr/bin pk/etc && printf 'Package: demo\\nVersion: 1.2-3\\nArchitecture: all\\nMaintainer: t <t@example.test>\\nDescription: a demo package\\n' > pk/DEBIAN/control && printf '#!/bin/sh\\necho demo\\n' > pk/usr/bin/demo && chmod 755 pk/usr/bin/demo && printf 'conf\\n' > pk/etc/demo.conf && dpkg-deb -Zgzip --build pk demo.deb >/dev/null; "
+    test.expect(strings.equal(outcome(d, deb + bb + " dpkg -c demo.deb | tr -s ' ' | sed 's/[0-9-]* [0-9:]* //' | sort"), outcome(d, deb + "dpkg-deb -c demo.deb | tr -s ' ' | sed 's/[0-9-]* [0-9:]* //' | sort")), "dpkg -c differs from dpkg-deb -c:\n" + outcome(d, deb + bb + " dpkg -c demo.deb") + "\n" + outcome(d, deb + "dpkg-deb -c demo.deb"))
+    test.expect(strings.contains(outcome(d, deb + bb + " dpkg -x demo.deb out; cat out/etc/demo.conf; ls out/usr/bin"), "conf\ndemo\n"), "dpkg -x")
+    test.expect(strings.contains(outcome(d, deb + bb + " dpkg -I demo.deb"), "Package: demo\nVersion: 1.2-3"), "dpkg -I")
+    let inst = deb + "mkdir rootfs; " + bb + " dpkg -i --root=rootfs demo.deb; "
+    test.expect(strings.contains(outcome(d, inst + "cat rootfs/etc/demo.conf; " + bb + " dpkg -l --root=rootfs"), "Setting up demo (1.2-3)\nconf\n"), "dpkg -i")
+    test.expect(strings.contains(outcome(d, inst + bb + " dpkg -l --root=rootfs"), "demo           1.2-3          a demo package"), "dpkg -l")
+    test.expect(strings.contains(outcome(d, inst + bb + " dpkg -L --root=rootfs demo"), "usr/bin/demo"), "dpkg -L")
+    test.expect(strings.contains(outcome(d, inst + bb + " dpkg -s --root=rootfs demo"), "Status: install ok installed"), "dpkg -s")
+    test.expect(strings.contains(outcome(d, inst + bb + " dpkg -r --root=rootfs demo; ls rootfs/usr/bin rootfs/etc 2>&1 | grep -c demo; " + bb + " dpkg -s --root=rootfs demo; echo rc=$?"), "Removing demo\n0\n"), "dpkg -r")
+    test.expect(strings.contains(outcome(d, bb + " dpkg -c a.txt; echo rc=$?"), "rc=1"), "dpkg of a text file")
+    let rpm = "mkdir -p tree/usr/bin && printf 'payload\\n' > tree/usr/bin/tool && sh " + t.root() + "/tests/lib/make-rpm.sh pkg.rpm tree demo 1.0 gzip; "
+    test.expect(strings.equal(outcome(d, rpm + bb + " rpm -qp pkg.rpm"), "demo-1.0-1\nrc=0\n"), "rpm -qp:\n" + outcome(d, rpm + bb + " rpm -qp pkg.rpm"))
+    test.expect(strings.contains(outcome(d, rpm + bb + " rpm -qpi pkg.rpm"), "Name        : demo\nVersion     : 1.0\nRelease     : 1\nSummary     : A demo test package"), "rpm -qpi")
+    test.expect(strings.contains(outcome(d, rpm + bb + " rpm -qpl pkg.rpm"), "usr/bin/tool"), "rpm -qpl")
+    test.expect(strings.contains(outcome(d, rpm + "mkdir rr; " + bb + " rpm -i --root=rr pkg.rpm; cat rr/usr/bin/tool"), "payload"), "rpm -i")
+    test.expect(strings.contains(outcome(d, bb + " rpm -qp a.txt; echo rc=$?"), "rc=1"), "rpm of a text file")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

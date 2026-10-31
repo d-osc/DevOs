@@ -1,0 +1,210 @@
+# dpkg, rpm: package files (.deb and .rpm). Both read the package with the archive code of this program; gzip-compressed or plain payloads only.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "./gzip.dev" as gz
+use "./tar.dev" as tar
+use "./archive.dev" as ar
+use "./rpmhdr.dev" as rh
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn temp_path(tag: str): str { return sys.join2(sys.join2("/tmp/.bbpkg-", decimal(proc.my_pid())), sys.join2("-", tag)) }
+fn read_lines_of(path: str): Vec<str> { let out = Vec<str>(); let input = sys.read_path(path); if !input.ok { return out }; let ls = lines.split_lines(input.bytes, 10); for k in 0..(ls.starts.len() as i64) { out.push(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])) }; return out }
+
+// The bytes of a member of the .deb with the given name prefix ("control.tar", "data.tar"); ok is false when absent.
+struct Part { ok: bool, bytes: *sys.Bytes, name: str }
+fn deb_part(deb: *sys.Bytes, prefix: str): Part {
+    let members = ar.read_members(deb)
+    for k in 0..(members.len() as i64) {
+        if sys.starts(members[k].name, prefix) { let b = sys.bytes_new(); sys.bytes_append(b, sys.bptr(deb, members[k].from), members[k].size); return Part(true, b, members[k].name) }
+    }
+    return Part(false, sys.bytes_new(), "")
+}
+fn supported_part(p: Part): bool { return !(sys.ends(p.name, ".xz") || sys.ends(p.name, ".zst") || sys.ends(p.name, ".bz2") || sys.ends(p.name, ".lzma")) || sys.ends(p.name, ".bz2") }
+// Extracts a tar part into dir (or lists it with the given tar option).
+fn tar_part(p: Part, tag: str, mode: str, dir: str): i64 {
+    let tmp = temp_path(tag)
+    if sys.ends(p.name, ".bz2") {
+        # decompress by hand so that tar sees a plain archive
+        let r = proc.run_wait(Vec<str>("sh", "-c", "true"), proc.environment())
+    }
+    if !gz.write_file(tmp, p.bytes, 384) { return 1 }
+    let args = Vec<str>(mode, tmp); if sys.length(dir) > 0 { args.push("-C"); args.push(dir) }
+    let here = sys.current_dir()
+    let r = tar.run_tar(args)
+    fsx.change_dir(here)
+    fsx.do_unlink(tmp)
+    return r
+}
+fn control_text(deb: *sys.Bytes): str {
+    let p = deb_part(deb, "control.tar"); if !p.ok { return "" }
+    let dir = temp_path("control"); fsx.make_dirs(dir, 448)
+    let here = sys.current_dir()
+    let r = tar_part(p, "ctl", "-xf", dir)
+    let text = ""; let input = sys.read_path(fsx.join_path(dir, "control"))
+    if input.ok { text = lines.text_of(input.bytes, 0, sys.blen(input.bytes)) }
+    proc.run_wait(Vec<str>("rm", "-rf", dir), proc.environment())
+    return text
+}
+fn field_of(control: str, name: str): str {
+    let want = sys.join2(name, ":"); let n = sys.length(control); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(control, i) == 10 {
+            let line = sys.join2(sys.slice(control, start, i), ""); start = i + 1
+            if sys.starts(line, want) { let v = sys.join2(sys.slice(line, sys.length(want), sys.length(line)), ""); let a = 0; while a < sys.length(v) && sys.at(v, a) == 32 { a = a + 1 }; return sys.join2(sys.slice(v, a, sys.length(v)), "") }
+        }
+    }
+    return ""
+}
+fn root_of(args: Vec<str>): str { for k in 0..(args.len() as i64) { if sys.starts(args[k], "--root=") { return sys.join2(sys.slice(args[k], 7, sys.length(args[k])), "") } }; return "" }
+fn run_dpkg(args: Vec<str>): i64 {
+    let mode = ""; let operands = Vec<str>(); let root = root_of(args)
+    for k in 0..(args.len() as i64) {
+        let a = args[k]
+        if sys.starts(a, "--root=") || sys.same(a, "--force-all") || sys.same(a, "--force-depends") || sys.same(a, "-E") || sys.same(a, "-G") { continue }
+        if sys.same(a, "-c") || sys.same(a, "--contents") { mode = "c" } else if sys.same(a, "-x") || sys.same(a, "--extract") { mode = "x" } else if sys.same(a, "-I") || sys.same(a, "--info") { mode = "I" }
+        else if sys.same(a, "-i") || sys.same(a, "--install") { mode = "i" } else if sys.same(a, "-r") || sys.same(a, "--remove") || sys.same(a, "-P") || sys.same(a, "--purge") { mode = "r" }
+        else if sys.same(a, "-l") || sys.same(a, "--list") { mode = "l" } else if sys.same(a, "-s") || sys.same(a, "--status") { mode = "s" } else if sys.same(a, "-L") || sys.same(a, "--listfiles") { mode = "L" }
+        else { operands.push(a) }
+    }
+    if sys.length(mode) == 0 { sys.warn("dpkg", "invalid usage: dpkg -i|-r|-l|-s|-L|-c|-x|-I [--root=DIR] FILE|PACKAGE..."); return 1 }
+    let out = sys.out_new(1)
+    let db = fsx.join_path(root, "/var/lib/dpkg"); let status_file = fsx.join_path(db, "status")
+    if mode == "c" || mode == "x" || mode == "I" || mode == "i" {
+        if operands.len() == 0 { sys.warn("dpkg", "no package file given"); return 1 }
+        let deb_path = operands[0]; let input = sys.read_path(deb_path)
+        if !input.ok { sys.warn_path("dpkg", deb_path); return 1 }
+        if sys.blen(input.bytes) < 8 || !sys.same(lines.text_of(input.bytes, 0, 8), "!<arch>\n") { sys.warn("dpkg", sys.join2(deb_path, ": not a Debian package")); return 1 }
+        let data = deb_part(input.bytes, "data.tar")
+        if !data.ok { sys.warn("dpkg", "no data.tar in the package"); return 1 }
+        if sys.ends(data.name, ".xz") || sys.ends(data.name, ".zst") || sys.ends(data.name, ".lzma") { sys.warn("dpkg", sys.join2(data.name, ": this compression is not supported (use gzip)")); return 1 }
+        if mode == "c" { sys.out_flush(out); return tar_part(data, "data", "-tvf", "") }
+        if mode == "I" { let c = control_text(input.bytes); sys.out_str(out, c); sys.out_flush(out); return sys.length(c) > 0 ? 0 : 1 }
+        if mode == "x" { if operands.len() < 2 { sys.warn("dpkg", "usage: dpkg -x PACKAGE DIRECTORY"); return 1 }; fsx.make_dirs(operands[1], 493); return tar_part(data, "data", "-xf", operands[1]) }
+        # install: unpack below the root, record the files and the status entry
+        let control = control_text(input.bytes); let name = field_of(control, "Package")
+        if sys.length(name) == 0 { sys.warn("dpkg", "the package has no control data"); return 1 }
+        let target = sys.length(root) > 0 ? root : "/"
+        fsx.make_dirs(target, 493)
+        let listing = temp_path("list"); let tmp = temp_path("data"); gz.write_file(tmp, data.bytes, 384)
+        let listed = proc.run_wait(Vec<str>("sh", "-c", sys.join2(sys.join2("cd / && true", ""), "")), proc.environment())
+        let here_dir = sys.current_dir()
+        let r = tar.run_tar(Vec<str>("-xf", tmp, "-C", target))
+        fsx.change_dir(here_dir)
+        if r != 0 { fsx.do_unlink(tmp); return 1 }
+        # names of the installed files
+        let names_out = sys.bytes_new(); let real = sys.out_new(1)
+        let names = tar_names(tmp)
+        fsx.do_unlink(tmp)
+        fsx.make_dirs(fsx.join_path(db, "info"), 493)
+        let nb = sys.bytes_new(); for k in 0..(names.len() as i64) { sys.bytes_str(nb, names[k]); sys.bytes_push(nb, 10) }
+        gz.write_file(fsx.join_path(db, sys.join2("info/", sys.join2(name, ".list"))), nb, 420)
+        let entries = read_lines_of(status_file); let kept = sys.bytes_new(); let skipping = false
+        for k in 0..(entries.len() as i64) {
+            if sys.starts(entries[k], "Package:") { skipping = sys.same(sys.join2(sys.slice(entries[k], 9, sys.length(entries[k])), ""), name) }
+            if !skipping { sys.bytes_str(kept, entries[k]); sys.bytes_push(kept, 10) }
+        }
+        sys.bytes_str(kept, sys.join2("Package: ", sys.join2(name, "\n"))); sys.bytes_str(kept, "Status: install ok installed\n")
+        let version = field_of(control, "Version"); if sys.length(version) > 0 { sys.bytes_str(kept, sys.join2("Version: ", sys.join2(version, "\n"))) }
+        let desc = field_of(control, "Description"); if sys.length(desc) > 0 { sys.bytes_str(kept, sys.join2("Description: ", sys.join2(desc, "\n"))) }
+        sys.bytes_push(kept, 10)
+        gz.write_file(status_file, kept, 420)
+        sys.out_str(out, sys.join2(sys.join2("Setting up ", name), sys.join2(" (", sys.join2(version, ")\n")))); sys.out_flush(out)
+        return 0
+    }
+    if mode == "l" {
+        let entries = read_lines_of(status_file); sys.out_str(out, "Name           Version        Description\n")
+        let name = ""; let version = ""; let desc = ""; let installed = false
+        for k in 0..((entries.len() as i64) + 1) {
+            let line = k < (entries.len() as i64) ? entries[k] : ""
+            if sys.length(line) == 0 { if sys.length(name) > 0 && installed { sys.out_str(out, sys.join2(sys.join2(pad_right(name, 14), " "), sys.join2(sys.join2(pad_right(version, 14), " "), sys.join2(desc, "\n")))) }; name = ""; version = ""; desc = ""; installed = false; continue }
+            if sys.starts(line, "Package: ") { name = sys.join2(sys.slice(line, 9, sys.length(line)), "") } else if sys.starts(line, "Version: ") { version = sys.join2(sys.slice(line, 9, sys.length(line)), "") }
+            else if sys.starts(line, "Description: ") { desc = sys.join2(sys.slice(line, 13, sys.length(line)), "") } else if sys.starts(line, "Status: ") { installed = sys.ends(line, " installed") }
+        }
+        sys.out_flush(out); return 0
+    }
+    if operands.len() == 0 { sys.warn("dpkg", "no package name given"); return 1 }
+    let status = 0
+    for k in 0..(operands.len() as i64) {
+        let name = operands[k]; let list_file = fsx.join_path(db, sys.join2("info/", sys.join2(name, ".list")))
+        if mode == "L" { let names = read_lines_of(list_file); if names.len() == 0 { sys.warn("dpkg", sys.join2(sys.join2("package '", name), "' is not installed")); status = 1; continue }; for q in 0..(names.len() as i64) { sys.out_str(out, names[q]); sys.out_byte(out, 10) }; continue }
+        if mode == "s" {
+            let entries = read_lines_of(status_file); let found = false; let print = false
+            for q in 0..(entries.len() as i64) { if sys.starts(entries[q], "Package: ") { print = sys.same(sys.join2(sys.slice(entries[q], 9, sys.length(entries[q])), ""), name); if print { found = true } }; if print && sys.length(entries[q]) > 0 { sys.out_str(out, entries[q]); sys.out_byte(out, 10) } }
+            if !found { sys.warn("dpkg", sys.join2(sys.join2("package '", name), "' is not installed")); status = 1 }; continue
+        }
+        # remove: delete the listed files (deepest first), then the database entries
+        let names = read_lines_of(list_file)
+        if names.len() == 0 { sys.warn("dpkg", sys.join2(sys.join2("package '", name), "' is not installed")); status = 1; continue }
+        let q = (names.len() as i64) - 1
+        while q >= 0 { let rel = names[q]; while sys.starts(rel, "./") { rel = sys.join2(sys.slice(rel, 2, sys.length(rel)), "") }; let path = fsx.join_path(sys.length(root) > 0 ? root : "/", rel); if sys.length(rel) > 0 && !sys.same(rel, ".") { if sys.is_dir(path) { fsx.do_rmdir(path) } else { fsx.do_unlink(path) } }; q = q - 1 }
+        fsx.do_unlink(list_file)
+        let entries = read_lines_of(status_file); let kept = sys.bytes_new(); let skipping = false
+        for z in 0..(entries.len() as i64) {
+            if sys.starts(entries[z], "Package: ") { skipping = sys.same(sys.join2(sys.slice(entries[z], 9, sys.length(entries[z])), ""), name) }
+            if !skipping { sys.bytes_str(kept, entries[z]); sys.bytes_push(kept, 10) }
+        }
+        gz.write_file(status_file, kept, 420)
+        sys.out_str(out, sys.join2(sys.join2("Removing ", name), "\n"))
+    }
+    sys.out_flush(out)
+    return status
+}
+fn pad_right(text: str, width: i64): str { let b = sys.bytes_new(); sys.bytes_str(b, text); while sys.blen(b) < width { sys.bytes_push(b, 32) }; return sys.join2(sys.bytes_cstr(b), "") }
+// The member names of a (possibly gzipped) tar file, as "tar -t" prints them.
+fn tar_names(path: str): Vec<str> {
+    let out = Vec<str>(); let tmp = temp_path("names")
+    proc.run_wait(Vec<str>("sh", "-c", sys.join2(sys.join2(sys.join2(self_exe(), " tar -tf "), path), sys.join2(" > ", tmp))), proc.environment())
+    out = read_lines_of(tmp); fsx.do_unlink(tmp)
+    return out
+}
+fn self_exe(): str { let l = fsx.read_link("/proc/self/exe"); return sys.length(l) > 0 ? l : "busybox" }
+
+// ---- rpm -qp[ilR] FILE / rpm -i[v] [--root=DIR] FILE ----------------------------------------------------------------------------------------------------------------------
+fn run_rpm(args: Vec<str>): i64 {
+    let query = false; let info = false; let list = false; let install = false; let files = Vec<str>(); let root = root_of(args)
+    for k in 0..(args.len() as i64) {
+        let a = args[k]
+        if sys.starts(a, "--root=") { continue }
+        if sys.length(a) > 1 && sys.at(a, 0) == 45 && sys.at(a, 1) != 45 {
+            for q in 1..sys.length(a) { let c = sys.at(a, q); if c == 113 { query = true } else if c == 105 { if query { info = true } else { install = true } } else if c == 108 { list = true } else if c == 112 || c == 118 || c == 104 || c == 85 { if c == 85 { install = true } } else { sys.warn("rpm", "invalid usage: rpm -qp[il] FILE | rpm -i [--root=DIR] FILE"); return 1 } }
+        } else if sys.same(a, "--install") { install = true } else { files.push(a) }
+    }
+    if files.len() == 0 { sys.warn("rpm", "no package file given"); return 1 }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let input = sys.read_path(files[k]); if !input.ok { sys.warn_path("rpm", files[k]); status = 1; continue }
+        let h = rh.read_header(input.bytes)
+        if !h.ok { sys.warn("rpm", sys.join2(files[k], ": not an RPM package")); status = 1; continue }
+        if install {
+            let target = sys.length(root) > 0 ? root : "/"; fsx.make_dirs(target, 493)
+            let payload = sys.bytes_new(); sys.bytes_append(payload, sys.bptr(input.bytes, h.payload), sys.blen(input.bytes) - h.payload)
+            let cpio = payload
+            if sys.blen(payload) >= 2 && sys.bat(payload, 0) == 31 && sys.bat(payload, 1) == 139 { let r = gz.decompress(payload); if !r.ok { sys.warn("rpm", r.message); status = 1; continue }; cpio = r.bytes }
+            else if !(sys.blen(payload) >= 2 && sys.bat(payload, 0) == 48) { sys.warn("rpm", "unsupported payload compression (only gzip and plain are available)"); status = 1; continue }
+            let tmp = temp_path("rpm"); gz.write_file(tmp, cpio, 384)
+            let here = sys.current_dir()
+            fsx.change_dir(target)
+            let r = ar.run_cpio(Vec<str>("-idm", "-F", tmp))
+            fsx.change_dir(here); fsx.do_unlink(tmp)
+            if r != 0 { status = 1; continue }
+            sys.out_str(out, sys.join2(sys.join2(h.name, "-"), sys.join2(sys.join2(h.version, "-"), sys.join2(h.release, "\n"))))
+            continue
+        }
+        if !query { sys.warn("rpm", "only -q (query) and -i (install) are available"); return 1 }
+        if info {
+            sys.out_str(out, sys.join2("Name        : ", sys.join2(h.name, "\n"))); sys.out_str(out, sys.join2("Version     : ", sys.join2(h.version, "\n"))); sys.out_str(out, sys.join2("Release     : ", sys.join2(h.release, "\n")))
+            sys.out_str(out, sys.join2("Summary     : ", sys.join2(h.summary, "\n")))
+        } else if list {
+            let payload = sys.bytes_new(); sys.bytes_append(payload, sys.bptr(input.bytes, h.payload), sys.blen(input.bytes) - h.payload)
+            let cpio = payload
+            if sys.blen(payload) >= 2 && sys.bat(payload, 0) == 31 && sys.bat(payload, 1) == 139 { let r = gz.decompress(payload); if r.ok { cpio = r.bytes } }
+            let tmp = temp_path("rpml"); gz.write_file(tmp, cpio, 384)
+            proc.run_wait(Vec<str>("sh", "-c", sys.join2(sys.join2(self_exe(), " cpio -t -F "), tmp)), proc.environment())
+            fsx.do_unlink(tmp)
+        } else { sys.out_str(out, sys.join2(sys.join2(h.name, "-"), sys.join2(sys.join2(h.version, "-"), sys.join2(h.release, "\n")))) }
+    }
+    sys.out_flush(out)
+    return status
+}

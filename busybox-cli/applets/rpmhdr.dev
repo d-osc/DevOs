@@ -1,0 +1,27 @@
+# Reading the metadata header of an RPM file (name, version, release, summary) and finding where the payload starts.
+use "../lib/sys.dev" as sys
+
+struct Header { ok: bool, name: str, version: str, release: str, summary: str, payload: i64 }
+fn be32(b: *sys.Bytes, off: i64): i64 { return (sys.bat(b, off) as i64) * 16777216 + (sys.bat(b, off + 1) as i64) * 65536 + (sys.bat(b, off + 2) as i64) * 256 + (sys.bat(b, off + 3) as i64) }
+fn text_at(b: *sys.Bytes, off: i64): str {
+    let out = sys.bytes_new(); let i = off
+    while i < sys.blen(b) && sys.bat(b, i) != 0 { sys.bytes_push(out, sys.bat(b, i)); i = i + 1 }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn bad(): Header { return Header(false, "", "", "", "", 0) }
+fn read_header(b: *sys.Bytes): Header {
+    if sys.blen(b) < 112 || sys.bat(b, 0) != 237 || sys.bat(b, 1) != 171 || sys.bat(b, 2) != 238 || sys.bat(b, 3) != 219 { return bad() }
+    let pos = 96
+    if sys.bat(b, pos) != 142 || sys.bat(b, pos + 1) != 173 || sys.bat(b, pos + 2) != 232 { return bad() }
+    pos = pos + 16 + be32(b, pos + 8) * 16 + be32(b, pos + 12)
+    pos = (pos + 7) / 8 * 8
+    if pos + 16 > sys.blen(b) || sys.bat(b, pos) != 142 { return bad() }
+    let entries = be32(b, pos + 8); let size = be32(b, pos + 12)
+    let index = pos + 16; let store = index + entries * 16
+    let name = ""; let version = ""; let release = ""; let summary = ""
+    for k in 0..entries {
+        let e = index + k * 16; let tag = be32(b, e); let offset = be32(b, e + 8)
+        if tag == 1000 { name = text_at(b, store + offset) } else if tag == 1001 { version = text_at(b, store + offset) } else if tag == 1002 { release = text_at(b, store + offset) } else if tag == 1004 { summary = text_at(b, store + offset) }
+    }
+    return Header(true, name, version, release, summary, store + size)
+}
