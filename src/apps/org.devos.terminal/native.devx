@@ -18,10 +18,33 @@ extern fn g_signal_lookup(name:str, itype:u64):u32
 extern fn rd_close_on(widget:*void, signal:str, root:*void)
 extern fn rd_strv_new(count:i32):*u8
 extern fn rd_strv_set(vector:*u8, index:i32, text:str)
+extern fn g_malloc0(size:u64):*void
+extern fn gdk_rgba_parse(color:*void, spec:str):i32
+extern fn vte_terminal_set_colors(terminal:*void, foreground:*void, background:*void, palette:*void, size:u64)
+extern fn vte_terminal_set_color_cursor(terminal:*void, color:*void)
+extern fn gtk_widget_set_hexpand(widget:*void, expand:i32)
+extern fn gtk_widget_set_vexpand(widget:*void, expand:i32)
 
 # Native Terminal window: one VTE terminal running the user's shell (or DEVOS_TERMINAL_COMMAND with `sh -c`, which the tests use).
 # The terminal widget is created here and placed in an empty host box of the toolkit; the window closes when the shell exits.
 fn environment(name:str):str { unsafe { return rc_env(name) } }
+# Terminal colors per theme: foreground, background, cursor, then the 16 ANSI colors (data/themes/palettes.json: terminalFg, terminalBg, cursor, ansi0..ansi15).
+fn same(a:str, b:str):bool { return ui.equalText(ui.text(a),ui.text(b)) }
+fn terminalColors(family:str, mode:str):Vec<str> {
+    if same(family,"github") && same(mode,"dark") { return Vec<str>("#e6edf3","#0d1117","#2f81f7","#484f58","#ff7b72","#3fb950","#d29922","#58a6ff","#bc8cff","#39c5cf","#b1bac4","#6e7681","#ffa198","#56d364","#e3b341","#79c0ff","#d2a8ff","#56d4dd","#ffffff") }
+    if same(family,"github") && same(mode,"light") { return Vec<str>("#1f2328","#ffffff","#0969da","#24292f","#cf222e","#116329","#4d2d00","#0969da","#8250df","#1b7c83","#6e7781","#57606a","#a40e26","#1a7f37","#633c01","#218bff","#a475f9","#3192aa","#8c959f") }
+    if same(mode,"light") { return Vec<str>("#333333","#fafafd","#202020","#000000","#cd3131","#107c10","#949800","#0451a5","#bc05bc","#0598bc","#555555","#666666","#f14c4c","#14ce14","#b5ba00","#3b8eea","#d670d6","#29b8db","#a5a5a5") }
+    return Vec<str>("#cccccc","#191a1b","#bfbfbf","#000000","#cd3131","#0dbc79","#e5e510","#2472c8","#bc3fbc","#11a8cd","#e5e5e5","#666666","#f14c4c","#23d18b","#f5f543","#3b8eea","#d670d6","#29b8db","#e5e5e5")
+}
+# One GdkRGBA (four doubles, 32 bytes) parsed from a color name.
+fn rgba(spec:str):*void { unsafe { let color = g_malloc0(32); gdk_rgba_parse(color,spec); return color } }
+fn paint(terminal:*void, family:str, mode:str) { unsafe {
+    let colors = terminalColors(family,mode)
+    let palette = g_malloc0(512)
+    for i in 0..16 { gdk_rgba_parse((((palette as i64) + (i as i64) * 32) as *void),colors[3 + i as i64]) }
+    vte_terminal_set_colors(terminal,rgba(colors[0]),rgba(colors[1]),palette,16)
+    vte_terminal_set_color_cursor(terminal,rgba(colors[2]))
+} }
 fn argvOf(items:Vec<str>):*u8 { unsafe {
     let table = rd_strv_new(items.len() as i32)
     for i in 0..(items.len() as i64) { rd_strv_set(table,i as i32,items[i]) }
@@ -48,6 +71,9 @@ fn App(context:*ui.Context):ui.Node {
             let terminal = vte_terminal_new()
             vte_terminal_set_scrollback_lines(terminal,10000)
             gtk_container_add(host,terminal)
+            gtk_widget_set_hexpand(terminal,1); gtk_widget_set_vexpand(terminal,1)
+            let mode = environment("DEV_OS_THEME"); if ui.text(mode).bytes.len() == 0 { mode = rd_default_theme() }
+            paint(terminal,environment("DEV_OS_THEME_FAMILY"),mode)
             gtk_widget_show(terminal)
             rd_close_on(terminal,"child-exited",(*context).native)
             rd_terminal_keys(terminal)

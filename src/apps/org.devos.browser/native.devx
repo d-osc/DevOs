@@ -76,6 +76,13 @@ fn address(entered:ui.Text):ui.Text {
     return ui.concatText(Vec<ui.Text>(plain("https://"),t))
 }
 
+# The old browser's toolbar and its single tab (the theme's .browser-toolbar, .window-tabs and .window-tab rules).
+fn toolbar(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = 8; options.className = ui.text("browser-toolbar"); return ui.Box(options,children) }
+fn tabStrip(title:ui.Node):ui.Node {
+    let tab = ui.props(); tab.vertical = false; tab.className = ui.text("window-tab window-tab-active")
+    let strip = ui.props(); strip.vertical = false; strip.className = ui.text("window-tabs")
+    return ui.Box(strip,Vec<ui.Node>(ui.Box(tab,Vec<ui.Node>(title))))
+}
 fn App(context:*ui.Context):ui.Node {
     let step = ui.useRef(context,0); let view = ui.useRef(context,0); let current = ui.useText(context,ui.emptyText()); let title = ui.useText(context,ui.emptyText())
     let back = ui.useState(context,0); let forward = ui.useState(context,0); let loading = ui.useState(context,0); let draft = ui.useText(context,ui.emptyText())
@@ -128,14 +135,14 @@ fn App(context:*ui.Context):ui.Node {
     let reload = ui.named("browser-reload")
     let url = ui.named("browser-url"); url.expand = true; url.placeholder = plain("Search or type an address")
     let go = ui.named("browser-go")
-    let bar = ext.row(8,Vec<ui.Node>(
+    let bar = toolbar(Vec<ui.Node>(
         ui.Button(backButton,"Back",fn() { unsafe { webkit_web_view_go_back(view.get() as *void) } }),
         ui.Button(forwardButton,"Forward",fn() { unsafe { webkit_web_view_go_forward(view.get() as *void) } }),
         ui.Button(reload,"Reload",fn() { unsafe { webkit_web_view_reload(view.get() as *void) } }),
         ui.Entry(url,draft.value,fn(value:ui.Text) { draft.set(value) }),
         ui.Button(go,"Go",fn() { unsafe { load(view.get() as *void,draft.get()) } })))
     let host = ui.props(); host.expand = true; host.id = ui.text("browser-host")
-    return ext.column(8,Vec<ui.Node>(bar,ext.named(k.caption(has(title.value) ? title.value : plain(loading.value != 0 ? "Loading…" : "New tab"),"settings-description"),"browser-title"),ui.Box(host,Vec<ui.Node>())))
+    return ext.column(0,Vec<ui.Node>(bar,tabStrip(ext.named(k.caption(has(title.value) ? title.value : plain(loading.value != 0 ? "Loading…" : "New tab"),"settings-description"),"browser-title")),ui.Box(host,Vec<ui.Node>())))
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.browser.Native" }

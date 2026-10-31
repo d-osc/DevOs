@@ -37,11 +37,15 @@ fn size(bytes:i64):ui.Text {
     if bytes < 1048576 { return plain("${(bytes + 512) / 1024} KB") }
     return plain("${(bytes * 10 + 524288) / 1048576 / 10}.${(bytes * 10 + 524288) / 1048576 % 10} MB")
 }
+fn tabRow(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = 8; options.className = ui.text("app-store-sidebar"); return ui.Box(options,children) }
 fn tabButton(name:str, label:str, current:i64, index:i64, pick:fn():void):ui.Node {
-    let options = ui.named(name); options.className = ui.text(current == index ? "settings-nav settings-nav-active" : "settings-nav")
+    let options = ui.named(name); options.className = ui.text(current == index ? "selected" : "")
     return ui.Button(options,label,pick)
 }
 
+# A catalog or installed entry: a bordered card (the old store's .app-store-card), actions to the right.
+fn card(row:ui.Node):ui.Node { let options = ui.props(); options.className = ui.text("app-store-card"); return ui.Box(options,Vec<ui.Node>(row)) }
+fn primary(options:ui.Props):ui.Props { options.className = ui.text("app-store-primary"); return options }
 fn App(context:*ui.Context):ui.Node {
     let l = sp.link(context,"../org.devos.appstore/service.dev","{\"action\":\"catalog\"}")
     # asked: kind of the last request (0 catalog, 1 installed, 2 installApp, 3 another change); tab: 0 store, 1 installed, 2 file
@@ -78,7 +82,7 @@ fn App(context:*ui.Context):ui.Node {
     },Vec<i64>(l.replies.value))
     if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
     let busy = l.waiting.get() != 0; let current = tab.value
-    let nodes = Vec<ui.Node>(ext.row(8,Vec<ui.Node>(
+    let nodes = Vec<ui.Node>(tabRow(Vec<ui.Node>(
         tabButton("store-tab-store","Apps",current,0,fn() { tab.set(0) }),tabButton("store-tab-installed","Installed",current,1,fn() { tab.set(1) }),tabButton("store-tab-file","Install a file",current,2,fn() { tab.set(2) }))))
     if has(l.failure.value) { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"store-error")) }
     else if busy { nodes.push(ext.named(k.note(asked.get() == 2 ? "Downloading and installing… this can take a few minutes." : "Working…","settings-description"),"store-working")) }
@@ -95,8 +99,8 @@ fn App(context:*ui.Context):ui.Node {
             let bound = has(sp.cell(a,8)); let usable = has(sp.cell(a,7))
             let install = ui.named("store-install-${index}"); install.sensitive = !busy && usable
             let detail = join(Vec<ui.Text>(sp.cell(a,3),has(sp.cell(a,3)) ? plain(" · ") : ui.emptyText(),sp.cell(a,4),usable ? ui.emptyText() : plain(" · No Linux ARM64 download")))
-            nodes.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"application-x-executable-symbolic"),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(a,2),"settings-field-title"),k.caption(detail,"settings-description"),k.caption(sp.cell(a,5),"settings-description")))),
-                ui.Button(install,bound ? "Reinstall" : "Install",fn() { asked.set(2); message.set(ui.emptyText()); sp.send(l,idRequest("installApp",sp.cell(a,1))) }))))
+            nodes.push(card(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"application-x-executable-symbolic"),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(a,2),"settings-field-title"),k.caption(detail,"settings-description"),k.caption(sp.cell(a,5),"settings-description")))),
+                ui.Button(primary(install),bound ? "Reinstall" : "Install",fn() { asked.set(2); message.set(ui.emptyText()); sp.send(l,idRequest("installApp",sp.cell(a,1))) })))))
         }
         if shown == 0 { nodes.push(ext.named(k.note("No apps match.","settings-description"),"store-empty")) }
     } else if current == 1 {
@@ -107,9 +111,9 @@ fn App(context:*ui.Context):ui.Node {
             let remove = ui.named("installed-remove-${index}"); remove.sensitive = !busy
             let rollback = ui.named("installed-rollback-${index}"); rollback.sensitive = !busy && has(sp.cell(p,6))
             let detail = join(Vec<ui.Text>(plain("Version "),sp.cell(p,2),has(sp.cell(p,6)) ? join(Vec<ui.Text>(plain(" · previous "),sp.cell(p,6))) : ui.emptyText(),plain(" · "),sp.cell(p,3),plain(" · "),size(sp.number(sp.cell(p,5)))))
-            nodes.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"application-x-executable-symbolic"),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(p,8),"settings-field-title"),k.caption(detail,"settings-description"),k.caption(sp.cell(p,9),"settings-description")))),
+            nodes.push(card(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),"application-x-executable-symbolic"),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(sp.cell(p,8),"settings-field-title"),k.caption(detail,"settings-description"),k.caption(sp.cell(p,9),"settings-description")))),
                 ui.Button(rollback,"Roll back",fn() { asked.set(3); sp.send(l,idRequest("rollback",sp.cell(p,1))) }),
-                ui.Button(remove,"Remove",fn() { asked.set(3); sp.send(l,idRequest("remove",sp.cell(p,1))) }))))
+                ui.Button(remove,"Remove",fn() { asked.set(3); sp.send(l,idRequest("remove",sp.cell(p,1))) })))))
         }
         if shown == 0 { nodes.push(ext.named(k.note("Nothing is installed yet.","settings-description"),"installed-empty")) }
     } else {

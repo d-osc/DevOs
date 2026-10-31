@@ -40,6 +40,11 @@ fn startProcess(argv:Vec<str>, extra:Vec<str>) {
     for item in argv { all.push(item) }
     hw.spawnDetached(all)
 }
+# The theme an app starts in: the Theme extension's choice at this moment (Auto follows the clock), so a window opens in the colors of the desktop.
+fn themeEnv():Vec<str> {
+    let choice = theme.choice(themeValues())
+    return Vec<str>("DEV_OS_THEME=" + theme.resolve(choice,clock()),"DEV_OS_THEME_FAMILY=" + choice.family)
+}
 fn isExecutable(path:str):bool { return hw.isExecutable(path) }
 
 # Starts a process of `role` for `command` (a running one is asked over D-Bus first).
@@ -67,7 +72,7 @@ fn launch(role:str, command:str, path:str) {
     extra.push("DEV_OS_NATIVE_ID=" + id); extra.push("DEV_OS_SHELL_ID=" + shellId())
     if background { extra.push("DEVOS_BACKGROUND_ROLE=settings") }
     if panel { extra.push("DEVOS_PANEL_ROLE=settings") }
-    for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
+    for item in themeEnv() { extra.push(item) }
     argv.push(native)
     for item in args { argv.push(item) }
     startProcess(argv,extra)
@@ -87,7 +92,7 @@ fn overlay(role:str, command:str, open:bool) {
     if !open { return }
     let extra = Vec<str>("DEV_OS_NATIVE_ID=" + id,"DEV_OS_SHELL_ID=" + shellId())
     if strings.equal(args.len() > 1 ? args[1] : "","logout") { extra.push("DEVOS_LAUNCHER_LOGOUT=1") }
-    for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
+    for item in themeEnv() { extra.push(item) }
     let executable = root() + "/dist/native/" + role
     if !isExecutable(executable) { say("Native " + role + " is missing. Run sh tools/build/native-apps.sh."); return }
     startProcess(Vec<str>(executable),extra)

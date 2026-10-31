@@ -274,7 +274,7 @@ void *rd_widget(void *data, int32_t kind) {
     case 2: widget = gtk_button_new(); g_signal_connect(widget, "clicked", G_CALLBACK(rd_clicked), root); break;
     case 3: widget = gtk_entry_new(); g_signal_connect(widget, "changed", G_CALLBACK(rd_changed), root); g_signal_connect(widget,"activate",G_CALLBACK(rd_clicked),root); break;
     case 4: widget = gtk_check_button_new(); g_signal_connect(widget, "toggled", G_CALLBACK(rd_toggled), root); break;
-    case 5: widget = gtk_scrolled_window_new(NULL, NULL); break;
+    case 5: widget = gtk_scrolled_window_new(NULL, NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(widget), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC); break; /* content wraps to the window instead of scrolling sideways */
     case 6: widget = gtk_progress_bar_new(); break;
     case 7: widget = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL); break;
     case 8: widget = gtk_combo_box_text_new(); g_signal_connect(widget,"changed",G_CALLBACK(rd_combo_changed),root); break;
@@ -398,7 +398,8 @@ void rd_stack_select(void *widget,int32_t index){
 void rd_selected(void *widget,int32_t index) { gtk_combo_box_set_active(GTK_COMBO_BOX(widget),index); }
 void rd_label_options(void *widget,double xalign,int32_t width,int32_t wrap,int32_t ellipsize) {
     gtk_label_set_xalign(GTK_LABEL(widget),(float)xalign); gtk_label_set_width_chars(GTK_LABEL(widget),width);
-    gtk_label_set_line_wrap(GTK_LABEL(widget),wrap); gtk_label_set_ellipsize(GTK_LABEL(widget),ellipsize ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
+    gtk_label_set_line_wrap(GTK_LABEL(widget),wrap); if (wrap) gtk_label_set_max_width_chars(GTK_LABEL(widget),44); /* a wrapped label must not ask for the width of its whole text */
+    gtk_label_set_ellipsize(GTK_LABEL(widget),ellipsize ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
 }
 void rd_placeholder(void *widget,const unsigned char *bytes,int64_t length) { char *value=rd_string(bytes,length); gtk_entry_set_placeholder_text(GTK_ENTRY(widget),value); g_free(value); }
 int32_t rd_select_name(void *root,const char *name,int32_t index) { GtkWidget *widget=rd_find_name(root,name); if (!widget || !GTK_IS_COMBO_BOX(widget)) return 0; gtk_combo_box_set_active(GTK_COMBO_BOX(widget),index); return 1; }
