@@ -482,6 +482,19 @@ test.case("bzip2 bunzip2 bzcat (BusyBox against the system bzip2)",fn() {
     test.expect(strings.contains(outcome(d, data + "bzip2 -c a.txt > t.bz2; head -c 30 t.bz2 > cut.bz2; " + bb + " bunzip2 -c cut.bz2; echo rc=$?"), "rc=2"), "bunzip2 accepted a truncated file")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("blkid crontab inotifyd",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let strip = " | sed 's/ BLOCK_SIZE=\"[0-9]*\"//; s/UUID=\"[^\"]*\"/UUID=X/; s/ SEC_TYPE=\"ext2\"//; s/ SEC_TYPE=\"msdos\"//; s/ LABEL_FATBOOT=\"[^\"]*\"//'"
+    let images = "truncate -s 8M e2.img e3.img e4.img v.img && mke2fs -q -F -t ext2 -L two e2.img && mke2fs -q -F -t ext3 -L three e3.img && mke2fs -q -F -t ext4 e4.img && mkfs.vfat -n VFATLAB v.img >/dev/null && head -c 1048576 /dev/zero > sw.img && mkswap -L swp sw.img >/dev/null; "
+    all_same(d, Vec<str>(images + "@blkid e2.img" + strip,images + "@blkid e3.img" + strip,images + "@blkid e4.img" + strip,images + "@blkid v.img" + strip,images + "@blkid sw.img" + strip,images + "@blkid a.txt; echo rc=$?",images + "@blkid e2.img v.img" + strip))
+    test.expect(strings.contains(outcome(d, "mkdir ct; printf '* * * * * echo hi\\n' > job; " + bb + " crontab -c ct -u tester job; " + bb + " crontab -c ct -u tester -l; " + bb + " crontab -c ct -u tester -r; " + bb + " crontab -c ct -u tester -l; echo rc=$?"), "* * * * * echo hi\n"), "crontab did not install and list a file")
+    test.expect(strings.contains(outcome(d, "mkdir ct; " + bb + " crontab -c ct -u tester -l; echo rc=$?"), "rc=1"), "crontab -l of a missing file")
+    test.expect(strings.contains(outcome(d, "mkdir w; (" + bb + " inotifyd - w:nd > ev.log & echo $! > p.pid); sleep 1; touch w/new; rm w/new; sleep 1; kill $(cat p.pid); cat ev.log"), "n\tw\tnew"), "inotifyd missed the create event:\n" + outcome(d, "mkdir w; (" + bb + " inotifyd - w:nd > ev.log & echo $! > p.pid); sleep 1; touch w/new; rm w/new; sleep 1; kill $(cat p.pid); cat ev.log"))
+    test.expect(strings.contains(outcome(d, "mkdir w; (" + bb + " inotifyd - w:nd > ev.log & echo $! > p.pid); sleep 1; touch w/new; rm w/new; sleep 1; kill $(cat p.pid); cat ev.log"), "d\tw\tnew"), "inotifyd missed the delete event")
+    test.expect(strings.contains(outcome(d, "mkdir w; (" + bb + " inotifyd 'echo' w:n > /dev/null & echo $! > p.pid); sleep 1; kill $(cat p.pid); echo done"), "done"), "inotifyd with a program")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

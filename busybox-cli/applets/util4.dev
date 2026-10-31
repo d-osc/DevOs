@@ -1,0 +1,204 @@
+# blkid, findfs, crontab, inotifyd: block device probing, crontab files and file system events.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "./gzip.dev" as gz
+
+extern fn inotify_init(): i32
+extern fn inotify_add_watch(fd: i32, path: str, mask: u32): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+
+// ---- blkid / findfs ----------------------------------------------------------------------------------------------------------------------------------------------------------
+fn hex_at(b: *sys.Bytes, off: i64, count: i64, upper: bool): str {
+    let digits = upper ? "0123456789ABCDEF" : "0123456789abcdef"; let out = sys.bytes_new()
+    for i in 0..count { let c = sys.bat(b, off + i) as i64; sys.bytes_push(out, sys.at(digits, c / 16)); sys.bytes_push(out, sys.at(digits, c % 16)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn uuid_at(b: *sys.Bytes, off: i64): str {
+    let h = hex_at(b, off, 16, false)
+    return sys.join2(sys.join2(sys.join2(sys.slice(h, 0, 8), "-"), sys.join2(sys.slice(h, 8, 12), "-")), sys.join2(sys.join2(sys.slice(h, 12, 16), "-"), sys.join2(sys.join2(sys.slice(h, 16, 20), "-"), sys.slice(h, 20, 32))))
+}
+fn text_at(b: *sys.Bytes, off: i64, count: i64): str {
+    let out = sys.bytes_new()
+    for i in 0..count { let c = sys.bat(b, off + i); if c == 0 { break }; sys.bytes_push(out, c) }
+    let n = sys.blen(out); while n > 0 && sys.bat(out, n - 1) == 32 { n = n - 1 }
+    return sys.join2(sys.slice(sys.join2(sys.bytes_cstr(out), ""), 0, n), "")
+}
+fn le(b: *sys.Bytes, off: i64, width: i64): i64 { let v = 0; let p = 1; for i in 0..width { v = v + (sys.bat(b, off + i) as i64) * p; p = p * 256 }; return v }
+fn has_bit(v: i64, bit: i64): bool { return (v / bit) % 2 == 1 }
+struct Probe { ok: bool, label: str, uuid: str, kind: str }
+fn probe_device(path: str): Probe {
+    let none = Probe(false, "", "", "")
+    let fd = sys.open_fd(path, 0, 0); if fd < 0 { return none }
+    let b = sys.bytes_new(); let chunk = sys.bytes_new(); for i in 0..4096 { sys.bytes_push(chunk, 0) }
+    for round in 0..4 { let n = sys.read_into(fd, sys.bdata(chunk), 4096); if n <= 0 { break }; sys.bytes_append(b, sys.bdata(chunk), n) }
+    sys.close_fd(fd)
+    let n = sys.blen(b)
+    if n >= 2048 && le(b, 1080, 2) == 61267 {
+        let compat = le(b, 1024 + 92, 4); let incompat = le(b, 1024 + 96, 4); let ro = le(b, 1024 + 100, 4)
+        let kind = "ext2"
+        let ext3_incompat = 2 + 4 + 8 + 16; let beyond_incompat = false
+        for bit in Vec<i64>(1, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536) { if has_bit(incompat, bit) && !(bit == 1) { beyond_incompat = true } }
+        if has_bit(incompat, 1) && false { }
+        let beyond_ro = false
+        for bit in Vec<i64>(8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096) { if has_bit(ro, bit) { beyond_ro = true } }
+        if has_bit(compat, 4) { kind = "ext3" }
+        if beyond_incompat || beyond_ro { kind = "ext4" }
+        return Probe(true, text_at(b, 1024 + 120, 16), uuid_at(b, 1024 + 104), kind)
+    }
+    if n >= 4096 && sys.bat(b, 4086) == 83 && sys.same(text_at(b, 4086, 10), "SWAPSPACE2") { return Probe(true, text_at(b, 1052, 16), uuid_at(b, 1036), "swap") }
+    if n >= 512 && sys.bat(b, 510) == 85 && sys.bat(b, 511) == 170 {
+        if sys.same(text_at(b, 82, 8), "FAT32") {
+            let serial = le(b, 67, 4); let label = text_at(b, 71, 11)
+            return Probe(true, sys.same(label, "NO NAME") ? "" : label, sys.join2(sys.join2(hex_serial(serial / 65536), "-"), hex_serial(serial % 65536)), "vfat")
+        }
+        if sys.starts(text_at(b, 54, 3), "FAT") {
+            let serial = le(b, 39, 4); let label = text_at(b, 43, 11)
+            return Probe(true, sys.same(label, "NO NAME") ? "" : label, sys.join2(sys.join2(hex_serial(serial / 65536), "-"), hex_serial(serial % 65536)), "vfat")
+        }
+    }
+    if n >= 4 && sys.same(text_at(b, 0, 4), "XFSB") { return Probe(true, text_at(b, 108, 12), uuid_at(b, 32), "xfs") }
+    if n >= 4 && sys.same(text_at(b, 0, 4), "hsqs") { return Probe(true, "", "", "squashfs") }
+    return none
+}
+fn hex_serial(v: i64): str {
+    let digits = "0123456789ABCDEF"; let out = sys.bytes_new()
+    for i in 0..4 { let p = 1; for k in 0..(3 - i) { p = p * 16 }; sys.bytes_push(out, sys.at(digits, (v / p) % 16)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn device_list(): Vec<str> {
+    let out = Vec<str>(); let input = sys.read_path("/proc/partitions")
+    if !input.ok { return out }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 2..(ls.starts.len() as i64) { let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])); if parts.len() >= 4 { out.push(sys.join2("/dev/", parts[3])) } }
+    return out
+}
+fn run_blkid(args: Vec<str>): i64 {
+    let devices = Vec<str>(); for k in 0..(args.len() as i64) { if !sys.starts(args[k], "-") { devices.push(args[k]) } }
+    if devices.len() == 0 { devices = device_list() }
+    let out = sys.out_new(1); let found = false
+    for k in 0..(devices.len() as i64) {
+        let p = probe_device(devices[k]); if !p.ok { continue }
+        found = true
+        sys.out_str(out, devices[k]); sys.out_byte(out, 58)
+        if sys.length(p.label) > 0 { sys.out_str(out, " LABEL=\""); sys.out_str(out, p.label); sys.out_byte(out, 34) }
+        if sys.length(p.uuid) > 0 { sys.out_str(out, " UUID=\""); sys.out_str(out, p.uuid); sys.out_byte(out, 34) }
+        sys.out_str(out, " TYPE=\""); sys.out_str(out, p.kind); sys.out_str(out, "\"\n")
+    }
+    sys.out_flush(out)
+    return found ? 0 : 2
+}
+fn run_findfs(args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn("findfs", "invalid usage: findfs LABEL=label|UUID=uuid"); return 1 }
+    let spec = args[0]; let eq = sys.find_char(spec, 61)
+    if eq < 0 { sys.warn("findfs", "bad specification"); return 1 }
+    let key = sys.join2(sys.slice(spec, 0, eq), ""); let value = sys.join2(sys.slice(spec, eq + 1, sys.length(spec)), "")
+    let devices = device_list()
+    for k in 0..(devices.len() as i64) {
+        let p = probe_device(devices[k]); if !p.ok { continue }
+        if (sys.same(key, "LABEL") && sys.same(p.label, value)) || (sys.same(key, "UUID") && sys.same(p.uuid, value)) { let out = sys.out_new(1); sys.out_str(out, devices[k]); sys.out_byte(out, 10); sys.out_flush(out); return 0 }
+    }
+    sys.warn("findfs", sys.join2("unable to resolve ", sys.join2("'", sys.join2(spec, "'"))))
+    return 1
+}
+
+// ---- crontab [-c DIR] [-u USER] [-l | -r | -e | FILE] ------------------------------------------------------------------------------------------------------------------
+fn run_crontab(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "c:u:ler")
+    if o.bad != 0 || o.missing != 0 { sys.warn("crontab", "invalid usage: crontab [-c DIR] [-u USER] [-l | -r | -e | FILE]"); return 1 }
+    let dir = sys.has(o, 99) ? sys.val(o, 99) : "/var/spool/cron/crontabs"
+    let user = sys.has(o, 117) ? sys.val(o, 117) : fsx.user_name(fsx.uid())
+    if sys.length(user) == 0 { user = decimal(fsx.uid()) }
+    let path = fsx.join_path(dir, user)
+    if sys.has(o, 108) {
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn("crontab", sys.join2("no crontab for ", user)); return 1 }
+        let out = sys.out_new(1); sys.out_data(out, sys.bdata(input.bytes), sys.blen(input.bytes)); sys.out_flush(out)
+        return 0
+    }
+    if sys.has(o, 114) {
+        if !sys.exists(path) { sys.warn("crontab", sys.join2("no crontab for ", user)); return 1 }
+        fsx.do_unlink(path); return 0
+    }
+    if !sys.is_dir(dir) { fsx.make_dirs(dir, 448) }
+    if sys.has(o, 101) {
+        let editor = proc.lookup(proc.environment(), "VISUAL"); let name = editor.found ? editor.value : "vi"
+        if !editor.found { let e2 = proc.lookup(proc.environment(), "EDITOR"); if e2.found { name = e2.value } }
+        let tmp = sys.join2(path, ".edit")
+        let current = sys.read_path(path); if current.ok { gz.write_file(tmp, current.bytes, 384) } else { gz.write_file(tmp, sys.bytes_new(), 384) }
+        let r = proc.run_wait(Vec<str>("sh", "-c", sys.join2(sys.join2(name, " "), tmp)), proc.environment())
+        if r != 0 { fsx.do_unlink(tmp); sys.warn("crontab", "editor failed"); return 1 }
+        fsx.do_rename(tmp, path); return 0
+    }
+    let source = o.rest.len() > 0 ? o.rest[0] : "-"
+    let input = sys.read_path(source)
+    if !input.ok { sys.warn_path("crontab", source); return 1 }
+    if !gz.write_file(path, input.bytes, 384) { sys.warn_write("crontab", path); return 1 }
+    return 0
+}
+
+// ---- inotifyd PROG FILE[:MASK]... ------------------------------------------------------------------------------------------------------------------------------------------------
+fn event_letters(mask: i64): str {
+    let letters = "acewromyndDMuox"; let bits = Vec<i64>(1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 8192, 16384, 32768)
+    let hasletter = "acerwomyndDMuox"
+    let b = sys.bytes_new()
+    let table = Vec<str>("a", "c", "e", "w", "0", "r", "m", "y", "n", "d", "D", "M", "u", "o", "x")
+    for k in 0..(bits.len() as i64) { if has_bit(mask, bits[k]) { sys.bytes_str(b, table[k]) } }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn mask_of(letters: str): i64 {
+    let table = "ac" ; let m = 0
+    for i in 0..sys.length(letters) {
+        let c = sys.at(letters, i)
+        if c == 97 { m = m + 1 } else if c == 99 { m = m + 2 } else if c == 101 { m = m + 4 } else if c == 119 { m = m + 8 } else if c == 48 { m = m + 16 } else if c == 114 { m = m + 32 }
+        else if c == 109 { m = m + 64 } else if c == 121 { m = m + 128 } else if c == 110 { m = m + 256 } else if c == 100 { m = m + 512 } else if c == 68 { m = m + 1024 } else if c == 77 { m = m + 2048 }
+    }
+    return m
+}
+fn run_inotifyd(args: Vec<str>): i64 {
+    if args.len() < 2 { sys.warn("inotifyd", "invalid usage: inotifyd PROG FILE[:MASK]..."); return 1 }
+    let fd = 0
+    unsafe { fd = inotify_init() as i64 }
+    if fd < 0 { sys.warn("inotifyd", "inotify_init failed"); return 1 }
+    let paths = Vec<str>(); let wds = Vec<i64>()
+    for k in 1..(args.len() as i64) {
+        let a = args[k]; let colon = sys.find_char(a, 58)
+        let path = colon < 0 ? a : sys.join2(sys.slice(a, 0, colon), "")
+        let mask = colon < 0 ? 4095 : mask_of(sys.join2(sys.slice(a, colon + 1, sys.length(a)), ""))
+        let wd = 0
+        unsafe { wd = inotify_add_watch(fd as i32, path, mask as u32) as i64 }
+        if wd < 0 { sys.warn("inotifyd", sys.join2(sys.join2("can't watch ", path), "")); return 1 }
+        paths.push(path); wds.push(wd)
+    }
+    let buffer = sys.bytes_new(); for i in 0..8192 { sys.bytes_push(buffer, 0) }
+    let out = sys.out_new(1)
+    while true {
+        let n = sys.read_into(fd, sys.bdata(buffer), 8192)
+        if n <= 0 { break }
+        let pos = 0
+        while pos + 16 <= n {
+            let wd = le(buffer, pos, 4); let mask = le(buffer, pos + 4, 4); let len = le(buffer, pos + 12, 4)
+            let name = len > 0 ? text_at(buffer, pos + 16, len) : ""
+            let path = ""; for q in 0..(wds.len() as i64) { if wds[q] == wd { path = paths[q] } }
+            let letters = event_letters(mask)
+            if sys.same(args[0], "-") {
+                sys.out_str(out, letters); sys.out_byte(out, 9); sys.out_str(out, path); if sys.length(name) > 0 { sys.out_byte(out, 9); sys.out_str(out, name) }; sys.out_byte(out, 10); sys.out_flush(out)
+            } else {
+                let cmd = Vec<str>(args[0], letters, path); if sys.length(name) > 0 { cmd.push(name) }
+                sys.out_flush(out); proc.run_wait(cmd, proc.environment())
+            }
+            pos = pos + 16 + len
+        }
+    }
+    return 0
+}
