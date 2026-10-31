@@ -39,7 +39,7 @@ fn iconFor(folder:bool, tag:ui.Text):str {
     if k.isText(tag,"SH") { return "text-x-script-symbolic" }
     return "text-x-generic-symbolic"
 }
-struct Row { name:ui.Text, path:ui.Text, folder:bool, detail:ui.Text, tag:ui.Text, package:ui.Text, color:ui.Text, size:ui.Text, stamp:ui.Text, label:ui.Text }
+struct Row { name:ui.Text, path:ui.Text, folder:bool, detail:ui.Text, tag:ui.Text, package:ui.Text, color:ui.Text, size:ui.Text, stamp:ui.Text, label:ui.Text, icon:ui.Text }
 struct Custom { id:ui.Text, title:ui.Text, target:ui.Text }
 
 fn App(context:*ui.Context):ui.Node {
@@ -139,13 +139,13 @@ fn App(context:*ui.Context):ui.Node {
         else if sp.kindOf(record,77) { customs.push(Custom(sp.cell(c,1),sp.cell(c,2),sp.cell(c,3))) }
         else if sp.kindOf(record,70) {
             let detail = join(Vec<ui.Text>(sp.cell(c,7),has(sp.cell(c,5)) ? plain(" · ") : ui.emptyText(),sp.cell(c,5),plain(" · "),sp.cell(c,6)))
-            rows.push(Row(sp.cell(c,1),sp.cell(c,2),sp.flag(sp.cell(c,3)),detail,sp.cell(c,8),sp.cell(c,10),sp.cell(c,9),sp.cell(c,5),sp.cell(c,6),sp.cell(c,7)))
+            rows.push(Row(sp.cell(c,1),sp.cell(c,2),sp.flag(sp.cell(c,3)),detail,sp.cell(c,8),sp.cell(c,10),sp.cell(c,9),sp.cell(c,5),sp.cell(c,6),sp.cell(c,7),sp.cell(c,11)))
         }
     }
     if gridChoice.value >= 0 { grid = gridChoice.value != 0 }
-    for record in sp.records(results.value) { if sp.kindOf(record,82) { let c = sp.cells(record); found.push(Row(sp.cell(c,1),sp.cell(c,2),false,sp.cell(c,3),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText())) } }
+    for record in sp.records(results.value) { if sp.kindOf(record,82) { let c = sp.cells(record); found.push(Row(sp.cell(c,1),sp.cell(c,2),false,sp.cell(c,3),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText())) } }
     let inSearch = searching.value != 0
-    let chosen = Row(ui.emptyText(),ui.emptyText(),false,ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText()); let hasChosen = false
+    let chosen = Row(ui.emptyText(),ui.emptyText(),false,ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText()); let hasChosen = false
     for r in rows { if ui.equalText(r.path,selected.value) { chosen = r; hasChosen = true } }
     for r in found { if inSearch && ui.equalText(r.path,selected.value) { chosen = r; hasChosen = true } }
     let go = fn(path:ui.Text) { nav.set(0); asked.set(0); selected.set(ui.emptyText()); sp.send(l,listRequest(path,current,hiddenOn)) }
@@ -288,18 +288,18 @@ fn App(context:*ui.Context):ui.Node {
         let select = ui.named("files-row-${index}"); select.expand = true
         let badge = ui.props(); badge.className = join(Vec<ui.Text>(plain("fl-badge fl-kind-"),has(e.color) ? e.color : plain("neutral"))); badge.valign = 1
         if grid && !inSearch {
-            let big = ui.props(); big.iconSize = 36; big.xalign = 0.0; big.expand = true
+            let big = ui.props(); big.iconSize = 40; big.xalign = 0.0; big.expand = true
             let tile = ui.props(); tile.id = select.id; tile.className = ui.text(chosenRow ? "fl-card fl-selected" : "fl-card"); tile.width = 168; tile.height = 118
             let inner = ui.props(); inner.spacing = 8
-            let top = Vec<ui.Node>(ui.Icon(big,iconFor(e.folder,e.tag))); if has(e.tag) { top.push(ui.withProps(ui.TextLabel(e.tag),badge)) }
+            let top = Vec<ui.Node>(ui.element(11,big,has(e.icon) ? e.icon : plain(iconFor(e.folder,e.tag)),Vec<ui.Node>())); if has(e.tag) { top.push(ui.withProps(ui.TextLabel(e.tag),badge)) }
             line.push(ui.WidgetButton(tile,ui.Box(inner,Vec<ui.Node>(flat(6,"",top),lab(e.name,"fl-name",0.0,16),lab(e.folder ? e.label : e.size,"fl-muted",0.0,0))),fn() { selected.set(e.path); if e.folder && chosenRow { go(e.path) } }))
             if line.len() >= perLine { body.push(flat(10,"",line)); line = Vec<ui.Node>() }
         } else {
             let open = ui.named((inSearch ? "files-result-open-" : "files-open-") + "${index}"); open.sensitive = !busy; open.className = ui.text("fl-tool"); open.valign = 3; open.width = 96
-            let image = ui.props(); image.iconSize = 20
+            let image = ui.props(); image.iconSize = 24
             let nameCell = ui.props(); nameCell.expand = true; nameCell.xalign = 0.0; nameCell.ellipsize = true; nameCell.widthChars = 20; nameCell.className = ui.text("fl-name")
             let kind = ui.props(); kind.className = join(Vec<ui.Text>(plain("fl-kind-"),has(e.color) ? e.color : plain("neutral"),plain(" fl-muted"))); kind.xalign = 0.0; kind.widthChars = 12; kind.ellipsize = true
-            let cells = Vec<ui.Node>(ui.Icon(image,iconFor(e.folder,e.tag)),ui.withProps(ui.TextLabel(e.name),nameCell))
+            let cells = Vec<ui.Node>(ui.element(11,image,has(e.icon) ? e.icon : plain(iconFor(e.folder,e.tag)),Vec<ui.Node>()),ui.withProps(ui.TextLabel(e.name),nameCell))
             if inSearch { cells.push(lab(e.detail,"fl-muted fl-mono",0.0,28)) }
             else { cells.push(ui.withProps(ui.TextLabel(e.label),kind)); cells.push(lab(e.folder ? plain("—") : e.size,"fl-muted fl-mono",1.0,9)); cells.push(lab(e.stamp,"fl-muted fl-mono",1.0,14)) }
             let options = ui.props(); options.id = select.id; options.expand = true; options.className = ui.text(chosenRow ? "fl-row fl-selected" : "fl-row")

@@ -11,7 +11,7 @@
 #   {"action":"custom","id":"custom-x","path":"/home/u/a.txt","dir":"/home/u","hidden":false}
 # Every answer is the listing of the folder it ended in (frame; records separated by ASCII 30, text never holds tabs or newlines):
 #   V path home parent message
-#   F name path folder hidden size stamp label tag color installable (1 sure, ? a .tar.gz that must be looked into, 0 not a package)
+#   F name path folder hidden size stamp label tag color installable (1 sure, ? a .tar.gz that must be looked into, 0 not a package) icon (a theme icon name, "" for none)
 #   S grid showHidden menuEnabled flags (eight 0/1 digits: Open Install Rename CopyPath NewFolder Terminal Refresh Hidden)
 #   M id title target                                                            enabled custom actions
 #   R name path relative                                                         search results (search only)
@@ -34,6 +34,7 @@ use "../org.devos.appstore/package-rules.dev" as rules
 use "./model.dev" as model
 use "./search.dev" as search
 use "./custom-menu.dev" as custom
+use "./file-icons.dev" as icons
 
 fn text(value:json.Value, key:str):str { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"string") ? json.string(json.get(value,key)) : "" }
 fn bool(value:json.Value, key:str):bool { return json.has(value,key) && strings.equal(json.kind(json.get(value,key)),"bool") && json.bool(json.get(value,key)) }
@@ -77,9 +78,10 @@ fn frame(path:str, hidden:bool, message:str):str {
     let listing = model.list(path)
     if !strings.equal(listing.error,"") { return kit.failure(listing.error) }
     let out = "V\t" + kit.clean(path) + "\t" + kit.clean(home()) + "\t" + kit.clean(model.parent(path)) + "\t" + kit.clean(message)
+    let mapping = icons.load(root())
     for e in model.visible(listing.entries,hidden) {
         let kind = model.fileKind(e.name,e.directory)
-        out = out + kit.rs() + "F\t" + kit.clean(e.name) + "\t" + kit.clean(e.path) + "\t" + (e.directory ? "1" : "0") + "\t" + (e.hidden ? "1" : "0") + "\t" + (e.directory ? "" : sizeLabel(e.size)) + "\t" + kit.clean(e.stamp) + "\t" + kit.clean(kind.label) + "\t" + kit.clean(kind.tag) + "\t" + kind.color + "\t" + installable(e.path,e.directory)
+        out = out + kit.rs() + "F\t" + kit.clean(e.name) + "\t" + kit.clean(e.path) + "\t" + (e.directory ? "1" : "0") + "\t" + (e.hidden ? "1" : "0") + "\t" + (e.directory ? "" : sizeLabel(e.size)) + "\t" + kit.clean(e.stamp) + "\t" + kit.clean(kind.label) + "\t" + kit.clean(kind.tag) + "\t" + kind.color + "\t" + installable(e.path,e.directory) + "\t" + icons.pick(mapping,e.name,e.directory)
     }
     return out + settingsRecords()
 }

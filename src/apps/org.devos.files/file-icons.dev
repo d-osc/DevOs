@@ -1,0 +1,39 @@
+# The default file and folder icons of the native Files window: the names the Icons extension ships (data/icons/hicolor/scalable/apps/dev-os-material-*.svg),
+# chosen by file name, then by extension (compound ones such as d.ts first), then the generic file or folder icon. No GTK here.
+use "std/fs"
+use "std/json"
+use "std/result"
+use "std/strings"
+
+# The mapping of the Icons extension ({} when it cannot be read: the window then falls back to the theme icons).
+fn load(root:str):json.Value {
+    let read = result.attempt(fn():json.Value { return json.parse(fs.readFileSync(root + "/src/apps/org.devos.icons/material/mapping.json","utf8")) })
+    return result.isErr(read) ? json.object() : result.unwrap(read)
+}
+fn lookup(table:json.Value, key:str):str {
+    if !json.has(table,key) { return "" }
+    let value = json.get(table,key)
+    return strings.equal(json.kind(value),"string") ? json.string(value) : ""
+}
+fn section(mapping:json.Value, name:str):json.Value { return json.has(mapping,name) ? json.get(mapping,name) : json.object() }
+# The icon name of a file or folder, "" when there is no mapping.
+fn pick(mapping:json.Value, name:str, directory:bool):str {
+    if !json.has(mapping,"names") { return "" }
+    let lower = strings.toLowerCase(name)
+    if directory {
+        let folder = lookup(section(mapping,"folders"),lower)
+        return strings.equal(folder,"") ? "dev-os-material-folder" : folder
+    }
+    let exact = lookup(section(mapping,"names"),lower)
+    if !strings.equal(exact,"") { return exact }
+    let parts = strings.split(lower,".")
+    let extensions = section(mapping,"extensions")
+    let count = parts.len() as i64
+    for i in 1..count {
+        let suffix = ""
+        for j in i..count { suffix = suffix + (j > i ? "." : "") + parts[j] }
+        let found = lookup(extensions,suffix)
+        if !strings.equal(found,"") { return found }
+    }
+    return "dev-os-material-file"
+}
