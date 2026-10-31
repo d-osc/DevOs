@@ -1,0 +1,221 @@
+# grep, egrep, fgrep: search files for lines that match patterns.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/regex.dev" as rx
+
+struct Config {
+    res: Vec<i64>, invert: bool, count: bool, list: bool, list_not: bool, number: bool, only: bool, quiet: bool, silent: bool, word: bool, whole: bool
+    names: bool, before: i64, after: i64, max: i64, null_data: bool
+}
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+
+# -F patterns become extended expressions with every special character escaped.
+fn literal_pattern(text: str): str {
+    let b = sys.bytes_new()
+    for i in 0..sys.length(text) {
+        let c = sys.at(text, i)
+        if sys.find_char("\\.[]*^$+?(){}|", c) >= 0 { sys.bytes_push(b, 92) }
+        sys.bytes_push(b, c)
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+# The leftmost (then longest) match of any pattern in line [from_line, to_line) at or after `from`; start is -1 when there is none.
+struct Hit { start: i64, end: i64 }
+fn re_at(cfg: Config, k: i64): *i64 { unsafe { return cfg.res[k] as *i64 } }
+fn find_match(cfg: Config, text: *u8, from_line: i64, to_line: i64, from: i64): Hit {
+    let best = Hit(0 - 1, 0 - 1)
+    let len = to_line - from_line
+    let base = text
+    unsafe { base = &text[from_line] }
+    for k in 0..(cfg.res.len() as i64) {
+        let re = re_at(cfg, k)
+        let caps = rx.new_caps(re)
+        let at = from
+        while at <= len {
+            if !rx.search(re, base, len, at, caps) { break }
+            unsafe {
+                let s = caps[0]; let e = caps[1]
+                let ok = true
+                if cfg.whole { ok = s == 0 && e == len }
+                else if cfg.word {
+                    ok = e > s && !word_byte(base, len, s - 1) && !word_byte(base, len, e)
+                }
+                if ok {
+                    if best.start < 0 || s < best.start || (s == best.start && e > best.end) { best = Hit(s, e) }
+                    break
+                }
+                at = s + 1
+            }
+        }
+        unsafe { sys.free(caps as *void) }
+    }
+    return best
+}
+fn word_byte(text: *u8, len: i64, i: i64): bool { unsafe { if i < 0 || i >= len { return false }; return rx.is_word_byte(text[i] as i64) } }
+
+fn new_totals(): *i64 { unsafe { return sys.calloc(2, 8) as *i64 } }
+fn emit_line(cfg: Config, o: *sys.Out, name: str, number: i64, sep: u8, data: *u8, from: i64, to: i64) {
+    if cfg.names { sys.out_str(o, name); sys.out_byte(o, sep) }
+    if cfg.number { sys.out_num(o, number); sys.out_byte(o, sep) }
+    unsafe { sys.out_data(o, &data[from], to - from) }
+    sys.out_byte(o, cfg.null_data ? 0 : 10)
+}
+# Searches one buffer; returns the number of selected lines.
+fn grep_buffer(cfg: Config, o: *sys.Out, name: str, b: *sys.Bytes): i64 {
+    let ls = lines.split_lines(b, cfg.null_data ? 0 : 10)
+    let data = sys.bdata(b); let total = ls.starts.len() as i64
+    let selected = 0; let last_printed = 0 - 1; let after_left = 0
+    let context = cfg.before > 0 || cfg.after > 0
+    let i = 0
+    while i < total {
+        let s = ls.starts[i]; let e = ls.ends[i]
+        let hit = find_match(cfg, data, s, e, 0)
+        let chosen = (hit.start >= 0) != cfg.invert
+        if chosen {
+            selected = selected + 1
+            if cfg.quiet || cfg.list || cfg.list_not { return selected }
+            if !cfg.count {
+                if context {
+                    let first = i - cfg.before; if first <= last_printed { first = last_printed + 1 }
+                    if first < 0 { first = 0 }
+                    if last_printed >= 0 && first > last_printed + 1 { sys.out_str(o, "--\n") }
+                    else if last_printed < 0 && first > 0 && false { }
+                    for k in first..i { emit_line(cfg, o, name, k + 1, 45, data, ls.starts[k], ls.ends[k]) }
+                }
+                if cfg.only && !cfg.invert {
+                    let from = 0
+                    while from <= e - s {
+                        let h = find_match(cfg, data, s, e, from)
+                        if h.start < 0 { break }
+                        if h.end > h.start {
+                            if cfg.names { sys.out_str(o, name); sys.out_byte(o, 58) }
+                            if cfg.number { sys.out_num(o, i + 1); sys.out_byte(o, 58) }
+                            unsafe { sys.out_data(o, &data[s + h.start], h.end - h.start) }
+                            sys.out_byte(o, 10)
+                        }
+                        from = h.end > h.start ? h.end : h.start + 1
+                    }
+                } else if !cfg.only { emit_line(cfg, o, name, i + 1, 58, data, s, e) }
+                last_printed = i; after_left = cfg.after
+            }
+            if cfg.max > 0 && selected >= cfg.max {
+                if !cfg.count && context {
+                    let k = i + 1
+                    while k < total && after_left > 0 { emit_line(cfg, o, name, k + 1, 45, data, ls.starts[k], ls.ends[k]); k = k + 1; after_left = after_left - 1 }
+                }
+                break
+            }
+        } else if !cfg.count && after_left > 0 {
+            emit_line(cfg, o, name, i + 1, 45, data, s, e); last_printed = i; after_left = after_left - 1
+        }
+        i = i + 1
+    }
+    return selected
+}
+fn grep_input(cfg: Config, o: *sys.Out, name: str, label: str): i64 {
+    let input = sys.read_path(name)
+    if !input.ok { if !cfg.silent { sys.warn_path("grep", name) }; return 0 - 1 }
+    let n = grep_buffer(cfg, o, label, input.bytes)
+    if cfg.count { if cfg.names { sys.out_str(o, label); sys.out_byte(o, 58) }; sys.out_num(o, n); sys.out_byte(o, 10) }
+    if cfg.list && n > 0 { sys.out_str(o, label); sys.out_byte(o, 10) }
+    if cfg.list_not && n == 0 { sys.out_str(o, label); sys.out_byte(o, 10) }
+    return n
+}
+fn grep_path(cfg: Config, o: *sys.Out, path: str, recurse: bool, top: bool, totals: *i64) {
+    let info = sys.file_info(path, true)
+    if info.ok && sys.is_dir_mode(info.mode) {
+        if !recurse { if !cfg.silent { sys.warn("grep", sys.join2(path, ": Is a directory")) }; return }
+        let l = fsx.list_dir(path)
+        for k in 0..(l.names.len() as i64) { grep_path(cfg, o, fsx.join_path(path, l.names[k]), recurse, false, totals) }
+        return
+    }
+    let n = grep_input(cfg, o, path, path)
+    unsafe {
+        if n < 0 { totals[1] = 1 } else { totals[0] = totals[0] + n }
+    }
+}
+fn add_pattern_lines(patterns: Vec<str>, text: str): Vec<str> {
+    let out = patterns; let start = 0; let n = sys.length(text)
+    for i in 0..(n + 1) { if i == n || sys.at(text, i) == 10 { out.push(sys.join2(sys.slice(text, start, i), "")); start = i + 1 } }
+    return out
+}
+fn run_grep_mode(args: Vec<str>, mode: i64): i64 {
+    # pull the -e / -f options (which may repeat) out of the argument list first
+    let patterns = Vec<str>(); let have_pattern = false; let rest = Vec<str>(); let i = 0; let n = args.len() as i64; let ended = false
+    while i < n {
+        let a = args[i]
+        if ended || sys.length(a) < 2 || sys.at(a, 0) != 45 { rest.push(a); i = i + 1; continue }
+        if sys.same(a, "--") { ended = true; rest.push(a); i = i + 1; continue }
+        let keep = sys.bytes_new(); sys.bytes_push(keep, 45)
+        let k = 1; let len = sys.length(a)
+        while k < len {
+            let c = sys.at(a, k)
+            if c == 101 || c == 102 {
+                let value = ""
+                if k + 1 < len { value = sys.join2(sys.slice(a, k + 1, len), "") } else if i + 1 < n { i = i + 1; value = args[i] } else { sys.warn("grep", "option requires an argument -- 'e'"); return 2 }
+                have_pattern = true
+                if c == 101 { patterns = add_pattern_lines(patterns, value) }
+                else {
+                    let f = sys.read_path(value)
+                    if !f.ok { sys.warn_path("grep", value); return 2 }
+                    let body = lines.text_of(f.bytes, 0, sys.blen(f.bytes))
+                    if sys.length(body) > 0 && sys.at(body, sys.length(body) - 1) == 10 { body = sys.join2(sys.slice(body, 0, sys.length(body) - 1), "") }
+                    if sys.length(body) > 0 || sys.blen(f.bytes) > 0 { patterns = add_pattern_lines(patterns, body) }
+                }
+                k = len
+            } else { sys.bytes_push(keep, c); k = k + 1 }
+        }
+        if sys.blen(keep) > 1 { rest.push(sys.join2(sys.bytes_cstr(keep), "")) }
+        i = i + 1
+    }
+    let o = sys.parse_opts(rest, "EFGivclLnHhoqsrRwxaIyUVzm:A:B:C:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("grep", "invalid usage: grep [-HhnlLoqvsriwFEzabcR] [-m N] [-A|B|C N] { PATTERN | -e PATTERN... | -f FILE... } [FILE]..."); return 2 }
+    let operands = o.rest
+    if !have_pattern {
+        if operands.len() == 0 { sys.warn("grep", "no pattern given"); return 2 }
+        patterns = add_pattern_lines(patterns, operands[0])
+        let tail = Vec<str>(); for k in 1..(operands.len() as i64) { tail.push(operands[k]) }
+        operands = tail
+    }
+    let fixed = mode == 2 || sys.has(o, 70); let ere = mode == 1 || sys.has(o, 69)
+    let icase = sys.has(o, 105) || sys.has(o, 121)
+    let res = Vec<i64>()
+    for k in 0..(patterns.len() as i64) {
+        let text = patterns[k]
+        if fixed { text = literal_pattern(text) }
+        if sys.has(o, 120) { text = sys.join2(sys.join2(ere || fixed ? "^(" : "^\\(", text), ere || fixed ? ")$" : "\\)$") }
+        let re = rx.compile(text, ere || fixed, icase)
+        if rx.failed(re) { sys.warn("grep", sys.join2("bad regex: ", patterns[k])); return 2 }
+        unsafe { res.push(re as i64) }
+    }
+    let recurse = sys.has(o, 114) || sys.has(o, 82)
+    let cfg = Config(res, sys.has(o, 118), sys.has(o, 99), sys.has(o, 108), sys.has(o, 76), sys.has(o, 110), sys.has(o, 111), sys.has(o, 113), sys.has(o, 115), sys.has(o, 119), sys.has(o, 120),
+        false, 0, 0, 0, sys.has(o, 122))
+    let context_both = 0
+    if sys.has(o, 67) { let v = sys.parse_number(sys.val(o, 67)); if v.ok { context_both = v.value } }
+    if sys.has(o, 65) { let v = sys.parse_number(sys.val(o, 65)); cfg.after = v.ok ? v.value : 0 } else { cfg.after = context_both }
+    if sys.has(o, 66) { let v = sys.parse_number(sys.val(o, 66)); cfg.before = v.ok ? v.value : 0 } else { cfg.before = context_both }
+    if sys.has(o, 109) { let v = sys.parse_number(sys.val(o, 109)); cfg.max = v.ok ? v.value : 0 }
+    if operands.len() == 0 && recurse { operands.push(".") }
+    cfg.names = (operands.len() > 1 || recurse) && !sys.has(o, 104) || sys.has(o, 72)
+    let out = sys.out_new(1); let totals = new_totals()
+    if operands.len() == 0 {
+        let n = grep_input(cfg, out, "-", "(standard input)")
+        unsafe { totals[0] = n > 0 ? n : 0 }
+    } else {
+        for k in 0..(operands.len() as i64) {
+            if sys.same(operands[k], "-") { let n = grep_input(cfg, out, "-", "(standard input)"); unsafe { if n > 0 { totals[0] = totals[0] + n } } }
+            else { grep_path(cfg, out, operands[k], recurse, true, totals) }
+        }
+    }
+    sys.out_flush(out)
+    unsafe {
+        if totals[0] > 0 && (cfg.quiet || totals[1] == 0) { return 0 }
+        if totals[1] != 0 { return 2 }
+        return 1
+    }
+}
+fn run_grep(args: Vec<str>): i64 { return run_grep_mode(args, 0) }
+fn run_egrep(args: Vec<str>): i64 { return run_grep_mode(args, 1) }
+fn run_fgrep(args: Vec<str>): i64 { return run_grep_mode(args, 2) }

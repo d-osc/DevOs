@@ -1,0 +1,447 @@
+# POSIX regular expressions (BRE and ERE with the usual GNU extensions) for grep, sed, expr and find, as a backtracking matcher.
+# A pattern is parsed into a tree, compiled to a small instruction list and run by `step`. Everything lives in raw i64 arrays so that
+# no values are copied while matching. Matching is leftmost, with greedy repetition and the first alternative that succeeds.
+use "./sys.dev" as sys
+
+# instruction codes
+fn I_CHAR(): i64 { return 1 }
+fn I_ANY(): i64 { return 2 }
+fn I_SET(): i64 { return 3 }
+fn I_SPLIT(): i64 { return 4 }
+fn I_JMP(): i64 { return 5 }
+fn I_SAVE(): i64 { return 6 }
+fn I_BOL(): i64 { return 7 }
+fn I_EOL(): i64 { return 8 }
+fn I_WORDB(): i64 { return 9 }
+fn I_NWORDB(): i64 { return 10 }
+fn I_WSTART(): i64 { return 11 }
+fn I_WEND(): i64 { return 12 }
+fn I_BACKREF(): i64 { return 13 }
+fn I_MATCH(): i64 { return 14 }
+fn I_RPT(): i64 { return 15 }
+fn I_LOOPSET(): i64 { return 16 }
+fn I_LOOPCHK(): i64 { return 17 }
+
+# tree node kinds
+fn N_EMPTY(): i64 { return 0 }
+fn N_CHAR(): i64 { return 1 }
+fn N_ANY(): i64 { return 2 }
+fn N_SET(): i64 { return 3 }
+fn N_CAT(): i64 { return 4 }
+fn N_ALT(): i64 { return 5 }
+fn N_REP(): i64 { return 6 }
+fn N_GROUP(): i64 { return 7 }
+fn N_BOL(): i64 { return 8 }
+fn N_EOL(): i64 { return 9 }
+fn N_WORDB(): i64 { return 10 }
+fn N_NWORDB(): i64 { return 11 }
+fn N_WSTART(): i64 { return 12 }
+fn N_WEND(): i64 { return 13 }
+fn N_BACKREF(): i64 { return 14 }
+
+# ---- the compiled program: re[0] code, re[1] instructions, re[2] sets, re[3] groups, re[4] icase, re[5] error, re[6] loop slots, re[7] code capacity
+fn failed(re: *i64): bool { unsafe { return re[5] != 0 } }
+fn groups(re: *i64): i64 { unsafe { return re[3] } }
+fn cells(count: i64): *i64 { unsafe { return sys.calloc(count as usize, 8) as *i64 } }
+fn new_caps(re: *i64): *i64 { unsafe { return sys.calloc(((re[3] + 1) * 2) as usize, 8) as *i64 } }
+
+# ---- parser state: p[0] position, p[1] nodes, p[2] node count, p[3] groups, p[4] error, p[5] extended, p[6] icase, p[7] sets, p[8] set count, p[9] set capacity
+fn mk(p: *i64, kind: i64, a: i64, b: i64, c: i64): i64 { unsafe {
+    let nodes = p[1] as *i64; let n = p[2]
+    nodes[n * 4] = kind; nodes[n * 4 + 1] = a; nodes[n * 4 + 2] = b; nodes[n * 4 + 3] = c
+    p[2] = n + 1
+    return n
+} }
+fn node_kind(p: *i64, i: i64): i64 { unsafe { let nodes = p[1] as *i64; return nodes[i * 4] } }
+fn node_field(p: *i64, i: i64, f: i64): i64 { unsafe { let nodes = p[1] as *i64; return nodes[i * 4 + f] } }
+fn lower_of(c: u8): u8 { return c >= 65 && c <= 90 ? c + 32 : c }
+fn new_set(p: *i64): i64 { unsafe {
+    let n = p[8]
+    if n >= p[9] { p[9] = p[9] * 2 + 4; p[7] = sys.realloc(p[7] as *void, (p[9] * 256) as usize) as i64 }
+    let base = p[7] as *u8
+    for k in 0..256 { base[n * 256 + k] = 0 }
+    p[8] = n + 1
+    return n
+} }
+fn set_put(p: *i64, idx: i64, c: i64) { unsafe {
+    let base = p[7] as *u8
+    base[idx * 256 + c] = 1
+    if p[6] != 0 {
+        if c >= 65 && c <= 90 { base[idx * 256 + c + 32] = 1 }
+        if c >= 97 && c <= 122 { base[idx * 256 + c - 32] = 1 }
+    }
+} }
+fn in_class(name: str, c: i64): bool {
+    let alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122); let digit = c >= 48 && c <= 57
+    if sys.same(name, "alpha") { return alpha }
+    if sys.same(name, "digit") { return digit }
+    if sys.same(name, "alnum") { return alpha || digit }
+    if sys.same(name, "upper") { return c >= 65 && c <= 90 }
+    if sys.same(name, "lower") { return c >= 97 && c <= 122 }
+    if sys.same(name, "space") { return c == 32 || (c >= 9 && c <= 13) }
+    if sys.same(name, "blank") { return c == 32 || c == 9 }
+    if sys.same(name, "punct") { return c > 32 && c < 127 && !alpha && !digit }
+    if sys.same(name, "print") { return c >= 32 && c < 127 }
+    if sys.same(name, "graph") { return c > 32 && c < 127 }
+    if sys.same(name, "cntrl") { return c < 32 || c == 127 }
+    if sys.same(name, "xdigit") { return digit || (c >= 65 && c <= 70) || (c >= 97 && c <= 102) }
+    return false
+}
+fn known_class(name: str): bool {
+    return sys.same(name, "alpha") || sys.same(name, "digit") || sys.same(name, "alnum") || sys.same(name, "upper") || sys.same(name, "lower") || sys.same(name, "space") || sys.same(name, "blank") || sys.same(name, "punct") || sys.same(name, "print") || sys.same(name, "graph") || sys.same(name, "cntrl") || sys.same(name, "xdigit")
+}
+fn is_word_byte(c: i64): bool { return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 }
+
+fn pos(p: *i64): i64 { unsafe { return p[0] } }
+fn set_pos(p: *i64, v: i64) { unsafe { p[0] = v } }
+fn fail(p: *i64) { unsafe { p[4] = 1 } }
+fn bad(p: *i64): bool { unsafe { return p[4] != 0 } }
+fn extended(p: *i64): bool { unsafe { return p[5] != 0 } }
+fn char_at(pat: str, i: i64): i64 { return i < sys.length(pat) ? sys.at(pat, i) as i64 : 0 - 1 }
+
+# [...] starting after the '['; returns a SET node.
+fn parse_bracket(p: *i64, pat: str): i64 {
+    let n = sys.length(pat); let i = pos(p)
+    let idx = new_set(p); let negate = false
+    if char_at(pat, i) == 94 { negate = true; i = i + 1 }
+    let first = true
+    while true {
+        if i >= n { fail(p); return 0 }
+        let c = char_at(pat, i)
+        if c == 93 && !first { i = i + 1; break }
+        first = false
+        if c == 91 && (char_at(pat, i + 1) == 58 || char_at(pat, i + 1) == 46 || char_at(pat, i + 1) == 61) {
+            let kind = char_at(pat, i + 1); let end = i + 2
+            while end + 1 < n && !(char_at(pat, end) == kind && char_at(pat, end + 1) == 93) { end = end + 1 }
+            if end + 1 >= n { fail(p); return 0 }
+            let name = sys.join2(sys.slice(pat, i + 2, end), "")
+            if kind == 58 {
+                if !known_class(name) { fail(p); return 0 }
+                for k in 0..256 { if in_class(name, k) { set_put(p, idx, k) } }
+            } else if sys.length(name) == 1 { set_put(p, idx, sys.at(name, 0) as i64) }
+            i = end + 2
+            continue
+        }
+        let lo = c; i = i + 1
+        if char_at(pat, i) == 45 && char_at(pat, i + 1) != 93 && char_at(pat, i + 1) >= 0 {
+            let hi = char_at(pat, i + 1); i = i + 2
+            if hi < lo { fail(p); return 0 }
+            for k in lo..(hi + 1) { set_put(p, idx, k) }
+        } else { set_put(p, idx, lo) }
+    }
+    set_pos(p, i)
+    unsafe {
+        let base = p[7] as *u8
+        if negate { for k in 0..256 { base[idx * 256 + k] = base[idx * 256 + k] == 0 ? 1 : 0 } }
+    }
+    return mk(p, N_SET(), idx, 0, 0)
+}
+fn class_set(p: *i64, name: str, negate: bool): i64 {
+    let idx = new_set(p)
+    for k in 0..256 { let inside = sys.same(name, "w") ? is_word_byte(k) : in_class("space", k); if inside != negate { set_put(p, idx, k) } }
+    return mk(p, N_SET(), idx, 0, 0)
+}
+fn at_alt(p: *i64, pat: str): i64 {
+    let i = pos(p)
+    if extended(p) { return char_at(pat, i) == 124 ? 1 : 0 }
+    return char_at(pat, i) == 92 && char_at(pat, i + 1) == 124 ? 2 : 0
+}
+fn at_close(p: *i64, pat: str): i64 {
+    let i = pos(p)
+    if extended(p) { return char_at(pat, i) == 41 ? 1 : 0 }
+    return char_at(pat, i) == 92 && char_at(pat, i + 1) == 41 ? 2 : 0
+}
+fn parse_alt(p: *i64, pat: str, depth: i64): i64 {
+    let left = parse_cat(p, pat, depth)
+    while !bad(p) && at_alt(p, pat) > 0 {
+        set_pos(p, pos(p) + at_alt(p, pat))
+        let right = parse_cat(p, pat, depth)
+        left = mk(p, N_ALT(), left, right, 0)
+    }
+    return left
+}
+fn parse_cat(p: *i64, pat: str, depth: i64): i64 {
+    let n = sys.length(pat); let acc = 0 - 1; let at_start = true
+    while !bad(p) && pos(p) < n {
+        if at_alt(p, pat) > 0 { break }
+        if depth > 0 && at_close(p, pat) > 0 { break }
+        let atom = parse_atom(p, pat, depth, at_start)
+        if bad(p) { break }
+        let keep_start = node_kind(p, atom) == N_BOL()
+        if !keep_start { atom = parse_postfix(p, pat, atom) }
+        acc = acc < 0 ? atom : mk(p, N_CAT(), acc, atom, 0)
+        at_start = keep_start && at_start
+    }
+    return acc < 0 ? mk(p, N_EMPTY(), 0, 0, 0) : acc
+}
+# {m,n} / \{m,n\}: returns the end of the interval and its bounds through out (out[0] min, out[1] max); -1 if there is none.
+fn parse_interval(p: *i64, pat: str, start: i64, out: *i64): i64 { unsafe {
+    let i = start; let lo = 0; let hi = 0 - 1; let seen = false
+    while char_at(pat, i) >= 48 && char_at(pat, i) <= 57 { lo = lo * 10 + char_at(pat, i) - 48; i = i + 1; seen = true }
+    if !seen { return 0 - 1 }
+    hi = lo
+    if char_at(pat, i) == 44 {
+        i = i + 1; hi = 0 - 1
+        let got = false; let v = 0
+        while char_at(pat, i) >= 48 && char_at(pat, i) <= 57 { v = v * 10 + char_at(pat, i) - 48; i = i + 1; got = true }
+        if got { hi = v }
+    }
+    if extended(p) { if char_at(pat, i) != 125 { return 0 - 1 }; i = i + 1 }
+    else { if !(char_at(pat, i) == 92 && char_at(pat, i + 1) == 125) { return 0 - 1 }; i = i + 2 }
+    if hi >= 0 && hi < lo { return 0 - 1 }
+    if lo > 255 || hi > 255 { return 0 - 1 }
+    out[0] = lo; out[1] = hi
+    return i
+} }
+fn parse_postfix(p: *i64, pat: str, atom: i64): i64 {
+    let node = atom
+    while !bad(p) {
+        let i = pos(p); let c = char_at(pat, i)
+        let lo = 0 - 1; let hi = 0 - 1; let next = i
+        if c == 42 { lo = 0; hi = 0 - 1; next = i + 1 }
+        else if extended(p) && c == 43 { lo = 1; hi = 0 - 1; next = i + 1 }
+        else if extended(p) && c == 63 { lo = 0; hi = 1; next = i + 1 }
+        else if !extended(p) && c == 92 && char_at(pat, i + 1) == 43 { lo = 1; hi = 0 - 1; next = i + 2 }
+        else if !extended(p) && c == 92 && char_at(pat, i + 1) == 63 { lo = 0; hi = 1; next = i + 2 }
+        else if (extended(p) && c == 123) || (!extended(p) && c == 92 && char_at(pat, i + 1) == 123) {
+            let box = cells(2)
+            let end = parse_interval(p, pat, i + (extended(p) ? 1 : 2), box)
+            if end < 0 { if extended(p) { break }; fail(p); break }
+            unsafe { lo = box[0]; hi = box[1] }
+            next = end
+        } else { break }
+        set_pos(p, next)
+        node = mk(p, N_REP(), node, lo, hi)
+    }
+    return node
+}
+fn parse_atom(p: *i64, pat: str, depth: i64, at_start: bool): i64 {
+    let n = sys.length(pat); let i = pos(p); let c = char_at(pat, i)
+    let ere = extended(p)
+    if c == 46 { set_pos(p, i + 1); return mk(p, N_ANY(), 0, 0, 0) }
+    if c == 91 { set_pos(p, i + 1); return parse_bracket(p, pat) }
+    if c == 94 && (ere || at_start) { set_pos(p, i + 1); return mk(p, N_BOL(), 0, 0, 0) }
+    if c == 36 {
+        let after = i + 1
+        let last = after >= n || (!ere && ((char_at(pat, after) == 92 && (char_at(pat, after + 1) == 41 || char_at(pat, after + 1) == 124))))
+        if ere || last { set_pos(p, i + 1); return mk(p, N_EOL(), 0, 0, 0) }
+    }
+    if ere && c == 40 {
+        set_pos(p, i + 1)
+        unsafe { p[3] = p[3] + 1 }
+        let number = 0
+        unsafe { number = p[3] }
+        let inner = parse_alt(p, pat, depth + 1)
+        if bad(p) { return inner }
+        if char_at(pat, pos(p)) != 41 { fail(p); return inner }
+        set_pos(p, pos(p) + 1)
+        return mk(p, N_GROUP(), inner, number, 0)
+    }
+    if ere && (c == 41) && depth == 0 { set_pos(p, i + 1); return mk(p, N_CHAR(), 41, 0, 0) }
+    if c == 92 {
+        let e = char_at(pat, i + 1)
+        if e < 0 { fail(p); return 0 }
+        set_pos(p, i + 2)
+        if !ere && e == 40 {
+            unsafe { p[3] = p[3] + 1 }
+            let number = 0
+            unsafe { number = p[3] }
+            let inner = parse_alt(p, pat, depth + 1)
+            if bad(p) { return inner }
+            if !(char_at(pat, pos(p)) == 92 && char_at(pat, pos(p) + 1) == 41) { fail(p); return inner }
+            set_pos(p, pos(p) + 2)
+            return mk(p, N_GROUP(), inner, number, 0)
+        }
+        if e >= 49 && e <= 57 { return mk(p, N_BACKREF(), e - 48, 0, 0) }
+        if e == 119 { return class_set(p, "w", false) }
+        if e == 87 { return class_set(p, "w", true) }
+        if e == 115 { return class_set(p, "s", false) }
+        if e == 83 { return class_set(p, "s", true) }
+        if e == 98 { return mk(p, N_WORDB(), 0, 0, 0) }
+        if e == 66 { return mk(p, N_NWORDB(), 0, 0, 0) }
+        if e == 60 { return mk(p, N_WSTART(), 0, 0, 0) }
+        if e == 62 { return mk(p, N_WEND(), 0, 0, 0) }
+        if e == 96 { return mk(p, N_BOL(), 0, 0, 0) }
+        if e == 39 { return mk(p, N_EOL(), 0, 0, 0) }
+        if e == 110 { return mk(p, N_CHAR(), 10, 0, 0) }
+        if e == 116 { return mk(p, N_CHAR(), 9, 0, 0) }
+        return mk(p, N_CHAR(), e, 0, 0)
+    }
+    if (c == 42 || (ere && (c == 43 || c == 63))) && at_start { set_pos(p, i + 1); return mk(p, N_CHAR(), c, 0, 0) }
+    set_pos(p, i + 1)
+    return mk(p, N_CHAR(), c, 0, 0)
+}
+
+# ---- code generation ---------------------------------------------------------------------------------------------------------------------------
+fn emit(re: *i64, op: i64, x: i64, y: i64): i64 { unsafe {
+    let n = re[1]
+    if (n + 1) * 4 > re[7] { re[7] = re[7] * 2 + 64; re[0] = sys.realloc(re[0] as *void, (re[7] * 8) as usize) as i64 }
+    let code = re[0] as *i64
+    code[n * 4] = op; code[n * 4 + 1] = x; code[n * 4 + 2] = y; code[n * 4 + 3] = 0
+    re[1] = n + 1
+    return n
+} }
+fn patch(re: *i64, at: i64, field: i64, v: i64) { unsafe { let code = re[0] as *i64; code[at * 4 + field] = v } }
+fn here(re: *i64): i64 { unsafe { return re[1] } }
+fn single_char(kind: i64): bool { return kind == N_CHAR() || kind == N_ANY() || kind == N_SET() }
+fn gen_atom(re: *i64, p: *i64, node: i64) {
+    let kind = node_kind(p, node)
+    if kind == N_CHAR() { let c = node_field(p, node, 1); unsafe { emit(re, I_CHAR(), re[4] != 0 ? lower_of(c as u8) as i64 : c, 0) } }
+    else if kind == N_ANY() { emit(re, I_ANY(), 0, 0) }
+    else { emit(re, I_SET(), node_field(p, node, 1), 0) }
+}
+fn gen(re: *i64, p: *i64, node: i64) {
+    let kind = node_kind(p, node)
+    if kind == N_EMPTY() { return }
+    if single_char(kind) { gen_atom(re, p, node); return }
+    if kind == N_CAT() { gen(re, p, node_field(p, node, 1)); gen(re, p, node_field(p, node, 2)); return }
+    if kind == N_ALT() {
+        let split = emit(re, I_SPLIT(), 0, 0)
+        patch(re, split, 1, here(re))
+        gen(re, p, node_field(p, node, 1))
+        let jump = emit(re, I_JMP(), 0, 0)
+        patch(re, split, 2, here(re))
+        gen(re, p, node_field(p, node, 2))
+        patch(re, jump, 1, here(re))
+        return
+    }
+    if kind == N_GROUP() {
+        let g = node_field(p, node, 2)
+        emit(re, I_SAVE(), g * 2, 0)
+        gen(re, p, node_field(p, node, 1))
+        emit(re, I_SAVE(), g * 2 + 1, 0)
+        return
+    }
+    if kind == N_REP() {
+        let child = node_field(p, node, 1); let lo = node_field(p, node, 2); let hi = node_field(p, node, 3)
+        if single_char(node_kind(p, child)) { emit(re, I_RPT(), lo, hi); gen_atom(re, p, child); return }
+        for k in 0..lo { gen(re, p, child) }
+        if hi < 0 {
+            let slot = 0
+            unsafe { slot = re[6]; re[6] = slot + 1 }
+            let top = emit(re, I_SPLIT(), 0, 0)
+            patch(re, top, 1, here(re))
+            emit(re, I_LOOPSET(), slot, 0)
+            gen(re, p, child)
+            emit(re, I_LOOPCHK(), slot, 0)
+            emit(re, I_JMP(), top, 0)
+            patch(re, top, 2, here(re))
+        } else {
+            let pending = Vec<i64>()
+            for k in 0..(hi - lo) {
+                let split = emit(re, I_SPLIT(), 0, 0)
+                patch(re, split, 1, here(re)); pending.push(split)
+                gen(re, p, child)
+            }
+            for k in 0..(pending.len() as i64) { patch(re, pending[k], 2, here(re)) }
+        }
+        return
+    }
+    if kind == N_GROUP() { return }
+    if kind == N_BOL() { emit(re, I_BOL(), 0, 0) } else if kind == N_EOL() { emit(re, I_EOL(), 0, 0) } else if kind == N_WORDB() { emit(re, I_WORDB(), 0, 0) }
+    else if kind == N_NWORDB() { emit(re, I_NWORDB(), 0, 0) } else if kind == N_WSTART() { emit(re, I_WSTART(), 0, 0) } else if kind == N_WEND() { emit(re, I_WEND(), 0, 0) }
+    else if kind == N_BACKREF() { emit(re, I_BACKREF(), node_field(p, node, 1), 0) }
+}
+
+# Compiles `pat`; `ere` selects extended syntax. Check `failed(re)` before using the result.
+fn compile(pat: str, ere: bool, icase: bool): *i64 { unsafe {
+    let n = sys.length(pat)
+    let p = sys.calloc(12, 8) as *i64
+    p[1] = sys.calloc(((n * 3 + 16) * 4) as usize, 8) as i64
+    p[5] = ere ? 1 : 0; p[6] = icase ? 1 : 0
+    let re = sys.calloc(8, 8) as *i64
+    re[4] = icase ? 1 : 0
+    re[7] = 0; re[0] = 0
+    let root = parse_alt(p, pat, 0)
+    if !bad(p) && pos(p) < n { fail(p) }
+    if bad(p) { re[5] = 1; return re }
+    re[3] = p[3]
+    emit(re, I_SAVE(), 0, 0)
+    gen(re, p, root)
+    emit(re, I_MATCH(), 0, 0)
+    re[2] = p[7]
+    return re
+} }
+
+# ---- matching ---------------------------------------------------------------------------------------------------------------------------------------
+# m[0] text, m[1] length, m[2] captures, m[3] loop slots
+fn fold(re: *i64, c: i64): i64 { unsafe { return re[4] != 0 && c >= 65 && c <= 90 ? c + 32 : c } }
+fn atom_ok(re: *i64, m: *i64, a: i64, sp: i64): bool { unsafe {
+    if sp >= m[1] { return false }
+    let code = re[0] as *i64; let text = m[0] as *u8
+    let op = code[a * 4]; let c = text[sp] as i64
+    if op == I_CHAR() { return fold(re, c) == code[a * 4 + 1] }
+    if op == I_ANY() { return true }
+    let sets = re[2] as *u8
+    return sets[code[a * 4 + 1] * 256 + c] != 0
+} }
+fn word_at(m: *i64, i: i64): bool { unsafe {
+    if i < 0 || i >= m[1] { return false }
+    let text = m[0] as *u8
+    return is_word_byte(text[i] as i64)
+} }
+# Runs the program from instruction `pc` at text offset `sp`: the end offset of the match, or -1.
+fn step(re: *i64, m: *i64, pc0: i64, sp0: i64): i64 { unsafe {
+    let code = re[0] as *i64; let caps = m[2] as *i64; let loops = m[3] as *i64
+    let pc = pc0; let sp = sp0
+    while true {
+        let op = code[pc * 4]; let x = code[pc * 4 + 1]; let y = code[pc * 4 + 2]
+        if op == I_CHAR() || op == I_ANY() || op == I_SET() { if !atom_ok(re, m, pc, sp) { return 0 - 1 }; sp = sp + 1; pc = pc + 1 }
+        else if op == I_SPLIT() { let r = step(re, m, x, sp); if r >= 0 { return r }; pc = y }
+        else if op == I_JMP() { pc = x }
+        else if op == I_SAVE() { let old = caps[x]; caps[x] = sp; let r = step(re, m, pc + 1, sp); if r < 0 { caps[x] = old }; return r }
+        else if op == I_BOL() { if sp != 0 { return 0 - 1 }; pc = pc + 1 }
+        else if op == I_EOL() { if sp != m[1] { return 0 - 1 }; pc = pc + 1 }
+        else if op == I_WORDB() { if word_at(m, sp - 1) == word_at(m, sp) { return 0 - 1 }; pc = pc + 1 }
+        else if op == I_NWORDB() { if word_at(m, sp - 1) != word_at(m, sp) { return 0 - 1 }; pc = pc + 1 }
+        else if op == I_WSTART() { if word_at(m, sp - 1) || !word_at(m, sp) { return 0 - 1 }; pc = pc + 1 }
+        else if op == I_WEND() { if !word_at(m, sp - 1) || word_at(m, sp) { return 0 - 1 }; pc = pc + 1 }
+        else if op == I_BACKREF() {
+            let s = caps[x * 2]; let e = caps[x * 2 + 1]
+            if s < 0 || e < 0 { return 0 - 1 }
+            let text = m[0] as *u8; let len = e - s
+            if sp + len > m[1] { return 0 - 1 }
+            for k in 0..len { if fold(re, text[s + k] as i64) != fold(re, text[sp + k] as i64) { return 0 - 1 } }
+            sp = sp + len; pc = pc + 1
+        }
+        else if op == I_MATCH() { return sp }
+        else if op == I_RPT() {
+            let count = 0
+            while (y < 0 || count < y) && atom_ok(re, m, pc + 1, sp + count) { count = count + 1 }
+            if count < x { return 0 - 1 }
+            let k = count
+            while k >= x { let r = step(re, m, pc + 2, sp + k); if r >= 0 { return r }; k = k - 1 }
+            return 0 - 1
+        }
+        else if op == I_LOOPSET() { let old = loops[x]; loops[x] = sp; let r = step(re, m, pc + 1, sp); loops[x] = old; return r }
+        else if op == I_LOOPCHK() { if loops[x] == sp { return 0 - 1 }; pc = pc + 1 }
+        else { return 0 - 1 }
+    }
+    return 0 - 1
+} }
+# Looks for the leftmost match in text[0..len] starting at offset `from`; fills caps (start/end pairs, -1 for unset groups).
+fn search(re: *i64, text: *u8, len: i64, from: i64, caps: *i64): bool { unsafe {
+    let m = sys.calloc(4, 8) as *i64
+    m[0] = text as i64; m[1] = len; m[2] = caps as i64
+    let slots = re[6] > 0 ? re[6] : 1
+    m[3] = sys.calloc(slots as usize, 8) as i64
+    let width = (re[3] + 1) * 2
+    let found = false
+    let start = from
+    while start <= len && !found {
+        for k in 0..width { caps[k] = 0 - 1 }
+        let r = step(re, m, 0, start)
+        if r >= 0 { caps[0] = start; caps[1] = r; found = true } else { start = start + 1 }
+    }
+    sys.free(m[3] as *void); sys.free(m as *void)
+    return found
+} }
+# Convenience for a plain string.
+fn matches_text(re: *i64, text: str): bool { unsafe {
+    let caps = new_caps(re); let n = sys.length(text)
+    let copy = sys.calloc((n + 1) as usize, 1) as *u8
+    for i in 0..n { copy[i] = sys.at(text, i) }
+    let found = search(re, copy, n, 0, caps)
+    sys.free(caps as *void); sys.free(copy as *void)
+    return found
+} }

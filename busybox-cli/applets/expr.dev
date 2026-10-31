@@ -1,6 +1,7 @@
 # test, [, [[, expr: evaluating conditions and arithmetic from the command line.
 use "../lib/sys.dev" as sys
 use "../lib/fsx.dev" as fsx
+use "../lib/regex.dev" as rx
 
 fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
 fn cell(): *i64 { unsafe { return sys.calloc(1, 8) as *i64 } }
@@ -210,7 +211,23 @@ fn expr_match(p: Parser): str {
     }
     return v
 }
-fn match_hook(text: str, pattern: str): str { return "0" }
+fn match_hook(text: str, pattern: str): str {
+    let re = rx.compile(sys.join2("^", pattern), false, false)
+    if rx.failed(re) { return "0" }
+    let n = sys.length(text)
+    let buffer = sys.bytes_new()
+    for i in 0..n { sys.bytes_push(buffer, sys.at(text, i)) }
+    let caps = rx.new_caps(re)
+    let found = rx.search(re, sys.bdata(buffer), n, 0, caps)
+    unsafe {
+        if rx.groups(re) > 0 {
+            if !found || caps[2] < 0 { return "" }
+            return sys.join2(sys.slice(text, caps[2], caps[3]), "")
+        }
+        if !found { return "0" }
+        return decimal(caps[1] - caps[0])
+    }
+}
 fn expr_primary(p: Parser): str {
     if !more(p) { fail(p, 2); return "" }
     let t = peek(p)

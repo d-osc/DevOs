@@ -9,6 +9,7 @@ use "./applets/sysinfo.dev" as si
 use "./applets/procs.dev" as pr
 use "./applets/expr.dev" as xp
 use "./applets/printf.dev" as pf
+use "./applets/grep.dev" as gr
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
@@ -95,6 +96,9 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "[[") { return xp.run___(args) }
     if sys.same(name, "expr") { return xp.run_expr(args) }
     if sys.same(name, "printf") { return pf.run_printf(args) }
+    if sys.same(name, "grep") { return gr.run_grep(args) }
+    if sys.same(name, "egrep") { return gr.run_egrep(args) }
+    if sys.same(name, "fgrep") { return gr.run_fgrep(args) }
     sys.warn(name, "applet not found")
     return 127
 }
