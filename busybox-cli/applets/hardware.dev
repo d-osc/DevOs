@@ -1,0 +1,269 @@
+# chvt, deallocvt, setconsole, setlogcons, kbd_mode, beep, fdflush, freeramdisk, raidautorun, eject, hwclock, adjtimex, devmem, watchdog, modprobe, nameif: hardware, console and kernel module helpers.
+# Most of these need device access (usually root); the ioctl numbers are the Linux ones.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/clock.dev" as clock
+use "./gzip.dev" as gz
+
+extern fn ioctl(fd: i32, request: u64, argument: *void): i32
+extern fn syscall(number: i64, a: i64, b: i64, c: i64): i64
+extern fn settimeofday(tv: *void, tz: *void): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn cells(n: i64): *i64 { unsafe { return sys.calloc(n as usize, 8) as *i64 } }
+fn cg(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn control(fd: i64, request: i64, argument: i64): i64 { unsafe { return ioctl(fd as i32, request as u64, argument as *void) as i64 } }
+fn control_buffer(fd: i64, request: i64, b: *sys.Bytes): i64 { unsafe { return ioctl(fd as i32, request as u64, sys.bdata(b) as *void) as i64 } }
+fn open_console(): i64 {
+    for path in Vec<str>("/dev/tty0", "/dev/console", "/dev/vc/0") { let fd = sys.open_fd(path, 2, 0); if fd >= 0 { return fd } }
+    return 0 - 1
+}
+fn need_number(prog: str, args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn(prog, sys.join2(sys.join2("invalid usage: ", prog), " N")); return 0 - 1 }
+    let n = sys.parse_number(args[0]); if !n.ok || n.value < 0 { sys.warn(prog, sys.join2("invalid number ", args[0])); return 0 - 1 }
+    return n.value
+}
+
+// ---- virtual terminals -----------------------------------------------------------------------------------------------------------------------------------------------------------
+fn run_chvt(args: Vec<str>): i64 {
+    let n = need_number("chvt", args); if n < 0 { return 1 }
+    let fd = open_console(); if fd < 0 { sys.warn("chvt", "can't open the console (are you root?)"); return 1 }
+    if control(fd, 22022, n) != 0 || control(fd, 22023, n) != 0 { sys.warn("chvt", sys.join2("can't switch to console ", decimal(n))); return 1 }
+    return 0
+}
+fn run_deallocvt(args: Vec<str>): i64 {
+    let n = args.len() == 0 ? 0 : need_number("deallocvt", args); if n < 0 { return 1 }
+    let fd = open_console(); if fd < 0 { sys.warn("deallocvt", "can't open the console (are you root?)"); return 1 }
+    if control(fd, 22024, n) != 0 { sys.warn("deallocvt", "can't deallocate the console"); return 1 }
+    return 0
+}
+fn run_setconsole(args: Vec<str>): i64 {
+    let device = "/dev/tty"; let reset = false
+    for k in 0..(args.len() as i64) { if sys.same(args[k], "-r") { reset = true } else if !sys.starts(args[k], "-") { device = args[k] } }
+    let fd = sys.open_fd(reset ? "/dev/console" : device, 2, 0); if fd < 0 { sys.warn_path("setconsole", device); return 1 }
+    if control(fd, 21533, 0) != 0 { sys.warn("setconsole", "TIOCCONS failed (are you root?)"); return 1 }
+    return 0
+}
+fn run_setlogcons(args: Vec<str>): i64 {
+    let n = args.len() == 0 ? 0 : need_number("setlogcons", args); if n < 0 { return 1 }
+    let fd = open_console(); if fd < 0 { sys.warn("setlogcons", "can't open the console"); return 1 }
+    let b = sys.bytes_new(); sys.bytes_push(b, 11); sys.bytes_push(b, n as u8)
+    if control_buffer(fd, 21532, b) != 0 { sys.warn("setlogcons", "TIOCLINUX failed (are you root?)"); return 1 }
+    return 0
+}
+fn run_kbd_mode(args: Vec<str>): i64 {
+    let fd = open_console(); if fd < 0 { sys.warn("kbd_mode", "can't open the console"); return 1 }
+    let want = 0 - 1
+    for k in 0..(args.len() as i64) { let a = args[k]; if sys.same(a, "-s") { want = 0 } else if sys.same(a, "-k") { want = 2 } else if sys.same(a, "-a") { want = 1 } else if sys.same(a, "-u") { want = 3 } else { sys.warn("kbd_mode", "invalid usage: kbd_mode [-a|-k|-s|-u]"); return 1 } }
+    if want >= 0 { if control(fd, 19269, want) != 0 { sys.warn("kbd_mode", "can't set the keyboard mode"); return 1 }; return 0 }
+    let b = sys.bytes_new(); for i in 0..8 { sys.bytes_push(b, 0) }
+    if control_buffer(fd, 19268, b) != 0 { sys.warn("kbd_mode", "can't read the keyboard mode"); return 1 }
+    let m = sys.bat(b, 0) as i64; let out = sys.out_new(1)
+    sys.out_str(out, sys.join2("The keyboard is in ", sys.join2(m == 0 ? "raw (scancode)" : (m == 1 ? "default (ASCII)" : (m == 2 ? "mediumraw (keycode)" : (m == 3 ? "Unicode (UTF-8)" : "unknown"))), " mode\n"))); sys.out_flush(out)
+    return 0
+}
+fn run_beep(args: Vec<str>): i64 {
+    let freq = 4000; let length = 30; let delay = 30; let reps = 1; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-f") && i + 1 < n { freq = sys.parse_number(args[i + 1]).value; i = i + 1 } else if sys.same(a, "-l") && i + 1 < n { length = sys.parse_number(args[i + 1]).value; i = i + 1 }
+        else if sys.same(a, "-d") && i + 1 < n { delay = sys.parse_number(args[i + 1]).value; i = i + 1 } else if sys.same(a, "-r") && i + 1 < n { reps = sys.parse_number(args[i + 1]).value; i = i + 1 }
+        i = i + 1
+    }
+    let fd = sys.open_fd("/dev/console", 1, 0); if fd < 0 { sys.warn("beep", "can't open /dev/console"); return 1 }
+    if freq < 1 { freq = 1 }
+    for r in 0..reps {
+        if control(fd, 19247, 1193180 / freq) != 0 { sys.warn("beep", "KIOCSOUND failed"); return 1 }
+        proc.pause_us(length * 1000); control(fd, 19247, 0)
+        if r + 1 < reps { proc.pause_us(delay * 1000) }
+    }
+    return 0
+}
+
+// ---- block devices ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn device_ioctl(prog: str, args: Vec<str>, request: i64, message: str): i64 {
+    if args.len() != 1 { sys.warn(prog, sys.join2(sys.join2("invalid usage: ", prog), " DEVICE")); return 1 }
+    let fd = sys.open_fd(args[0], 2048, 0); if fd < 0 { sys.warn_path(prog, args[0]); return 1 }
+    if control(fd, request, 0) != 0 { sys.warn(prog, sys.join2(sys.join2(args[0], ": "), message)); return 1 }
+    return 0
+}
+fn run_fdflush(args: Vec<str>): i64 { return device_ioctl("fdflush", args, 587, "FDFLUSH failed") }
+fn run_freeramdisk(args: Vec<str>): i64 { return device_ioctl("freeramdisk", args, 4705, "BLKFLSBUF failed") }
+fn run_raidautorun(args: Vec<str>): i64 { return device_ioctl("raidautorun", args, 2324, "RAID_AUTORUN failed") }
+fn run_eject(args: Vec<str>): i64 {
+    let close = false; let device = "/dev/cdrom"
+    for k in 0..(args.len() as i64) { if sys.same(args[k], "-t") { close = true } else if !sys.starts(args[k], "-") { device = args[k] } }
+    let fd = sys.open_fd(device, 2048, 0); if fd < 0 { sys.warn_path("eject", device); return 1 }
+    if control(fd, close ? 21273 : 21257, 0) != 0 { sys.warn("eject", sys.join2(device, ": operation failed")); return 1 }
+    return 0
+}
+
+// ---- clocks ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn run_hwclock(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "rwsulf:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("hwclock", "invalid usage: hwclock [-rwsul] [-f DEVICE]"); return 1 }
+    let device = sys.has(o, 102) ? sys.val(o, 102) : "/dev/rtc0"
+    let fd = sys.open_fd(device, 0, 0)
+    if fd < 0 { fd = sys.open_fd("/dev/rtc", 0, 0) }
+    if fd < 0 { sys.warn("hwclock", sys.join2(sys.join2("can't open ", device), ": No such device")); return 1 }
+    let utc = !sys.has(o, 108)
+    if sys.has(o, 119) {
+        let now = clock.now(); let f = clock.fields(now, true)
+        let b = sys.bytes_new(); for i in 0..36 { sys.bytes_push(b, 0) }
+        let values = Vec<i64>(clock.get(f, 0), clock.get(f, 1), clock.get(f, 2), clock.get(f, 3), clock.get(f, 4), clock.get(f, 5) - 1900, clock.get(f, 6), clock.get(f, 7), 0)
+        for q in 0..9 { sys.bptr_set(b, q * 4, (values[q] % 256) as u8); sys.bptr_set(b, q * 4 + 1, ((values[q] / 256) % 256) as u8) }
+        let wfd = sys.open_fd(device, 1, 0)
+        if wfd < 0 || control_buffer(wfd, 1076129802, b) != 0 { sys.warn("hwclock", "can't set the RTC (are you root?)"); return 1 }
+        return 0
+    }
+    let b = sys.bytes_new(); for i in 0..36 { sys.bytes_push(b, 0) }
+    if control_buffer(fd, 2149871625, b) != 0 { sys.warn("hwclock", "can't read the RTC"); return 1 }
+    let part = Vec<i64>(); for q in 0..6 { part.push((sys.bat(b, q * 4) as i64) + (sys.bat(b, q * 4 + 1) as i64) * 256) }
+    let epoch = clock.utc_epoch(part[5] + 1900, part[4] + 1, part[3], part[2], part[1], part[0])
+    if sys.has(o, 115) {
+        let tv = sys.bytes_new(); for i in 0..16 { sys.bytes_push(tv, 0) }
+        for q in 0..8 { sys.bptr_set(tv, q, ((epoch / pow256(q)) % 256) as u8) }
+        let r = 0; unsafe { r = settimeofday(sys.bdata(tv) as *void, 0 as *void) as i64 }
+        if r != 0 { sys.warn("hwclock", "can't set the system clock (are you root?)"); return 1 }
+        return 0
+    }
+    let out = sys.out_new(1)
+    sys.out_str(out, sys.join2(clock.format("%a %b %e %H:%M:%S %Y", clock.fields(epoch, utc), epoch, utc), "  0.000000 seconds\n")); sys.out_flush(out)
+    return 0
+}
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+fn run_adjtimex(args: Vec<str>): i64 {
+    let b = sys.bytes_new(); for i in 0..256 { sys.bytes_push(b, 0) }
+    let state = 0
+    unsafe { state = syscall(159, sys.bdata(b) as i64, 0, 0) }
+    if state < 0 { sys.warn("adjtimex", "adjtimex syscall failed"); return 1 }
+    let out = sys.out_new(1)
+    let names = Vec<str>("mode", "offset", "frequency", "maxerror", "esterror", "status", "constant", "precision", "tolerance")
+    let offsets = Vec<i64>(0, 8, 16, 24, 32, 40, 48, 56, 64)
+    for k in 0..(names.len() as i64) { let v = 0; for q in 0..8 { v = v + (sys.bat(b, offsets[k] + q) as i64) * pow256(q) }; if k == 0 || k == 5 { v = v % 4294967296 }; sys.out_str(out, sys.join2(sys.join2(names[k], ": "), sys.join2(decimal(v), "\n"))) }
+    sys.out_str(out, sys.join2(sys.join2("return value: ", decimal(state)), "\n")); sys.out_flush(out)
+    return 0
+}
+fn run_devmem(args: Vec<str>): i64 {
+    if args.len() < 1 || args.len() > 3 { sys.warn("devmem", "invalid usage: devmem ADDRESS [WIDTH [VALUE]]"); return 1 }
+    let address = parse_hex_or_decimal(args[0]); let width = args.len() > 1 ? sys.parse_number(args[1]).value : 32
+    if width != 8 && width != 16 && width != 32 && width != 64 { sys.warn("devmem", "bad width"); return 1 }
+    let bytes = width / 8; let writing = args.len() == 3
+    let fd = sys.open_fd("/dev/mem", writing ? 2 : 0, 0); if fd < 0 { sys.warn("devmem", "can't open /dev/mem (are you root?)"); return 1 }
+    sys.seek_fd(fd, address, 0)
+    if writing {
+        let value = parse_hex_or_decimal(args[2]); let b = sys.bytes_new(); for q in 0..bytes { sys.bytes_push(b, ((value / pow256(q)) % 256) as u8) }
+        if sys.write_fd(fd, sys.bdata(b), bytes) != bytes { sys.warn("devmem", "write failed"); return 1 }
+        return 0
+    }
+    let b = sys.bytes_new(); for q in 0..bytes { sys.bytes_push(b, 0) }
+    if sys.read_into(fd, sys.bdata(b), bytes) != bytes { sys.warn("devmem", "read failed"); return 1 }
+    let v = 0; for q in 0..bytes { v = v + (sys.bat(b, q) as i64) * pow256(q) }
+    let digits = "0123456789ABCDEF"; let t = sys.bytes_new(); sys.bytes_str(t, "0x")
+    for i in 0..(bytes * 2) { let sh = bytes * 2 - 1 - i; let p = 1; for k in 0..sh { p = p * 16 }; sys.bytes_push(t, sys.at(digits, (v / p) % 16)) }
+    let out = sys.out_new(1); sys.out_str(out, sys.join2(sys.join2("", sys.bytes_cstr(t)), "\n")); sys.out_flush(out)
+    return 0
+}
+fn parse_hex_or_decimal(text: str): i64 {
+    if sys.starts(text, "0x") || sys.starts(text, "0X") { let v = 0; for i in 2..sys.length(text) { let c = sys.at(text, i); let d = 0; if c >= 48 && c <= 57 { d = (c - 48) as i64 } else if c >= 97 && c <= 102 { d = (c - 87) as i64 } else if c >= 65 && c <= 70 { d = (c - 55) as i64 }; v = v * 16 + d }; return v }
+    return sys.parse_number(text).value
+}
+fn run_watchdog(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "t:T:Fw")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("watchdog", "invalid usage: watchdog [-t SECONDS] [-T SECONDS] [-F] DEVICE"); return 1 }
+    let period = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)).value : 30
+    let fd = sys.open_fd(o.rest[0], 1, 0); if fd < 0 { sys.warn_path("watchdog", o.rest[0]); return 1 }
+    if sys.has(o, 84) { let b = sys.bytes_new(); for q in 0..4 { sys.bytes_push(b, 0) }; sys.bptr_set(b, 0, (sys.parse_number(sys.val(o, 84)).value % 256) as u8); control_buffer(fd, 3221509894, b) }
+    let one = sys.bytes_new(); sys.bytes_push(one, 0)
+    while true { if sys.write_fd(fd, sys.bdata(one), 1) != 1 { sys.warn("watchdog", "write failed"); return 1 }; proc.pause_us(period * 1000000) }
+    return 0
+}
+
+// ---- modprobe [-nqrv] [-d MODULES_DIR] MODULE [SYMBOL=VALUE...] --------------------------------------------------------------------------------------------------------------
+fn release(): str {
+    let input = sys.read_path("/proc/sys/kernel/osrelease"); if !input.ok { return "" }
+    let n = sys.blen(input.bytes); while n > 0 && sys.bat(input.bytes, n - 1) == 10 { n = n - 1 }
+    return lines.text_of(input.bytes, 0, n)
+}
+fn module_key(path: str): str {
+    let base = sys.base_name(path); let dot = sys.find_char(base, 46)
+    let name = dot < 0 ? base : sys.join2(sys.slice(base, 0, dot), "")
+    let b = sys.bytes_new(); for i in 0..sys.length(name) { let c = sys.at(name, i); let v = c; if c == 45 { v = 95 }; sys.bytes_push(b, v) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_modprobe(args: Vec<str>): i64 {
+    let dry = false; let quiet = false; let verbose = false; let dir = ""; let words = Vec<str>(); let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-n") || sys.same(a, "--show") || sys.same(a, "--dry-run") { dry = true } else if sys.same(a, "-q") { quiet = true } else if sys.same(a, "-v") { verbose = true } else if sys.same(a, "-d") && i + 1 < n { dir = args[i + 1]; i = i + 1 }
+        else if sys.starts(a, "-") && words.len() == 0 { } else { words.push(a) }
+        i = i + 1
+    }
+    if words.len() == 0 { sys.warn("modprobe", "invalid usage: modprobe [-nqv] [-d DIR] MODULE [SYMBOL=VALUE]..."); return 1 }
+    let base = sys.length(dir) > 0 ? dir : fsx.join_path("/lib/modules", release())
+    let dep = sys.read_path(fsx.join_path(base, "modules.dep"))
+    if !dep.ok { sys.warn("modprobe", sys.join2(sys.join2("can't open ", fsx.join_path(base, "modules.dep")), "")); return 1 }
+    let ls = lines.split_lines(dep.bytes, 10); let paths = Vec<str>(); let deps = Vec<str>()
+    for k in 0..(ls.starts.len() as i64) {
+        let line = lines.text_of(dep.bytes, ls.starts[k], ls.ends[k]); let colon = sys.find_char(line, 58); if colon <= 0 { continue }
+        paths.push(sys.join2(sys.slice(line, 0, colon), "")); deps.push(sys.join2(sys.slice(line, colon + 1, sys.length(line)), ""))
+    }
+    let want = module_key(words[0]); let target = 0 - 1
+    for k in 0..(paths.len() as i64) { if sys.same(module_key(paths[k]), want) { target = k } }
+    if target < 0 { if !quiet { sys.warn("modprobe", sys.join2(sys.join2("module '", words[0]), "' not found")) }; return 1 }
+    let order = Vec<str>(); let list = fields_of(deps[target])
+    let q = (list.len() as i64) - 1
+    while q >= 0 { order.push(list[q]); q = q - 1 }
+    order.push(paths[target])
+    let loaded = sys.read_path("/proc/modules"); let out = sys.out_new(1); let status = 0
+    for k in 0..(order.len() as i64) {
+        let full = sys.starts(order[k], "/") ? order[k] : fsx.join_path(base, order[k])
+        let key = module_key(order[k]); let already = false
+        if loaded.ok { let ml = lines.split_lines(loaded.bytes, 10); for z in 0..(ml.starts.len() as i64) { let p = fields_of(lines.text_of(loaded.bytes, ml.starts[z], ml.ends[z])); if p.len() > 0 && sys.same(p[0], key) { already = true } } }
+        if already { continue }
+        let params = ""; if k + 1 == (order.len() as i64) { for z in 1..(words.len() as i64) { params = sys.length(params) > 0 ? sys.join2(sys.join2(params, " "), words[z]) : words[z] } }
+        if dry || verbose { sys.out_str(out, sys.join2("insmod ", sys.join2(full, sys.join2(sys.length(params) > 0 ? " " : "", sys.join2(params, "\n"))))); sys.out_flush(out) }
+        if dry { continue }
+        let fd = sys.open_fd(full, 0, 0)
+        if fd < 0 { sys.warn_path("modprobe", full); status = 1; break }
+        let r = 0; let pstr = sys.join2(params, ""); unsafe { r = syscall(273, fd, pstr as i64, 0) }
+        sys.close_fd(fd)
+        if r != 0 { sys.warn("modprobe", sys.join2(sys.join2("can't load ", full), ": Operation not permitted or invalid module")); status = 1; break }
+    }
+    return status
+}
+
+// ---- nameif [-c CONFFILE]: rename interfaces by MAC address ("name  00:11:22:33:44:55") ----------------------------------------------------------------------------------
+fn run_nameif(args: Vec<str>): i64 {
+    let conf = "/etc/mactab"; for k in 0..(args.len() as i64) { if sys.same(args[k], "-c") && k + 1 < (args.len() as i64) { conf = args[k + 1] } }
+    let input = sys.read_path(conf); if !input.ok { sys.warn_path("nameif", conf); return 1 }
+    let ls = lines.split_lines(input.bytes, 10); let nets = fsx.list_dir("/sys/class/net"); let status = 0
+    for k in 0..(ls.starts.len() as i64) {
+        let p = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])); if p.len() < 2 || sys.starts(p[0], "#") { continue }
+        for q in 0..(nets.names.len() as i64) {
+            let mac = sys.read_path(sys.join2(sys.join2("/sys/class/net/", nets.names[q]), "/address")); if !mac.ok { continue }
+            let text = lines.text_of(mac.bytes, 0, sys.blen(mac.bytes)); if sys.length(text) > 0 && sys.at(text, sys.length(text) - 1) == 10 { text = sys.join2(sys.slice(text, 0, sys.length(text) - 1), "") }
+            if !sys.same(lower(text), lower(p[1])) || sys.same(nets.names[q], p[0]) { continue }
+            let sock = sys.open_fd("/proc/self/exe", 0, 0)
+            let fd = socket_fd()
+            let req = sys.bytes_new(); for z in 0..40 { sys.bytes_push(req, 0) }
+            for z in 0..sys.length(nets.names[q]) { sys.bptr_set(req, z, sys.at(nets.names[q], z)) }
+            for z in 0..sys.length(p[0]) { sys.bptr_set(req, 16 + z, sys.at(p[0], z)) }
+            if fd < 0 || control_buffer(fd, 35107, req) != 0 { sys.warn("nameif", sys.join2(sys.join2("can't rename ", nets.names[q]), " (are you root?)")); status = 1 }
+        }
+    }
+    return status
+}
+extern fn socket(domain: i32, kind: i32, protocol: i32): i32
+fn socket_fd(): i64 { unsafe { return socket(2, 2, 0) as i64 } }
+fn lower(s: str): str { let b = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); let v = c; if c >= 65 && c <= 90 { v = c + 32 }; sys.bytes_push(b, v) }; return sys.join2(sys.bytes_cstr(b), "") }

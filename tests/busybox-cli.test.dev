@@ -679,6 +679,22 @@ test.case("chrt chattr last volname stty",fn() {
     test.expect(strings.contains(outcome(d, bb + " stty size < /dev/null; echo rc=$?"), "rc=1"), "stty without a terminal")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("modprobe (dry run) and the device tools' error paths",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let mods = "mkdir -p mods/kernel/net && : > mods/kernel/net/base.ko && : > mods/kernel/net/mid.ko && : > mods/kernel/net/top-mod.ko && printf 'kernel/net/base.ko:\\nkernel/net/mid.ko: kernel/net/base.ko\\nkernel/net/top-mod.ko: kernel/net/mid.ko kernel/net/base.ko\\n' > mods/modules.dep; "
+    test.expect(strings.equal(outcome(d, mods + bb + " modprobe -n -d mods top_mod"), "insmod mods/kernel/net/base.ko\ninsmod mods/kernel/net/mid.ko\ninsmod mods/kernel/net/top-mod.ko\nrc=0\n"), "modprobe dependency order:\n" + outcome(d, mods + bb + " modprobe -n -d mods top_mod"))
+    test.expect(strings.equal(outcome(d, mods + bb + " modprobe -n -d mods base"), "insmod mods/kernel/net/base.ko\nrc=0\n"), "modprobe of a module without dependencies")
+    test.expect(strings.contains(outcome(d, mods + bb + " modprobe -n -d mods top_mod opt=1"), "top-mod.ko opt=1\n"), "modprobe passes parameters to the module")
+    test.expect(strings.contains(outcome(d, mods + bb + " modprobe -n -d mods nosuch; echo rc=$?"), "rc=1"), "modprobe of an unknown module")
+    test.expect(strings.contains(outcome(d, bb + " modprobe -n -d nodir x; echo rc=$?"), "rc=1"), "modprobe without modules.dep")
+    for c in Vec<str>("chvt 3","deallocvt 3","setlogcons 1","kbd_mode -s","beep","fdflush /dev/nosuch","freeramdisk /dev/nosuch","raidautorun /dev/nosuch","eject /dev/nosuch","hwclock -r -f /dev/nosuch","devmem 0x0","watchdog /dev/nosuch","nameif -c nosuch.conf") {
+        test.expect(strings.contains(outcome(d, bb + " " + c + " >/dev/null 2>&1; echo rc=$?"), "rc=1"), c + " should fail without the device or privileges")
+    }
+    test.expect(strings.contains(outcome(d, bb + " chvt; echo rc=$?"), "rc=1"), "chvt without an argument")
+    test.expect(strings.contains(outcome(d, bb + " adjtimex | head -1"), "mode: ") || strings.contains(outcome(d, bb + " adjtimex; echo rc=$?"), "rc=1"), "adjtimex")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
