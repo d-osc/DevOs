@@ -39,7 +39,7 @@ fn iconFor(folder:bool, tag:ui.Text):str {
     if k.isText(tag,"SH") { return "text-x-script-symbolic" }
     return "text-x-generic-symbolic"
 }
-struct Row { name:ui.Text, path:ui.Text, folder:bool, detail:ui.Text, tag:ui.Text, package:ui.Text }
+struct Row { name:ui.Text, path:ui.Text, folder:bool, detail:ui.Text, tag:ui.Text, package:ui.Text, color:ui.Text, size:ui.Text, stamp:ui.Text, label:ui.Text }
 struct Custom { id:ui.Text, title:ui.Text, target:ui.Text }
 
 fn App(context:*ui.Context):ui.Node {
@@ -139,62 +139,114 @@ fn App(context:*ui.Context):ui.Node {
         else if sp.kindOf(record,77) { customs.push(Custom(sp.cell(c,1),sp.cell(c,2),sp.cell(c,3))) }
         else if sp.kindOf(record,70) {
             let detail = join(Vec<ui.Text>(sp.cell(c,7),has(sp.cell(c,5)) ? plain(" · ") : ui.emptyText(),sp.cell(c,5),plain(" · "),sp.cell(c,6)))
-            rows.push(Row(sp.cell(c,1),sp.cell(c,2),sp.flag(sp.cell(c,3)),detail,sp.cell(c,8),sp.cell(c,10)))
+            rows.push(Row(sp.cell(c,1),sp.cell(c,2),sp.flag(sp.cell(c,3)),detail,sp.cell(c,8),sp.cell(c,10),sp.cell(c,9),sp.cell(c,5),sp.cell(c,6),sp.cell(c,7)))
         }
     }
     if gridChoice.value >= 0 { grid = gridChoice.value != 0 }
-    for record in sp.records(results.value) { if sp.kindOf(record,82) { let c = sp.cells(record); found.push(Row(sp.cell(c,1),sp.cell(c,2),false,sp.cell(c,3),ui.emptyText(),ui.emptyText())) } }
+    for record in sp.records(results.value) { if sp.kindOf(record,82) { let c = sp.cells(record); found.push(Row(sp.cell(c,1),sp.cell(c,2),false,sp.cell(c,3),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText())) } }
     let inSearch = searching.value != 0
-    let chosen = Row(ui.emptyText(),ui.emptyText(),false,ui.emptyText(),ui.emptyText(),ui.emptyText()); let hasChosen = false
+    let chosen = Row(ui.emptyText(),ui.emptyText(),false,ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText(),ui.emptyText()); let hasChosen = false
     for r in rows { if ui.equalText(r.path,selected.value) { chosen = r; hasChosen = true } }
     for r in found { if inSearch && ui.equalText(r.path,selected.value) { chosen = r; hasChosen = true } }
     let go = fn(path:ui.Text) { nav.set(0); asked.set(0); selected.set(ui.emptyText()); sp.send(l,listRequest(path,current,hiddenOn)) }
     let act = fn(action:str, path:ui.Text) { asked.set(0); nav.set(2); sp.send(l,pathRequest(action,path,current,hiddenOn)) }
-    # --- header: navigation and the path ---
-    let bar = Vec<ui.Node>()
-    let back = ui.named("files-back"); back.sensitive = canBack && !busy
-    bar.push(ui.Button(back,"Back",fn() { nav.set(1); asked.set(0); at.set(at.get() - 1); sp.send(l,listRequest(known[at.get()],current,hiddenOn)) }))
-    let forward = ui.named("files-forward"); forward.sensitive = canForward && !busy
-    bar.push(ui.Button(forward,"Forward",fn() { nav.set(1); asked.set(0); at.set(at.get() + 1); sp.send(l,listRequest(known[at.get()],current,hiddenOn)) }))
-    let up = ui.named("files-up"); up.sensitive = !busy && has(field(f,3)) && !ui.equalText(field(f,3),current)
-    bar.push(ui.Button(up,"Up",fn() { go(field(f,3)) }))
-    if bit(flags,6) { let refresh = ui.named("files-refresh"); refresh.sensitive = !busy; bar.push(ui.Button(refresh,"Refresh",fn() { nav.set(2); asked.set(0); sp.send(l,listRequest(current,current,hiddenOn)) })) }
-    let path = ui.named("files-path"); path.expand = true; path.placeholder = plain("Type a folder path")
-    bar.push(ui.Entry(path,pathDraft.value,fn(value:ui.Text) { pathDraft.set(value) }))
-    let goButton = ui.named("files-go"); goButton.sensitive = !busy
-    bar.push(ui.Button(goButton,"Go",fn() { go(pathDraft.get()) }))
-    let tools = Vec<ui.Node>()
-    if bit(flags,4) { let newFolder = ui.named("files-new"); newFolder.sensitive = !busy; tools.push(ui.Button(newFolder,"New folder",fn() { mode.set(plain("mkdir")); renaming.set(ui.emptyText()); nameDraft.set(ui.emptyText()) })) }
-    let searchToggle = ui.named("files-search-toggle")
-    tools.push(ui.Button(searchToggle,inSearch ? "Close search" : "Search",fn() { if inSearch { searching.set(0); asked.set(0); query.set(ui.emptyText()); results.set(ui.emptyText()) } else { searching.set(1) } }))
-    let viewList = ui.named("files-view-list"); let viewGrid = ui.named("files-view-grid")
-    tools.push(ui.Button(viewList,grid ? "List" : "● List",fn() { gridChoice.set(0) })); tools.push(ui.Button(viewGrid,grid ? "● Grid" : "Grid",fn() { gridChoice.set(1) }))
-    tools.push(ext.expand(k.note("","settings-description")))
-    if bit(flags,7) {
-        let toggle = ui.named("files-hidden"); toggle.valign = 3
-        tools.push(k.note("Show hidden files","settings-description"))
-        tools.push(ui.Switch(toggle,hiddenOn,fn(next:bool) { if next != hiddenOn { hidden.set(next ? 1 : 0); nav.set(2); asked.set(0); sp.send(l,listRequest(current,current,next)) } }))
+    # --- small builders for the layout ---
+    let lab = fn(value:ui.Text, style:str, align:f64, chars:i32):ui.Node {
+        let options = ui.props(); options.className = ui.text(style); options.xalign = align; options.valign = 3
+        if chars > 0 { options.widthChars = chars; options.ellipsize = true }
+        return ui.withProps(ui.TextLabel(value),options)
     }
-    let side = Vec<ui.Node>(k.note("Places","section-heading"))
+    let flat = fn(spacing:i32, style:str, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = spacing; options.className = ui.text(style); return ui.Box(options,children) }
+    let navButton = fn(id:str, icon:str, enabled:bool, action:fn():void):ui.Node {
+        let options = ui.named(id); options.className = ui.text("fl-nav"); options.sensitive = enabled
+        return ui.WidgetButton(options,ui.Icon(ui.props(),icon),action)
+    }
+    let iconLabel = fn(icon:str, value:ui.Text, size:i32):ui.Node {
+        let image = ui.props(); image.iconSize = size
+        let text = ui.props(); text.xalign = 0.0; text.expand = true
+        return flat(10,"",Vec<ui.Node>(ui.Icon(image,icon),ui.withProps(ui.TextLabel(value),text)))
+    }
+    let home = field(f,2)
+    # --- header: navigation, the path and the breadcrumbs ---
+    let bar = Vec<ui.Node>(navButton("files-back","go-previous-symbolic",canBack && !busy,fn() { nav.set(1); asked.set(0); at.set(at.get() - 1); sp.send(l,listRequest(known[at.get()],current,hiddenOn)) }),
+        navButton("files-forward","go-next-symbolic",canForward && !busy,fn() { nav.set(1); asked.set(0); at.set(at.get() + 1); sp.send(l,listRequest(known[at.get()],current,hiddenOn)) }),
+        navButton("files-up","go-up-symbolic",!busy && has(field(f,3)) && !ui.equalText(field(f,3),current),fn() { go(field(f,3)) }))
+    let path = ui.named("files-path"); path.expand = true; path.placeholder = plain("Type a folder path"); path.className = ui.text("fl-mono")
+    bar.push(ui.Entry(path,pathDraft.value,fn(value:ui.Text) { pathDraft.set(value) }))
+    if bit(flags,6) { bar.push(navButton("files-refresh","view-refresh-symbolic",!busy,fn() { nav.set(2); asked.set(0); sp.send(l,listRequest(current,current,hiddenOn)) })) }
+    let goButton = ui.named("files-go"); goButton.sensitive = !busy; goButton.className = ui.text("fl-nav")
+    bar.push(ui.Button(goButton,"Go",fn() { go(pathDraft.get()) }))
+    let crumbs = Vec<ui.Node>(); let walked = Vec<u8>(); let rootCrumb = ui.props(); rootCrumb.className = ui.text(ui.equalText(current,plain("/")) ? "fl-crumb fl-crumb-current" : "fl-crumb")
+    crumbs.push(ui.Button(rootCrumb,"File system",fn() { go(plain("/")) }))
+    let parts = channel.split(current,47)
+    for part in parts {
+        if has(part) {
+            walked.push(47); for byte in part.bytes { walked.push(byte) }
+            let target = ui.Text(walked); let crumb = ui.props(); crumb.className = ui.text(ui.equalText(target,current) ? "fl-crumb fl-crumb-current" : "fl-crumb")
+            crumbs.push(ui.TextButton(crumb,part,fn() { go(target) }))
+        }
+    }
+    # --- the folder heading and the tools ---
+    let title = ui.equalText(current,home) ? plain("Home") : ui.equalText(current,plain("/")) ? plain("File system") : base_name(current)
+    let emblemIcon = ui.props(); emblemIcon.iconSize = 26
+    let emblem = flat(0,"fl-emblem",Vec<ui.Node>(ui.Icon(emblemIcon,ui.equalText(current,home) ? "user-home-symbolic" : "folder-symbolic")))
+    let counted = (rows.len() as i64); let countText = counted == 0 ? plain("A little space for something new") : plain("${counted} " + (counted == 1 ? "item" : "items") + " in this folder")
+    let headingText = ext.column(4,Vec<ui.Node>(lab(title,"fl-title",0.0,28),lab(countText,"fl-muted",0.0,0)))
+    let searchToggle = ui.named("files-search-toggle"); searchToggle.className = ui.text(inSearch ? "fl-tool fl-tool-active" : "fl-tool"); searchToggle.valign = 3
+    let searchButton = ui.Button(searchToggle,inSearch ? "Close search" : "Search",fn() { if inSearch { searching.set(0); asked.set(0); query.set(ui.emptyText()); results.set(ui.emptyText()) } else { searching.set(1) } })
+    let tools = Vec<ui.Node>()
+    if bit(flags,4) {
+        let newFolder = ui.named("files-new"); newFolder.sensitive = !busy; newFolder.className = ui.text("fl-primary")
+        tools.push(ui.WidgetButton(newFolder,iconLabel("folder-new-symbolic",plain("New folder"),16),fn() { mode.set(plain("mkdir")); renaming.set(ui.emptyText()); nameDraft.set(ui.emptyText()) }))
+    }
+    let viewList = ui.named("files-view-list"); viewList.className = ui.text(grid ? "fl-tool" : "fl-tool fl-tool-active")
+    let viewGrid = ui.named("files-view-grid"); viewGrid.className = ui.text(grid ? "fl-tool fl-tool-active" : "fl-tool")
+    tools.push(ui.WidgetButton(viewList,ui.Icon(ui.props(),"view-list-symbolic"),fn() { gridChoice.set(0) })); tools.push(ui.WidgetButton(viewGrid,ui.Icon(ui.props(),"view-grid-symbolic"),fn() { gridChoice.set(1) }))
+    let headRow = Vec<ui.Node>(emblem,ext.expand(headingText),searchButton); for tool in tools { headRow.push(tool) }
+    let heading = flat(10,"",headRow)
+    # --- the sidebar: brand, places, folders here and the hidden switch ---
+    let brandIcon = ui.props(); brandIcon.iconSize = 24; brandIcon.className = ui.text("fl-brand-icon"); brandIcon.valign = 3
+    let side = Vec<ui.Node>(flat(10,"",Vec<ui.Node>(ui.Icon(brandIcon,"folder-symbolic"),ext.column(2,Vec<ui.Node>(lab(plain("Files"),"fl-brand-title",0.0,0),lab(plain("Your everyday workspace"),"fl-muted",0.0,0))))),
+        lab(plain("PLACES"),"fl-eyebrow",0.0,0))
     let names = places()
     for i in 0..(names.len() as i64) {
-        let place = ui.named("files-place-${i}"); place.sensitive = !busy
-        side.push(ui.Button(place,names[i],fn() { go(i == 0 ? plain("~") : plain("~/" + names[i])) }))
+        let target = i == 0 ? home : join(Vec<ui.Text>(home,plain("/" + names[i])))
+        let place = ui.named("files-place-${i}"); place.sensitive = !busy; place.className = ui.text(ui.equalText(current,target) ? "fl-place fl-place-active" : "fl-place")
+        side.push(ui.WidgetButton(place,iconLabel(i == 0 ? "user-home-symbolic" : "folder-symbolic",plain(names[i]),16),fn() { go(i == 0 ? plain("~") : plain("~/" + names[i])) }))
     }
-    let main = Vec<ui.Node>(ext.row(8,bar),ext.row(12,tools))
+    let shown = 0
+    side.push(lab(plain("FOLDERS HERE"),"fl-eyebrow",0.0,0))
+    for r in rows {
+        if r.folder && shown < 10 {
+            let shortcut = ui.named("files-folder-${shown}"); shortcut.className = ui.text("fl-folder"); shortcut.sensitive = !busy; shown = shown + 1
+            let name = ui.props(); name.xalign = 0.0; name.expand = true; name.ellipsize = true; name.widthChars = 16; name.className = ui.text("fl-mono")
+            let small = ui.props(); small.iconSize = 14
+            side.push(ui.WidgetButton(shortcut,flat(8,"",Vec<ui.Node>(ui.Icon(small,"folder-symbolic"),ui.withProps(ui.TextLabel(r.name),name))),fn() { go(r.path) }))
+        }
+    }
+    if shown == 0 { side.push(lab(plain("No subfolders"),"fl-muted",0.0,0)) }
+    let bottom = Vec<ui.Node>()
+    if bit(flags,7) {
+        let toggle = ui.named("files-hidden"); toggle.valign = 3
+        bottom.push(flat(8,"",Vec<ui.Node>(ext.expand(lab(plain("Hidden files"),"fl-muted",0.0,0)),ui.Switch(toggle,hiddenOn,fn(next:bool) { if next != hiddenOn { hidden.set(next ? 1 : 0); nav.set(2); asked.set(0); sp.send(l,listRequest(current,current,next)) } }))))
+    }
+    let sideScroll = ui.props(); sideScroll.expand = true; let sideInner = ui.props(); sideInner.spacing = 6
+    let sideColumn = Vec<ui.Node>(ui.Scroll(sideScroll,ui.Box(sideInner,side))); for item in bottom { sideColumn.push(item) }
+    let sideOptions = ui.props(); sideOptions.spacing = 8; sideOptions.className = ui.text("fl-side"); sideOptions.width = 210
+    let main = Vec<ui.Node>(ext.row(6,bar),ui.Scroll(ui.props(),flat(3,"",crumbs)),heading)
     if inSearch {
         let box = ui.named("files-search"); box.expand = true; box.placeholder = plain("Search files in this folder and below")
         main.push(ui.SearchEntry(box,query.value,fn(value:ui.Text) { query.set(value); if has(value) { wanted.set(1) } else { results.set(ui.emptyText()) } }))
     }
-    if has(l.failure.value) { main.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"files-error")) }
+    if has(l.failure.value) { main.push(ext.named(k.caption(l.failure.value,"fl-error"),"files-error")) }
     let shownMessage = inSearch && has(results.value) ? field(results.value,4) : field(f,4)
-    if has(shownMessage) { main.push(ext.named(k.caption(shownMessage,"settings-description"),"files-message")) }
+    if has(shownMessage) { main.push(ext.named(k.caption(shownMessage,"fl-notice"),"files-message")) }
     if has(mode.value) {
         let name = ui.named("files-name"); name.expand = true; name.placeholder = plain(k.isText(mode.value,"mkdir") ? "Folder name" : "New name")
-        let confirm = ui.named("files-name-confirm"); confirm.className = ui.text("settings-primary"); confirm.sensitive = !busy
-        let cancel = ui.named("files-name-cancel")
-        main.push(card(Vec<ui.Node>(k.caption(k.isText(mode.value,"mkdir") ? plain("New folder") : join(Vec<ui.Text>(plain("Rename "),renaming.value)),"section-heading"),
-            ext.row(8,Vec<ui.Node>(ui.Entry(name,nameDraft.value,fn(value:ui.Text) { nameDraft.set(value) }),
+        let confirm = ui.named("files-name-confirm"); confirm.className = ui.text("fl-primary"); confirm.sensitive = !busy
+        let cancel = ui.named("files-name-cancel"); cancel.className = ui.text("fl-tool")
+        main.push(ext.column(8,Vec<ui.Node>(lab(k.isText(mode.value,"mkdir") ? plain("New folder") : join(Vec<ui.Text>(plain("Rename "),renaming.value)),"fl-eyebrow",0.0,0),
+            flat(8,"fl-strip",Vec<ui.Node>(ext.expand(ui.Entry(name,nameDraft.value,fn(value:ui.Text) { nameDraft.set(value) })),
                 ui.Button(confirm,k.isText(mode.value,"mkdir") ? "Create" : "Rename",fn() {
                     asked.set(0); nav.set(2)
                     if k.isText(mode.get(),"mkdir") { sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"mkdir\",\"dir\":"),channel.quote(current),plain(",\"name\":"),channel.quote(nameDraft.get()),plain(",\"hidden\":" + flag(hiddenOn) + "}")))) }
@@ -207,53 +259,88 @@ fn App(context:*ui.Context):ui.Node {
         let actions = Vec<ui.Node>()
         let target = hasChosen ? (chosen.folder ? "folder" : "file") : "background"
         let place = hasChosen ? chosen.path : current
-        if hasChosen && bit(flags,0) { let open = ui.named("files-open"); open.sensitive = !busy; actions.push(ui.Button(open,"Open",fn() { if chosen.folder { go(chosen.path) } else { act("open",chosen.path) } })) }
-        if hasChosen && bit(flags,1) && !k.isText(chosen.package,"0") && has(chosen.package) { let install = ui.named("files-install"); install.sensitive = !busy; actions.push(ui.Button(install,"Install",fn() { act("install",chosen.path) })) }
-        if hasChosen && bit(flags,2) && !inSearch { let rename = ui.named("files-rename"); rename.sensitive = !busy; actions.push(ui.Button(rename,"Rename",fn() { mode.set(plain("rename")); renaming.set(chosen.name); nameDraft.set(chosen.name) })) }
-        if bit(flags,3) { let copy = ui.named("files-copy"); actions.push(ui.Button(copy,"Copy path",fn() { unsafe { let native = ui.nativeText(place); rd_clipboard(native); ui.rd_buffer_free(native as *void) }; notice.set(plain("Path copied")) })) }
-        if bit(flags,5) { let terminal = ui.named("files-terminal"); terminal.sensitive = !busy; actions.push(ui.Button(terminal,"Open in Terminal",fn() { act("terminal",hasChosen && chosen.folder ? chosen.path : current) })) }
+        let tool = fn(id:str, caption:str, run:fn():void):ui.Node { let options = ui.named(id); options.sensitive = !busy; options.className = ui.text("fl-tool"); return ui.Button(options,caption,run) }
+        if hasChosen && bit(flags,0) { actions.push(tool("files-open","Open",fn() { if chosen.folder { go(chosen.path) } else { act("open",chosen.path) } })) }
+        if hasChosen && bit(flags,1) && !k.isText(chosen.package,"0") && has(chosen.package) { actions.push(tool("files-install","Install",fn() { act("install",chosen.path) })) }
+        if hasChosen && bit(flags,2) && !inSearch { actions.push(tool("files-rename","Rename",fn() { mode.set(plain("rename")); renaming.set(chosen.name); nameDraft.set(chosen.name) })) }
+        if bit(flags,3) { actions.push(tool("files-copy","Copy path",fn() { unsafe { let native = ui.nativeText(place); rd_clipboard(native); ui.rd_buffer_free(native as *void) }; notice.set(plain("Path copied")) })) }
+        if bit(flags,5) { actions.push(tool("files-terminal","Open in Terminal",fn() { act("terminal",hasChosen && chosen.folder ? chosen.path : current) })) }
         for item in customs {
             if ui.equalText(item.target,plain("any")) || ui.equalText(item.target,plain(target)) {
-                let options = ui.props(); options.id = join(Vec<ui.Text>(plain("files-custom-"),item.id)); options.sensitive = !busy
+                let options = ui.props(); options.id = join(Vec<ui.Text>(plain("files-custom-"),item.id)); options.sensitive = !busy; options.className = ui.text("fl-tool")
                 actions.push(ui.TextButton(options,item.title,fn() { asked.set(0); nav.set(2); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"custom\",\"id\":"),channel.quote(item.id),plain(",\"path\":"),channel.quote(hasChosen ? chosen.path : ui.emptyText()),plain(",\"dir\":"),channel.quote(current),plain(",\"hidden\":" + flag(hiddenOn) + "}")))) }))
             }
         }
-        if actions.len() > 0 { main.push(ext.row(8,Vec<ui.Node>(k.note(hasChosen ? "Selected: " : "This folder:","settings-description"),ext.expand(ext.row(8,actions))))) }
+        if actions.len() > 0 { main.push(flat(8,"fl-actions",Vec<ui.Node>(lab(plain(hasChosen ? "SELECTED" : "THIS FOLDER"),"fl-eyebrow",0.0,0),ext.expand(ext.row(8,actions))))) }
     }
-    if has(notice.value) && !has(shownMessage) { main.push(ext.named(k.caption(notice.value,"settings-description"),"files-notice")) }
+    if has(notice.value) && !has(shownMessage) { main.push(ext.named(k.caption(notice.value,"fl-notice"),"files-notice")) }
     # --- the rows: the listing or the search results, as a list or an icon grid ---
     let source = inSearch && has(results.value) ? found : rows
-    let body = Vec<ui.Node>(); let line = Vec<ui.Node>(); let perLine: usize = 5
+    let body = Vec<ui.Node>(); let line = Vec<ui.Node>(); let perLine: usize = 4
+    let openSpace = ui.props(); openSpace.width = 96
+    if !grid || inSearch {
+        body.push(flat(12,"",Vec<ui.Node>(ext.expand(lab(plain("NAME"),"fl-head",0.0,0)),
+            lab(plain(inSearch ? "FOLDER" : "TYPE"),"fl-head",0.0,12),lab(plain(inSearch ? "" : "SIZE"),"fl-head",1.0,9),lab(plain(inSearch ? "" : "MODIFIED"),"fl-head",1.0,14),ui.Box(openSpace,Vec<ui.Node>()))))
+    }
     for n in 0..(source.len() as i64) {
         let e = source[n as usize]; let index = n
         let chosenRow = ui.equalText(e.path,selected.value)
         let select = ui.named("files-row-${index}"); select.expand = true
+        let badge = ui.props(); badge.className = join(Vec<ui.Text>(plain("fl-badge fl-kind-"),has(e.color) ? e.color : plain("neutral"))); badge.valign = 1
         if grid && !inSearch {
-            let big = ui.props(); big.iconSize = 40; big.halign = 3
-            let nameLabel = ui.props(); nameLabel.xalign = 0.5; nameLabel.ellipsize = true; nameLabel.widthChars = 14; nameLabel.halign = 3
-            let tile = ui.props(); tile.id = select.id; tile.className = ui.text(chosenRow ? "settings-card system-card" : ""); tile.width = 140; tile.height = 110
-            let inner = ui.props(); inner.spacing = 8; inner.valign = 3
-            line.push(ui.WidgetButton(tile,ui.Box(inner,Vec<ui.Node>(ui.element(11,big,plain(iconFor(e.folder,e.tag)),Vec<ui.Node>()),ui.withProps(ui.TextLabel(e.name),nameLabel))),fn() { selected.set(e.path); if e.folder && chosenRow { go(e.path) } }))
-            if line.len() >= perLine { let rowProps = ui.props(); rowProps.vertical = false; rowProps.spacing = 10; body.push(ui.Box(rowProps,line)); line = Vec<ui.Node>() }
+            let big = ui.props(); big.iconSize = 36; big.xalign = 0.0; big.expand = true
+            let tile = ui.props(); tile.id = select.id; tile.className = ui.text(chosenRow ? "fl-card fl-selected" : "fl-card"); tile.width = 168; tile.height = 118
+            let inner = ui.props(); inner.spacing = 8
+            let top = Vec<ui.Node>(ui.Icon(big,iconFor(e.folder,e.tag))); if has(e.tag) { top.push(ui.withProps(ui.TextLabel(e.tag),badge)) }
+            line.push(ui.WidgetButton(tile,ui.Box(inner,Vec<ui.Node>(flat(6,"",top),lab(e.name,"fl-name",0.0,16),lab(e.folder ? e.label : e.size,"fl-muted",0.0,0))),fn() { selected.set(e.path); if e.folder && chosenRow { go(e.path) } }))
+            if line.len() >= perLine { body.push(flat(10,"",line)); line = Vec<ui.Node>() }
         } else {
-            let open = ui.named((inSearch ? "files-result-open-" : "files-open-") + "${index}"); open.sensitive = !busy
-            let content = ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),iconFor(e.folder,e.tag)),ext.expand(ext.column(3,Vec<ui.Node>(k.caption(e.name,"settings-field-title"),k.caption(e.detail,"settings-description"))))))
-            let options = ui.props(); options.id = select.id; options.expand = true; options.className = ui.text(chosenRow ? "settings-card system-card" : "")
-            let rowNodes = Vec<ui.Node>(ext.expand(ui.WidgetButton(options,content,fn() { selected.set(e.path) })),
+            let open = ui.named((inSearch ? "files-result-open-" : "files-open-") + "${index}"); open.sensitive = !busy; open.className = ui.text("fl-tool"); open.valign = 3; open.width = 96
+            let image = ui.props(); image.iconSize = 20
+            let nameCell = ui.props(); nameCell.expand = true; nameCell.xalign = 0.0; nameCell.ellipsize = true; nameCell.widthChars = 20; nameCell.className = ui.text("fl-name")
+            let kind = ui.props(); kind.className = join(Vec<ui.Text>(plain("fl-kind-"),has(e.color) ? e.color : plain("neutral"),plain(" fl-muted"))); kind.xalign = 0.0; kind.widthChars = 12; kind.ellipsize = true
+            let cells = Vec<ui.Node>(ui.Icon(image,iconFor(e.folder,e.tag)),ui.withProps(ui.TextLabel(e.name),nameCell))
+            if inSearch { cells.push(lab(e.detail,"fl-muted fl-mono",0.0,28)) }
+            else { cells.push(ui.withProps(ui.TextLabel(e.label),kind)); cells.push(lab(e.folder ? plain("—") : e.size,"fl-muted fl-mono",1.0,9)); cells.push(lab(e.stamp,"fl-muted fl-mono",1.0,14)) }
+            let options = ui.props(); options.id = select.id; options.expand = true; options.className = ui.text(chosenRow ? "fl-row fl-selected" : "fl-row")
+            let rowNodes = Vec<ui.Node>(ext.expand(ui.WidgetButton(options,flat(12,"",cells),fn() { selected.set(e.path) })),
                 ui.Button(open,e.folder ? "Open" : "Open file",fn() { if e.folder { go(e.path) } else { selected.set(e.path); act("open",e.path) } }))
             if inSearch {
-                let folderButton = ui.named("files-result-folder-${index}"); folderButton.sensitive = !busy
+                let folderButton = ui.named("files-result-folder-${index}"); folderButton.sensitive = !busy; folderButton.className = ui.text("fl-tool"); folderButton.valign = 3
                 rowNodes.push(ui.Button(folderButton,"Show folder",fn() { let parentDir = strings_parent(e.path); searching.set(0); results.set(ui.emptyText()); query.set(ui.emptyText()); go(parentDir) }))
             }
             body.push(ext.row(8,rowNodes))
         }
     }
-    if grid && !inSearch && line.len() > 0 { let rowProps = ui.props(); rowProps.vertical = false; rowProps.spacing = 10; body.push(ui.Box(rowProps,line)) }
-    if source.len() == 0 { body.push(ext.named(k.note(inSearch ? (has(query.value) ? "No files match." : "Type to search below this folder.") : "This folder is empty.","settings-description"),"files-empty")) }
-    let listBox = ui.props(); listBox.spacing = 8
-    main.push(ui.Box(listBox,body))
-    let window = ui.props(); window.vertical = false; window.spacing = 16; window.className = ui.text("settings-native")
-    return ui.Box(window,Vec<ui.Node>(ext.column(6,side),ext.expand(ext.column(12,main))))
+    if grid && !inSearch && line.len() > 0 { body.push(flat(10,"",line)) }
+    if source.len() == 0 {
+        let big = ui.props(); big.iconSize = 52
+        let emptyIcon = flat(0,"fl-empty-icon",Vec<ui.Node>(ui.Icon(big,"folder-symbolic")))
+        let hint = inSearch ? (has(query.value) ? "No files match." : "Type to search below this folder.") : "Use New folder to make room for your next idea."
+        let centre = ui.props(); centre.spacing = 10; centre.halign = 3
+        body.push(ext.named(ui.Box(centre,Vec<ui.Node>(emptyIcon,lab(plain(inSearch ? "Nothing here" : "A fresh start"),"fl-empty-title",0.5,0),lab(plain(hint),"fl-muted",0.5,0))),"files-empty"))
+    }
+    let listBox = ui.props(); listBox.spacing = 4
+    let scrollOptions = ui.props(); scrollOptions.expand = true
+    main.push(ui.Scroll(scrollOptions,ui.Box(listBox,body)))
+    # --- the status bar ---
+    let counts = (source.len() as i64); let status = Vec<ui.Node>()
+    let small = ui.props(); small.iconSize = 14; small.valign = 3
+    status.push(ui.Icon(small,hasChosen ? "text-x-generic-symbolic" : "folder-symbolic"))
+    status.push(ext.expand(lab(hasChosen ? chosen.name : (ui.equalText(current,home) ? plain("Home") : current),"fl-muted",0.0,40)))
+    if busy { status.push(lab(plain("Working…"),"fl-muted",1.0,0)) }
+    status.push(lab(plain((hasChosen ? "1 selected  ·  " : "") + "${counts} " + (counts == 1 ? "item" : "items")),"fl-muted",1.0,0))
+    let mainOptions = ui.props(); mainOptions.spacing = 12; mainOptions.className = ui.text("fl-main")
+    let content = ui.props(); content.vertical = false; content.spacing = 0; content.expand = true
+    let window = ui.props(); window.spacing = 0; window.expand = true; window.className = ui.text("settings-native")
+    let statusBar = ui.props(); statusBar.vertical = false; statusBar.spacing = 10; statusBar.className = ui.text("fl-status")
+    return ui.Box(window,Vec<ui.Node>(ext.expand(ui.Box(content,Vec<ui.Node>(ui.Box(sideOptions,sideColumn),ext.expand(ui.Box(mainOptions,main))))),ui.Box(statusBar,status)))
+}
+# The last path component of an absolute path.
+fn base_name(path:ui.Text):ui.Text {
+    let last = 0 - 1; let n = path.bytes.len() as i64
+    for i in 0..n { if path.bytes[i] == 47 { last = i } }
+    let out = Vec<u8>(); for i in (last + 1)..n { out.push(path.bytes[i]) }; return ui.Text(out)
 }
 # The folder part of an absolute path.
 fn strings_parent(path:ui.Text):ui.Text {

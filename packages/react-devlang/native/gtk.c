@@ -110,6 +110,59 @@ static void rd_layer_overlay(RdRoot *root) {
     g_signal_connect(root->window, "key-press-event", G_CALLBACK(rd_layer_key), root);
     root->layer = TRUE; gtk_widget_set_opacity(root->window, 0); gtk_widget_add_tick_callback(root->window, rd_fade_in, root, NULL);
 }
+// Styles shared by the native apps that draw their own layout (Files). Each rule has a hex fallback before the theme variable.
+static void rd_app_css(RdRoot *root) {
+    GtkCssProvider *css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css,
+        ".fl-side {background-color: #121314; background-color: @dv_s0; border-right: 1px solid #2a2b2c; border-right: 1px solid @dv_line0; padding: 16px 12px;} "
+        ".fl-brand-title {font-size: 19px; font-weight: 700; color: #ededed; color: @dv_fg_strong;} "
+        ".fl-brand-icon {color: #48a0c7; color: @dv_accent_fg;} "
+        ".fl-eyebrow {font-size: 10px; font-weight: 700; letter-spacing: 1px; color: #8c8c8c; color: @dv_fg_muted;} "
+        ".fl-muted {font-size: 11px; color: #8c8c8c; color: @dv_fg_muted;} "
+        ".fl-mono {font-family: monospace; font-size: 12px;} "
+        ".fl-place {padding: 9px 10px; border-radius: 9px; border: 1px solid transparent; background-color: transparent; background-image: none; box-shadow: none; color: #bfbfbf; color: @dv_fg;} "
+        ".fl-place:hover {background-color: #202122; background-color: @dv_s2;} "
+        ".fl-place:disabled {color: #5c5c5c; color: @dv_fg_dim;} "
+        ".fl-place-active {background-color: #1d4a60; background-color: @dv_accent_t2; border-color: #2b6f90; border-color: @dv_accent_t4;} "
+        ".fl-place-active image, .fl-place-active label {color: #48a0c7; color: @dv_accent_fg;} "
+        ".fl-folder {padding: 6px 10px; border-radius: 9px; border: 1px solid transparent; background-color: transparent; background-image: none; box-shadow: none; color: #8c8c8c; color: @dv_fg_muted;} "
+        ".fl-folder:hover {background-color: #202122; background-color: @dv_s2;} "
+        ".fl-main {padding: 18px 20px;} "
+        ".fl-nav {padding: 8px 10px; border-radius: 9px; border: 1px solid #2a2b2c; border: 1px solid @dv_line0; background-color: #191a1b; background-color: @dv_s1; background-image: none; box-shadow: none; color: #bfbfbf; color: @dv_fg;} "
+        ".fl-nav:hover {background-color: #242526; background-color: @dv_s3; border-color: #3a3b3c; border-color: @dv_line2;} "
+        ".fl-nav:disabled {color: #5c5c5c; color: @dv_fg_dim; background-color: #191a1b; background-color: @dv_s1;} "
+        ".fl-crumb {padding: 3px 7px; border-radius: 6px; border: 1px solid transparent; background-color: transparent; background-image: none; box-shadow: none; font-size: 11px; color: #8c8c8c; color: @dv_fg_muted;} "
+        ".fl-crumb:hover {background-color: #242526; background-color: @dv_s3;} "
+        ".fl-crumb-current {color: #48a0c7; color: @dv_accent_fg; background-color: #1d4a60; background-color: @dv_accent_t2;} "
+        ".fl-emblem {padding: 12px; border-radius: 14px; background-color: #1d4a60; background-color: @dv_accent_t2; color: #48a0c7; color: @dv_accent_fg;} "
+        ".fl-title {font-size: 25px; font-weight: 700; color: #ededed; color: @dv_fg_strong;} "
+        ".fl-primary {padding: 8px 14px; border-radius: 9px; border: 1px solid #2b6f90; border: 1px solid @dv_accent_t4; background-color: #1d4a60; background-color: @dv_accent_t3; background-image: none; box-shadow: none; color: #48a0c7; color: @dv_accent_fg; font-weight: 600;} "
+        ".fl-primary:hover {background-color: #2b6f90; background-color: @dv_accent_t4;} "
+        ".fl-primary:disabled {color: #5c5c5c; color: @dv_fg_dim;} "
+        ".fl-tool {padding: 6px 12px; border-radius: 8px; border: 1px solid #2a2b2c; border: 1px solid @dv_line0; background-color: #191a1b; background-color: @dv_s1; background-image: none; box-shadow: none; font-size: 12px; color: #bfbfbf; color: @dv_fg;} "
+        ".fl-tool:hover {background-color: #242526; background-color: @dv_s3;} "
+        ".fl-tool:disabled {color: #5c5c5c; color: @dv_fg_dim;} "
+        ".fl-tool-active {background-color: #1d4a60; background-color: @dv_accent_t2; border-color: #2b6f90; border-color: @dv_accent_t4; color: #48a0c7; color: @dv_accent_fg;} "
+        ".fl-strip {padding: 10px; border-radius: 10px; border: 1px solid #3a3b3c; border: 1px solid @dv_line2; background-color: #242526; background-color: @dv_s3;} "
+        ".fl-head {font-size: 10px; font-weight: 700; letter-spacing: 1px; color: #8c8c8c; color: @dv_fg_muted;} "
+        ".fl-row {padding: 8px 12px; border-radius: 8px; border: 1px solid transparent; background-color: transparent; background-image: none; box-shadow: none;} "
+        ".fl-row:hover {background-color: #202122; background-color: @dv_s2;} "
+        ".fl-selected {background-color: #1d4a60; background-color: @dv_accent_t2; border-color: #2b6f90; border-color: @dv_accent_t4;} "
+        ".fl-name {color: #ededed; color: @dv_fg_strong;} "
+        ".fl-card {padding: 14px; border-radius: 10px; border: 1px solid #2a2b2c; border: 1px solid @dv_line0; background-color: #191a1b; background-color: @dv_s1; background-image: none; box-shadow: none;} "
+        ".fl-card:hover {background-color: #242526; background-color: @dv_s3; border-color: #3a3b3c; border-color: @dv_line2;} "
+        ".fl-badge {padding: 3px 7px; border-radius: 5px; font-size: 9px; font-weight: 700; background-color: #121314; background-color: @dv_s0;} "
+        ".fl-kind-mint {color: #48a0c7; color: @dv_accent_fg;} .fl-kind-blue {color: #4aa3ff; color: @dv_info;} .fl-kind-yellow {color: #d9a441; color: @dv_warning;} "
+        ".fl-kind-purple {color: #b48ead; color: @dv_purple;} .fl-kind-orange {color: #d9a441; color: @dv_warning;} .fl-kind-neutral {color: #8c8c8c; color: @dv_fg_muted;} "
+        ".fl-notice {padding: 8px 12px; border-radius: 8px; background-color: #191a1b; background-color: @dv_s1; font-size: 12px; color: #48a0c7; color: @dv_accent_fg;} "
+        ".fl-error {padding: 8px 12px; border-radius: 8px; background-color: #191a1b; background-color: @dv_s1; font-size: 12px; color: #e5534b; color: @dv_error;} "
+        ".fl-actions {padding: 8px 12px; border-radius: 10px; border: 1px solid #2a2b2c; border: 1px solid @dv_line0; background-color: #191a1b; background-color: @dv_s1;} "
+        ".fl-status {padding: 0 16px; min-height: 32px; border-top: 1px solid #2a2b2c; border-top: 1px solid @dv_line0; background-color: #121314; background-color: @dv_s0;} "
+        ".fl-empty-icon {padding: 24px; border-radius: 22px; background-color: #191a1b; background-color: @dv_s1; color: #48a0c7; color: @dv_accent_fg;} "
+        ".fl-empty-title {font-size: 18px; font-weight: 600; color: #ededed; color: @dv_fg_strong;}", -1, NULL);
+    gtk_style_context_add_provider_for_screen(root->screen, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_USER);
+    g_object_unref(css);
+}
 void *rd_new(const char *title, int32_t width, int32_t height) {
     if (!gtk_init_check(NULL, NULL)) return NULL;
     RdRoot *root = g_new0(RdRoot, 1);
@@ -117,6 +170,7 @@ void *rd_new(const char *title, int32_t width, int32_t height) {
     root->screen = g_object_ref(gtk_widget_get_screen(root->window));
     gtk_window_set_title(GTK_WINDOW(root->window), title);
     gtk_window_set_default_size(GTK_WINDOW(root->window), width, height);
+    rd_app_css(root);
     rd_layer_overlay(root);
     root->host = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(root->window), root->host);
