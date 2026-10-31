@@ -2,10 +2,11 @@
 use "./lib/sys.dev" as sys
 use "./applets/basic.dev" as basic
 use "./applets/text.dev" as text
+use "./applets/files.dev" as files
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "basename", "cat", "dirname", "echo", "false", "head", "pwd", "seq", "sleep", "tail", "tee", "true", "wc", "yes")
+    return Vec<str>("[", "basename", "cat", "chgrp", "chmod", "chown", "cp", "dirname", "echo", "false", "head", "install", "ln", "mkdir", "mkfifo", "mktemp", "mv", "pwd", "readlink", "realpath", "rm", "rmdir", "seq", "sleep", "sync", "tail", "tee", "touch", "true", "wc", "yes")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -23,6 +24,22 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "tail") { return text.run_tail(args) }
     if sys.same(name, "wc") { return text.run_wc(args) }
     if sys.same(name, "seq") { return text.run_seq(args) }
+    if sys.same(name, "mkdir") { return files.run_mkdir(args) }
+    if sys.same(name, "rmdir") { return files.run_rmdir(args) }
+    if sys.same(name, "rm") { return files.run_rm(args) }
+    if sys.same(name, "touch") { return files.run_touch(args) }
+    if sys.same(name, "ln") { return files.run_ln(args) }
+    if sys.same(name, "readlink") { return files.run_readlink(args) }
+    if sys.same(name, "realpath") { return files.run_realpath(args) }
+    if sys.same(name, "cp") { return files.run_cp(args) }
+    if sys.same(name, "mv") { return files.run_mv(args) }
+    if sys.same(name, "install") { return files.run_install(args) }
+    if sys.same(name, "chmod") { return files.run_chmod(args) }
+    if sys.same(name, "chown") { return files.run_chown(args) }
+    if sys.same(name, "chgrp") { return files.run_chgrp(args) }
+    if sys.same(name, "mktemp") { return files.run_mktemp(args) }
+    if sys.same(name, "mkfifo") { return files.run_mkfifo(args) }
+    if sys.same(name, "sync") { return files.run_sync(args) }
     sys.warn(name, "applet not found")
     return 127
 }

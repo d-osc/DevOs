@@ -1,0 +1,466 @@
+# mkdir rmdir rm touch ln readlink mv cp chmod chown chgrp mktemp mkfifo sync realpath install: the file system applets.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+extern fn getpid(): i32
+extern fn utimes(path: str, times: *void): i32
+
+fn say(prog: str, text: str) { sys.warn(prog, text) }
+fn quoted(text: str): str { return sys.join2(sys.join2("'", text), "'") }
+fn exists_or_link(path: str): bool { return sys.file_info(path, false).ok }
+# "applet: can't <what> 'path': reason".
+fn cant(prog: str, what: str, path: str, reason: str) {
+    sys.put_fd(2, prog); sys.put_fd(2, ": can't "); sys.put_fd(2, what); sys.put_fd(2, " "); sys.put_fd(2, quoted(path)); sys.put_fd(2, ": "); sys.put_fd(2, reason); sys.put_fd(2, "\n")
+}
+fn mode_of(path: str, follow: bool): i64 { let i = sys.file_info(path, follow); return i.ok ? i.mode : 0 - 1 }
+fn parent_of(path: str): str {
+    let n = sys.length(path)
+    while n > 1 && sys.at(path, n - 1) == 47 { n = n - 1 }
+    let cut = sys.last_char(sys.slice(path, 0, n), 47)
+    if cut < 0 { return "." }
+    if cut == 0 { return "/" }
+    return sys.slice(path, 0, cut)
+}
+fn base_of(path: str): str { return sys.base_name(path) }
+fn why_not_created(path: str): str {
+    if exists_or_link(path) { return "File exists" }
+    let parent = parent_of(path)
+    if !sys.file_info(parent, true).ok { return "No such file or directory" }
+    if !sys.is_dir(parent) { return "Not a directory" }
+    return "Permission denied"
+}
+
+# ---- mkdir [-p] [-m MODE] DIRECTORY... --------------------------------------------------------------------------------------------------
+fn run_mkdir(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "pm:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() == 0 { say("mkdir", "invalid usage: mkdir [OPTIONS] DIRECTORY..."); return 1 }
+    let mode = 511
+    if sys.has(o, 109) { mode = fsx.apply_mode(sys.val(o, 109), 511, true); if mode < 0 { say("mkdir", sys.join2("invalid mode ", quoted(sys.val(o, 109)))); return 1 } }
+    let status = 0
+    for i in 0..(o.rest.len() as i64) {
+        let path = o.rest[i]
+        if sys.has(o, 112) { if !fsx.make_dirs(path, mode) { cant("mkdir", "create directory", path, why_not_created(path)); status = 1 } else if sys.has(o, 109) { fsx.do_chmod(path, mode) }; continue }
+        if !fsx.make_dir(path, mode) { cant("mkdir", "create directory", path, why_not_created(path)); status = 1 } else if sys.has(o, 109) { unsafe { fsx.do_chmod(path, mode) } }
+    }
+    return status
+}
+
+# ---- rmdir [-p] [--ignore-fail-on-non-empty] DIRECTORY... ----------------------------------------------------------------------------------
+fn why_not_removed_dir(path: str): str {
+    let info = sys.file_info(path, false)
+    if !info.ok { return "No such file or directory" }
+    if !sys.is_dir_mode(info.mode) { return "Not a directory" }
+    let listing = fsx.list_dir(path)
+    if listing.ok && listing.names.len() > 0 { return "Directory not empty" }
+    return "Permission denied"
+}
+fn run_rmdir(args: Vec<str>): i64 { unsafe {
+    let parents = false; let ignore = false; let paths = Vec<str>()
+    for i in 0..(args.len() as i64) {
+        let a = args[i]
+        if sys.same(a, "-p") || sys.same(a, "--parents") { parents = true }
+        else if sys.same(a, "--ignore-fail-on-non-empty") { ignore = true }
+        else { paths.push(a) }
+    }
+    if paths.len() == 0 { say("rmdir", "invalid usage: rmdir [OPTIONS] DIRECTORY..."); return 1 }
+    let status = 0
+    for i in 0..(paths.len() as i64) {
+        let path = paths[i]
+        let current = path
+        while true {
+            if fsx.do_rmdir(current) != 0 {
+                let reason = why_not_removed_dir(current)
+                if !(ignore && sys.same(reason, "Directory not empty")) { sys.put_fd(2, "rmdir: "); sys.put_fd(2, quoted(current)); sys.put_fd(2, ": "); sys.put_fd(2, reason); sys.put_fd(2, "\n"); status = 1 }
+                break
+            }
+            if !parents { break }
+            let up = parent_of(current)
+            if sys.same(up, ".") || sys.same(up, "/") || sys.same(up, current) { break }
+            current = up
+        }
+    }
+    return status
+} }
+
+# ---- rm [-irRf] FILE... ----------------------------------------------------------------------------------------------------------------------
+fn confirm(prompt: str): bool {
+    sys.put_fd(2, prompt)
+    let input = sys.read_fd_line()
+    return sys.length(input) > 0 && (sys.at(input, 0) == 121 || sys.at(input, 0) == 89)
+}
+fn rm_path(path: str, recurse: bool, force: bool, interactive: bool): bool {
+    let info = sys.file_info(path, false)
+    if !info.ok {
+        if force { return true }
+        cant("rm", "remove", path, "No such file or directory"); return false
+    }
+    if sys.is_dir_mode(info.mode) {
+        if !recurse { sys.put_fd(2, "rm: "); sys.put_fd(2, quoted(path)); sys.put_fd(2, " is a directory\n"); return false }
+        if interactive && !confirm(sys.join2(sys.join2("rm: descend into directory ", quoted(path)), "? ")) { return true }
+        let listing = fsx.list_dir(path); let ok = true
+        for i in 0..(listing.names.len() as i64) { if !rm_path(fsx.join_path(path, listing.names[i]), recurse, force, interactive) { ok = false } }
+        if interactive && !confirm(sys.join2(sys.join2("rm: remove directory ", quoted(path)), "? ")) { return ok }
+        unsafe { if fsx.do_rmdir(path) != 0 { cant("rm", "remove", path, "Directory not empty"); return false } }
+        return ok
+    }
+    if interactive && !confirm(sys.join2(sys.join2("rm: remove ", quoted(path)), "? ")) { return true }
+    unsafe { if fsx.do_unlink(path) != 0 { cant("rm", "remove", path, "Permission denied"); return false } }
+    return true
+}
+fn run_rm(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "irRf")
+    if o.bad != 0 { say("rm", "invalid option"); return 1 }
+    if o.rest.len() == 0 { if sys.has(o, 102) { return 0 }; say("rm", "invalid usage: rm [OPTIONS] FILE..."); return 1 }
+    let recurse = sys.has(o, 114) || sys.has(o, 82); let force = sys.has(o, 102); let interactive = sys.has(o, 105) && !force
+    let status = 0
+    for i in 0..(o.rest.len() as i64) { if !rm_path(o.rest[i], recurse, force, interactive) { status = 1 } }
+    return status
+}
+
+# ---- touch [-c] [-d DATE] FILE... ---------------------------------------------------------------------------------------------------------------
+# days since 1970-01-01 of a civil date (proleptic Gregorian)
+fn days_from_civil(y: i64, m: i64, d: i64): i64 {
+    let yy = m <= 2 ? y - 1 : y
+    let era = (yy >= 0 ? yy : yy - 399) / 400
+    let yoe = yy - era * 400
+    let mp = (m + 9) % 12
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+# "YYYY-MM-DD[ T]hh:mm[:ss]", "YYYY-MM-DD" or "@seconds" as epoch seconds (UTC); -1 when it is none of them.
+fn parse_time(text: str): i64 {
+    let n = sys.length(text)
+    if n > 1 && sys.at(text, 0) == 64 { let v = sys.parse_number(sys.slice(text, 1, n)); return v.ok ? v.value : 0 - 1 }
+    if n < 10 || sys.at(text, 4) != 45 || sys.at(text, 7) != 45 { return 0 - 1 }
+    let y = sys.parse_number(sys.slice(text, 0, 4)); let mo = sys.parse_number(sys.slice(text, 5, 7)); let d = sys.parse_number(sys.slice(text, 8, 10))
+    if !y.ok || !mo.ok || !d.ok { return 0 - 1 }
+    let h = 0; let mi = 0; let s = 0
+    if n >= 16 && (sys.at(text, 10) == 32 || sys.at(text, 10) == 84) {
+        let hh = sys.parse_number(sys.slice(text, 11, 13)); let mm = sys.parse_number(sys.slice(text, 14, 16))
+        if !hh.ok || !mm.ok { return 0 - 1 }
+        h = hh.value; mi = mm.value
+        if n >= 19 { let ss = sys.parse_number(sys.slice(text, 17, 19)); if !ss.ok { return 0 - 1 }; s = ss.value }
+    } else if n != 10 { return 0 - 1 }
+    return days_from_civil(y.value, mo.value, d.value) * 86400 + h * 3600 + mi * 60 + s
+}
+fn set_times(path: str, seconds: i64, use_now: bool): bool { unsafe {
+    if use_now { return utimes(path, null) == 0 }
+    let times = sys.calloc(32, 1) as *u8
+    for k in 0..2 { let base = k * 16; let v = seconds; for b in 0..8 { times[base + b] = (v % 256) as u8; v = v / 256 } }
+    let ok = utimes(path, times as *void) == 0
+    sys.free(times as *void)
+    return ok
+} }
+fn run_touch(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "cd:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() == 0 { say("touch", "invalid usage: touch [-c] [-d DATE] FILE [FILE]..."); return 1 }
+    let seconds = 0; let use_now = true
+    if sys.has(o, 100) { seconds = parse_time(sys.val(o, 100)); if seconds < 0 { say("touch", sys.join2("invalid date ", quoted(sys.val(o, 100)))); return 1 }; use_now = false }
+    let status = 0
+    for i in 0..(o.rest.len() as i64) {
+        let path = o.rest[i]
+        if !exists_or_link(path) {
+            if sys.has(o, 99) { continue }
+            unsafe { let fd = sys.open(path, 65, 438); if fd < 0 { sys.warn_write("touch", path); status = 1; continue }; sys.close(fd) }
+        }
+        if !set_times(path, seconds, use_now) { sys.warn_write("touch", path); status = 1 }
+    }
+    return status
+}
+
+# ---- ln [-sfnb] [-S SUF] TARGET... LINK|DIRECTORY -----------------------------------------------------------------------------------------------
+fn run_ln(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "sfnbS:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 1 { say("ln", "invalid usage: ln [OPTIONS] TARGET... LINK|DIRECTORY"); return 1 }
+    let symbolic = sys.has(o, 115); let force = sys.has(o, 102); let no_deref = sys.has(o, 110); let backup = sys.has(o, 98)
+    let suffix = sys.has(o, 83) ? sys.val(o, 83) : "~"
+    let n = o.rest.len() as i64
+    let dest = n == 1 ? "." : o.rest[n - 1]
+    let into_dir = (n > 2) || (n == 1) || (sys.is_dir(dest) && !(no_deref && sys.file_info(dest, false).ok && sys.is_link_mode(sys.file_info(dest, false).mode)))
+    if n > 2 && !sys.is_dir(dest) { cant("ln", "access", dest, "Not a directory"); return 1 }
+    let status = 0
+    let last = n == 1 ? 1 : n - 1
+    for i in 0..last {
+        let target = o.rest[i]
+        let link_path = into_dir ? fsx.join_path(dest, sys.base_name(target)) : dest
+        if exists_or_link(link_path) {
+            if backup { fsx.do_rename(link_path, sys.join2(link_path, suffix)) }
+            else if force { fsx.do_unlink(link_path) }
+        }
+        let ok = symbolic ? fsx.do_symlink(target, link_path) == 0 : fsx.do_link(target, link_path) == 0
+        if !ok { cant("ln", symbolic ? "create symlink" : "create hard link", link_path, exists_or_link(link_path) ? "File exists" : (symbolic || sys.file_info(target, true).ok ? "Permission denied" : "No such file or directory")); status = 1 }
+    }
+    return status
+} }
+
+# ---- realpath / readlink -f ----------------------------------------------------------------------------------------------------------------------
+# The canonical absolute path: symlinks resolved, "." and ".." removed; "" when a component is missing (unless `missing_ok` for the last one).
+fn canonical(path: str, missing_ok: bool): str {
+    let start = path
+    if sys.length(path) == 0 { return "" }
+    if sys.at(path, 0) != 47 { start = fsx.join_path(sys.current_dir(), path) }
+    let parts = Vec<str>(); let pending = Vec<str>()
+    # components left to process, last first
+    let tokens = Vec<str>(); let n = sys.length(start); let from = 0
+    for i in 0..(n + 1) { if i == n || sys.at(start, i) == 47 { if i > from { tokens.push(sys.slice(start, from, i)) }; from = i + 1 } }
+    let k = tokens.len() as i64 - 1
+    while k >= 0 { pending.push(tokens[k]); k = k - 1 }
+    let hops = 0
+    while pending.len() > 0 {
+        let part = pending[pending.len() as i64 - 1]
+        let rest = Vec<str>(); for i in 0..(pending.len() as i64 - 1) { rest.push(pending[i]) }
+        pending = rest
+        if sys.same(part, ".") { continue }
+        if sys.same(part, "..") { if parts.len() > 0 { let shorter = Vec<str>(); for i in 0..(parts.len() as i64 - 1) { shorter.push(parts[i]) }; parts = shorter }; continue }
+        let here = "/"
+        for i in 0..(parts.len() as i64) { here = fsx.join_path(here, parts[i]) }
+        let candidate = fsx.join_path(here, part)
+        let info = sys.file_info(candidate, false)
+        if !info.ok { if missing_ok && pending.len() == 0 { parts.push(part); continue }; return "" }
+        if sys.is_link_mode(info.mode) {
+            hops = hops + 1
+            if hops > 40 { return "" }
+            let target = fsx.read_link(candidate)
+            if sys.at(target, 0) == 47 { parts = Vec<str>() }
+            let tn = sys.length(target); let tf = 0; let sub = Vec<str>()
+            for i in 0..(tn + 1) { if i == tn || sys.at(target, i) == 47 { if i > tf { sub.push(sys.slice(target, tf, i)) }; tf = i + 1 } }
+            let j = sub.len() as i64 - 1
+            while j >= 0 { pending.push(sub[j]); j = j - 1 }
+            continue
+        }
+        parts.push(part)
+    }
+    let result = "/"
+    for i in 0..(parts.len() as i64) { result = fsx.join_path(result, parts[i]) }
+    return result
+}
+fn run_realpath(args: Vec<str>): i64 {
+    if args.len() == 0 { say("realpath", "invalid usage: realpath pathname..."); return 1 }
+    let out = sys.out_new(1); let status = 0
+    for i in 0..(args.len() as i64) {
+        let resolved = canonical(args[i], false)
+        if sys.length(resolved) == 0 { cant("realpath", "resolve", args[i], "No such file or directory"); status = 1; continue }
+        sys.out_str(out, resolved); sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return status
+}
+fn run_readlink(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fnv")
+    if o.bad != 0 || o.rest.len() != 1 { say("readlink", "invalid usage: readlink [-fnv] FILE"); return 1 }
+    let path = o.rest[0]; let result = ""
+    if sys.has(o, 102) { result = canonical(path, true) } else { result = fsx.read_link(path) }
+    if sys.length(result) == 0 { if sys.has(o, 118) { cant("readlink", "read link", path, exists_or_link(path) ? "Invalid argument" : "No such file or directory") }; return 1 }
+    let out = sys.out_new(1); sys.out_str(out, result); if !sys.has(o, 110) { sys.out_byte(out, 10) }; sys.out_flush(out)
+    return 0
+}
+
+# ---- cp / mv / install ------------------------------------------------------------------------------------------------------------------------------
+struct CopyOptions { recurse: bool, preserve: bool, keep_links: bool, force: bool, interactive: bool, hard: bool, soft: bool }
+fn same_file(a: str, b: str): bool { let x = sys.file_info(a, true); let y = sys.file_info(b, true); return x.ok && y.ok && x.inode == y.inode && x.size == y.size && x.mtime == y.mtime && sys.same(canonical(a, true), canonical(b, true)) }
+fn copy_entry(prog: str, source: str, target: str, opt: CopyOptions): bool { unsafe {
+    let info = sys.file_info(source, !opt.keep_links)
+    if !info.ok { cant(prog, "stat", source, "No such file or directory"); return false }
+    if sys.is_dir_mode(info.mode) {
+        if !opt.recurse { sys.put_fd(2, prog); sys.put_fd(2, ": omitting directory "); sys.put_fd(2, quoted(source)); sys.put_fd(2, "\n"); return false }
+        if !sys.is_dir(target) { if !fsx.make_dir(target, 448) { cant(prog, "create directory", target, why_not_created(target)); return false } }
+        let listing = fsx.list_dir(source); let ok = true
+        for i in 0..(listing.names.len() as i64) { if !copy_entry(prog, fsx.join_path(source, listing.names[i]), fsx.join_path(target, listing.names[i]), opt) { ok = false } }
+        if opt.preserve { fsx.do_chmod(target, sys.permission_bits(info.mode)) } else { fsx.do_chmod(target, sys.permission_bits(info.mode) - (sys.permission_bits(info.mode) % 8 == 0 ? 0 : 0)) }
+        return ok
+    }
+    if exists_or_link(target) {
+        if opt.interactive && !confirm(sys.join2(sys.join2(prog, ": overwrite "), sys.join2(quoted(target), "? "))) { return true }
+        if sys.same(canonical(source, true), canonical(target, true)) { sys.put_fd(2, prog); sys.put_fd(2, ": "); sys.put_fd(2, quoted(source)); sys.put_fd(2, " and "); sys.put_fd(2, quoted(target)); sys.put_fd(2, " are the same file\n"); return false }
+        if opt.force || opt.hard || opt.soft || sys.is_link_mode(sys.file_info(target, false).mode) { fsx.do_unlink(target) }
+    }
+    if sys.is_link_mode(info.mode) {
+        if fsx.do_symlink(fsx.read_link(source), target) != 0 { cant(prog, "create symlink", target, why_not_created(target)); return false }
+        return true
+    }
+    if opt.soft { if fsx.do_symlink(source, target) != 0 { cant(prog, "create symlink", target, why_not_created(target)); return false }; return true }
+    if opt.hard { if fsx.do_link(source, target) != 0 { cant(prog, "create hard link", target, why_not_created(target)); return false }; return true }
+    let mode = sys.permission_bits(info.mode)
+    if !fsx.copy_file(source, target, mode) { sys.warn_path(prog, source); return false }
+    if opt.preserve { fsx.do_chmod(target, mode); set_times(target, info.mtime, false) }
+    return true
+} }
+fn run_cp(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "adPHLpfiRrls")
+    if o.bad != 0 || o.rest.len() < 2 { say("cp", "invalid usage: cp [OPTIONS] SOURCE DEST"); return 1 }
+    let a = sys.has(o, 97)
+    let opt = CopyOptions(sys.has(o, 82) || sys.has(o, 114) || a, sys.has(o, 112) || a, sys.has(o, 100) || sys.has(o, 80) || a, sys.has(o, 102), sys.has(o, 105), sys.has(o, 108), sys.has(o, 115))
+    let n = o.rest.len() as i64; let dest = o.rest[n - 1]
+    if n > 2 && !sys.is_dir(dest) { cant("cp", "access", dest, "Not a directory"); return 1 }
+    let status = 0
+    for i in 0..(n - 1) {
+        let source = o.rest[i]
+        let target = sys.is_dir(dest) ? fsx.join_path(dest, sys.base_name(source)) : dest
+        if !copy_entry("cp", source, target, opt) { status = 1 }
+    }
+    return status
+}
+fn run_mv(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "fi")
+    if o.bad != 0 || o.rest.len() < 2 { say("mv", "invalid usage: mv [OPTIONS] SOURCE DEST"); return 1 }
+    let n = o.rest.len() as i64; let dest = o.rest[n - 1]
+    if n > 2 && !sys.is_dir(dest) { cant("mv", "access", dest, "Not a directory"); return 1 }
+    let status = 0
+    for i in 0..(n - 1) {
+        let source = o.rest[i]
+        let target = sys.is_dir(dest) ? fsx.join_path(dest, sys.base_name(source)) : dest
+        if !exists_or_link(source) { cant("mv", "rename", source, "No such file or directory"); status = 1; continue }
+        if sys.has(o, 105) && !sys.has(o, 102) && exists_or_link(target) && !confirm(sys.join2(sys.join2("mv: overwrite ", quoted(target)), "? ")) { continue }
+        if fsx.do_rename(source, target) != 0 {
+            # another file system: copy then remove
+            let opt = CopyOptions(true, true, true, true, false, false, false)
+            if copy_entry("mv", source, target, opt) { fsx.remove_tree(source) } else { status = 1 }
+        }
+    }
+    return status
+} }
+fn run_install(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "cdDspo:g:m:")
+    if o.bad != 0 || o.missing != 0 { say("install", "invalid usage: install [-cdDsp] [-o USER] [-g GRP] [-m MODE] [source] dest|directory"); return 1 }
+    let mode = 493
+    if sys.has(o, 109) { mode = fsx.apply_mode(sys.val(o, 109), 493, false); if mode < 0 { say("install", sys.join2("invalid mode ", quoted(sys.val(o, 109)))); return 1 } }
+    let owner = sys.has(o, 111) ? fsx.lookup_id("/etc/passwd", sys.val(o, 111)) : 0 - 1
+    let group = sys.has(o, 103) ? fsx.lookup_id("/etc/group", sys.val(o, 103)) : 0 - 1
+    let status = 0
+    if sys.has(o, 100) {
+        for i in 0..(o.rest.len() as i64) { if !fsx.make_dirs(o.rest[i], mode) { cant("install", "create directory", o.rest[i], why_not_created(o.rest[i])); status = 1 } else { fsx.do_chmod(o.rest[i], mode) } }
+        return status
+    }
+    if o.rest.len() < 2 { say("install", "invalid usage: install [-cdDsp] [-o USER] [-g GRP] [-m MODE] [source] dest|directory"); return 1 }
+    let n = o.rest.len() as i64; let dest = o.rest[n - 1]
+    if n > 2 && !sys.is_dir(dest) { cant("install", "access", dest, "Not a directory"); return 1 }
+    for i in 0..(n - 1) {
+        let source = o.rest[i]
+        let target = (n > 2 || sys.is_dir(dest)) ? fsx.join_path(dest, sys.base_name(source)) : dest
+        if sys.has(o, 68) { fsx.make_dirs(parent_of(target), 493) }
+        if exists_or_link(target) { fsx.do_unlink(target) }
+        if !fsx.copy_file(source, target, mode) { sys.warn_path("install", source); status = 1; continue }
+        fsx.do_chmod(target, mode)
+        if sys.has(o, 112) { let info = sys.file_info(source, true); if info.ok { set_times(target, info.mtime, false) } }
+        if owner >= 0 || group >= 0 { fsx.do_chown(target, owner, group) }
+    }
+    return status
+} }
+
+# ---- chmod [-Rcvf] MODE[,MODE]... FILE... -----------------------------------------------------------------------------------------------------------
+fn chmod_path(path: str, spec: str, recurse: bool, changed: bool, verbose: bool, quiet: bool, out: *sys.Out): bool { unsafe {
+    let info = sys.file_info(path, true)
+    if !info.ok { if !quiet { cant("chmod", "change permissions of", path, "No such file or directory") }; return false }
+    let new_mode = fsx.apply_mode(spec, sys.permission_bits(info.mode), sys.is_dir_mode(info.mode))
+    let ok = true
+    if new_mode < 0 { if !quiet { say("chmod", sys.join2("invalid mode ", quoted(spec))) }; return false }
+    if fsx.do_chmod(path, new_mode) != 0 { if !quiet { cant("chmod", "change permissions of", path, "Permission denied") }; ok = false }
+    else if verbose || (changed && new_mode != sys.permission_bits(info.mode)) {
+        sys.out_str(out, "mode of '"); sys.out_str(out, path); sys.out_str(out, "' ")
+        sys.out_str(out, new_mode != sys.permission_bits(info.mode) ? "changed to " : "retained as "); octal(out, new_mode); sys.out_str(out, " ("); sys.out_str(out, fsx.mode_string(new_mode)); sys.out_str(out, ")\n")
+    }
+    if recurse && sys.is_dir_mode(info.mode) && !sys.is_link_mode(sys.file_info(path, false).mode) {
+        let listing = fsx.list_dir(path)
+        for i in 0..(listing.names.len() as i64) { if !chmod_path(fsx.join_path(path, listing.names[i]), spec, recurse, changed, verbose, quiet, out) { ok = false } }
+    }
+    return ok
+} }
+fn octal(out: *sys.Out, v: i64) { sys.out_byte(out, 48); let digits = Vec<u8>(); let m = v; if m == 0 { digits.push(48) }; while m > 0 { digits.push((48 + m % 8) as u8); m = m / 8 }; let k = digits.len() as i64 - 1; while k >= 0 { sys.out_byte(out, digits[k]); k = k - 1 } }
+fn run_chmod(args: Vec<str>): i64 {
+    # the first non-option is the mode (a mode such as -x is not an option); options are -R -c -v -f
+    let recurse = false; let changed = false; let verbose = false; let quiet = false; let rest = Vec<str>(); let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if rest.len() == 0 && sys.length(a) > 1 && sys.at(a, 0) == 45 && (sys.at(a, 1) == 82 || sys.at(a, 1) == 99 || sys.at(a, 1) == 118 || sys.at(a, 1) == 102) {
+            for k in 1..sys.length(a) { let c = sys.at(a, k); if c == 82 { recurse = true } else if c == 99 { changed = true } else if c == 118 { verbose = true } else if c == 102 { quiet = true } }
+        } else if sys.same(a, "--") { } else { rest.push(a) }
+        i = i + 1
+    }
+    if rest.len() < 2 { say("chmod", "invalid usage: chmod [-Rcvf] MODE[,MODE]... FILE..."); return 1 }
+    let out = sys.out_new(1); let status = 0
+    for k in 1..(rest.len() as i64) { if !chmod_path(rest[k], rest[0], recurse, changed, verbose, quiet, out) { status = 1 } }
+    sys.out_flush(out)
+    return status
+}
+
+# ---- chown / chgrp [-RhLHPcvf] OWNER[:GROUP] FILE... -----------------------------------------------------------------------------------------------
+fn chown_path(prog: str, path: str, owner: i64, group: i64, recurse: bool, no_deref: bool, verbose: bool, quiet: bool, out: *sys.Out): bool { unsafe {
+    let info = sys.file_info(path, !no_deref)
+    if !info.ok { if !quiet { cant(prog, "change ownership of", path, "No such file or directory") }; return false }
+    let ok = true
+    let rc = no_deref ? fsx.do_lchown(path, owner, group) : fsx.do_chown(path, owner, group)
+    if rc != 0 { if !quiet { cant(prog, "change ownership of", path, "Operation not permitted") }; ok = false }
+    else if verbose { sys.out_str(out, "changed ownership of '"); sys.out_str(out, path); sys.out_str(out, "'\n") }
+    if recurse && sys.is_dir_mode(info.mode) && !sys.is_link_mode(sys.file_info(path, false).mode) {
+        let listing = fsx.list_dir(path)
+        for i in 0..(listing.names.len() as i64) { if !chown_path(prog, fsx.join_path(path, listing.names[i]), owner, group, recurse, no_deref, verbose, quiet, out) { ok = false } }
+    }
+    return ok
+} }
+fn ownership(prog: str, args: Vec<str>, is_chgrp: bool): i64 {
+    let o = sys.parse_opts(args, "RhLHPcvf")
+    if o.bad != 0 || o.rest.len() < 2 { say(prog, is_chgrp ? "invalid usage: chgrp [-RhLHPcvf]... GROUP FILE..." : "invalid usage: chown [-RhLHPcvf]... OWNER[<.|:>[GROUP]] FILE..."); return 1 }
+    let spec = o.rest[0]; let owner = 0 - 1; let group = 0 - 1
+    if is_chgrp { group = fsx.lookup_id("/etc/group", spec); if group < 0 { say(prog, sys.join2("unknown group ", spec)); return 1 } }
+    else {
+        let sep = sys.find_char(spec, 58); if sep < 0 { sep = sys.find_char(spec, 46) }
+        let user = sep < 0 ? spec : sys.slice(spec, 0, sep)
+        if sys.length(user) > 0 { owner = fsx.lookup_id("/etc/passwd", user); if owner < 0 { say(prog, sys.join2("unknown user ", user)); return 1 } }
+        if sep >= 0 && sep + 1 < sys.length(spec) { group = fsx.lookup_id("/etc/group", sys.slice(spec, sep + 1, sys.length(spec))); if group < 0 { say(prog, "unknown group"); return 1 } }
+    }
+    let out = sys.out_new(1); let status = 0
+    for i in 1..(o.rest.len() as i64) { if !chown_path(prog, o.rest[i], owner, group, sys.has(o, 82), sys.has(o, 104), sys.has(o, 118), sys.has(o, 102), out) { status = 1 } }
+    sys.out_flush(out)
+    return status
+}
+fn run_chown(args: Vec<str>): i64 { return ownership("chown", args, false) }
+fn run_chgrp(args: Vec<str>): i64 { return ownership("chgrp", args, true) }
+
+# ---- mktemp [-dt] [-p DIR] [TEMPLATE] ------------------------------------------------------------------------------------------------------------
+fn random_name(template: str): str { unsafe {
+    let n = sys.length(template); let x = n
+    while x > 0 && sys.at(template, x - 1) == 88 { x = x - 1 }
+    let count = n - x
+    let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    let seed = sys.calloc(64, 1) as *u8
+    let fd = sys.open("/dev/urandom", 0, 0)
+    if fd >= 0 { sys.read(fd, seed as *void, count as usize); sys.close(fd) }
+    let out = sys.calloc((n + 1) as usize, 1) as *u8
+    for i in 0..x { out[i] = sys.at(template, i) }
+    for i in 0..count { out[x + i] = sys.at(letters, (seed[i] as i64) % 62) }
+    return out as str
+} }
+fn run_mktemp(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "dtp:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() > 1 { say("mktemp", "invalid usage: mktemp [-dt] [-p DIR] [TEMPLATE]"); return 1 }
+    let template = o.rest.len() == 1 ? o.rest[0] : "tmp.XXXXXXXXXX"
+    let tail = 0
+    let n = sys.length(template)
+    while tail < n && sys.at(template, n - 1 - tail) == 88 { tail = tail + 1 }
+    if tail < 3 { say("mktemp", sys.join2("too few X's in template ", quoted(template))); return 1 }
+    let dir = ""
+    if sys.has(o, 112) { dir = sys.val(o, 112) }
+    else if sys.has(o, 116) || o.rest.len() == 0 { dir = "/tmp" }
+    let status = 1; let result = ""
+    for attempt in 0..100 {
+        let name = random_name(template)
+        let path = sys.length(dir) > 0 ? fsx.join_path(dir, name) : name
+        if sys.has(o, 100) { if fsx.make_dir(path, 448) { result = path; status = 0; break } }
+        else { let fd = sys.open(path, 193, 384); if fd >= 0 { sys.close(fd); result = path; status = 0; break } }
+    }
+    if status != 0 { cant("mktemp", sys.has(o, 100) ? "create directory" : "create file", sys.length(dir) > 0 ? dir : template, "No such file or directory"); return 1 }
+    let out = sys.out_new(1); sys.out_str(out, result); sys.out_byte(out, 10); sys.out_flush(out)
+    return 0
+} }
+
+# ---- mkfifo [-m MODE] name, sync -----------------------------------------------------------------------------------------------------------------
+fn run_mkfifo(args: Vec<str>): i64 { unsafe {
+    let o = sys.parse_opts(args, "m:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() == 0 { say("mkfifo", "invalid usage: mkfifo [OPTIONS] name"); return 1 }
+    let mode = 438
+    if sys.has(o, 109) { mode = fsx.apply_mode(sys.val(o, 109), 438, false); if mode < 0 { say("mkfifo", sys.join2("invalid mode ", quoted(sys.val(o, 109)))); return 1 } }
+    let status = 0
+    for i in 0..(o.rest.len() as i64) { if fsx.do_mkfifo(o.rest[i], mode) != 0 { cant("mkfifo", "create fifo", o.rest[i], why_not_created(o.rest[i])); status = 1 } }
+    return status
+} }
+fn run_sync(args: Vec<str>): i64 { unsafe { fsx.do_sync(); return 0 } }

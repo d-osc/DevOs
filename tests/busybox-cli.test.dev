@@ -20,7 +20,9 @@ fn sandbox(): str {
     return d
 }
 fn outcome(d: str, command: str): str {
-    let run = tool.run(Vec<str>("sh","-c","cd " + d + " && " + command + " 2>/dev/null; echo \"rc=$?\""), Map<str,str>(), "", 60000)
+    # every run gets its own copy of the sandbox, so a case that changes files cannot affect the one run after it
+    let script = "w=$(mktemp -d) && o=$(mktemp) && cp -a " + d + "/. $w && cd $w && { " + command + "\n} > $o 2>/dev/null; rc=$?; cd /; sed \"s#$w#W#g\" $o; rm -rf $w $o; echo \"rc=$rc\""
+    let run = tool.run(Vec<str>("sh","-c",script), Map<str,str>(), "", 60000)
     return t.out(run)
 }
 # "@" in a case stands for the program prefix: the system tool (`env`) on one side, busybox on the other ("echo hi | @tee f"). A case without "@" gets
@@ -62,6 +64,26 @@ test.case("wc and seq",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("wc a.txt","wc -l a.txt","wc -w a.txt","wc -c a.txt","wc a.txt b.txt","wc -lw a.txt","wc < a.txt","wc -L a.txt","wc -l a.txt b.txt c.txt","wc nosuch a.txt","wc empty.txt",
         "seq 5","seq 2 5","seq 1 2 9","seq 5 -1 1","seq -w 8 11","seq -s , 4","seq 3 1","seq 0","seq -1 1","seq 1 0 5","seq a"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("mkdir rmdir rm touch ln",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("@mkdir n1 n2; find . -maxdepth 1 -name 'n*' | sort","@mkdir -p a/b/c; find a | sort","@mkdir -m 700 mm; stat -c %a mm","@mkdir dir","@mkdir -p dir/sub","@mkdir nosuch/x","@mkdir",
+        "mkdir -p e1/e2; @rmdir e1/e2; find e1","mkdir -p e1/e2; @rmdir -p e1/e2; ls e1","@rmdir dir","@rmdir nosuch","@rmdir a.txt","@rmdir --ignore-fail-on-non-empty dir; echo done",
+        "@rm a.txt; ls a.txt","@rm nosuch","@rm -f nosuch","@rm -f","@rm dir; ls dir","@rm -r dir; ls dir","@rm -rf dir; ls dir","@rm a.txt b.txt; ls",
+        "@touch t1; stat -c %s t1","@touch -c nonesuch; ls nonesuch","@touch -d '2020-01-02 03:04:05' t2; stat -c %Y t2","@touch a.txt; stat -c %s a.txt","@touch -d @86400 t3; stat -c %Y t3","@touch nosuchdir/x",
+        "@ln -s a.txt l1; readlink l1","@ln a.txt h1; stat -c %h a.txt","@ln -s b.txt l1 ; echo rc","@ln -sf b.txt l2; ln -sf c.txt l2; readlink l2","@ln -s a.txt b.txt c.txt","@ln a.txt dir; ls dir","@ln -s a.txt nosuchdir/l"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+test.case("realpath readlink cp mv install chmod mktemp mkfifo",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("@realpath dir/sub/../g.txt","ln -s dir sl; @readlink -f sl/sub","ln -s a.txt s1; @readlink s1","@readlink a.txt; echo rc","@readlink -n nosuch; echo","ln -s dir/sub sl2; @realpath sl2/f.txt",
+        "@cp a.txt z.txt; cmp a.txt z.txt && echo same","@cp -r dir cdir; find cdir | sort","@cp a.txt b.txt c.txt","@cp dir x; ls x","@cp -p a.txt p.txt; stat -c '%a %Y' a.txt p.txt","@cp nosuch x","@cp a.txt dir; cat dir/a.txt | wc -c","@cp -R dir/ cd2; find cd2 | sort","@cp -s a.txt sl3; readlink sl3",
+        "@mv a.txt m1; ls a.txt m1","@mv a.txt b.txt c.txt","@mv nosuch x","@mv a.txt dir; ls dir","@mv dir ndir; ls ndir",
+        "@install -m 640 a.txt inst; stat -c %a inst","@install -d x1/y1; test -d x1/y1 && echo dir","@install -D a.txt q1/q2/a; ls q1/q2","@install a.txt b.txt dir; ls dir","@install -m 700 -d idir; stat -c %a idir",
+        "@chmod 600 a.txt; stat -c %a a.txt","@chmod u+x,g-r a.txt; stat -c %a a.txt","@chmod -R a=rX dir; find dir -printf '%m %p\\n' | sort","@chmod 999 a.txt; echo rc","@chmod 600 nosuch","@chmod a+x,o-r b.txt; stat -c %a b.txt","@chmod g=u a.txt; stat -c %a a.txt","@chmod +t dir; stat -c %a dir","@chmod -c 644 a.txt","@chmod -v 644 a.txt",
+        "f=$(@mktemp); test -f $f && echo ok; rm -f $f","d=$(@mktemp -d); test -d $d && echo ok; rmdir $d","f=$(@mktemp -p dir tXXXXXX); test -f $f && echo ok; rm -f $f","@mktemp bad","f=$(@mktemp -t fooXXXXXX); echo $f | grep -c '^/tmp/foo'; rm -f $f",
+        "@mkfifo ff; test -p ff && echo fifo","@mkfifo -m 600 ff2; stat -c %a ff2","@mkfifo dir","@sync; echo rc"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
 test.case("cat passes binary data through untouched and yes stops when its reader does",fn() {

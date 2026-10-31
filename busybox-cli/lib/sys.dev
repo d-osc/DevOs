@@ -210,6 +210,17 @@ fn base_name(path: str): str {
     for i in 0..n { if at(path, i) == 47 { cut = i } }
     return slice(path, cut + 1, n)
 }
+# One line of standard input without its newline ("" at end of input).
+fn read_fd_line(): str { unsafe {
+    let b = bytes_new(); let c = calloc(1, 1) as *u8
+    while true {
+        let n = read(0, c as *void, 1)
+        if n <= 0 || c[0] == 10 { break }
+        bytes_push(b, c[0])
+    }
+    free(c as *void)
+    return bytes_cstr(b)
+} }
 fn current_dir(): str { unsafe {
     let buffer = calloc(4096, 1)
     if getcwd(buffer, 4096) == null { return "." }
@@ -294,5 +305,6 @@ fn file_info(path: str, follow: bool): Info { unsafe {
 fn is_dir_mode(mode: i64): bool { return (mode / 4096) % 16 == 4 }
 fn is_reg_mode(mode: i64): bool { return (mode / 4096) % 16 == 8 }
 fn is_link_mode(mode: i64): bool { return (mode / 4096) % 16 == 10 }
+fn permission_bits(mode: i64): i64 { return mode % 4096 }
 fn is_dir(path: str): bool { let i = file_info(path, true); return i.ok && is_dir_mode(i.mode) }
 fn exists(path: str): bool { return file_info(path, false).ok }
