@@ -717,6 +717,21 @@ test.case("dpkg rpm (packages built by dpkg-deb and make-rpm.sh)",fn() {
     test.expect(strings.contains(outcome(d, bb + " rpm -qp a.txt; echo rc=$?"), "rc=1"), "rpm of a text file")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("fdisk (tables checked with the system sfdisk and fdisk)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let make = "truncate -s 64M disk.img; printf 'o\\nn\\np\\n1\\n2048\\n+10M\\nn\\np\\n2\\n\\n+20M\\nt\\n2\\n82\\na\\n1\\nw\\n' | " + bb + " fdisk disk.img >/dev/null; "
+    let dump = "sfdisk -d disk.img 2>/dev/null | grep '^disk.img' | tr -s ' '"
+    test.expect(strings.contains(outcome(d, make + dump), "disk.img1 : start= 2048, size= 20480, type=83, bootable\ndisk.img2 : start= 22528, size= 40960, type=82\n"), "partitions written by fdisk differ:\n" + outcome(d, make + dump))
+    test.expect(strings.contains(outcome(d, make + "fdisk -l disk.img 2>/dev/null | grep '^disk.img' | tr -s ' ' | cut -d' ' -f1-4"), "disk.img1 * 2048 22527\ndisk.img2 22528 63487"), "the system fdisk reads our table differently")
+    test.expect(strings.contains(outcome(d, make + bb + " fdisk -l disk.img | grep '^disk.img' | tr -s ' '"), "disk.img1 * 2048 22527 20480 83 Linux\ndisk.img2 22528 63487 40960 82 Linux swap\n"), "fdisk -l output:\n" + outcome(d, make + bb + " fdisk -l disk.img"))
+    let system_table = "truncate -s 64M sys.img; printf 'o\\nn\\np\\n1\\n2048\\n+16M\\nn\\np\\n2\\n\\n\\nt\\n2\\nb\\nw\\n' | fdisk sys.img >/dev/null 2>&1; "
+    test.expect(strings.contains(outcome(d, system_table + bb + " fdisk -l sys.img | grep '^sys.img' | tr -s ' '"), "sys.img1 2048 34815 32768 83 Linux\nsys.img2 34816 131071 96256 b W95 FAT32\n"), "our fdisk -l on a table made by the system fdisk:\n" + outcome(d, system_table + bb + " fdisk -l sys.img"))
+    test.expect(strings.contains(outcome(d, make + "printf 'd\\n1\\nw\\n' | " + bb + " fdisk disk.img >/dev/null; " + dump), "disk.img2 : start= 22528"), "fdisk d")
+    test.expect(strings.contains(outcome(d, make + "printf 'd\\n1\\nq\\n' | " + bb + " fdisk disk.img >/dev/null; " + dump), "disk.img1 : start= 2048"), "fdisk q must not write")
+    test.expect(strings.contains(outcome(d, bb + " fdisk -l nosuch.img; echo rc=$?"), "rc=1"), "fdisk of a missing file")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
