@@ -171,6 +171,17 @@ test.case("md5sum sha1sum sha256sum sha512sum cksum sum",fn() {
     all_same(d, cmds)
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("find",fn() {
+    let d = sandbox()
+    let data = "mkdir -p t/a/b t/c && printf 'x' > t/a/one.txt && printf 'xyz' > t/a/b/two.log && : > t/empty.txt && printf 'hello world hello' > t/c/Three.TXT && ln -s one.txt t/a/link && chmod 600 t/c/Three.TXT; "
+    let s = " | sort"
+    all_same(d, Vec<str>(data + "@find t" + s,data + "@find t -type f" + s,data + "@find t -type d" + s,data + "@find t -type l" + s,data + "@find t -name '*.txt'" + s,data + "@find t -iname '*.txt'" + s,data + "@find t -name 'o*'" + s,data + "@find t -name '[tT]*'" + s,data + "@find t -path '*/b/*'" + s,
+        data + "@find t -maxdepth 1" + s,data + "@find t -mindepth 2" + s,data + "@find t -maxdepth 2 -mindepth 2" + s,data + "@find t -empty" + s,data + "@find t -size 0" + s,data + "@find t -size -2c" + s,data + "@find t -size +3c" + s,data + "@find t -size 1c" + s,data + "@find t -perm 600" + s,data + "@find t -perm -600" + s,data + "@find t -perm /111" + s,
+        data + "@find t -type f -a -name '*.log'" + s,data + "@find t -name '*.log' -o -name '*.TXT'" + s,data + "@find t \\( -name '*.log' -o -name '*.TXT' \\) -a -type f" + s,data + "@find t ! -type d" + s,data + "@find t -not -name '*.txt' -type f" + s,data + "@find t -name a -prune -o -print" + s,data + "@find t -print0 | tr '\\0' '\\n'" + s,
+        data + "@find t -type f -exec echo X {} \\;" + s,data + "@find t -type f -exec echo X {} + | tr ' ' '\\n' | sort",data + "@find t -type f -exec false {} \\; ; echo rc=$?",data + "@find t -name '*.log' -delete; @find t" + s,data + "@find t/a t/c -name '*e*'" + s,data + "@find nosuchdir; echo rc=$?",data + "@find . -maxdepth 0",data + "touch -d 2001-01-01 t/a/one.txt; @find t -newer t/a/one.txt" + s,data + "touch -d '3 days ago' t/c; @find t -mtime +1" + s,data + "@find t -user root" + s,data + "@find t -links 2" + s,
+        data + "@find t -regex '.*/two\\.log'" + s,data + "@find t -mtime 0" + s,data + "@find t -mtime +1" + s,data + "@find t -mmin -5" + s,data + "@find t -depth" + s,data + "@find t -type f -name '*.txt' -print -quit | wc -l",data + "@find t -name 'x' -o -name 'y' -true | wc -l"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

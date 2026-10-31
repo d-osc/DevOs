@@ -1,0 +1,81 @@
+# Shell-style pattern matching (fnmatch): * ? [set] [!set] and backslash escapes.
+use "./sys.dev" as sys
+
+fn fold(c: u8, icase: bool): u8 { return icase && c >= 65 && c <= 90 ? c + 32 : c }
+# Matches text[ti..] against pattern[pi..]. `pathname` makes * and ? refuse '/'; `period` keeps a leading '.' from matching a wildcard.
+fn match_from(pattern: str, pi: i64, text: str, ti: i64, pathname: bool, icase: bool): bool {
+    let pn = sys.length(pattern); let tn = sys.length(text)
+    while pi < pn {
+        let p = sys.at(pattern, pi)
+        if p == 42 {
+            while pi < pn && sys.at(pattern, pi) == 42 { pi = pi + 1 }
+            if pi == pn { if !pathname { return true }; for k in ti..tn { if sys.at(text, k) == 47 { return false } }; return true }
+            let k = ti
+            while k <= tn {
+                if match_from(pattern, pi, text, k, pathname, icase) { return true }
+                if k < tn && pathname && sys.at(text, k) == 47 { return false }
+                k = k + 1
+            }
+            return false
+        }
+        if ti >= tn { return false }
+        let c = sys.at(text, ti)
+        if p == 63 { if pathname && c == 47 { return false }; pi = pi + 1; ti = ti + 1; continue }
+        if p == 91 {
+            let k = pi + 1; let negate = false; let hit = false; let first = true
+            if k < pn && (sys.at(pattern, k) == 33 || sys.at(pattern, k) == 94) { negate = true; k = k + 1 }
+            let closed = false
+            while k < pn {
+                let q = sys.at(pattern, k)
+                if q == 93 && !first { closed = true; break }
+                first = false
+                if q == 91 && k + 1 < pn && sys.at(pattern, k + 1) == 58 {
+                    let end = k + 2
+                    while end + 1 < pn && !(sys.at(pattern, end) == 58 && sys.at(pattern, end + 1) == 93) { end = end + 1 }
+                    if end + 1 < pn {
+                        let name = sys.join2(sys.slice(pattern, k + 2, end), "")
+                        if in_class(name, c) { hit = true }
+                        k = end + 2; continue
+                    }
+                }
+                let lo = q
+                if q == 92 && k + 1 < pn { k = k + 1; lo = sys.at(pattern, k) }
+                if k + 2 < pn && sys.at(pattern, k + 1) == 45 && sys.at(pattern, k + 2) != 93 {
+                    let hi = sys.at(pattern, k + 2); k = k + 3
+                    if fold(c, icase) >= fold(lo, icase) && fold(c, icase) <= fold(hi, icase) { hit = true }
+                    if icase && c >= 65 && c <= 90 && c + 32 >= lo && c + 32 <= hi { hit = true }
+                    if icase && c >= 97 && c <= 122 && c - 32 >= lo && c - 32 <= hi { hit = true }
+                } else { if fold(c, icase) == fold(lo, icase) { hit = true }; k = k + 1 }
+            }
+            if !closed {
+                # no closing bracket: '[' is an ordinary character
+                if fold(c, icase) != 91 { return false }
+                pi = pi + 1; ti = ti + 1; continue
+            }
+            if hit == negate { return false }
+            if pathname && c == 47 { return false }
+            pi = k + 1; ti = ti + 1; continue
+        }
+        if p == 92 && pi + 1 < pn { pi = pi + 1; p = sys.at(pattern, pi) }
+        if fold(p, icase) != fold(c, icase) { return false }
+        pi = pi + 1; ti = ti + 1
+    }
+    return ti == tn
+}
+fn in_class(name: str, c: u8): bool {
+    let alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122); let digit = c >= 48 && c <= 57
+    if sys.same(name, "alpha") { return alpha }
+    if sys.same(name, "digit") { return digit }
+    if sys.same(name, "alnum") { return alpha || digit }
+    if sys.same(name, "upper") { return c >= 65 && c <= 90 }
+    if sys.same(name, "lower") { return c >= 97 && c <= 122 }
+    if sys.same(name, "space") { return c == 32 || (c >= 9 && c <= 13) }
+    if sys.same(name, "blank") { return c == 32 || c == 9 }
+    if sys.same(name, "punct") { return c > 32 && c < 127 && !alpha && !digit }
+    if sys.same(name, "xdigit") { return digit || (c >= 65 && c <= 70) || (c >= 97 && c <= 102) }
+    if sys.same(name, "print") { return c >= 32 && c < 127 }
+    if sys.same(name, "graph") { return c > 32 && c < 127 }
+    if sys.same(name, "cntrl") { return c < 32 || c == 127 }
+    return false
+}
+fn matches(pattern: str, text: str, pathname: bool, icase: bool): bool { return match_from(pattern, 0, text, 0, pathname, icase) }

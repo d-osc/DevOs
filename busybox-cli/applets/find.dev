@@ -1,0 +1,296 @@
+# find [-HLP] [PATH...] [EXPRESSION]: search a directory tree.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/regex.dev" as rx
+use "../lib/glob.dev" as glob
+
+extern fn time(t: *void): i64
+
+# The expression is a tree kept in a flat table (10 slots per node) so that nothing is copied while parsing or evaluating.
+# kinds: 1 name 2 iname 3 path 4 ipath 5 regex 6 type 7 size 8 time(days) 9 minutes 10 newer 11 perm 12 user 13 group 14 empty 15 print 16 print0 17 delete
+#        18 exec 19 prune 20 true 21 false 22 and 23 or 24 not 25 quit 26 links 27 inum 28 access 29 exec+ 30 option
+# slots: 0 kind, 1 n, 2 cmp, 3 field, 4 left, 5 right, 6 extra, 7 string, 8 exec arguments (NUL separated), 9 argument count
+# cells: 0 maxdepth (-1 none), 1 mindepth, 2 depth first, 3 follow links, 4 prune, 5 quit, 6 status, 7 error while parsing, 8 cursor, 9 node count, 10 action seen
+fn cells(count: i64): *i64 { unsafe { return sys.calloc(count as usize, 8) as *i64 } }
+fn cget(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cset(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn pget(t: *i64, i: i64, f: i64): i64 { unsafe { return t[i * 10 + f] } }
+fn pset(t: *i64, i: i64, f: i64, v: i64) { unsafe { t[i * 10 + f] = v } }
+fn pstr(t: *i64, i: i64): str { unsafe { return t[i * 10 + 7] as str } }
+fn str_val(s: str): i64 { unsafe { return s as i64 } }
+fn re_val(p: *i64): i64 { unsafe { return p as i64 } }
+fn re_ptr(v: i64): *i64 { unsafe { return v as *i64 } }
+fn new_batch(): i64 { unsafe { return sys.bytes_new() as i64 } }
+fn batch_ptr(v: i64): *sys.Bytes { unsafe { return v as *sys.Bytes } }
+fn now_seconds(): i64 { unsafe { return time(0 as *void) } }
+
+struct Parse { t: *i64, c: *i64, tokens: Vec<str> }
+fn tok(p: Parse): str { let i = cget(p.c, 8); return i < (p.tokens.len() as i64) ? p.tokens[i] : "" }
+fn has_more(p: Parse): bool { return cget(p.c, 8) < (p.tokens.len() as i64) }
+fn next_tok(p: Parse) { cset(p.c, 8, cget(p.c, 8) + 1) }
+fn error(p: Parse) { cset(p.c, 7, 1) }
+fn add(p: Parse, kind: i64, s: str, n: i64, cmp: i64, field: i64, a: i64, b: i64): i64 {
+    let id = cget(p.c, 9); cset(p.c, 9, id + 1)
+    pset(p.t, id, 0, kind); pset(p.t, id, 1, n); pset(p.t, id, 2, cmp); pset(p.t, id, 3, field); pset(p.t, id, 4, a); pset(p.t, id, 5, b); pset(p.t, id, 7, str_val(s))
+    return id
+}
+
+fn parse_or(p: Parse): i64 {
+    let left = parse_and(p)
+    while has_more(p) && (sys.same(tok(p), "-o") || sys.same(tok(p), "-or")) { next_tok(p); let right = parse_and(p); left = add(p, 23, "", 0, 0, 0, left, right) }
+    return left
+}
+fn parse_and(p: Parse): i64 {
+    let left = parse_not(p)
+    while has_more(p) && !sys.same(tok(p), "-o") && !sys.same(tok(p), "-or") && !sys.same(tok(p), ")") {
+        if sys.same(tok(p), "-a") || sys.same(tok(p), "-and") { next_tok(p) }
+        let right = parse_not(p); left = add(p, 22, "", 0, 0, 0, left, right)
+    }
+    return left
+}
+fn parse_not(p: Parse): i64 {
+    if has_more(p) && (sys.same(tok(p), "!") || sys.same(tok(p), "-not")) { next_tok(p); let inner = parse_not(p); return add(p, 24, "", 0, 0, 0, inner, 0) }
+    return parse_primary(p)
+}
+struct Count { cmp: i64, n: i64, ok: bool }
+fn read_count(text: str): Count {
+    let cmp = 0; let from = 0
+    if sys.length(text) > 0 && sys.at(text, 0) == 43 { cmp = 1; from = 1 } else if sys.length(text) > 0 && sys.at(text, 0) == 45 { cmp = 0 - 1; from = 1 }
+    let n = sys.parse_number(sys.join2(sys.slice(text, from, sys.length(text)), ""))
+    return Count(cmp, n.value, n.ok)
+}
+fn parse_exec(p: Parse, plus_allowed: bool): i64 {
+    let args = sys.bytes_new(); let count = 0; let plus = false; let last = ""
+    while has_more(p) {
+        let a = tok(p)
+        if sys.same(a, ";") { next_tok(p); break }
+        if sys.same(a, "+") && count > 0 && sys.same(last, "{}") && plus_allowed { next_tok(p); plus = true; break }
+        sys.bytes_str(args, a); sys.bytes_push(args, 0); count = count + 1; last = a; next_tok(p)
+    }
+    cset(p.c, 10, 1)
+    let id = add(p, plus ? 29 : 18, "", 0, 0, 0, 0, 0)
+    unsafe { pset(p.t, id, 8, args as i64) }
+    pset(p.t, id, 9, plus ? count - 1 : count)
+    if plus { pset(p.t, id, 6, new_batch()) }
+    return id
+}
+fn parse_flag(p: Parse, t: str): i64 {
+    if sys.same(t, "-print") { cset(p.c, 10, 1); return add(p, 15, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-print0") { cset(p.c, 10, 1); return add(p, 16, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-delete") { cset(p.c, 10, 1); cset(p.c, 2, 1); return add(p, 17, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-prune") { return add(p, 19, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-true") { return add(p, 20, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-false") { return add(p, 21, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-quit") { return add(p, 25, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-empty") { return add(p, 14, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-readable") { return add(p, 28, "", 4, 0, 0, 0, 0) }
+    if sys.same(t, "-writable") { return add(p, 28, "", 2, 0, 0, 0, 0) }
+    if sys.same(t, "-executable") { return add(p, 28, "", 1, 0, 0, 0, 0) }
+    if sys.same(t, "-depth") || sys.same(t, "-d") { cset(p.c, 2, 1); return add(p, 30, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-follow") { cset(p.c, 3, 1); return add(p, 30, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-xdev") || sys.same(t, "-mount") || sys.same(t, "-noleaf") { return add(p, 30, "", 0, 0, 0, 0, 0) }
+    return 0 - 1
+}
+fn parse_valued(p: Parse, t: str, v: str): i64 {
+    if sys.same(t, "-maxdepth") { cset(p.c, 0, sys.parse_number(v).value); return add(p, 30, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-mindepth") { cset(p.c, 1, sys.parse_number(v).value); return add(p, 30, "", 0, 0, 0, 0, 0) }
+    if sys.same(t, "-name") { return add(p, 1, v, 0, 0, 0, 0, 0) }
+    if sys.same(t, "-iname") { return add(p, 2, v, 0, 0, 0, 0, 0) }
+    if sys.same(t, "-path") || sys.same(t, "-wholename") { return add(p, 3, v, 0, 0, 0, 0, 0) }
+    if sys.same(t, "-ipath") || sys.same(t, "-iwholename") { return add(p, 4, v, 0, 0, 0, 0, 0) }
+    if sys.same(t, "-type") { return add(p, 6, v, 0, 0, 0, 0, 0) }
+    if sys.same(t, "-newer") { return add(p, 10, v, 0, 0, 0, 0, 0) }
+    if sys.same(t, "-regex") || sys.same(t, "-iregex") {
+        let re = rx.compile(sys.join2(sys.join2("^\\(", v), "\\)$"), false, sys.same(t, "-iregex"))
+        if rx.failed(re) { error(p) }
+        return add(p, 5, "", re_val(re), 0, 0, 0, 0)
+    }
+    if sys.same(t, "-size") {
+        let unit_char = sys.length(v) > 0 ? sys.at(v, sys.length(v) - 1) : 0
+        let unit = 512; let digits = v
+        if unit_char == 99 { unit = 1 } else if unit_char == 107 { unit = 1024 } else if unit_char == 77 { unit = 1048576 } else if unit_char == 71 { unit = 1073741824 } else if unit_char == 119 { unit = 2 }
+        if unit_char == 99 || unit_char == 107 || unit_char == 77 || unit_char == 71 || unit_char == 119 || unit_char == 98 { digits = sys.join2(sys.slice(v, 0, sys.length(v) - 1), "") }
+        let c = read_count(digits)
+        if !c.ok { error(p) }
+        return add(p, 7, "", c.n, c.cmp, unit, 0, 0)
+    }
+    if sys.same(t, "-mtime") || sys.same(t, "-atime") || sys.same(t, "-ctime") {
+        let c = read_count(v); if !c.ok { error(p) }
+        return add(p, 8, "", c.n, c.cmp, sys.same(t, "-mtime") ? 0 : (sys.same(t, "-atime") ? 1 : 2), 0, 0)
+    }
+    if sys.same(t, "-mmin") || sys.same(t, "-amin") || sys.same(t, "-cmin") {
+        let c = read_count(v); if !c.ok { error(p) }
+        return add(p, 9, "", c.n, c.cmp, sys.same(t, "-mmin") ? 0 : (sys.same(t, "-amin") ? 1 : 2), 0, 0)
+    }
+    if sys.same(t, "-perm") {
+        let cmp = 0; let from = 0
+        if sys.length(v) > 0 && sys.at(v, 0) == 45 { cmp = 1; from = 1 } else if sys.length(v) > 0 && sys.at(v, 0) == 47 { cmp = 2; from = 1 }
+        let m = 0
+        for i in from..sys.length(v) { let c = sys.at(v, i); if c < 48 || c > 55 { error(p) }; m = m * 8 + (c - 48) as i64 }
+        return add(p, 11, "", m, cmp, 0, 0, 0)
+    }
+    if sys.same(t, "-user") || sys.same(t, "-group") {
+        let number = sys.parse_number(v)
+        let id = number.ok ? number.value : fsx.lookup_id(sys.same(t, "-user") ? "/etc/passwd" : "/etc/group", v)
+        if id < 0 { error(p) }
+        return add(p, sys.same(t, "-user") ? 12 : 13, "", id, 0, 0, 0, 0)
+    }
+    if sys.same(t, "-links") { let c = read_count(v); return add(p, 26, "", c.n, c.cmp, 0, 0, 0) }
+    if sys.same(t, "-inum") { let c = read_count(v); return add(p, 27, "", c.n, c.cmp, 0, 0, 0) }
+    error(p)
+    return add(p, 20, "", 0, 0, 0, 0, 0)
+}
+fn parse_primary(p: Parse): i64 {
+    if !has_more(p) { error(p); return add(p, 20, "", 0, 0, 0, 0, 0) }
+    let t = tok(p); next_tok(p)
+    if sys.same(t, "(") {
+        let inner = parse_or(p)
+        if has_more(p) && sys.same(tok(p), ")") { next_tok(p) } else { error(p) }
+        return inner
+    }
+    if sys.same(t, "-exec") || sys.same(t, "-execdir") { return parse_exec(p, true) }
+    let flag = parse_flag(p, t)
+    if flag >= 0 { return flag }
+    if !has_more(p) { error(p); return add(p, 20, "", 0, 0, 0, 0, 0) }
+    let v = tok(p); next_tok(p)
+    return parse_valued(p, t, v)
+}
+
+# ---- evaluation ----------------------------------------------------------------------------------------------------------------------------------------------------
+struct Env { t: *i64, c: *i64, out: *sys.Out, now: i64 }
+fn compare(cmp: i64, actual: i64, wanted: i64): bool {
+    if cmp > 0 { return actual > wanted }
+    if cmp < 0 { return actual < wanted }
+    return actual == wanted
+}
+fn base_of(path: str): str {
+    let n = sys.length(path)
+    while n > 1 && sys.at(path, n - 1) == 47 { n = n - 1 }
+    if n == 1 && sys.at(path, 0) == 47 { return "/" }
+    let cut = 0 - 1
+    for i in 0..n { if sys.at(path, i) == 47 { cut = i } }
+    return sys.join2(sys.slice(path, cut + 1, n), "")
+}
+fn replace_braces(text: str, path: str): str {
+    let b = sys.bytes_new(); let n = sys.length(text); let i = 0
+    while i < n {
+        if sys.at(text, i) == 123 && i + 1 < n && sys.at(text, i + 1) == 125 { sys.bytes_str(b, path); i = i + 2 } else { sys.bytes_push(b, sys.at(text, i)); i = i + 1 }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+# The exec arguments of node `id` (with {} replaced by `path` when given).
+fn exec_args(env: Env, id: i64, path: str, replace: bool): Vec<str> {
+    let b = batch_ptr(pget(env.t, id, 8)); let out = Vec<str>(); let start = 0
+    for q in 0..sys.blen(b) { if sys.bat(b, q) == 0 { let a = copy_range(b, start, q); out.push(replace ? replace_braces(a, path) : a); start = q + 1 } }
+    return out
+}
+fn is_empty_dir(path: str): bool { let l = fsx.list_dir(path); return l.ok && l.names.len() == 0 }
+fn matches_type(letter: u8, mode: i64): bool {
+    let kind = (mode / 4096) % 16
+    if letter == 102 { return kind == 8 }
+    if letter == 100 { return kind == 4 }
+    if letter == 108 { return kind == 10 }
+    if letter == 98 { return kind == 6 }
+    if letter == 99 { return kind == 2 }
+    if letter == 112 { return kind == 1 }
+    if letter == 115 { return kind == 12 }
+    return false
+}
+fn eval_test(env: Env, id: i64, path: str, info: sys.Info): bool {
+    let k = pget(env.t, id, 0); let n = pget(env.t, id, 1); let cmp = pget(env.t, id, 2); let field = pget(env.t, id, 3)
+    if k == 1 { return glob.matches(pstr(env.t, id), base_of(path), false, false) }
+    if k == 2 { return glob.matches(pstr(env.t, id), base_of(path), false, true) }
+    if k == 3 { return glob.matches(pstr(env.t, id), path, false, false) }
+    if k == 4 { return glob.matches(pstr(env.t, id), path, false, true) }
+    if k == 5 { return rx.matches_text(re_ptr(n), path) }
+    if k == 6 { let s = pstr(env.t, id); return sys.length(s) > 0 && matches_type(sys.at(s, 0), info.mode) }
+    if k == 7 { return compare(cmp, (info.size + field - 1) / field, n) }
+    if k == 8 { let t = field == 0 ? info.mtime : (field == 1 ? info.atime : info.ctime); return compare(cmp, (env.now - t) / 86400, n) }
+    if k == 9 { let t = field == 0 ? info.mtime : (field == 1 ? info.atime : info.ctime); return compare(cmp, (env.now - t) / 60, n) }
+    if k == 10 { let other = sys.file_info(pstr(env.t, id), true); return other.ok && info.mtime > other.mtime }
+    if k == 11 {
+        let m = sys.permission_bits(info.mode)
+        if cmp == 0 { return m == n }
+        if cmp == 1 { return (m & n) == n }
+        return n == 0 || (m & n) != 0
+    }
+    if k == 12 { return info.uid == n }
+    if k == 13 { return info.gid == n }
+    if k == 14 { if sys.is_dir_mode(info.mode) { return is_empty_dir(path) }; return sys.is_reg_mode(info.mode) && info.size == 0 }
+    if k == 26 { return compare(cmp, info.nlink, n) }
+    if k == 27 { return compare(cmp, info.inode, n) }
+    if k == 28 { unsafe { return sys.access(path, n as i32) == 0 } }
+    return true
+}
+fn eval(env: Env, id: i64, path: str, info: sys.Info): bool {
+    let k = pget(env.t, id, 0)
+    if k == 22 { return eval(env, pget(env.t, id, 4), path, info) && eval(env, pget(env.t, id, 5), path, info) }
+    if k == 23 { return eval(env, pget(env.t, id, 4), path, info) || eval(env, pget(env.t, id, 5), path, info) }
+    if k == 24 { return !eval(env, pget(env.t, id, 4), path, info) }
+    if k == 15 { sys.out_str(env.out, path); sys.out_byte(env.out, 10); return true }
+    if k == 16 { sys.out_str(env.out, path); sys.out_byte(env.out, 0); return true }
+    if k == 17 {
+        let ok = sys.is_dir_mode(info.mode) ? fsx.do_rmdir(path) == 0 : fsx.do_unlink(path) == 0
+        if !ok { sys.warn("find", sys.join2(sys.join2("cannot delete '", path), "'")); cset(env.c, 6, 1) }
+        return ok
+    }
+    if k == 18 { sys.out_flush(env.out); return proc.run_wait(exec_args(env, id, path, true), proc.environment()) == 0 }
+    if k == 29 { let b = batch_ptr(pget(env.t, id, 6)); sys.bytes_str(b, path); sys.bytes_push(b, 0); return true }
+    if k == 19 { cset(env.c, 4, 1); return true }
+    if k == 21 { return false }
+    if k == 25 { cset(env.c, 5, 1); return true }
+    return eval_test(env, id, path, info)
+}
+fn walk(env: Env, top: i64, path: str, depth: i64) {
+    if cget(env.c, 5) != 0 { return }
+    let info = sys.file_info(path, cget(env.c, 3) != 0)
+    if !info.ok { sys.warn("find", sys.join2(sys.join2("'", path), "': No such file or directory")); cset(env.c, 6, 1); return }
+    let maxd = cget(env.c, 0)
+    let can_descend = sys.is_dir_mode(info.mode) && (maxd < 0 || depth < maxd)
+    let depth_first = cget(env.c, 2) != 0
+    if depth_first && can_descend { descend(env, top, path, depth) }
+    if depth >= cget(env.c, 1) { cset(env.c, 4, 0); eval(env, top, path, info) }
+    if !depth_first && can_descend && cget(env.c, 4) == 0 { descend(env, top, path, depth) }
+}
+fn descend(env: Env, top: i64, path: str, depth: i64) {
+    let l = fsx.list_dir(path)
+    if !l.ok { sys.warn("find", sys.join2(sys.join2("'", path), "': Permission denied")); cset(env.c, 6, 1); return }
+    for k in 0..(l.names.len() as i64) { walk(env, top, fsx.join_path(path, l.names[k]), depth + 1) }
+}
+fn run_find(args: Vec<str>): i64 {
+    let paths = Vec<str>(); let tokens = Vec<str>(); let i = 0; let n = args.len() as i64; let follow = false
+    while i < n && (sys.same(args[i], "-H") || sys.same(args[i], "-L") || sys.same(args[i], "-P")) { if sys.same(args[i], "-L") { follow = true }; i = i + 1 }
+    while i < n && !(sys.at(args[i], 0) == 45 && sys.length(args[i]) > 1) && !sys.same(args[i], "!") && !sys.same(args[i], "(") { paths.push(args[i]); i = i + 1 }
+    while i < n { tokens.push(args[i]); i = i + 1 }
+    if paths.len() == 0 { paths.push(".") }
+    let c = cells(16); cset(c, 0, 0 - 1); cset(c, 3, follow ? 1 : 0)
+    let parse = Parse(cells(((tokens.len() as i64) * 2 + 8) * 10), c, tokens)
+    let top = 0 - 1
+    if tokens.len() == 0 { top = add(parse, 20, "", 0, 0, 0, 0, 0) } else { top = parse_or(parse) }
+    if cget(c, 7) != 0 || has_more(parse) { sys.warn("find", "bad expression"); return 1 }
+    if cget(c, 10) == 0 { let pr = add(parse, 15, "", 0, 0, 0, 0, 0); top = add(parse, 22, "", 0, 0, 0, top, pr) }
+    let out = sys.out_new(1)
+    let env = Env(parse.t, c, out, now_seconds())
+    for k in 0..(paths.len() as i64) { walk(env, top, paths[k], 0) }
+    # exec ... {} + : the collected paths go to one command at the end
+    for id in 0..cget(c, 9) {
+        if pget(env.t, id, 0) == 29 {
+            let b = batch_ptr(pget(env.t, id, 6))
+            if sys.blen(b) > 0 {
+                let all_args = exec_args(env, id, "", false); let argv = Vec<str>(); let start = 0
+                for q in 0..pget(env.t, id, 9) { argv.push(all_args[q]) }
+                for q in 0..sys.blen(b) { if sys.bat(b, q) == 0 { argv.push(copy_range(b, start, q)); start = q + 1 } }
+                sys.out_flush(out)
+                if proc.run_wait(argv, proc.environment()) != 0 { cset(c, 6, 1) }
+            }
+        }
+    }
+    sys.out_flush(out)
+    return cget(c, 6) != 0 ? 1 : 0
+}
