@@ -1,0 +1,390 @@
+# dd, cal, clear, reset, hostid, mknod, renice, fsync, uuencode, uudecode, more, less, mesg, runlevel, lsmod, sysctl, chroot, ionice: small utilities.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/clock.dev" as clock
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "./text.dev" as text
+
+extern fn gethostid(): i64
+extern fn mknod(path: str, mode: u32, device: u64): i32
+extern fn setpriority(which: i32, who: i32, priority: i32): i32
+extern fn chroot(path: str): i32
+extern fn fsync(fd: i32): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+
+# ---- dd ------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn size_of(text: str): i64 {
+    let n = sys.length(text); let v = 0; let i = 0
+    while i < n && sys.is_digit(sys.at(text, i)) { v = v * 10 + (sys.at(text, i) - 48) as i64; i = i + 1 }
+    let mult = 1
+    while i < n {
+        let c = sys.at(text, i)
+        if c == 99 { mult = mult * 1 } else if c == 119 { mult = mult * 2 } else if c == 98 { mult = mult * 512 } else if c == 107 || c == 75 { mult = mult * 1024 } else if c == 77 { mult = mult * 1048576 } else if c == 71 { mult = mult * 1073741824 }
+        else if c == 120 { let rest = size_of(sys.join2(sys.slice(text, i + 1, n), "")); return v * mult * rest }
+        i = i + 1
+    }
+    return v * mult
+}
+fn run_dd(args: Vec<str>): i64 {
+    let input = ""; let output = ""; let ibs = 512; let obs = 512; let count = 0 - 1; let skip = 0; let seek = 0; let notrunc = false; let sync_pad = false; let noerror = false; let quiet = false
+    for k in 0..(args.len() as i64) {
+        let a = args[k]; let eq = sys.find_char(a, 61)
+        if eq <= 0 { sys.warn("dd", sys.join2(sys.join2("unrecognized operand '", a), "'")); return 1 }
+        let key = sys.join2(sys.slice(a, 0, eq), ""); let value = sys.join2(sys.slice(a, eq + 1, sys.length(a)), "")
+        if sys.same(key, "if") { input = value } else if sys.same(key, "of") { output = value } else if sys.same(key, "bs") { ibs = size_of(value); obs = ibs }
+        else if sys.same(key, "ibs") { ibs = size_of(value) } else if sys.same(key, "obs") { obs = size_of(value) } else if sys.same(key, "count") { count = size_of(value) }
+        else if sys.same(key, "skip") || sys.same(key, "iseek") { skip = size_of(value) } else if sys.same(key, "seek") || sys.same(key, "oseek") { seek = size_of(value) }
+        else if sys.same(key, "status") { quiet = sys.same(value, "none") }
+        else if sys.same(key, "conv") {
+            let n = sys.length(value); let start = 0
+            for i in 0..(n + 1) { if i == n || sys.at(value, i) == 44 { let w = sys.join2(sys.slice(value, start, i), ""); if sys.same(w, "notrunc") { notrunc = true } else if sys.same(w, "sync") { sync_pad = true } else if sys.same(w, "noerror") { noerror = true }; start = i + 1 } }
+        } else { sys.warn("dd", sys.join2(sys.join2("unrecognized operand '", a), "'")); return 1 }
+    }
+    if ibs <= 0 || obs <= 0 { sys.warn("dd", "invalid number"); return 1 }
+    let in_fd = 0; let out_fd = 1
+    if sys.length(input) > 0 { in_fd = sys.open_fd(input, 0, 0); if in_fd < 0 { sys.warn_path("dd", input); return 1 } }
+    if sys.length(output) > 0 { out_fd = sys.open_fd(output, notrunc ? 65 : 577, 438); if out_fd < 0 { sys.warn_write("dd", output); return 1 } }
+    if skip > 0 {
+        if sys.seek_fd(in_fd, skip * ibs, 0) < 0 {
+            let scratch = sys.bytes_new(); for i in 0..ibs { sys.bytes_push(scratch, 0) }
+            for i in 0..skip { if sys.read_into(in_fd, sys.bdata(scratch), ibs) <= 0 { break } }
+        }
+    }
+    if seek > 0 { sys.seek_fd(out_fd, seek * obs, 0) }
+    let buffer = sys.bytes_new(); for i in 0..ibs { sys.bytes_push(buffer, 0) }
+    let pending = sys.bytes_new()
+    let full_in = 0; let part_in = 0; let full_out = 0; let part_out = 0; let total = 0; let blocks = 0; let status = 0
+    while count < 0 || blocks < count {
+        let n = sys.read_into(in_fd, sys.bdata(buffer), ibs)
+        if n < 0 { if noerror { n = 0; sys.warn("dd", "read error") } else { sys.warn("dd", "read error"); status = 1; break } }
+        if n == 0 { break }
+        blocks = blocks + 1
+        if n == ibs { full_in = full_in + 1 } else { part_in = part_in + 1 }
+        if sync_pad && n < ibs { for i in n..ibs { sys.bptr_set(buffer, i, 0) }; n = ibs }
+        sys.bytes_append(pending, sys.bdata(buffer), n); total = total + n
+        while sys.blen(pending) >= obs {
+            let w = sys.write_fd(out_fd, sys.bdata(pending), obs)
+            if w < obs { sys.warn("dd", "write error"); status = 1; break }
+            full_out = full_out + 1
+            let rest = sys.bytes_new(); sys.bytes_append(rest, sys.bptr_at(sys.bdata(pending), obs), sys.blen(pending) - obs); pending = rest
+        }
+        if status != 0 { break }
+    }
+    if sys.blen(pending) > 0 && status == 0 { sys.write_fd(out_fd, sys.bdata(pending), sys.blen(pending)); part_out = 1 }
+    if in_fd != 0 { sys.close_fd(in_fd) }
+    if out_fd != 1 { sys.close_fd(out_fd) }
+    if !quiet {
+        sys.put_fd(2, sys.join2(sys.join2(decimal(full_in), "+"), sys.join2(decimal(part_in), " records in\n")))
+        sys.put_fd(2, sys.join2(sys.join2(decimal(full_out), "+"), sys.join2(decimal(part_out), " records out\n")))
+        sys.put_fd(2, sys.join2(sys.join2(decimal(total), " bytes copied\n"), ""))
+    }
+    return status
+}
+
+// ---- cal [[month] year] ---------------------------------------------------------------------------------------------------------------------------------------
+fn days_in_month(year: i64, month: i64): i64 {
+    if month == 2 { return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 ? 29 : 28 }
+    return month == 4 || month == 6 || month == 9 || month == 11 ? 30 : 31
+}
+fn month_lines(year: i64, month: i64, highlight: i64): Vec<str> {
+    let rows = Vec<str>()
+    let title = sys.join2(sys.join2(clock.month_name(month - 1), " "), decimal(year))
+    let pad = (20 - sys.length(title)) / 2
+    let t = sys.bytes_new(); for i in 0..pad { sys.bytes_push(t, 32) }; sys.bytes_str(t, title)
+    while sys.blen(t) < 20 { sys.bytes_push(t, 32) }
+    rows.push(sys.join2(sys.bytes_cstr(t), ""))
+    rows.push("Su Mo Tu We Th Fr Sa")
+    let first = (clock.days_from_civil(year, month, 1) + 4) % 7
+    let line = sys.bytes_new()
+    for i in 0..first { sys.bytes_str(line, "   ") }
+    let col = first
+    for day in 1..(days_in_month(year, month) + 1) {
+        if day < 10 { sys.bytes_push(line, 32) }
+        sys.bytes_num(line, day)
+        col = col + 1
+        if col == 7 { rows.push(sys.join2(sys.bytes_cstr(line), "")); line = sys.bytes_new(); col = 0 } else { sys.bytes_push(line, 32) }
+    }
+    if col > 0 { let s = sys.join2(sys.bytes_cstr(line), ""); rows.push(sys.join2(s, "")) }
+    return rows
+}
+fn run_cal(args: Vec<str>): i64 {
+    let now = clock.fields(clock.now(), false)
+    let year = clock.get(now, 5); let month = clock.get(now, 4) + 1; let whole_year = false
+    let nums = Vec<i64>()
+    for k in 0..(args.len() as i64) {
+        if sys.same(args[k], "-y") { whole_year = true; continue }
+        let v = sys.parse_number(args[k])
+        if !v.ok { sys.warn("cal", sys.join2("not a valid number: ", args[k])); return 1 }
+        nums.push(v.value)
+    }
+    if nums.len() == 1 { year = nums[0]; whole_year = true } else if nums.len() == 2 { month = nums[0]; year = nums[1] } else if nums.len() > 2 { sys.warn("cal", "too many arguments"); return 1 }
+    if month < 1 || month > 12 || year < 1 || year > 9999 { sys.warn("cal", "invalid date"); return 1 }
+    let o = sys.out_new(1)
+    if !whole_year {
+        let rows = month_lines(year, month, 0)
+        for k in 0..(rows.len() as i64) { sys.out_str(o, trim_end(rows[k])); sys.out_byte(o, 10) }
+    } else {
+        let t = sys.bytes_new(); let ys = decimal(year); for i in 0..((62 - sys.length(ys)) / 2) { sys.bytes_push(t, 32) }; sys.bytes_str(t, ys)
+        sys.out_str(o, sys.join2(sys.bytes_cstr(t), "")); sys.out_str(o, "\n\n")
+        for quarter in 0..4 {
+            let a = month_lines(year, quarter * 3 + 1, 0); let b = month_lines(year, quarter * 3 + 2, 0); let c = month_lines(year, quarter * 3 + 3, 0)
+            let height = 8
+            for r in 0..height {
+                let la = r < a.len() as i64 ? a[r] : ""; let lb = r < b.len() as i64 ? b[r] : ""; let lc = r < c.len() as i64 ? c[r] : ""
+                sys.out_str(o, pad_to(la, 20)); sys.out_str(o, "  "); sys.out_str(o, pad_to(lb, 20)); sys.out_str(o, "  "); sys.out_str(o, lc); sys.out_byte(o, 10)
+            }
+        }
+    }
+    sys.out_flush(o)
+    return 0
+}
+fn trim_end(text: str): str { let n = sys.length(text); while n > 0 && sys.at(text, n - 1) == 32 { n = n - 1 }; return sys.join2(sys.slice(text, 0, n), "") }
+fn pad_to(text: str, width: i64): str { let b = sys.bytes_new(); sys.bytes_str(b, text); while sys.blen(b) < width { sys.bytes_push(b, 32) }; return sys.join2(sys.bytes_cstr(b), "") }
+
+// ---- trivial terminal and system tools ------------------------------------------------------------------------------------------------------------------------
+fn escaped(text: str): str {
+    let b = sys.bytes_new()
+    for i in 0..sys.length(text) { let c = sys.at(text, i); let v = c; if c == 126 { v = 27 }; sys.bytes_push(b, v) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_clear(args: Vec<str>): i64 { let o = sys.out_new(1); sys.out_str(o, escaped("~[H~[2J~[3J")); sys.out_flush(o); return 0 }
+fn run_reset(args: Vec<str>): i64 { let o = sys.out_new(1); sys.out_str(o, escaped("~c~[!p~[?3;4l~[4l~>")); sys.out_flush(o); return 0 }
+fn hex8(v: i64): str {
+    let digits = "0123456789abcdef"; let b = sys.bytes_new(); let x = v % 4294967296
+    for i in 0..8 { let shift = 7 - i; let p = 1; for k in 0..shift { p = p * 16 }; sys.bytes_push(b, sys.at(digits, (x / p) % 16)) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_hostid(args: Vec<str>): i64 { let o = sys.out_new(1); unsafe { sys.out_str(o, hex8(gethostid())) }; sys.out_byte(o, 10); sys.out_flush(o); return 0 }
+fn run_mknod(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "m:")
+    if o.bad != 0 || o.rest.len() < 2 { sys.warn("mknod", "invalid usage: mknod [-m MODE] NAME TYPE [MAJOR MINOR]"); return 1 }
+    let name = o.rest[0]; let kind = o.rest[1]
+    let mode = 438
+    if sys.has(o, 109) { let m = sys.val(o, 109); mode = 0; for i in 0..sys.length(m) { mode = mode * 8 + (sys.at(m, i) - 48) as i64 } }
+    let type_bits = 0
+    let t = sys.length(kind) > 0 ? sys.at(kind, 0) : 0
+    if t == 112 { type_bits = 4096 } else if t == 98 { type_bits = 24576 } else if t == 99 || t == 117 { type_bits = 8192 } else { sys.warn("mknod", "invalid device type"); return 1 }
+    let major = 0; let minor = 0
+    if t != 112 {
+        if o.rest.len() != 4 { sys.warn("mknod", "invalid usage"); return 1 }
+        major = sys.parse_number(o.rest[2]).value; minor = sys.parse_number(o.rest[3]).value
+    }
+    let device = ((major % 4096) * 256) + (minor % 256) + ((minor / 256) * 1048576) + ((major / 4096) * 4294967296 * 4096)
+    unsafe { if mknod(name, (type_bits + mode) as u32, device as u64) != 0 { sys.warn("mknod", sys.join2(sys.join2(name, ": "), sys.path_error(name, true))); return 1 } }
+    return 0
+}
+fn run_renice(args: Vec<str>): i64 {
+    let rest = Vec<str>(); for k in 0..(args.len() as i64) { if !sys.same(args[k], "-n") && !sys.same(args[k], "-p") { rest.push(args[k]) } }
+    if rest.len() < 2 { sys.warn("renice", "invalid usage: renice [-n] PRIORITY [[-p] PID...]"); return 1 }
+    let prio = sys.parse_number(rest[0]); if !prio.ok { sys.warn("renice", sys.join2("invalid priority ", rest[0])); return 1 }
+    let status = 0
+    for k in 1..(rest.len() as i64) {
+        let pid = sys.parse_number(rest[k])
+        if !pid.ok { sys.warn("renice", sys.join2("invalid pid ", rest[k])); status = 1; continue }
+        unsafe { if setpriority(0, pid.value as i32, prio.value as i32) != 0 { sys.warn("renice", sys.join2(sys.join2("failed to set priority for ", rest[k]), ": No such process or permission denied")); status = 1 } }
+    }
+    return status
+}
+fn run_fsync(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("fsync", "invalid usage: fsync FILE..."); return 1 }
+    let status = 0
+    for k in 0..(args.len() as i64) {
+        let fd = sys.open_fd(args[k], 0, 0)
+        if fd < 0 { sys.warn_path("fsync", args[k]); status = 1; continue }
+        unsafe { if fsync(fd as i32) != 0 { status = 1 } }
+        sys.close_fd(fd)
+    }
+    return status
+}
+fn run_more(args: Vec<str>): i64 { return text.run_cat(args) }
+fn run_less(args: Vec<str>): i64 { return text.run_cat(args) }
+fn run_mesg(args: Vec<str>): i64 { if !sys.is_tty(0) { sys.warn("mesg", "not a tty"); return 1 }; let o = sys.out_new(1); sys.out_str(o, "is y\n"); sys.out_flush(o); return 0 }
+fn run_runlevel(args: Vec<str>): i64 { let o = sys.out_new(1); sys.out_str(o, "unknown\n"); sys.out_flush(o); return 1 }
+fn run_ionice(args: Vec<str>): i64 {
+    let rest = Vec<str>(); let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-c") || sys.same(a, "-n") || sys.same(a, "-p") { i = i + 2; continue }
+        if sys.length(a) > 1 && sys.at(a, 0) == 45 && rest.len() == 0 { i = i + 1; continue }
+        rest.push(a); i = i + 1
+    }
+    if rest.len() == 0 { let o = sys.out_new(1); sys.out_str(o, "none: prio 0\n"); sys.out_flush(o); return 0 }
+    return proc.run_wait(rest, proc.environment())
+}
+fn run_chroot(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("chroot", "invalid usage: chroot NEWROOT [PROG ARGS]"); return 1 }
+    unsafe { if chroot(args[0]) != 0 { sys.warn("chroot", sys.join2(sys.join2("cannot change root directory to ", args[0]), ": Operation not permitted")); return 126 } }
+    if !fsx.change_dir("/") { return 1 }
+    let cmd = Vec<str>(); for k in 1..(args.len() as i64) { cmd.push(args[k]) }
+    if cmd.len() == 0 { cmd.push("/bin/sh"); cmd.push("-i") }
+    return proc.run_wait(cmd, proc.environment())
+}
+fn run_lsmod(args: Vec<str>): i64 {
+    let input = sys.read_path("/proc/modules")
+    if !input.ok { sys.warn_path("lsmod", "/proc/modules"); return 1 }
+    let o = sys.out_new(1)
+    sys.out_str(o, "Module                  Size  Used by\n")
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) {
+        let line = copy_range(input.bytes, ls.starts[k], ls.ends[k]); let parts = fields_of(line)
+        if parts.len() < 4 { continue }
+        let name = parts[0]; let b = sys.bytes_new(); sys.bytes_str(b, name); while sys.blen(b) < 19 { sys.bytes_push(b, 32) }
+        let size = parts[1]; for i in 0..(8 - sys.length(size)) { sys.bytes_push(b, 32) }; sys.bytes_str(b, size)
+        sys.bytes_push(b, 32); sys.bytes_str(b, parts[2])
+        if parts.len() > 3 && !sys.same(parts[3], "-") { sys.bytes_push(b, 32); sys.bytes_str(b, strip_comma(parts[3])) }
+        sys.out_str(o, sys.join2(sys.bytes_cstr(b), "")); sys.out_byte(o, 10)
+    }
+    sys.out_flush(o)
+    return 0
+}
+fn strip_comma(s: str): str { return sys.ends(s, ",") ? sys.join2(sys.slice(s, 0, sys.length(s) - 1), "") : s }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn run_sysctl(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "naewpN")
+    if o.bad != 0 { sys.warn("sysctl", "invalid usage: sysctl [-n] [-e] [-a] [NAME[=VALUE]]..."); return 1 }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(o.rest.len() as i64) {
+        let item = o.rest[k]; let eq = sys.find_char(item, 61)
+        let name = eq < 0 ? item : sys.join2(sys.slice(item, 0, eq), "")
+        let path = sys.join2("/proc/sys/", sys.join2(replace_dots(name), ""))
+        if eq >= 0 {
+            let fd = sys.open_fd(path, 1, 0)
+            if fd < 0 { sys.warn("sysctl", sys.join2(sys.join2("error setting key '", name), "'")); status = 1; continue }
+            let value = sys.join2(sys.slice(item, eq + 1, sys.length(item)), "")
+            let b = sys.bytes_new(); sys.bytes_str(b, value); sys.bytes_push(b, 10); sys.write_fd(fd, sys.bdata(b), sys.blen(b)); sys.close_fd(fd)
+            if !sys.has(o, 110) { sys.out_str(out, name); sys.out_str(out, " = "); sys.out_str(out, value); sys.out_byte(out, 10) }
+            continue
+        }
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn("sysctl", sys.join2(sys.join2("error: '", name), "' is an unknown key")); status = 1; continue }
+        let text_value = copy_range(input.bytes, 0, sys.blen(input.bytes))
+        if sys.length(text_value) > 0 && sys.at(text_value, sys.length(text_value) - 1) == 10 { text_value = sys.join2(sys.slice(text_value, 0, sys.length(text_value) - 1), "") }
+        if !sys.has(o, 110) { sys.out_str(out, name); sys.out_str(out, " = ") }
+        sys.out_str(out, text_value); sys.out_byte(out, 10)
+    }
+    sys.out_flush(out)
+    return status
+}
+fn replace_dots(name: str): str {
+    let b = sys.bytes_new()
+    for i in 0..sys.length(name) { let c = sys.at(name, i); let v = c; if c == 46 { v = 47 }; sys.bytes_push(b, v) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+
+// ---- uuencode / uudecode ----------------------------------------------------------------------------------------------------------------------------------------
+fn uu_char(v: i64): u8 { return v == 0 ? 96 : (32 + v) as u8 }
+fn run_uuencode(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "m")
+    let base64 = sys.has(o, 109)
+    if o.rest.len() < 1 || o.rest.len() > 2 { sys.warn("uuencode", "invalid usage: uuencode [-m] [INFILE] STORED_FILENAME"); return 1 }
+    let source = o.rest.len() == 2 ? o.rest[0] : "-"; let stored = o.rest[(o.rest.len() as i64) - 1]
+    let input = sys.read_path(source)
+    if !input.ok { sys.warn_path("uuencode", source); return 1 }
+    let b = input.bytes; let n = sys.blen(b); let out = sys.out_new(1)
+    sys.out_str(out, base64 ? "begin-base64 644 " : "begin 644 "); sys.out_str(out, stored); sys.out_byte(out, 10)
+    let table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    if base64 {
+        let col = 0
+        let i = 0
+        while i < n {
+            let a = sys.bat(b, i) as i64; let c1 = i + 1 < n ? sys.bat(b, i + 1) as i64 : 0; let c2 = i + 2 < n ? sys.bat(b, i + 2) as i64 : 0
+            let v = a * 65536 + c1 * 256 + c2
+            sys.out_byte(out, sys.at(table, (v / 262144) % 64)); sys.out_byte(out, sys.at(table, (v / 4096) % 64))
+            sys.out_byte(out, i + 1 < n ? sys.at(table, (v / 64) % 64) : (61 as u8)); sys.out_byte(out, i + 2 < n ? sys.at(table, v % 64) : (61 as u8))
+            col = col + 4; i = i + 3
+            if col >= 60 { sys.out_byte(out, 10); col = 0 }
+        }
+        if col > 0 { sys.out_byte(out, 10) }
+        sys.out_str(out, "====\n")
+    } else {
+        let i = 0
+        while i < n {
+            let len = n - i > 45 ? 45 : n - i
+            sys.out_byte(out, uu_char(len))
+            let k = 0
+            while k < len {
+                let a = sys.bat(b, i + k) as i64; let c1 = k + 1 < len ? sys.bat(b, i + k + 1) as i64 : 0; let c2 = k + 2 < len ? sys.bat(b, i + k + 2) as i64 : 0
+                let v = a * 65536 + c1 * 256 + c2
+                sys.out_byte(out, uu_char((v / 262144) % 64)); sys.out_byte(out, uu_char((v / 4096) % 64)); sys.out_byte(out, uu_char((v / 64) % 64)); sys.out_byte(out, uu_char(v % 64))
+                k = k + 3
+            }
+            sys.out_byte(out, 10); i = i + len
+        }
+        sys.out_str(out, "`\nend\n")
+    }
+    sys.out_flush(out)
+    return 0
+}
+fn b64_value(c: u8): i64 {
+    if c >= 65 && c <= 90 { return (c - 65) as i64 } if c >= 97 && c <= 122 { return (c - 71) as i64 } if c >= 48 && c <= 57 { return (c + 4) as i64 }
+    if c == 43 { return 62 } if c == 47 { return 63 }
+    return 0 - 1
+}
+fn run_uudecode(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "o:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("uudecode", "invalid usage: uudecode [-o OUTFILE] [INFILE]"); return 1 }
+    let source = o.rest.len() > 0 ? o.rest[0] : "-"
+    let input = sys.read_path(source)
+    if !input.ok { sys.warn_path("uudecode", source); return 1 }
+    let ls = lines.split_lines(input.bytes, 10); let total = ls.starts.len() as i64
+    let k = 0; let target = ""; let base64 = false; let found = false
+    while k < total {
+        let line = copy_range(input.bytes, ls.starts[k], ls.ends[k])
+        if sys.starts(line, "begin-base64 ") || sys.starts(line, "begin ") {
+            base64 = sys.starts(line, "begin-base64 "); found = true
+            let parts = fields_of(line); if parts.len() >= 3 { target = sys.join2(sys.slice(line, sys.length(parts[0]) + sys.length(parts[1]) + 2, sys.length(line)), "") }
+            k = k + 1; break
+        }
+        k = k + 1
+    }
+    if !found { sys.warn("uudecode", "no 'begin' line"); return 1 }
+    if sys.has(o, 111) { target = sys.val(o, 111) }
+    let out = sys.bytes_new()
+    while k < total {
+        let s = ls.starts[k]; let e = ls.ends[k]; k = k + 1
+        if base64 {
+            if e - s >= 4 && sys.bat(input.bytes, s) == 61 { break }
+            let acc = 0; let bits = 0
+            for q in s..e {
+                let c = sys.bat(input.bytes, q)
+                if c == 61 { break }
+                let v = b64_value(c); if v < 0 { continue }
+                acc = acc * 64 + v; bits = bits + 6
+                if bits >= 8 { let shift = 1; for z in 0..(bits - 8) { shift = shift * 2 }; sys.bytes_push(out, ((acc / shift) % 256) as u8); acc = acc % shift; bits = bits - 8 }
+            }
+        } else {
+            if e - s == 0 { continue }
+            let len = (sys.bat(input.bytes, s) as i64 - 32) % 64
+            if len == 0 { break }
+            let produced = 0; let q = s + 1
+            while produced < len && q + 3 < e + 4 {
+                let v = 0
+                for z in 0..4 { let c = q + z < e ? sys.bat(input.bytes, q + z) as i64 : 32; v = v * 64 + (c - 32) % 64 }
+                let b1 = (v / 65536) % 256; let b2 = (v / 256) % 256; let b3 = v % 256
+                if produced < len { sys.bytes_push(out, b1 as u8); produced = produced + 1 }
+                if produced < len { sys.bytes_push(out, b2 as u8); produced = produced + 1 }
+                if produced < len { sys.bytes_push(out, b3 as u8); produced = produced + 1 }
+                q = q + 4
+            }
+        }
+    }
+    if sys.same(target, "/dev/stdout") || sys.length(target) == 0 { let w = sys.out_new(1); sys.out_data(w, sys.bdata(out), sys.blen(out)); sys.out_flush(w); return 0 }
+    let fd = sys.open_fd(target, 577, 420)
+    if fd < 0 { sys.warn_write("uudecode", target); return 1 }
+    sys.write_fd(fd, sys.bdata(out), sys.blen(out)); sys.close_fd(fd)
+    return 0
+}

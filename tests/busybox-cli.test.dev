@@ -252,6 +252,24 @@ test.case("tar (BusyBox against the system tar)",fn() {
     }
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("dd hostid sysctl lsmod mknod fsync more less mesg clear",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    all_same(d, Vec<str>("@dd if=a.txt bs=4 count=2 2>/dev/null","@dd if=a.txt bs=1 skip=3 count=5 2>/dev/null","@dd if=a.txt of=o.dat 2>/dev/null; cat o.dat","@dd if=/dev/zero bs=1k count=3 2>/dev/null | wc -c","@dd if=a.txt ibs=2 obs=8 2>/dev/null | cmp - a.txt; echo rc=$?","printf 'abc' | @dd 2>/dev/null","printf 'abcdef' | @dd bs=2 skip=1 count=1 2>/dev/null; echo","@dd if=a.txt of=o.dat seek=2 bs=1 conv=notrunc 2>/dev/null; wc -c < o.dat","printf 'xy' > o.dat; @dd if=b.txt of=o.dat bs=1 count=2 conv=notrunc 2>/dev/null; cat o.dat","@dd if=a.txt bs=1M 2>/dev/null | wc -c","@dd if=nosuch 2>/dev/null; echo rc=$?","@dd if=a.txt count=1 bs=2k status=none | wc -c","@dd bogus=1 2>/dev/null; echo rc=$?",
+        "@hostid","@sysctl -n kernel.ostype","@sysctl kernel.ostype","@sysctl -n nosuch.key 2>/dev/null; echo rc=$?","@lsmod | head -1","@mknod p1 p; ls -l p1 | cut -c1","cat a.txt | @more","cat b.txt | @less","@mesg | wc -l","@clear | wc -c"))
+    test.expect(strings.contains(outcome(d, bb + " fsync a.txt; echo rc=$?; " + bb + " fsync nosuch; echo rc=$?"), "rc=0\n") && strings.contains(outcome(d, bb + " fsync nosuch; echo rc=$?"), "rc=1"), "fsync status is wrong")
+    test.expect(strings.equal(outcome(d, bb + " cal 11 2026"), "   November 2026\nSu Mo Tu We Th Fr Sa\n 1  2  3  4  5  6  7\n 8  9 10 11 12 13 14\n15 16 17 18 19 20 21\n22 23 24 25 26 27 28\n29 30\nrc=0\n"), "cal 11 2026 is wrong:\n" + outcome(d, bb + " cal 11 2026"))
+    test.expect(strings.contains(outcome(d, bb + " cal 2 2024"), "25 26 27 28 29\n"), "cal 2 2024 misses the leap day")
+    test.expect(strings.contains(outcome(d, bb + " cal 2024 | head -3"), "2024"), "cal YEAR failed")
+    test.expect(strings.contains(outcome(d, bb + " cal 13 2024; echo"), "rc=1") || strings.contains(outcome(d, bb + " cal 13 2024"), "rc=1"), "cal accepted month 13")
+    test.expect(strings.equal(outcome(d, "printf Cat | " + bb + " uuencode f"), "begin 644 f\n#0V%T\n`\nend\nrc=0\n"), "uuencode of Cat is wrong:\n" + outcome(d, "printf Cat | " + bb + " uuencode f"))
+    test.expect(strings.equal(outcome(d, "printf Cat | " + bb + " uuencode -m f"), "begin-base64 644 f\nQ2F0\n====\nrc=0\n"), "uuencode -m of Cat is wrong:\n" + outcome(d, "printf Cat | " + bb + " uuencode -m f"))
+    for f in Vec<str>("a.txt", "b.txt", "empty.txt", "rnd.dat") {
+        test.expect(strings.contains(outcome(d, "head -c 1000 /dev/urandom > rnd.dat; " + bb + " uuencode " + f + " " + f + " | " + bb + " uudecode -o rt.out; cmp rt.out " + f + "; echo cmp=$?"), "cmp=0"), "uuencode/uudecode round trip failed for " + f)
+        test.expect(strings.contains(outcome(d, "head -c 1001 /dev/urandom > rnd.dat; " + bb + " uuencode -m " + f + " " + f + " | " + bb + " uudecode -o rt.out; cmp rt.out " + f + "; echo cmp=$?"), "cmp=0"), "base64 uuencode/uudecode round trip failed for " + f)
+    }
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

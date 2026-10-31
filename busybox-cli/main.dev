@@ -18,10 +18,11 @@ use "./applets/ls.dev" as ls
 use "./applets/diskinfo.dev" as di
 use "./applets/gzip.dev" as gz
 use "./applets/tar.dev" as tr
+use "./applets/misc.dev" as ms
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "basename", "cat", "chgrp", "chmod", "chown", "cksum", "cmp", "comm", "cp", "cut", "date", "df", "dirname", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostname", "id", "install", "kill", "killall", "length", "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mktemp", "mountpoint", "mv", "nice", "nohup", "od", "pgrep", "pidof", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "rm", "rmdir", "sed", "seq", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "sync", "tac", "tail", "tar", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "watch", "wc", "which", "whoami", "xargs", "yes", "zcat")
+    return Vec<str>("[", "[[", "basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cut", "date", "dd", "df", "dirname", "dos2unix", "du", "echo", "egrep", "env", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "install", "ionice", "kill", "killall", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mktemp", "more", "mountpoint", "mv", "nice", "nohup", "od", "pgrep", "pidof", "pkill", "printenv", "printf", "ps", "pwd", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "runlevel", "sed", "seq", "setsid", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split", "stat", "strings", "sum", "sync", "sysctl", "tac", "tail", "tar", "tee", "test", "time", "timeout", "touch", "tr", "true", "tty", "uname", "unexpand", "uniq", "unix2dos", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "which", "whoami", "xargs", "yes", "zcat")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -124,6 +125,24 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "gunzip") { return gz.run_gunzip(args) }
     if sys.same(name, "zcat") { return gz.run_zcat(args) }
     if sys.same(name, "tar") { return tr.run_tar(args) }
+    if sys.same(name, "dd") { return ms.run_dd(args) }
+    if sys.same(name, "cal") { return ms.run_cal(args) }
+    if sys.same(name, "clear") { return ms.run_clear(args) }
+    if sys.same(name, "reset") { return ms.run_reset(args) }
+    if sys.same(name, "hostid") { return ms.run_hostid(args) }
+    if sys.same(name, "mknod") { return ms.run_mknod(args) }
+    if sys.same(name, "renice") { return ms.run_renice(args) }
+    if sys.same(name, "fsync") { return ms.run_fsync(args) }
+    if sys.same(name, "uuencode") { return ms.run_uuencode(args) }
+    if sys.same(name, "uudecode") { return ms.run_uudecode(args) }
+    if sys.same(name, "more") { return ms.run_more(args) }
+    if sys.same(name, "less") { return ms.run_less(args) }
+    if sys.same(name, "mesg") { return ms.run_mesg(args) }
+    if sys.same(name, "runlevel") { return ms.run_runlevel(args) }
+    if sys.same(name, "lsmod") { return ms.run_lsmod(args) }
+    if sys.same(name, "sysctl") { return ms.run_sysctl(args) }
+    if sys.same(name, "chroot") { return ms.run_chroot(args) }
+    if sys.same(name, "ionice") { return ms.run_ionice(args) }
     sys.warn(name, "applet not found")
     return 127
 }

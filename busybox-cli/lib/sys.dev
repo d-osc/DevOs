@@ -312,6 +312,8 @@ fn is_link_mode(mode: i64): bool { return (mode / 4096) % 16 == 10 }
 fn permission_bits(mode: i64): i64 { return mode % 4096 }
 # Writes `count` bytes to a descriptor; the number written, or -1.
 fn write_fd(fd: i64, data: *u8, count: i64): i64 { unsafe { return write(fd as i32, data as str, count as usize) as i64 } }
+fn read_into(fd: i64, data: *u8, count: i64): i64 { unsafe { return read(fd as i32, data as *void, count as usize) as i64 } }
+fn seek_fd(fd: i64, offset: i64, whence: i64): i64 { unsafe { return lseek(fd as i32, offset, whence as i32) } }
 # Safe forms of open / close for applets (a negative descriptor means failure).
 fn open_fd(path: str, flags: i64, mode: i64): i64 { unsafe { return open(path, flags, mode) as i64 } }
 fn close_fd(fd: i64) { unsafe { close(fd as i32) } }
