@@ -13,6 +13,7 @@ use "./applets/grep.dev" as gr
 use "./applets/sed.dev" as sd
 use "./applets/hash.dev" as hs
 use "./applets/find.dev" as fd
+use "./applets/date.dev" as dt
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
@@ -110,6 +111,7 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "cksum") { return hs.run_cksum(args) }
     if sys.same(name, "sum") { return hs.run_sum(args) }
     if sys.same(name, "find") { return fd.run_find(args) }
+    if sys.same(name, "date") { return dt.run_date(args) }
     sys.warn(name, "applet not found")
     return 127
 }

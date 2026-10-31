@@ -1,0 +1,119 @@
+# date [-u] [-d STRING] [-r FILE] [-I] [-R] [+FORMAT]: print the date and time.
+use "../lib/sys.dev" as sys
+use "../lib/clock.dev" as clock
+
+struct When { ok: bool, epoch: i64 }
+fn digits_at(text: str, from: i64, count: i64): i64 {
+    let v = 0
+    if from + count > sys.length(text) { return 0 - 1 }
+    for k in 0..count { let c = sys.at(text, from + k); if !sys.is_digit(c) { return 0 - 1 }; v = v * 10 + (c - 48) as i64 }
+    return v
+}
+fn midnight_of(t: i64): i64 { return t - (t % 86400) }
+fn unit_seconds(word: str): i64 {
+    let w = sys.ends(word, "s") ? sys.join2(sys.slice(word, 0, sys.length(word) - 1), "") : word
+    if sys.same(w, "second") || sys.same(w, "sec") { return 1 }
+    if sys.same(w, "minute") || sys.same(w, "min") { return 60 }
+    if sys.same(w, "hour") { return 3600 }
+    if sys.same(w, "day") { return 86400 }
+    if sys.same(w, "week") { return 604800 }
+    return 0
+}
+fn words_of(text: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(text)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(text, i) == 32 || sys.at(text, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(text, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn at_time(f: *i64, utc: bool, hh: i64, mm: i64, ss: i64): i64 {
+    let y = clock.get(f, 5); let mo = clock.get(f, 4) + 1; let d = clock.get(f, 3)
+    return utc ? clock.utc_epoch(y, mo, d, hh, mm, ss) : clock.local_epoch(y, mo, d, hh, mm, ss)
+}
+# Parses "@N", "now", "YYYY-MM-DD[ HH:MM[:SS]]", "HH:MM[:SS]", "yesterday", "tomorrow" and "N units [ago]".
+fn parse_when(text: str, utc: bool): When {
+    let now = clock.now()
+    if sys.length(text) > 1 && sys.at(text, 0) == 64 { let v = sys.parse_number(sys.join2(sys.slice(text, 1, sys.length(text)), "")); return When(v.ok, v.value) }
+    let words = words_of(text)
+    if words.len() == 0 { return When(true, now) }
+    let base = now
+    let i = 0; let n = words.len() as i64
+    while i < n {
+        let w = words[i]; let len = sys.length(w)
+        if sys.same(w, "now") { i = i + 1; continue }
+        if sys.same(w, "today") { base = midnight_of(now); i = i + 1; continue }
+        if sys.same(w, "yesterday") { base = midnight_of(now) - 86400; i = i + 1; continue }
+        if sys.same(w, "tomorrow") { base = midnight_of(now) + 86400; i = i + 1; continue }
+        if sys.same(w, "ago") || sys.same(w, "UTC") || sys.same(w, "Z") || sys.same(w, "GMT") { i = i + 1; continue }
+        let number = sys.parse_number(w)
+        if number.ok && i + 1 < n && unit_seconds(words[i + 1]) > 0 {
+            let amount = number.value * unit_seconds(words[i + 1])
+            let ago = i + 2 < n && sys.same(words[i + 2], "ago")
+            base = ago ? base - amount : base + amount
+            i = i + (ago ? 3 : 2); continue
+        }
+        if len >= 10 && sys.at(w, 4) == 45 && sys.at(w, 7) == 45 {
+            let y = digits_at(w, 0, 4); let m = digits_at(w, 5, 2); let d = digits_at(w, 8, 2)
+            if y < 0 || m < 1 || m > 12 || d < 1 || d > 31 { return When(false, 0) }
+            let hh = 0; let mm = 0; let ss = 0
+            let rest = ""
+            if len > 11 && sys.at(w, 10) == 84 { rest = sys.join2(sys.slice(w, 11, len), "") }
+            else if i + 1 < n && sys.find_char(words[i + 1], 58) >= 0 { rest = words[i + 1]; i = i + 1 }
+            if sys.length(rest) >= 5 && sys.at(rest, 2) == 58 {
+                hh = digits_at(rest, 0, 2); mm = digits_at(rest, 3, 2)
+                if sys.length(rest) >= 8 && sys.at(rest, 5) == 58 { ss = digits_at(rest, 6, 2) }
+            }
+            base = utc ? clock.utc_epoch(y, m, d, hh, mm, ss) : clock.local_epoch(y, m, d, hh, mm, ss)
+            i = i + 1; continue
+        }
+        if len >= 5 && sys.at(w, 2) == 58 {
+            let hh = digits_at(w, 0, 2); let mm = digits_at(w, 3, 2); let ss = len >= 8 && sys.at(w, 5) == 58 ? digits_at(w, 6, 2) : 0
+            if hh < 0 || mm < 0 { return When(false, 0) }
+            base = at_time(clock.fields(now, utc), utc, hh, mm, ss)
+            i = i + 1; continue
+        }
+        return When(false, 0)
+    }
+    return When(true, base)
+}
+fn run_date(args: Vec<str>): i64 {
+    let utc = false; let describe = ""; let reference = ""; let format = ""; let iso = ""; let rfc = false; let have_format = false
+    let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.length(a) > 0 && sys.at(a, 0) == 43 { format = sys.join2(sys.slice(a, 1, sys.length(a)), ""); have_format = true }
+        else if sys.same(a, "-u") || sys.same(a, "--utc") { utc = true }
+        else if sys.same(a, "-R") { rfc = true }
+        else if sys.starts(a, "-I") { iso = sys.length(a) > 2 ? sys.join2(sys.slice(a, 2, sys.length(a)), "") : "date" }
+        else if sys.same(a, "-d") && i + 1 < n { i = i + 1; describe = args[i] }
+        else if sys.starts(a, "-d") && sys.length(a) > 2 { describe = sys.join2(sys.slice(a, 2, sys.length(a)), "") }
+        else if sys.starts(a, "--date=") { describe = sys.join2(sys.slice(a, 7, sys.length(a)), "") }
+        else if sys.same(a, "-r") && i + 1 < n { i = i + 1; reference = args[i] }
+        else if sys.same(a, "-s") { sys.warn("date", "setting the clock is not supported"); return 1 }
+        else { sys.warn("date", sys.join2(sys.join2("invalid date '", a), "'")); return 1 }
+        i = i + 1
+    }
+    let epoch = clock.now()
+    if sys.length(describe) > 0 {
+        let w = parse_when(describe, utc)
+        if !w.ok { sys.warn("date", sys.join2(sys.join2("invalid date '", describe), "'")); return 1 }
+        epoch = w.epoch
+    }
+    if sys.length(reference) > 0 {
+        let info = sys.file_info(reference, true)
+        if !info.ok { sys.warn_path("date", reference); return 1 }
+        epoch = info.mtime
+    }
+    let f = clock.fields(epoch, utc)
+    if !have_format {
+        if rfc { format = "%a, %d %b %Y %H:%M:%S %z" }
+        else if sys.length(iso) > 0 {
+            if sys.same(iso, "date") { format = "%Y-%m-%d" } else if sys.same(iso, "hours") { format = "%Y-%m-%dT%H%z" } else if sys.same(iso, "minutes") { format = "%Y-%m-%dT%H:%M%z" } else { format = "%Y-%m-%dT%H:%M:%S%z" }
+        }
+        else { format = "%a %b %e %H:%M:%S %Z %Y" }
+    }
+    let o = sys.out_new(1)
+    sys.out_str(o, clock.format(format, f, epoch, utc)); sys.out_byte(o, 10); sys.out_flush(o)
+    return 0
+}

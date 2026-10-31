@@ -1,0 +1,104 @@
+# Calendar time: breaking an epoch into fields, strftime-style formatting and parsing of date strings.
+use "./sys.dev" as sys
+
+extern fn time(t: *void): i64
+extern fn localtime_r(t: *void, tm: *void): *void
+extern fn gmtime_r(t: *void, tm: *void): *void
+
+fn now(): i64 { unsafe { return time(0 as *void) } }
+# Fields: 0 second, 1 minute, 2 hour, 3 day of month, 4 month (0-11), 5 year, 6 weekday (0 = Sunday), 7 day of year (0-based), 8 dst, 9 offset from UTC in seconds, 10 zone name (as a pointer).
+fn fields(t: i64, utc: bool): *i64 { unsafe {
+    let out = sys.calloc(11, 8) as *i64
+    let stamp = sys.calloc(1, 8) as *i64
+    stamp[0] = t
+    let tm = sys.calloc(64, 1) as *u8
+    if utc { gmtime_r(stamp as *void, tm as *void) } else { localtime_r(stamp as *void, tm as *void) }
+    for i in 0..9 { out[i] = sys.le(tm, i * 4, 4) }
+    out[5] = out[5] + 1900
+    out[9] = sys.le(tm, 40, 8)
+    out[10] = sys.le(tm, 48, 8)
+    sys.free(stamp as *void); sys.free(tm as *void)
+    return out
+} }
+fn get(f: *i64, i: i64): i64 { unsafe { return f[i] } }
+fn zone_name(f: *i64, utc: bool): str { unsafe { if utc || f[10] == 0 { return "UTC" }; return sys.join2(f[10] as str, "") } }
+fn month_name(m: i64): str {
+    let names = Vec<str>("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    return names[((m % 12) + 12) % 12]
+}
+fn day_name(d: i64): str {
+    let names = Vec<str>("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+    return names[((d % 7) + 7) % 7]
+}
+fn pad(b: *sys.Bytes, v: i64, width: i64, fill: u8) {
+    let text = sys.bytes_new(); sys.bytes_num(text, v)
+    let n = sys.blen(text)
+    for i in 0..(width > n ? width - n : 0) { sys.bytes_push(b, fill) }
+    sys.bytes_append(b, sys.bdata(text), n)
+}
+fn days_from_civil(y0: i64, m: i64, d: i64): i64 {
+    let y = m <= 2 ? y0 - 1 : y0
+    let era = (y >= 0 ? y : y - 399) / 400
+    let yoe = y - era * 400
+    let mp = (m + 9) % 12
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+fn week_of_year(f: *i64, monday_first: bool): i64 {
+    let wday = get(f, 6); let yday = get(f, 7)
+    let w = monday_first ? (wday + 6) % 7 : wday
+    return (yday + 7 - w) / 7
+}
+# strftime for the common conversions.
+fn format(spec: str, f: *i64, epoch: i64, utc: bool): str {
+    let b = sys.bytes_new(); let n = sys.length(spec); let i = 0
+    while i < n {
+        let c = sys.at(spec, i)
+        if c != 37 || i + 1 >= n { sys.bytes_push(b, c); i = i + 1; continue }
+        i = i + 1
+        let e = sys.at(spec, i)
+        let flag = 0
+        if (e == 45 || e == 95 || e == 48 || e == 94) && i + 1 < n { flag = e as i64; i = i + 1; e = sys.at(spec, i) }
+        i = i + 1
+        let sec = get(f, 0); let min = get(f, 1); let hour = get(f, 2); let mday = get(f, 3); let mon = get(f, 4); let year = get(f, 5); let wday = get(f, 6); let yday = get(f, 7)
+        let hour12 = hour % 12 == 0 ? 12 : hour % 12
+        let width = 2; let fill = 48
+        let value = 0 - 1
+        if e == 89 { value = year; width = 4 } else if e == 109 { value = mon + 1 } else if e == 100 { value = mday } else if e == 72 { value = hour } else if e == 77 { value = min }
+        else if e == 83 { value = sec } else if e == 121 { value = year % 100 } else if e == 101 { value = mday; fill = 32 } else if e == 106 { value = yday + 1; width = 3 }
+        else if e == 73 { value = hour12 } else if e == 107 { value = hour; fill = 32 } else if e == 108 { value = hour12; fill = 32 } else if e == 117 { value = wday == 0 ? 7 : wday; width = 1 }
+        else if e == 119 { value = wday; width = 1 } else if e == 85 { value = week_of_year(f, false) } else if e == 87 { value = week_of_year(f, true) } else if e == 115 { value = epoch; width = 1 }
+        else if e == 67 { value = year / 100 } else if e == 78 { value = 0; width = 9 }
+        if value >= 0 || e == 78 {
+            if flag == 45 { width = 1 } else if flag == 95 { fill = 32 } else if flag == 48 { fill = 48 }
+            pad(b, value, width, fill as u8)
+        }
+        else if e == 98 || e == 104 { sys.bytes_str(b, sys.slice(month_name(mon), 0, 3)) }
+        else if e == 66 { sys.bytes_str(b, month_name(mon)) }
+        else if e == 97 { sys.bytes_str(b, sys.slice(day_name(wday), 0, 3)) }
+        else if e == 65 { sys.bytes_str(b, day_name(wday)) }
+        else if e == 112 { sys.bytes_str(b, hour < 12 ? "AM" : "PM") }
+        else if e == 80 { sys.bytes_str(b, hour < 12 ? "am" : "pm") }
+        else if e == 90 { sys.bytes_str(b, zone_name(f, utc)) }
+        else if e == 122 { let off = get(f, 9); let a = off < 0 ? 0 - off : off; sys.bytes_push(b, off < 0 ? 45 : 43); pad(b, a / 3600, 2, 48); pad(b, (a / 60) % 60, 2, 48) }
+        else if e == 110 { sys.bytes_push(b, 10) } else if e == 116 { sys.bytes_push(b, 9) } else if e == 37 { sys.bytes_push(b, 37) }
+        else if e == 70 { sys.bytes_str(b, format("%Y-%m-%d", f, epoch, utc)) }
+        else if e == 84 || e == 88 { sys.bytes_str(b, format("%H:%M:%S", f, epoch, utc)) }
+        else if e == 68 || e == 120 { sys.bytes_str(b, format("%m/%d/%y", f, epoch, utc)) }
+        else if e == 82 { sys.bytes_str(b, format("%H:%M", f, epoch, utc)) }
+        else if e == 114 { sys.bytes_str(b, format("%I:%M:%S %p", f, epoch, utc)) }
+        else if e == 99 { sys.bytes_str(b, format("%a %b %e %H:%M:%S %Y", f, epoch, utc)) }
+        else { sys.bytes_push(b, 37); sys.bytes_push(b, e) }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn utc_epoch(year: i64, mon: i64, day: i64, hour: i64, min: i64, sec: i64): i64 { return days_from_civil(year, mon, day) * 86400 + hour * 3600 + min * 60 + sec }
+# An epoch for "local" wall-clock fields: the UTC value minus the zone offset in effect.
+fn local_epoch(year: i64, mon: i64, day: i64, hour: i64, min: i64, sec: i64): i64 {
+    let guess = utc_epoch(year, mon, day, hour, min, sec)
+    let f = fields(guess, false)
+    let first = guess - get(f, 9)
+    let g = fields(first, false)
+    return guess - get(g, 9)
+}
