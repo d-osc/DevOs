@@ -1,0 +1,220 @@
+# diff [-abBdiNqrTuw] [-U N] FILE1 FILE2: compare files line by line (normal and unified output, recursive comparison of directories).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/clock.dev" as clock
+
+struct Side { b: *sys.Bytes, starts: Vec<i64>, ends: Vec<i64>, final_newline: bool, count: i64 }
+fn load(b: *sys.Bytes): Side {
+    let ls = lines.split_lines(b, 10)
+    return Side(b, ls.starts, ls.ends, ls.final_newline, ls.starts.len() as i64)
+}
+struct Flags { ignore_case: bool, ignore_space: bool, ignore_all_space: bool, ignore_blank_lines: bool, unified: bool, context: i64, brief: bool, recursive: bool, new_files: bool, tabs: bool, shown: str }
+fn norm_byte(c: u8, f: Flags): u8 { return f.ignore_case && c >= 65 && c <= 90 ? c + 32 : c }
+fn same_line(f: Flags, a: Side, i: i64, b: Side, j: i64): bool {
+    if (i == a.count - 1 && !a.final_newline) != (j == b.count - 1 && !b.final_newline) { return false }
+    let x = a.starts[i]; let xe = a.ends[i]; let y = b.starts[j]; let ye = b.ends[j]
+    if !f.ignore_case && !f.ignore_space && !f.ignore_all_space {
+        if xe - x != ye - y { return false }
+        for k in 0..(xe - x) { if sys.bat(a.b, x + k) != sys.bat(b.b, y + k) { return false } }
+        return true
+    }
+    while true {
+        if f.ignore_all_space { while x < xe && lines.is_space(sys.bat(a.b, x)) { x = x + 1 }; while y < ye && lines.is_space(sys.bat(b.b, y)) { y = y + 1 } }
+        else if f.ignore_space {
+            if x < xe && lines.is_blank(sys.bat(a.b, x)) && y < ye && lines.is_blank(sys.bat(b.b, y)) { while x < xe && lines.is_blank(sys.bat(a.b, x)) { x = x + 1 }; while y < ye && lines.is_blank(sys.bat(b.b, y)) { y = y + 1 } }
+            else if x == xe || y == ye { while x < xe && lines.is_blank(sys.bat(a.b, x)) { x = x + 1 }; while y < ye && lines.is_blank(sys.bat(b.b, y)) { y = y + 1 } }
+        }
+        if x == xe || y == ye { return x == xe && y == ye }
+        if norm_byte(sys.bat(a.b, x), f) != norm_byte(sys.bat(b.b, y), f) { return false }
+        x = x + 1; y = y + 1
+    }
+    return false
+}
+// An edit script: kind 0 equal, 1 delete a line of A, 2 insert a line of B; with the line indexes.
+struct Script { kind: Vec<i64>, ai: Vec<i64>, bi: Vec<i64> }
+fn cell32(t: *u8, i: i64): i64 { unsafe { return (t[i * 4] as i64) + (t[i * 4 + 1] as i64) * 256 + (t[i * 4 + 2] as i64) * 65536 + (t[i * 4 + 3] as i64) * 16777216 } }
+fn set32(t: *u8, i: i64, v: i64) { unsafe { t[i * 4] = (v % 256) as u8; t[i * 4 + 1] = ((v / 256) % 256) as u8; t[i * 4 + 2] = ((v / 65536) % 256) as u8; t[i * 4 + 3] = ((v / 16777216) % 256) as u8 } }
+fn raw_table(bytes: i64): *u8 { unsafe { return sys.calloc(bytes as usize, 1) as *u8 } }
+fn make_script(f: Flags, a: Side, b: Side): Script {
+    let kind = Vec<i64>(); let ai = Vec<i64>(); let bi = Vec<i64>()
+    let n = a.count; let m = b.count; let p = 0
+    while p < n && p < m && same_line(f, a, p, b, p) { p = p + 1 }
+    let s = 0
+    while s < n - p && s < m - p && same_line(f, a, n - 1 - s, b, m - 1 - s) { s = s + 1 }
+    for i in 0..p { kind.push(0); ai.push(i); bi.push(i) }
+    let na = n - p - s; let nb = m - p - s
+    if na * nb > 40000000 {
+        for i in 0..na { kind.push(1); ai.push(p + i); bi.push(0 - 1) }
+        for j in 0..nb { kind.push(2); ai.push(0 - 1); bi.push(p + j) }
+    } else if na == 0 || nb == 0 {
+        for i in 0..na { kind.push(1); ai.push(p + i); bi.push(0 - 1) }
+        for j in 0..nb { kind.push(2); ai.push(0 - 1); bi.push(p + j) }
+    } else {
+        let w = nb + 1
+        let table = raw_table((na + 1) * w * 4)
+        let i = na - 1
+        while i >= 0 {
+            let j = nb - 1
+            while j >= 0 {
+                if same_line(f, a, p + i, b, p + j) { set32(table, i * w + j, cell32(table, (i + 1) * w + j + 1) + 1) }
+                else { let down = cell32(table, (i + 1) * w + j); let right = cell32(table, i * w + j + 1); set32(table, i * w + j, down >= right ? down : right) }
+                j = j - 1
+            }
+            i = i - 1
+        }
+        let x = 0; let y = 0
+        while x < na || y < nb {
+            if x < na && y < nb && same_line(f, a, p + x, b, p + y) { kind.push(0); ai.push(p + x); bi.push(p + y); x = x + 1; y = y + 1 }
+            else if x < na && (y >= nb || cell32(table, (x + 1) * w + y) >= cell32(table, x * w + y + 1)) { kind.push(1); ai.push(p + x); bi.push(0 - 1); x = x + 1 }
+            else { kind.push(2); ai.push(0 - 1); bi.push(p + y); y = y + 1 }
+        }
+        unsafe { sys.free(table as *void) }
+    }
+    for k in 0..s { kind.push(0); ai.push(n - s + k); bi.push(m - s + k) }
+    return Script(kind, ai, bi)
+}
+fn range_text(start: i64, end: i64): str {
+    let b = sys.bytes_new(); sys.bytes_num(b, start)
+    if end > start { sys.bytes_push(b, 44); sys.bytes_num(b, end) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn put_line(o: *sys.Out, prefix: str, side: Side, i: i64) {
+    sys.out_str(o, prefix)
+    sys.out_data(o, sys.bptr(side.b, side.starts[i]), side.ends[i] - side.starts[i]); sys.out_byte(o, 10)
+    if i == side.count - 1 && !side.final_newline { sys.out_str(o, "\\ No newline at end of file\n") }
+}
+fn print_normal(o: *sys.Out, sc: Script, a: Side, b: Side) {
+    let n = sc.kind.len() as i64; let k = 0
+    while k < n {
+        if sc.kind[k] == 0 { k = k + 1; continue }
+        let first = k
+        while k < n && sc.kind[k] != 0 { k = k + 1 }
+        let del = Vec<i64>(); let ins = Vec<i64>()
+        for q in first..k { if sc.kind[q] == 1 { del.push(sc.ai[q]) } else { ins.push(sc.bi[q]) } }
+        let ahead = 0; let bhead = 0
+        for q in 0..first { if sc.kind[q] != 2 { ahead = ahead + 1 }; if sc.kind[q] != 1 { bhead = bhead + 1 } }
+        let dn = del.len() as i64; let inn = ins.len() as i64
+        if dn == 0 { sys.out_str(o, sys.join2(sys.join2(decimal(ahead), "a"), range_text(bhead + 1, bhead + inn))) }
+        else if inn == 0 { sys.out_str(o, sys.join2(sys.join2(range_text(ahead + 1, ahead + dn), "d"), decimal(bhead))) }
+        else { sys.out_str(o, sys.join2(sys.join2(range_text(ahead + 1, ahead + dn), "c"), range_text(bhead + 1, bhead + inn))) }
+        sys.out_byte(o, 10)
+        for q in 0..dn { put_line(o, "< ", a, del[q]) }
+        if dn > 0 && inn > 0 { sys.out_str(o, "---\n") }
+        for q in 0..inn { put_line(o, "> ", b, ins[q]) }
+    }
+}
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn unified_range(start: i64, count: i64): str {
+    let b = sys.bytes_new()
+    if count == 0 { sys.bytes_num(b, start - 1 < 0 ? 0 : start - 1); sys.bytes_str(b, ",0") }
+    else { sys.bytes_num(b, start); if count != 1 { sys.bytes_push(b, 44); sys.bytes_num(b, count) } }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn stamp(path: str): str {
+    let info = sys.file_info(path, true)
+    if !info.ok { return "1970-01-01 00:00:00.000000000 +0000" }
+    return clock.format("%Y-%m-%d %H:%M:%S.000000000 %z", clock.fields(info.mtime, false), info.mtime, false)
+}
+fn print_unified(o: *sys.Out, sc: Script, a: Side, b: Side, context: i64, name_a: str, name_b: str, path_a: str, path_b: str) {
+    sys.out_str(o, sys.join2(sys.join2("--- ", name_a), sys.join2("\t", stamp(path_a)))); sys.out_byte(o, 10)
+    sys.out_str(o, sys.join2(sys.join2("+++ ", name_b), sys.join2("\t", stamp(path_b)))); sys.out_byte(o, 10)
+    let n = sc.kind.len() as i64; let k = 0
+    while k < n {
+        # find the next change
+        while k < n && sc.kind[k] == 0 { k = k + 1 }
+        if k >= n { break }
+        let start = k - context; if start < 0 { start = 0 }
+        let end = k; let last_change = k
+        while end < n {
+            if sc.kind[end] != 0 { last_change = end; end = end + 1; continue }
+            # a gap of equal lines: does another change follow within 2 * context lines?
+            let gap = end; while gap < n && sc.kind[gap] == 0 { gap = gap + 1 }
+            if gap < n && gap - last_change - 1 <= 2 * context { end = gap; continue }
+            break
+        }
+        let stop = last_change + 1 + context; if stop > n { stop = n }
+        let a_start = 0; let b_start = 0; let a_count = 0; let b_count = 0
+        for q in 0..start { if sc.kind[q] != 2 { a_start = a_start + 1 }; if sc.kind[q] != 1 { b_start = b_start + 1 } }
+        for q in start..stop { if sc.kind[q] != 2 { a_count = a_count + 1 }; if sc.kind[q] != 1 { b_count = b_count + 1 } }
+        sys.out_str(o, sys.join2(sys.join2("@@ -", unified_range(a_start + 1, a_count)), sys.join2(" +", sys.join2(unified_range(b_start + 1, b_count), " @@\n"))))
+        for q in start..stop {
+            if sc.kind[q] == 0 { put_line(o, " ", a, sc.ai[q]) } else if sc.kind[q] == 1 { put_line(o, "-", a, sc.ai[q]) } else { put_line(o, "+", b, sc.bi[q]) }
+        }
+        k = stop
+    }
+}
+fn has_changes(sc: Script): bool { for k in 0..(sc.kind.len() as i64) { if sc.kind[k] != 0 { return true } }; return false }
+// Compares two files; 0 same, 1 different, 2 trouble.
+fn diff_files(f: Flags, o: *sys.Out, path_a: str, path_b: str, name_a: str, name_b: str, header: bool): i64 {
+    let ia = sys.read_path(path_a); let ib = sys.read_path(path_b)
+    if !ia.ok { if f.new_files && !sys.exists(path_a) { ia = sys.Input(true, sys.bytes_new()) } else { sys.warn_path("diff", path_a); return 2 } }
+    if !ib.ok { if f.new_files && !sys.exists(path_b) { ib = sys.Input(true, sys.bytes_new()) } else { sys.warn_path("diff", path_b); return 2 } }
+    let a = load(ia.bytes); let b = load(ib.bytes)
+    let binary = false
+    for i in 0..(sys.blen(ia.bytes) < 8192 ? sys.blen(ia.bytes) : 8192) { if sys.bat(ia.bytes, i) == 0 { binary = true } }
+    for i in 0..(sys.blen(ib.bytes) < 8192 ? sys.blen(ib.bytes) : 8192) { if sys.bat(ib.bytes, i) == 0 { binary = true } }
+    let sc = make_script(f, a, b)
+    if !has_changes(sc) { return 0 }
+    if f.brief || binary {
+        sys.out_str(o, sys.join2(sys.join2("Files ", name_a), sys.join2(" and ", sys.join2(name_b, binary && !f.brief ? " differ\n" : " differ\n"))))
+        return 1
+    }
+    if header { sys.out_str(o, sys.join2(sys.join2("diff ", sys.join2(sys.length(f.shown) > 0 ? sys.join2(f.shown, " ") : "", name_a)), sys.join2(" ", sys.join2(name_b, "\n")))) }
+    if f.unified { print_unified(o, sc, a, b, f.context, name_a, name_b, path_a, path_b) } else { print_normal(o, sc, a, b) }
+    return 1
+}
+fn diff_dirs(f: Flags, o: *sys.Out, pa: str, pb: str): i64 {
+    let la = fsx.list_dir(pa); let lb = fsx.list_dir(pb)
+    let names = Vec<str>()
+    for k in 0..(la.names.len() as i64) { names.push(la.names[k]) }
+    for k in 0..(lb.names.len() as i64) { let seen = false; for q in 0..(la.names.len() as i64) { if sys.same(la.names[q], lb.names[k]) { seen = true } }; if !seen { names.push(lb.names[k]) } }
+    names = fsx.sort_strings(names)
+    let status = 0
+    for k in 0..(names.len() as i64) {
+        let na = fsx.join_path(pa, names[k]); let nb = fsx.join_path(pb, names[k])
+        let ea = sys.exists(na); let eb = sys.exists(nb)
+        if !ea && !f.new_files { sys.out_str(o, sys.join2(sys.join2("Only in ", pb), sys.join2(": ", sys.join2(names[k], "\n")))); status = 1; continue }
+        if !eb && !f.new_files { sys.out_str(o, sys.join2(sys.join2("Only in ", pa), sys.join2(": ", sys.join2(names[k], "\n")))); status = 1; continue }
+        let da = ea && sys.is_dir(na); let db = eb && sys.is_dir(nb)
+        if da && db { if f.recursive { let r = diff_dirs(f, o, na, nb); if r > status { status = r } } else { sys.out_str(o, sys.join2(sys.join2("Common subdirectories: ", na), sys.join2(" and ", sys.join2(nb, "\n")))) }; continue }
+        if da != db { sys.out_str(o, sys.join2(sys.join2("File ", na), sys.join2(" is a ", sys.join2(da ? "directory" : "regular file", sys.join2(" while file ", sys.join2(nb, sys.join2(" is a ", sys.join2(db ? "directory\n" : "regular file\n", "")))))))); status = 1; continue }
+        let r = diff_files(f, o, na, nb, na, nb, true)
+        if r > status { status = r }
+    }
+    return status
+}
+fn shown_options(args: Vec<str>): str {
+    let out = ""; let first = true
+    for k in 0..(args.len() as i64) { let a = args[k]; if sys.length(a) > 1 && sys.at(a, 0) == 45 { out = first ? a : sys.join2(sys.join2(out, " "), a); first = false } }
+    return out
+}
+fn run_diff(args: Vec<str>): i64 {
+    let words = Vec<str>(); let context = 3; let unified = false; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-U") && i + 1 < n { unified = true; context = sys.parse_number(args[i + 1]).value; i = i + 2; continue }
+        if sys.starts(a, "-U") && sys.length(a) > 2 { unified = true; context = sys.parse_number(sys.join2(sys.slice(a, 2, sys.length(a)), "")).value; i = i + 1; continue }
+        if sys.starts(a, "--unified=") { unified = true; context = sys.parse_number(sys.join2(sys.slice(a, 10, sys.length(a)), "")).value; i = i + 1; continue }
+        if sys.same(a, "--recursive") { words.push("-r"); i = i + 1; continue }
+        if sys.same(a, "--brief") { words.push("-q"); i = i + 1; continue }
+        if sys.same(a, "--unified") { words.push("-u"); i = i + 1; continue }
+        if sys.same(a, "--new-file") { words.push("-N"); i = i + 1; continue }
+        words.push(a); i = i + 1
+    }
+    let o = sys.parse_opts(words, "abBdiNqrTuwcenspE")
+    if o.bad != 0 || o.rest.len() != 2 { sys.warn("diff", "invalid usage: diff [-abBdiNqrTuw] [-U N] FILE1 FILE2"); return 2 }
+    let f = Flags(sys.has(o, 105), sys.has(o, 98), sys.has(o, 119), sys.has(o, 66), unified || sys.has(o, 117), context, sys.has(o, 113), sys.has(o, 114), sys.has(o, 78), sys.has(o, 84), shown_options(args))
+    let out = sys.out_new(1)
+    let pa = o.rest[0]; let pb = o.rest[1]
+    let status = 0
+    if sys.is_dir(pa) && sys.is_dir(pb) { status = diff_dirs(f, out, pa, pb) }
+    else if sys.is_dir(pa) || sys.is_dir(pb) {
+        let dir = sys.is_dir(pa) ? pa : pb; let file = sys.is_dir(pa) ? pb : pa
+        let target = fsx.join_path(dir, sys.base_name(file))
+        status = sys.is_dir(pa) ? diff_files(f, out, target, pb, target, pb, false) : diff_files(f, out, pa, target, pa, target, false)
+    }
+    else { status = diff_files(f, out, pa, pb, pa, pb, false) }
+    sys.out_flush(out)
+    return status
+}

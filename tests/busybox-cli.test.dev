@@ -270,6 +270,14 @@ test.case("dd hostid sysctl lsmod mknod fsync more less mesg clear",fn() {
     }
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("diff",fn() {
+    let d = sandbox()
+    let data = "seq 1 20 > n1; seq 1 20 | sed '5d;10s/.*/ten/;15a extra' > n2; printf 'a\\nb\\nc\\n' > x1; printf 'a\\nc\\nd\\n' > x2; printf 'same\\n' > s1; printf 'same\\n' > s2; printf 'one\\ntwo' > m1; printf 'one\\ntwo\\n' > m2; : > e1; mkdir -p da/sub db/sub; printf 'p\\n' > da/f; printf 'p\\n' > db/f; printf 'q\\n' > da/only; printf 'r\\n' > db/new; printf 'u\\n' > da/sub/g; printf 'v\\n' > db/sub/g; printf 'Hello World\\n' > h1; printf 'hello   world\\n' > h2; "
+    all_same(d, Vec<str>(data + "@diff x1 x2; echo rc=$?",data + "@diff n1 n2; echo rc=$?",data + "@diff s1 s2; echo rc=$?",data + "@diff -u x1 x2 | tail -n +3",data + "@diff -u n1 n2 | tail -n +3",data + "@diff -U1 n1 n2 | tail -n +3",data + "@diff -U0 x1 x2 | tail -n +3",data + "@diff m1 m2",data + "@diff -u m1 m2 | tail -n +3",data + "@diff e1 x1",data + "@diff x1 e1",data + "@diff -u e1 x1 | tail -n +3",
+        data + "@diff -q x1 x2; echo rc=$?",data + "@diff -q s1 s2; echo rc=$?",data + "@diff -i h1 h2; echo rc=$?",data + "@diff -w h1 h2; echo rc=$?",data + "@diff -b h1 h2; echo rc=$?",data + "@diff nosuch x1; echo rc=$?",data + "@diff -r da db; echo rc=$?",data + "@diff -rq da db; echo rc=$?",data + "@diff -rN da db; echo rc=$?",data + "@diff da db; echo rc=$?",data + "@diff x1 da; echo rc=$?",
+        data + "@diff - x1 < x2; echo rc=$?",data + "@diff -u x1 x2 | head -1 | cut -c1-6",data + "@diff x1; echo rc=$?"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
