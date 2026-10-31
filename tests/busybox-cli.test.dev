@@ -549,6 +549,23 @@ test.case("ipcs ipcrm start-stop-daemon ifup ifdown pscan",fn() {
     test.expect(strings.contains(outcome(d, bb + " pscan -p 18830 -P 18832 127.0.0.1"), "3 closed ports"), "pscan closed port count")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("logger syslogd crond (BusyBox only)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let sock = "export BUSYBOX_DEVLOG=$PWD/log.sock; "
+    let start = sock + bb + " syslogd -n -O $PWD/messages & echo $! > sl.pid; sleep 1; "
+    let stop = "; kill $(cat sl.pid) 2>/dev/null; sleep 1"
+    test.expect(strings.contains(outcome(d, start + bb + " logger -t mytag hello world; sleep 1; cat messages" + stop), "user.notice mytag: hello world"), "syslogd/logger line:\n" + outcome(d, start + bb + " logger -t mytag hello world; sleep 1; cat messages" + stop))
+    test.expect(strings.contains(outcome(d, start + bb + " logger -p daemon.err -t svc broke; sleep 1; cat messages" + stop), "daemon.err svc: broke"), "logger -p")
+    test.expect(strings.contains(outcome(d, start + "logger -u $PWD/log.sock -t sysl system logger; sleep 1; cat messages" + stop), "sysl: system logger"), "util-linux logger into our syslogd")
+    test.expect(strings.contains(outcome(d, start + "printf 'from stdin\\n' | " + bb + " logger -t pipe; sleep 1; cat messages" + stop), "pipe: from stdin"), "logger from stdin")
+    test.expect(strings.contains(outcome(d, bb + " logger -p nosuch.level x; echo rc=$?"), "rc=1"), "logger accepted a bad priority")
+    test.expect(strings.contains(outcome(d, sock + bb + " logger x; echo rc=$?"), "rc=1"), "logger without a syslogd")
+    let cron = "mkdir ct && printf 'MAILTO=x\\n* * * * * touch ran.flag\\n' > ct/tester; "
+    test.expect(strings.contains(outcome(d, cron + bb + " crond -f -c ct & echo $! > cd.pid; i=0; while [ ! -e ran.flag ] && [ $i -lt 70 ]; do sleep 1; i=$((i+1)); done; kill $(cat cd.pid); ls ran.flag"), "ran.flag"), "crond did not run the job within a minute")
+    test.expect(strings.contains(outcome(d, bb + " crond -f -c nosuchdir; echo rc=$?"), "rc=1"), "crond with a missing directory")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

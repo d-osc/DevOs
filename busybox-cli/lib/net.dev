@@ -159,3 +159,15 @@ fn resolve(name: str): i64 {
     let h = hosts_lookup(name); if h >= 0 { return h }
     return dns_query(name, nameserver())
 }
+
+// ---- unix domain datagram sockets (syslog) -----------------------------------------------------------------------------------------------------------------------------------
+fn unix_address(path: str): *u8 { unsafe {
+    let a = sys.calloc(110, 1) as *u8
+    a[0] = 1
+    for i in 0..sys.length(path) { if i < 107 { a[2 + i] = sys.at(path, i) } }
+    return a
+} }
+fn unix_socket(): i64 { unsafe { return socket(1, 2, 0) as i64 } }
+fn unix_bind(fd: i64, path: str): bool { unsafe { let a = unix_address(path); let r = bind(fd as i32, a as *void, 110); sys.free(a as *void); return r == 0 } }
+fn unix_send(fd: i64, path: str, data: *u8, count: i64): bool { unsafe { let a = unix_address(path); let r = sendto(fd as i32, data as *void, count as usize, 0, a as *void, 110); sys.free(a as *void); return r >= 0 } }
+fn unix_receive(fd: i64, data: *u8, count: i64): i64 { unsafe { return recvfrom(fd as i32, data as *void, count as usize, 0, 0 as *void, 0 as *void) as i64 } }

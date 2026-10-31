@@ -1,0 +1,193 @@
+# logger, syslogd, klogd, crond: logging and scheduled jobs. The syslog socket is /dev/log, or $BUSYBOX_DEVLOG when that is set (used by the tests).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/clock.dev" as clock
+use "./accounts.dev" as ac
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn log_socket_path(): str { let v = proc.lookup(proc.environment(), "BUSYBOX_DEVLOG"); return v.found && sys.length(v.value) > 0 ? v.value : "/dev/log" }
+fn facility_names(): Vec<str> { return Vec<str>("kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news", "uucp", "cron", "authpriv", "ftp", "ntp", "audit", "alert", "clock", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7") }
+fn level_names(): Vec<str> { return Vec<str>("emerg", "alert", "crit", "err", "warning", "notice", "info", "debug") }
+fn index_in(names: Vec<str>, name: str): i64 { for k in 0..(names.len() as i64) { if sys.same(names[k], name) { return k } }; return 0 - 1 }
+// "facility.level" or just a level into the numeric priority; -1 when it is not valid.
+fn parse_priority(text: str): i64 {
+    let dot = sys.find_char(text, 46)
+    let facility = 1; let level = 5
+    if dot < 0 { level = index_in(level_names(), text); if level < 0 { return 0 - 1 } }
+    else {
+        facility = index_in(facility_names(), sys.join2(sys.slice(text, 0, dot), "")); level = index_in(level_names(), sys.join2(sys.slice(text, dot + 1, sys.length(text)), ""))
+        if facility < 0 || level < 0 { return 0 - 1 }
+    }
+    return facility * 8 + level
+}
+fn run_logger(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "st:p:i")
+    if o.bad != 0 || o.missing != 0 { sys.warn("logger", "invalid usage: logger [-s] [-t TAG] [-p PRIO] [MESSAGE]"); return 1 }
+    let priority = 13; if sys.has(o, 112) { priority = parse_priority(sys.val(o, 112)); if priority < 0 { sys.warn("logger", sys.join2("unknown priority name: ", sys.val(o, 112))); return 1 } }
+    let tag = sys.has(o, 116) ? sys.val(o, 116) : fsx.user_name(fsx.uid())
+    if sys.length(tag) == 0 { tag = "user" }
+    let message = ""
+    if o.rest.len() > 0 { for k in 0..(o.rest.len() as i64) { message = k == 0 ? o.rest[k] : sys.join2(sys.join2(message, " "), o.rest[k]) } }
+    else { let input = sys.read_path("-"); message = lines.text_of(input.bytes, 0, sys.blen(input.bytes)); if sys.length(message) > 0 && sys.at(message, sys.length(message) - 1) == 10 { message = sys.join2(sys.slice(message, 0, sys.length(message) - 1), "") } }
+    let now = clock.now(); let stamp = clock.format("%b %e %H:%M:%S", clock.fields(now, false), now, false)
+    let id = sys.has(o, 105) ? sys.join2(sys.join2(sys.join2(tag, "["), decimal(proc.my_pid())), "]") : tag
+    let packet = sys.join2(sys.join2(sys.join2(sys.join2("<", decimal(priority)), "> "), sys.join2(stamp, " ")), sys.join2(sys.join2(id, ": "), message))
+    if sys.has(o, 115) { sys.put_fd(2, sys.join2(sys.join2(tag, ": "), sys.join2(message, "\n"))) }
+    let fd = net.unix_socket(); if fd < 0 { sys.warn("logger", "can't create a socket"); return 1 }
+    let b = sys.bytes_new(); sys.bytes_str(b, packet)
+    if !net.unix_send(fd, log_socket_path(), sys.bdata(b), sys.blen(b)) { sys.warn("logger", sys.join2(sys.join2("can't send to ", log_socket_path()), "")); return 1 }
+    return 0
+}
+
+// ---- syslogd [-n] [-O FILE] [-S] ---------------------------------------------------------------------------------------------------------------------------------------------
+fn hostname(): str {
+    let input = sys.read_path("/proc/sys/kernel/hostname"); if !input.ok { return "localhost" }
+    let n = sys.blen(input.bytes); while n > 0 && sys.bat(input.bytes, n - 1) == 10 { n = n - 1 }
+    return lines.text_of(input.bytes, 0, n)
+}
+fn looks_like_stamp(s: str): bool {
+    # "Mmm dd hh:mm:ss " (16 characters)
+    if sys.length(s) < 16 { return false }
+    return sys.at(s, 3) == 32 && sys.at(s, 6) == 32 && sys.at(s, 9) == 58 && sys.at(s, 12) == 58 && sys.at(s, 15) == 32
+}
+fn format_record(packet: str, host: str): str {
+    let priority = 13; let body = packet
+    if sys.starts(body, "<") { let close = sys.find_char(body, 62); if close > 0 { let p = sys.parse_number(sys.join2(sys.slice(body, 1, close), "")); if p.ok { priority = p.value }; body = sys.join2(sys.slice(body, close + 1, sys.length(body)), "") } }
+    if sys.length(body) > 0 && sys.at(body, 0) == 32 { body = sys.join2(sys.slice(body, 1, sys.length(body)), "") }
+    let now = clock.now(); let stamp = clock.format("%b %e %H:%M:%S", clock.fields(now, false), now, false)
+    if looks_like_stamp(body) { stamp = sys.join2(sys.slice(body, 0, 15), ""); body = sys.join2(sys.slice(body, 16, sys.length(body)), "") }
+    let fac = facility_names(); let lev = level_names(); let f = priority / 8; let l = priority % 8
+    return sys.join2(sys.join2(sys.join2(stamp, " "), sys.join2(host, " ")), sys.join2(sys.join2(sys.join2(f < (fac.len() as i64) ? fac[f] : "user", "."), lev[l]), sys.join2(" ", body)))
+}
+fn run_syslogd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "nO:l:S:s:b:R:LCm:KD")
+    if o.bad != 0 || o.missing != 0 { sys.warn("syslogd", "invalid usage: syslogd [-n] [-O FILE] [-l LEVEL]"); return 1 }
+    let path = log_socket_path()
+    fsx.do_unlink(path)
+    let fd = net.unix_socket(); if fd < 0 || !net.unix_bind(fd, path) { sys.warn("syslogd", sys.join2(sys.join2("can't bind ", path), "")); return 1 }
+    fsx.do_chmod(path, 438)
+    let target = sys.has(o, 79) ? sys.val(o, 79) : "/var/log/messages"; let host = hostname()
+    let log_fd = sys.open_fd(target, 1089, 420)
+    if log_fd < 0 { sys.warn_write("syslogd", target); return 1 }
+    let buffer = sys.bytes_new(); for i in 0..2048 { sys.bytes_push(buffer, 0) }
+    while true {
+        let n = net.unix_receive(fd, sys.bdata(buffer), 2047)
+        if n <= 0 { continue }
+        let text = sys.bytes_new(); for i in 0..n { let c = sys.bat(buffer, i); if c != 0 { sys.bytes_push(text, c) } }
+        let line = sys.join2(format_record(sys.join2(sys.bytes_cstr(text), ""), host), "\n")
+        let b = sys.bytes_new(); sys.bytes_str(b, line); sys.write_fd(log_fd, sys.bdata(b), sys.blen(b))
+    }
+    return 0
+}
+fn run_klogd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "nc:")
+    let fd = sys.open_fd("/proc/kmsg", 0, 0)
+    if fd < 0 { sys.warn("klogd", "can't open /proc/kmsg (are you root?)"); return 1 }
+    let sock = net.unix_socket(); let buffer = sys.bytes_new(); for i in 0..8192 { sys.bytes_push(buffer, 0) }
+    while true {
+        let n = sys.read_into(fd, sys.bdata(buffer), 8192)
+        if n <= 0 { break }
+        let start = 0
+        for i in 0..(n + 1) {
+            if i == n || sys.bat(buffer, i) == 10 {
+                if i > start { let line = sys.bytes_new(); for q in start..i { sys.bytes_push(line, sys.bat(buffer, q)) }; net.unix_send(sock, log_socket_path(), sys.bdata(line), sys.blen(line)) }
+                start = i + 1
+            }
+        }
+    }
+    return 0
+}
+
+// ---- crond [-f] [-b] [-c DIR] [-L FILE] ----------------------------------------------------------------------------------------------------------------------------------
+fn month_number(name: str): i64 {
+    let names = Vec<str>("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+    let lower = lower_text(name)
+    for k in 0..12 { if sys.same(names[k], lower) { return k + 1 } }
+    return 0 - 1
+}
+fn day_number(name: str): i64 {
+    let names = Vec<str>("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+    let lower = lower_text(name)
+    for k in 0..7 { if sys.same(names[k], lower) { return k } }
+    return 0 - 1
+}
+fn lower_text(s: str): str { let b = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); let v = c; if c >= 65 && c <= 90 { v = c + 32 }; sys.bytes_push(b, v) }; return sys.join2(sys.bytes_cstr(b), "") }
+fn field_value(text: str, kind: i64): i64 {
+    let n = sys.parse_number(text); if n.ok { return n.value }
+    return kind == 3 ? month_number(text) : (kind == 4 ? day_number(text) : 0 - 1)
+}
+// Does the cron field `spec` (lists, ranges, steps, names) match `value`? kind: 0 minute, 1 hour, 2 day, 3 month, 4 weekday.
+fn field_matches(spec: str, value: i64, kind: i64): bool {
+    let lo = kind == 2 || kind == 3 ? 1 : 0; let hi = kind == 0 ? 59 : (kind == 1 ? 23 : (kind == 2 ? 31 : (kind == 3 ? 12 : 7)))
+    let n = sys.length(spec); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(spec, i) == 44 {
+            let item = sys.join2(sys.slice(spec, start, i), ""); start = i + 1
+            let step = 1; let slash = sys.find_char(item, 47)
+            if slash >= 0 { step = sys.parse_number(sys.join2(sys.slice(item, slash + 1, sys.length(item)), "")).value; item = sys.join2(sys.slice(item, 0, slash), ""); if step < 1 { step = 1 } }
+            let from = lo; let to = hi
+            if !sys.same(item, "*") {
+                let dash = sys.find_char(item, 45)
+                if dash >= 0 { from = field_value(sys.join2(sys.slice(item, 0, dash), ""), kind); to = field_value(sys.join2(sys.slice(item, dash + 1, sys.length(item)), ""), kind) }
+                else { from = field_value(item, kind); to = slash >= 0 ? hi : from }
+            }
+            if from < 0 || to < 0 { continue }
+            let v = value; if kind == 4 && value == 0 && to == 7 { v = 0 }
+            for x in from..(to + 1) { if (x - from) % step == 0 && (x == v || (kind == 4 && x == 7 && v == 0)) { return true } }
+        }
+    }
+    return false
+}
+struct Job { minute: str, hour: str, day: str, month: str, weekday: str, command: str }
+fn parse_job(line: str): Job {
+    let parts = Vec<str>(); let start = 0 - 1; let n = sys.length(line); let i = 0; let cmd_start = 0 - 1
+    while i < n && parts.len() < 5 {
+        let blank = sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { parts.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+        i = i + 1
+    }
+    if parts.len() < 5 { return Job("", "", "", "", "", "") }
+    while i < n && (sys.at(line, i) == 32 || sys.at(line, i) == 9) { i = i + 1 }
+    return Job(parts[0], parts[1], parts[2], parts[3], parts[4], sys.join2(sys.slice(line, i, n), ""))
+}
+fn job_due(j: Job, f: *i64): bool {
+    if sys.length(j.command) == 0 { return false }
+    let minute = clock.get(f, 1); let hour = clock.get(f, 2); let day = clock.get(f, 3); let month = clock.get(f, 4) + 1; let weekday = clock.get(f, 6)
+    if !field_matches(j.minute, minute, 0) || !field_matches(j.hour, hour, 1) || !field_matches(j.month, month, 3) { return false }
+    let day_ok = field_matches(j.day, day, 2); let week_ok = field_matches(j.weekday, weekday, 4)
+    if !sys.same(j.day, "*") && !sys.same(j.weekday, "*") { return day_ok || week_ok }
+    return day_ok && week_ok
+}
+fn run_due_jobs(dir: str, f: *i64, log: bool) {
+    let l = fsx.list_dir(dir)
+    for k in 0..(l.names.len() as i64) {
+        let user = l.names[k]; let input = sys.read_path(fsx.join_path(dir, user)); if !input.ok { continue }
+        let ls = lines.split_lines(input.bytes, 10)
+        for q in 0..(ls.starts.len() as i64) {
+            let line = lines.text_of(input.bytes, ls.starts[q], ls.ends[q])
+            if sys.length(line) == 0 || sys.starts(line, "#") || sys.find_char(line, 61) > 0 && sys.find_char(line, 32) < 0 { continue }
+            let j = parse_job(line)
+            if job_due(j, f) { if log { sys.put_fd(2, sys.join2(sys.join2("crond: user ", user), sys.join2(" run ", sys.join2(j.command, "\n")))) }; proc.launch(Vec<str>("sh", "-c", j.command), proc.environment(), 1) }
+        }
+    }
+}
+fn run_crond(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fbSLl:d:c:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("crond", "invalid usage: crond [-fbS] [-c DIR]"); return 1 }
+    let dir = sys.has(o, 99) ? sys.val(o, 99) : "/var/spool/cron/crontabs"
+    if !sys.is_dir(dir) { sys.warn("crond", sys.join2(sys.join2("can't open ", dir), ": No such directory")); return 1 }
+    let last = 0 - 1
+    while true {
+        let now = clock.now(); let minute_index = now / 60
+        if minute_index != last {
+            last = minute_index
+            run_due_jobs(dir, clock.fields(now, false), sys.has(o, 108))
+        }
+        proc.pause_us(500000)
+        let reap = proc.poll_exit(0 - 1)
+    }
+    return 0
+}

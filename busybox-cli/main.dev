@@ -36,10 +36,11 @@ use "./applets/util4.dev" as u4
 use "./applets/ed.dev" as edx
 use "./applets/pw.dev" as pwx
 use "./applets/util5.dev" as u5
+use "./applets/logging.dev" as lg
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "addgroup", "adduser", "ar", "arp", "awk", "basename", "blkid", "bunzip2", "bzcat", "bzip2", "cal", "cat", "catv", "chgrp", "chmod", "chown", "chpasswd", "chpst", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "crontab", "cryptpw", "cut", "date", "dc", "dd", "delgroup", "deluser", "df", "diff", "dirname", "dmesg", "dos2unix", "du", "echo", "ed", "egrep", "env", "envdir", "envuidgid", "expand", "expr", "false", "fgrep", "find", "findfs", "fold", "free", "fsync", "ftpget", "ftpput", "fuser", "getopt", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "httpd", "id", "ifconfig", "ifdown", "ifup", "inotifyd", "insmod", "install", "ionice", "ipcalc", "ipcrm", "ipcs", "kill", "killall", "killall5", "length", "less", "ln", "login", "logname", "ls", "lsattr", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mkpasswd", "mkswap", "mktemp", "more", "mount", "mountpoint", "mv", "nc", "netstat", "nice", "nohup", "nslookup", "od", "passwd", "patch", "pgrep", "pidof", "ping", "pivot_root", "pkill", "printenv", "printf", "ps", "pscan", "pwd", "rdev", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "route", "rpm2cpio", "run-parts", "runlevel", "sed", "seq", "setarch", "setsid", "setuidgid", "sha1sum", "sha256sum", "sha512sum", "sleep", "softlimit", "sort", "split", "start-stop-daemon", "stat", "strings", "su", "sum", "swapoff", "swapon", "sync", "sysctl", "tac", "tail", "tar", "taskset", "tee", "telnet", "test", "time", "timeout", "top", "touch", "tr", "true", "tty", "ttysize", "umount", "uname", "unexpand", "uniq", "unix2dos", "unzip", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "wget", "which", "who", "whoami", "xargs", "yes", "zcat")
+    return Vec<str>("[", "[[", "addgroup", "adduser", "ar", "arp", "awk", "basename", "blkid", "bunzip2", "bzcat", "bzip2", "cal", "cat", "catv", "chgrp", "chmod", "chown", "chpasswd", "chpst", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "crond", "crontab", "cryptpw", "cut", "date", "dc", "dd", "delgroup", "deluser", "df", "diff", "dirname", "dmesg", "dos2unix", "du", "echo", "ed", "egrep", "env", "envdir", "envuidgid", "expand", "expr", "false", "fgrep", "find", "findfs", "fold", "free", "fsync", "ftpget", "ftpput", "fuser", "getopt", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "httpd", "id", "ifconfig", "ifdown", "ifup", "inotifyd", "insmod", "install", "ionice", "ipcalc", "ipcrm", "ipcs", "kill", "killall", "killall5", "klogd", "length", "less", "ln", "logger", "login", "logname", "ls", "lsattr", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mkpasswd", "mkswap", "mktemp", "more", "mount", "mountpoint", "mv", "nc", "netstat", "nice", "nohup", "nslookup", "od", "passwd", "patch", "pgrep", "pidof", "ping", "pivot_root", "pkill", "printenv", "printf", "ps", "pscan", "pwd", "rdev", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "route", "rpm2cpio", "run-parts", "runlevel", "sed", "seq", "setarch", "setsid", "setuidgid", "sha1sum", "sha256sum", "sha512sum", "sleep", "softlimit", "sort", "split", "start-stop-daemon", "stat", "strings", "su", "sum", "swapoff", "swapon", "sync", "sysctl", "syslogd", "tac", "tail", "tar", "taskset", "tee", "telnet", "test", "time", "timeout", "top", "touch", "tr", "true", "tty", "ttysize", "umount", "uname", "unexpand", "uniq", "unix2dos", "unzip", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "wget", "which", "who", "whoami", "xargs", "yes", "zcat")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -231,6 +232,10 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "pscan") { return u5.run_pscan(args) }
     if sys.same(name, "ipcs") { return u5.run_ipcs(args) }
     if sys.same(name, "ipcrm") { return u5.run_ipcrm(args) }
+    if sys.same(name, "logger") { return lg.run_logger(args) }
+    if sys.same(name, "syslogd") { return lg.run_syslogd(args) }
+    if sys.same(name, "klogd") { return lg.run_klogd(args) }
+    if sys.same(name, "crond") { return lg.run_crond(args) }
     sys.warn(name, "applet not found")
     return 127
 }
