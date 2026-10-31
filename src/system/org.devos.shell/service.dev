@@ -33,8 +33,9 @@ fn say(message:str) {
 # The D-Bus identity of an app process: org.devos.App.<name>.<shell id>.
 fn identity(name:str):str { return strings.replaceAll(shellId(),"org.devos.Shell.","org.devos.App." + name + ".") }
 fn nativeRoles():Vec<str> { return Vec<str>("taskmanager","diskmanager","installer","files","terminal","settings","camera","microphone","editor","screenshot","browser","appstore") }
-fn spawn(argv:Vec<str>, extra:Vec<str>) {
-    let all = Vec<str>("env","DEV_OS_ROOT=" + root())
+fn startProcess(argv:Vec<str>, extra:Vec<str>) {
+    # The shell runs with RD_HIDDEN=1 (no window); the apps it starts must not inherit it, or they would run without showing a window.
+    let all = Vec<str>("env","-u","RD_HIDDEN","DEV_OS_ROOT=" + root())
     for item in extra { all.push(item) }
     for item in argv { all.push(item) }
     hw.spawnDetached(all)
@@ -69,7 +70,7 @@ fn launch(role:str, command:str, path:str) {
     for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
     argv.push(native)
     for item in args { argv.push(item) }
-    spawn(argv,extra)
+    startProcess(argv,extra)
 }
 fn shellRoleIs(list:Vec<str>, role:str):bool { return router.contains(list,role) }
 
@@ -89,7 +90,7 @@ fn overlay(role:str, command:str, open:bool) {
     for name in Vec<str>("DEV_OS_THEME","DEV_OS_THEME_FAMILY") { if !strings.equal(hw.env(name),"") { extra.push(name + "=" + hw.env(name)) } }
     let executable = root() + "/dist/native/" + role
     if !isExecutable(executable) { say("Native " + role + " is missing. Run sh tools/build/native-apps.sh."); return }
-    spawn(Vec<str>(executable),extra)
+    startProcess(Vec<str>(executable),extra)
 }
 
 fn configured(key:str):Vec<str> {
@@ -126,7 +127,7 @@ fn runCommand(command:str, folder:str):bool {
     if !testing() && strings.equal(hw.which(args[0]),"") { say("Install " + args[0] + " or change '" + command + "' in config.json."); return false }
     note("run " + strings.join(args," "))
     if testing() { return true }
-    let argv = Vec<str>("sh","-c","cd \"$1\" 2>/dev/null || cd /; shift; exec \"$@\"","sh",folder)
+    let argv = Vec<str>("sh","-c","cd \"$1\" 2>/dev/null || cd /; shift; unset RD_HIDDEN; exec \"$@\"","sh",folder)
     for item in args { argv.push(item) }
     hw.spawnDetached(argv)
     return true
