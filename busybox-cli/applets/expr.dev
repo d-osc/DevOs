@@ -1,0 +1,248 @@
+# test, [, [[, expr: evaluating conditions and arithmetic from the command line.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn cell(): *i64 { unsafe { return sys.calloc(1, 8) as *i64 } }
+
+# ---- test EXPRESSION / [ EXPRESSION ] / [[ EXPRESSION ]] ------------------------------------------------------------------------------------
+fn is_binary(op: str): bool {
+    return sys.same(op, "=") || sys.same(op, "==") || sys.same(op, "!=") || sys.same(op, "<") || sys.same(op, ">") || sys.same(op, "-eq") || sys.same(op, "-ne") || sys.same(op, "-lt") || sys.same(op, "-le") || sys.same(op, "-gt") || sys.same(op, "-ge") || sys.same(op, "-nt") || sys.same(op, "-ot") || sys.same(op, "-ef")
+}
+fn is_unary(op: str): bool {
+    if sys.length(op) != 2 || sys.at(op, 0) != 45 { return false }
+    return sys.find_char("nzefdrwxsLhbcpSgukOGt", sys.at(op, 1)) >= 0
+}
+fn number_of(text: str): sys.Number { return sys.parse_number(text) }
+fn unary_test(op: str, arg: str): bool {
+    let c = sys.at(op, 1)
+    if c == 110 { return sys.length(arg) > 0 }
+    if c == 122 { return sys.length(arg) == 0 }
+    if c == 116 { let n = number_of(arg); return n.ok && sys.is_tty(n.value as i32) }
+    let follow = !(c == 76 || c == 104)
+    let info = sys.file_info(arg, follow)
+    if !info.ok { return false }
+    let kind = (info.mode / 4096) % 16
+    if c == 101 { return true }
+    if c == 102 { return kind == 8 }
+    if c == 100 { return kind == 4 }
+    if c == 76 || c == 104 { return kind == 10 }
+    if c == 98 { return kind == 6 }
+    if c == 99 { return kind == 2 }
+    if c == 112 { return kind == 1 }
+    if c == 83 { return kind == 12 }
+    if c == 115 { return info.size > 0 }
+    if c == 103 { return (info.mode / 1024) % 2 == 1 }
+    if c == 117 { return (info.mode / 2048) % 2 == 1 }
+    if c == 107 { return (info.mode / 512) % 2 == 1 }
+    if c == 79 { return info.uid == fsx.euid() }
+    if c == 71 { return info.gid == fsx.egid() }
+    unsafe {
+        if c == 114 { return sys.access(arg, 4) == 0 }
+        if c == 119 { return sys.access(arg, 2) == 0 }
+        if c == 120 { return sys.access(arg, 1) == 0 }
+    }
+    return false
+}
+# -1 when an operand is not a number (an error), else 0 / 1.
+fn binary_test(a: str, op: str, b: str): i64 {
+    if sys.same(op, "=") || sys.same(op, "==") { return sys.same(a, b) ? 1 : 0 }
+    if sys.same(op, "!=") { return sys.same(a, b) ? 0 : 1 }
+    if sys.same(op, "<") { return compare_text(a, b) < 0 ? 1 : 0 }
+    if sys.same(op, ">") { return compare_text(a, b) > 0 ? 1 : 0 }
+    if sys.same(op, "-nt") || sys.same(op, "-ot") || sys.same(op, "-ef") {
+        let x = sys.file_info(a, true); let y = sys.file_info(b, true)
+        if sys.same(op, "-nt") { return x.ok && (!y.ok || x.mtime > y.mtime) ? 1 : 0 }
+        if sys.same(op, "-ot") { return y.ok && (!x.ok || x.mtime < y.mtime) ? 1 : 0 }
+        return x.ok && y.ok && x.dev == y.dev && x.inode == y.inode ? 1 : 0
+    }
+    let x = number_of(a); let y = number_of(b)
+    if !x.ok || !y.ok { return 0 - 1 }
+    if sys.same(op, "-eq") { return x.value == y.value ? 1 : 0 }
+    if sys.same(op, "-ne") { return x.value != y.value ? 1 : 0 }
+    if sys.same(op, "-lt") { return x.value < y.value ? 1 : 0 }
+    if sys.same(op, "-le") { return x.value <= y.value ? 1 : 0 }
+    if sys.same(op, "-gt") { return x.value > y.value ? 1 : 0 }
+    return x.value >= y.value ? 1 : 0
+}
+fn compare_text(a: str, b: str): i64 {
+    let n = sys.length(a); let m = sys.length(b); let k = 0
+    while k < n && k < m { let x = sys.at(a, k); let y = sys.at(b, k); if x != y { return x < y ? 0 - 1 : 1 }; k = k + 1 }
+    if n == m { return 0 }
+    return n < m ? 0 - 1 : 1
+}
+
+struct Parser { args: Vec<str>, pos: *i64, bad: *i64 }
+fn cur(p: Parser): i64 { unsafe { return p.pos[0] } }
+fn advance(p: Parser) { unsafe { p.pos[0] = p.pos[0] + 1 } }
+fn fail(p: Parser, code: i64) { unsafe { p.bad[0] = code } }
+fn failed(p: Parser): i64 { unsafe { return p.bad[0] } }
+fn peek(p: Parser): str { let i = cur(p); return i < (p.args.len() as i64) ? p.args[i] : "" }
+fn more(p: Parser): bool { return cur(p) < (p.args.len() as i64) }
+fn step(p: Parser) { advance(p) }
+fn token_at(p: Parser, k: i64): str { let i = cur(p) + k; return i < (p.args.len() as i64) ? p.args[i] : "" }
+
+fn parse_or(p: Parser): bool {
+    let v = parse_and(p)
+    while more(p) && sys.same(peek(p), "-o") { step(p); let r = parse_and(p); v = v || r }
+    return v
+}
+fn parse_and(p: Parser): bool {
+    let v = parse_not(p)
+    while more(p) && sys.same(peek(p), "-a") { step(p); let r = parse_not(p); v = v && r }
+    return v
+}
+fn parse_not(p: Parser): bool {
+    if more(p) && sys.same(peek(p), "!") && cur(p) + 1 < (p.args.len() as i64) { step(p); return !parse_not(p) }
+    return parse_primary(p)
+}
+fn parse_primary(p: Parser): bool {
+    if !more(p) { return false }
+    let left = peek(p); let left_pos = cur(p)
+    let rest = (p.args.len() as i64) - left_pos
+    if sys.same(left, "(") && rest >= 2 {
+        step(p)
+        let v = parse_or(p)
+        if more(p) && sys.same(peek(p), ")") { step(p) } else { fail(p, 2) }
+        return v
+    }
+    if rest >= 3 && is_binary(token_at(p, 1)) {
+        let op = token_at(p, 1); let right = token_at(p, 2)
+        step(p); step(p); step(p)
+        let r = binary_test(left, op, right)
+        if r < 0 { fail(p, 2); return false }
+        return r == 1
+    }
+    if rest >= 2 && is_unary(left) && !(rest >= 3 && is_binary(token_at(p, 1))) {
+        let arg = token_at(p, 1)
+        step(p); step(p)
+        return unary_test(left, arg)
+    }
+    step(p)
+    return sys.length(left) > 0
+}
+fn evaluate_test(args: Vec<str>): i64 {
+    if args.len() == 0 { return 1 }
+    let p = Parser(args, cell(), cell())
+    let v = parse_or(p)
+    if failed(p) != 0 || more(p) { if failed(p) == 0 { sys.warn("test", "bad expression") }; return 2 }
+    return v ? 0 : 1
+}
+fn run_test(args: Vec<str>): i64 { return evaluate_test(args) }
+fn bracket(args: Vec<str>, close: str): i64 {
+    let n = args.len() as i64
+    if n == 0 || !sys.same(args[n - 1], close) { sys.warn("[", sys.join2("missing ", close)); return 2 }
+    let inner = Vec<str>()
+    for i in 0..(n - 1) { inner.push(args[i]) }
+    return evaluate_test(inner)
+}
+fn run__(args: Vec<str>): i64 { return bracket(args, "]") }
+fn run___(args: Vec<str>): i64 { return bracket(args, "]]") }
+
+# ---- expr ARG... -----------------------------------------------------------------------------------------------------------------------------------
+fn is_integer(text: str): bool {
+    let n = sys.length(text)
+    if n == 0 { return false }
+    let start = sys.at(text, 0) == 45 ? 1 : 0
+    if start == n { return false }
+    for i in start..n { if !sys.is_digit(sys.at(text, i)) { return false } }
+    return true
+}
+fn truthy(v: str): bool { return sys.length(v) > 0 && !(is_integer(v) && sys.parse_number(v).value == 0) }
+fn expr_or(p: Parser): str {
+    let v = expr_and(p)
+    while more(p) && sys.same(peek(p), "|") { step(p); let r = expr_and(p); if !truthy(v) { v = r } }
+    return v
+}
+fn expr_and(p: Parser): str {
+    let v = expr_compare(p)
+    while more(p) && sys.same(peek(p), "&") { step(p); let r = expr_compare(p); if !(truthy(v) && truthy(r)) { v = "0" } }
+    return v
+}
+fn expr_compare(p: Parser): str {
+    let v = expr_sum(p)
+    while more(p) {
+        let op = peek(p)
+        if !(sys.same(op, "=") || sys.same(op, "==") || sys.same(op, "!=") || sys.same(op, "<") || sys.same(op, "<=") || sys.same(op, ">") || sys.same(op, ">=")) { break }
+        step(p)
+        let r = expr_sum(p)
+        let c = 0
+        if is_integer(v) && is_integer(r) { let a = sys.parse_number(v).value; let b = sys.parse_number(r).value; c = a < b ? 0 - 1 : (a > b ? 1 : 0) } else { c = compare_text(v, r) }
+        let hit = false
+        if sys.same(op, "=") || sys.same(op, "==") { hit = c == 0 } else if sys.same(op, "!=") { hit = c != 0 } else if sys.same(op, "<") { hit = c < 0 }
+        else if sys.same(op, "<=") { hit = c <= 0 } else if sys.same(op, ">") { hit = c > 0 } else { hit = c >= 0 }
+        v = hit ? "1" : "0"
+    }
+    return v
+}
+fn need_integer(p: Parser, v: str): i64 {
+    if !is_integer(v) { fail(p, 2); return 0 }
+    return sys.parse_number(v).value
+}
+fn expr_sum(p: Parser): str {
+    let v = expr_product(p)
+    while more(p) && (sys.same(peek(p), "+") || sys.same(peek(p), "-")) {
+        let plus = sys.same(peek(p), "+"); step(p)
+        let r = expr_product(p)
+        let a = need_integer(p, v); let b = need_integer(p, r)
+        v = decimal(plus ? a + b : a - b)
+    }
+    return v
+}
+fn expr_product(p: Parser): str {
+    let v = expr_match(p)
+    while more(p) && (sys.same(peek(p), "*") || sys.same(peek(p), "/") || sys.same(peek(p), "%")) {
+        let op = peek(p); step(p)
+        let r = expr_match(p)
+        let a = need_integer(p, v); let b = need_integer(p, r)
+        if !sys.same(op, "*") && b == 0 { fail(p, 3); return "0" }
+        v = decimal(sys.same(op, "*") ? a * b : (sys.same(op, "/") ? a / b : a % b))
+    }
+    return v
+}
+# STRING : REGEX is applied by the regex module (see matcher); without it the operator is not available.
+fn expr_match(p: Parser): str {
+    let v = expr_primary(p)
+    while more(p) && sys.same(peek(p), ":") {
+        step(p)
+        let pattern = expr_primary(p)
+        v = match_hook(v, pattern)
+    }
+    return v
+}
+fn match_hook(text: str, pattern: str): str { return "0" }
+fn expr_primary(p: Parser): str {
+    if !more(p) { fail(p, 2); return "" }
+    let t = peek(p)
+    if sys.same(t, "(") {
+        step(p)
+        let v = expr_or(p)
+        if more(p) && sys.same(peek(p), ")") { step(p) } else { fail(p, 2) }
+        return v
+    }
+    if sys.same(t, "length") && cur(p) + 1 < (p.args.len() as i64) { step(p); let s = expr_primary(p); return decimal(sys.length(s)) }
+    if sys.same(t, "substr") && cur(p) + 3 < (p.args.len() as i64) {
+        step(p); let s = expr_primary(p); let a = need_integer(p, expr_primary(p)); let l = need_integer(p, expr_primary(p))
+        let n = sys.length(s)
+        if a < 1 || l < 1 || a > n { return "" }
+        let end = a - 1 + l > n ? n : a - 1 + l
+        return sys.join2(sys.slice(s, a - 1, end), "")
+    }
+    if sys.same(t, "index") && cur(p) + 2 < (p.args.len() as i64) {
+        step(p); let s = expr_primary(p); let chars = expr_primary(p)
+        for i in 0..sys.length(s) { if sys.find_char(chars, sys.at(s, i)) >= 0 { return decimal(i + 1) } }
+        return "0"
+    }
+    if sys.same(t, "+") && cur(p) + 1 < (p.args.len() as i64) { step(p); let v = peek(p); step(p); return v }
+    step(p)
+    return t
+}
+fn run_expr(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("expr", "syntax error"); return 2 }
+    let p = Parser(args, cell(), cell())
+    let v = expr_or(p)
+    if failed(p) == 3 { sys.warn("expr", "division by zero"); return 2 }
+    if failed(p) != 0 || more(p) { sys.warn("expr", "syntax error"); return 2 }
+    let o = sys.out_new(1); sys.out_str(o, v); sys.out_byte(o, 10); sys.out_flush(o)
+    return truthy(v) ? 0 : 1
+}

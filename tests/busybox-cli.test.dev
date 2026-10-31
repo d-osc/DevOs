@@ -121,6 +121,15 @@ test.case("id whoami hostname uname env printenv which tty nice nohup setsid tim
         "@mountpoint /","@mountpoint dir; echo rc","@mountpoint -q /; echo rc","@mountpoint nosuch; echo rc"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("test [ expr",fn() {
+    let d = sandbox()
+    all_same(d, Vec<str>("@test -f a.txt; echo rc=$?","@test -d dir; echo rc=$?","@test -e nosuch; echo rc=$?","@test -s a.txt; echo rc=$?","@test -n x; echo rc=$?","@test -z ''; echo rc=$?","@test -n; echo rc=$?","@test; echo rc=$?","@test x; echo rc=$?","@test ''; echo rc=$?",
+        "@test a = a; echo rc=$?","@test a != a; echo rc=$?","@test a = b -o b = b; echo rc=$?","@test a = a -a b = c; echo rc=$?","@test ! a = a; echo rc=$?","@test ! -f a.txt; echo rc=$?","@test \\( a = a \\) -a b = b; echo rc=$?","@test 3 -lt 10; echo rc=$?","@test 3 -ge 10; echo rc=$?","@test 5 -eq 5; echo rc=$?","@test 5 -ne 5; echo rc=$?",
+        "@test abc \\< abd; echo rc=$?","@test abc \\> abd; echo rc=$?","@test a.txt -nt b.txt; echo rc=$?","@test a.txt -ef a.txt; echo rc=$?","@test -r a.txt -a -w a.txt; echo rc=$?","@test -L nosuch; echo rc=$?","@test -f = -f; echo rc=$?","@test x -eq 3 2>/dev/null; echo rc=$?","@test 1 -eq; echo rc=$?",
+        "@[ -f a.txt ]; echo rc=$?","@[ a = b ]; echo rc=$?","@[ -n \"\" ]; echo rc=$?","@[ 1 -lt 2 ] && echo yes","@[ -f a.txt; echo rc=$?",
+        "@expr 1 + 2","@expr 10 - 3 - 2","@expr 6 \\* 7","@expr 17 / 5","@expr 17 % 5","@expr 2 + 3 \\* 4","@expr \\( 2 + 3 \\) \\* 4","@expr 3 \\< 5","@expr 5 \\< 3; echo rc=$?","@expr 3 = 3","@expr abc = abc","@expr abc \\< abd","@expr 5 \\>= 5","@expr 4 != 4; echo rc=$?","@expr 0; echo rc=$?","@expr ''; echo rc=$?","@expr a \\| b","@expr 0 \\| 7","@expr 0 \\& 5; echo rc=$?","@expr 3 \\& 5","@expr length hello","@expr substr hello 2 3","@expr substr hello 9 3; echo rc=$?","@expr index hello lo","@expr 1 / 0; echo rc=$?","@expr 1 +; echo rc=$?","@expr; echo rc=$?","@expr -5 + 2","@expr abc; echo rc=$?"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("process applets and system information (BusyBox only)",fn() {
     let d = sandbox()
     let bb = busybox()

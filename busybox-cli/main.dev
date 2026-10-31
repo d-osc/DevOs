@@ -7,6 +7,7 @@ use "./applets/sort.dev" as sorts
 use "./applets/filters.dev" as filt
 use "./applets/sysinfo.dev" as si
 use "./applets/procs.dev" as pr
+use "./applets/expr.dev" as xp
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
@@ -88,6 +89,10 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "uptime") { return pr.run_uptime(args) }
     if sys.same(name, "watch") { return pr.run_watch(args) }
     if sys.same(name, "mountpoint") { return pr.run_mountpoint(args) }
+    if sys.same(name, "test") { return xp.run_test(args) }
+    if sys.same(name, "[") { return xp.run__(args) }
+    if sys.same(name, "[[") { return xp.run___(args) }
+    if sys.same(name, "expr") { return xp.run_expr(args) }
     sys.warn(name, "applet not found")
     return 127
 }
