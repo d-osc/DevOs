@@ -345,6 +345,10 @@ void rd_text(void *data, int32_t kind, const unsigned char *bytes, int64_t lengt
 ICON" looks ICON up in the icon theme NAME (Icons settings previews). */
             if(g_str_has_prefix(text,"<svg"))rd_image_svg(GTK_IMAGE(widget),text);
             else if(g_str_has_prefix(text,"theme:"))rd_image_themed(GTK_IMAGE(widget),text+6);
+            else if(*text=='/'){ /* an icon file, as a desktop entry's Icon= names it (installed packages ship theirs this way) */
+                GFile *file=g_file_new_for_path(text);GIcon *icon=g_file_icon_new(file);
+                gtk_image_set_from_gicon(GTK_IMAGE(widget),icon,GTK_ICON_SIZE_BUTTON);g_object_unref(icon);g_object_unref(file);
+            }
             else if(*text)gtk_image_set_from_icon_name(GTK_IMAGE(widget),text,GTK_ICON_SIZE_BUTTON);else gtk_image_clear(GTK_IMAGE(widget));
             g_object_set_data_full(G_OBJECT(widget),"rd-icon",g_strdup(text),g_free);
         }
