@@ -1,0 +1,273 @@
+# adduser, addgroup, deluser, delgroup, envdir, envuidgid, setuidgid, chpst, softlimit, mkswap: accounts and process environment helpers.
+# The account files are read from /etc, or from the directory named by $BUSYBOX_ETC when that is set (used by the tests).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "./gzip.dev" as gz
+
+extern fn setuid(uid: u32): i32
+extern fn setgid(gid: u32): i32
+extern fn setgroups(count: usize, list: *void): i32
+extern fn setrlimit(resource: i32, limit: *void): i32
+extern fn nice(increment: i32): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn etc_dir(): str { let v = proc.lookup(proc.environment(), "BUSYBOX_ETC"); return v.found && sys.length(v.value) > 0 ? v.value : "/etc" }
+fn etc_file(name: str): str { return fsx.join_path(etc_dir(), name) }
+fn read_all_lines(path: str): Vec<str> {
+    let out = Vec<str>(); let input = sys.read_path(path)
+    if !input.ok { return out }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) { out.push(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])) }
+    return out
+}
+fn write_all_lines(path: str, items: Vec<str>): bool {
+    let b = sys.bytes_new()
+    for k in 0..(items.len() as i64) { sys.bytes_str(b, items[k]); sys.bytes_push(b, 10) }
+    let info = sys.file_info(path, true)
+    return gz.write_file(path, b, info.ok ? sys.permission_bits(info.mode) : 420)
+}
+fn field(line: str, index: i64): str {
+    let start = 0; let k = 0
+    for i in 0..(sys.length(line) + 1) {
+        if i == sys.length(line) || sys.at(line, i) == 58 { if k == index { return sys.join2(sys.slice(line, start, i), "") }; k = k + 1; start = i + 1 }
+    }
+    return ""
+}
+fn find_line(items: Vec<str>, key: str, index: i64): i64 {
+    for k in 0..(items.len() as i64) { if sys.same(field(items[k], index), key) { return k } }
+    return 0 - 1
+}
+fn highest_id(items: Vec<str>, index: i64, floor: i64): i64 {
+    let best = floor - 1
+    for k in 0..(items.len() as i64) { let v = sys.parse_number(field(items[k], index)); if v.ok && v.value >= floor && v.value < 60000 && v.value > best { best = v.value } }
+    return best + 1
+}
+fn say(prog: str, message: str) { sys.warn(prog, message) }
+
+fn run_addgroup(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "g:S")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() == 0 || o.rest.len() > 2 { say("addgroup", "invalid usage: addgroup [-g GID] [-S] [USER] GROUP"); return 1 }
+    let path = etc_file("group"); let groups = read_all_lines(path)
+    if o.rest.len() == 2 {
+        let user = o.rest[0]; let name = o.rest[1]
+        let at = find_line(groups, name, 0)
+        if at < 0 { say("addgroup", sys.join2(sys.join2("unknown group ", name), "")); return 1 }
+        let members = field(groups[at], 3)
+        for part in 0..1 { }
+        let present = false
+        let start = 0; for i in 0..(sys.length(members) + 1) { if i == sys.length(members) || sys.at(members, i) == 44 { if sys.same(sys.join2(sys.slice(members, start, i), ""), user) { present = true }; start = i + 1 } }
+        if present { return 0 }
+        let updated = sys.join2(sys.join2(sys.join2(sys.join2(field(groups[at], 0), ":"), sys.join2(field(groups[at], 1), ":")), sys.join2(field(groups[at], 2), ":")), sys.length(members) > 0 ? sys.join2(sys.join2(members, ","), user) : user)
+        groups[at] = updated
+        if !write_all_lines(path, groups) { sys.warn_write("addgroup", path); return 1 }
+        return 0
+    }
+    let name = o.rest[0]
+    if find_line(groups, name, 0) >= 0 { say("addgroup", sys.join2(sys.join2("group '", name), "' in use")); return 1 }
+    let gid = sys.has(o, 103) ? sys.parse_number(sys.val(o, 103)).value : highest_id(groups, 2, sys.has(o, 83) ? 100 : 1000)
+    groups.push(sys.join2(sys.join2(sys.join2(name, ":x:"), decimal(gid)), ":"))
+    if !write_all_lines(path, groups) { sys.warn_write("addgroup", path); return 1 }
+    return 0
+}
+fn run_adduser(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "h:g:s:G:SDHu:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { say("adduser", "invalid usage: adduser [OPTIONS] USER [GROUP]"); return 1 }
+    let name = o.rest[0]
+    let passwd_path = etc_file("passwd"); let group_path = etc_file("group"); let shadow_path = etc_file("shadow")
+    let users = read_all_lines(passwd_path); let groups = read_all_lines(group_path)
+    if find_line(users, name, 0) >= 0 { say("adduser", sys.join2(sys.join2("user '", name), "' in use")); return 1 }
+    let uid = sys.has(o, 117) ? sys.parse_number(sys.val(o, 117)).value : highest_id(users, 2, sys.has(o, 83) ? 100 : 1000)
+    let gid = uid
+    let existing = find_line(groups, sys.has(o, 71) ? sys.val(o, 71) : name, 0)
+    if sys.has(o, 71) {
+        if existing < 0 { say("adduser", sys.join2("unknown group ", sys.val(o, 71))); return 1 }
+        gid = sys.parse_number(field(groups[existing], 2)).value
+    } else if find_line(groups, name, 0) >= 0 { gid = sys.parse_number(field(groups[find_line(groups, name, 0)], 2)).value }
+    else {
+        let free_gid = highest_id(groups, 2, sys.has(o, 83) ? 100 : 1000)
+        gid = free_gid
+        groups.push(sys.join2(sys.join2(sys.join2(name, ":x:"), decimal(gid)), ":"))
+        if !write_all_lines(group_path, groups) { sys.warn_write("adduser", group_path); return 1 }
+    }
+    let home = sys.has(o, 104) ? sys.val(o, 104) : sys.join2("/home/", name)
+    let shell = sys.has(o, 115) ? sys.val(o, 115) : (sys.has(o, 83) ? "/bin/false" : "/bin/sh")
+    let gecos = sys.has(o, 103) ? sys.val(o, 103) : name
+    users.push(sys.join2(sys.join2(sys.join2(name, ":x:"), sys.join2(decimal(uid), ":")), sys.join2(sys.join2(decimal(gid), ":"), sys.join2(sys.join2(gecos, ":"), sys.join2(sys.join2(home, ":"), shell)))))
+    if !write_all_lines(passwd_path, users) { sys.warn_write("adduser", passwd_path); return 1 }
+    let shadow = read_all_lines(shadow_path)
+    if shadow.len() > 0 || sys.exists(shadow_path) { shadow.push(sys.join2(name, ":!:19000:0:99999:7:::")); write_all_lines(shadow_path, shadow) }
+    if !sys.has(o, 72) && !sys.has(o, 83) && !sys.exists(home) { fsx.make_dirs(home, 493); fsx.do_chown(home, uid, gid) }
+    return 0
+}
+fn drop_line(items: Vec<str>, at: i64): Vec<str> { let out = Vec<str>(); for k in 0..(items.len() as i64) { if k != at { out.push(items[k]) } }; return out }
+fn remove_member(line: str, user: str): str {
+    let members = field(line, 3); let kept = ""; let start = 0
+    for i in 0..(sys.length(members) + 1) { if i == sys.length(members) || sys.at(members, i) == 44 { let m = sys.join2(sys.slice(members, start, i), ""); if !sys.same(m, user) && sys.length(m) > 0 { kept = sys.length(kept) > 0 ? sys.join2(sys.join2(kept, ","), m) : m }; start = i + 1 } }
+    return sys.join2(sys.join2(sys.join2(field(line, 0), ":"), sys.join2(field(line, 1), ":")), sys.join2(sys.join2(field(line, 2), ":"), kept))
+}
+fn run_deluser(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "r")
+    let words = Vec<str>(); for k in 0..(args.len() as i64) { if sys.same(args[k], "--remove-home") { o.flag[114] = 1 } else if !sys.starts(args[k], "-") { words.push(args[k]) } }
+    if words.len() == 0 || words.len() > 2 { say("deluser", "invalid usage: deluser [--remove-home] USER [GROUP]"); return 1 }
+    let passwd_path = etc_file("passwd"); let users = read_all_lines(passwd_path); let groups = read_all_lines(etc_file("group"))
+    if words.len() == 2 {
+        let at = find_line(groups, words[1], 0)
+        if at < 0 { say("deluser", sys.join2("unknown group ", words[1])); return 1 }
+        groups[at] = remove_member(groups[at], words[0])
+        if !write_all_lines(etc_file("group"), groups) { sys.warn_write("deluser", etc_file("group")); return 1 }
+        return 0
+    }
+    let at = find_line(users, words[0], 0)
+    if at < 0 { say("deluser", sys.join2(sys.join2("can't find ", words[0]), " in /etc/passwd")); return 1 }
+    let home = field(users[at], 5)
+    users = drop_line(users, at)
+    if !write_all_lines(passwd_path, users) { sys.warn_write("deluser", passwd_path); return 1 }
+    let shadow = read_all_lines(etc_file("shadow")); let s = find_line(shadow, words[0], 0)
+    if s >= 0 { write_all_lines(etc_file("shadow"), drop_line(shadow, s)) }
+    let changed = false
+    for k in 0..(groups.len() as i64) { let updated = remove_member(groups[k], words[0]); if !sys.same(updated, groups[k]) { groups[k] = updated; changed = true } }
+    let g = find_line(groups, words[0], 0)
+    if g >= 0 && sys.length(field(groups[g], 3)) == 0 { groups = drop_line(groups, g); changed = true }
+    if changed { write_all_lines(etc_file("group"), groups) }
+    if sys.has(o, 114) && sys.length(home) > 1 && sys.is_dir(home) { proc.run_wait(Vec<str>("rm", "-rf", home), proc.environment()) }
+    return 0
+}
+fn run_delgroup(args: Vec<str>): i64 {
+    if args.len() == 0 || args.len() > 2 { say("delgroup", "invalid usage: delgroup [USER] GROUP"); return 1 }
+    if args.len() == 2 { return run_deluser(args) }
+    let path = etc_file("group"); let groups = read_all_lines(path); let at = find_line(groups, args[0], 0)
+    if at < 0 { say("delgroup", sys.join2("unknown group ", args[0])); return 1 }
+    let gid = field(groups[at], 2)
+    let users = read_all_lines(etc_file("passwd"))
+    for k in 0..(users.len() as i64) { if sys.same(field(users[k], 3), gid) { say("delgroup", sys.join2(sys.join2("'", args[0]), "' is the primary group of a user")); return 1 } }
+    if !write_all_lines(path, drop_line(groups, at)) { sys.warn_write("delgroup", path); return 1 }
+    return 0
+}
+
+// ---- process environment helpers ----------------------------------------------------------------------------------------------------------------------------------
+struct Account { ok: bool, uid: i64, gid: i64 }
+fn account_of(spec: str): Account {
+    let colon = sys.find_char(spec, 58); let user = colon < 0 ? spec : sys.join2(sys.slice(spec, 0, colon), "")
+    let n = sys.parse_number(user); let uid = n.ok ? n.value : fsx.lookup_id(etc_file("passwd"), user)
+    if uid < 0 { return Account(false, 0, 0) }
+    let users = read_all_lines(etc_file("passwd")); let gid = uid
+    for k in 0..(users.len() as i64) { if sys.parse_number(field(users[k], 2)).value == uid { gid = sys.parse_number(field(users[k], 3)).value } }
+    if colon >= 0 { let g = sys.join2(sys.slice(spec, colon + 1, sys.length(spec)), ""); let gn = sys.parse_number(g); gid = gn.ok ? gn.value : fsx.lookup_id(etc_file("group"), g); if gid < 0 { return Account(false, 0, 0) } }
+    return Account(true, uid, gid)
+}
+fn become(a: Account): bool {
+    let ok = true
+    unsafe { setgroups(0, 0 as *void); if setgid(a.gid as u32) != 0 { ok = false }; if setuid(a.uid as u32) != 0 { ok = false } }
+    return ok
+}
+fn env_from_dir(env: Vec<str>, dir: str): Vec<str> {
+    let l = fsx.list_dir(dir); let out = env
+    for k in 0..(l.names.len() as i64) {
+        let name = l.names[k]; let input = sys.read_path(fsx.join_path(dir, name))
+        if !input.ok { continue }
+        if sys.blen(input.bytes) == 0 { out = proc.unset_variable(out, name); continue }
+        let value = sys.bytes_new()
+        for i in 0..sys.blen(input.bytes) { let c = sys.bat(input.bytes, i); if c == 10 { break }; let v = c; if c == 0 { v = 10 }; sys.bytes_push(value, v) }
+        let text = sys.join2(sys.bytes_cstr(value), ""); let n = sys.length(text)
+        while n > 0 && (sys.at(text, n - 1) == 32 || sys.at(text, n - 1) == 9) { n = n - 1 }
+        out = proc.set_variable(out, name, sys.join2(sys.slice(text, 0, n), ""))
+    }
+    return out
+}
+fn run_envdir(args: Vec<str>): i64 {
+    if args.len() < 2 { say("envdir", "invalid usage: envdir DIR PROG [ARGS]"); return 1 }
+    if !sys.is_dir(args[0]) { say("envdir", sys.join2(args[0], ": No such directory")); return 1 }
+    let cmd = Vec<str>(); for k in 1..(args.len() as i64) { cmd.push(args[k]) }
+    return proc.run_wait(cmd, env_from_dir(proc.environment(), args[0]))
+}
+fn run_envuidgid(args: Vec<str>): i64 {
+    if args.len() < 2 { say("envuidgid", "invalid usage: envuidgid USER PROG [ARGS]"); return 1 }
+    let a = account_of(args[0]); if !a.ok { say("envuidgid", sys.join2("unknown account ", args[0])); return 1 }
+    let env = proc.set_variable(proc.set_variable(proc.environment(), "UID", decimal(a.uid)), "GID", decimal(a.gid))
+    let cmd = Vec<str>(); for k in 1..(args.len() as i64) { cmd.push(args[k]) }
+    return proc.run_wait(cmd, env)
+}
+fn run_setuidgid(args: Vec<str>): i64 {
+    if args.len() < 2 { say("setuidgid", "invalid usage: setuidgid USER PROG [ARGS]"); return 1 }
+    let a = account_of(args[0]); if !a.ok { say("setuidgid", sys.join2("unknown account ", args[0])); return 1 }
+    if !become(a) { say("setuidgid", "unable to set uid/gid: Operation not permitted"); return 1 }
+    let cmd = Vec<str>(); for k in 1..(args.len() as i64) { cmd.push(args[k]) }
+    return proc.run_wait(cmd, proc.environment())
+}
+fn limit(resource: i64, value: i64): bool {
+    let b = sys.bytes_new(); for i in 0..16 { sys.bytes_push(b, 0) }
+    for i in 0..8 { sys.bptr_set(b, i, ((value / pow256(i)) % 256) as u8); sys.bptr_set(b, 8 + i, ((value / pow256(i)) % 256) as u8) }
+    unsafe { return setrlimit(resource as i32, sys.bdata(b) as *void) == 0 }
+}
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+fn split_options(args: Vec<str>, valued: str): i64 {
+    let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.length(a) < 2 || sys.at(a, 0) != 45 { break }
+        if sys.length(a) == 2 && sys.find_char(valued, sys.at(a, 1)) >= 0 { i = i + 2 } else { i = i + 1 }
+    }
+    return i
+}
+fn head_of(args: Vec<str>, count: i64): Vec<str> { let out = Vec<str>(); for k in 0..count { out.push(args[k]) }; return out }
+fn tail_of(args: Vec<str>, from: i64): Vec<str> { let out = Vec<str>(); for k in from..(args.len() as i64) { out.push(args[k]) }; return out }
+fn run_softlimit(args: Vec<str>): i64 {
+    let cut = split_options(args, "acdflmoprst"); let program = tail_of(args, cut)
+    let o = sys.parse_opts(head_of(args, cut), "a:c:d:f:l:m:o:p:r:s:t:")
+    if o.bad != 0 || o.missing != 0 || program.len() == 0 { say("softlimit", "invalid usage: softlimit [-a BYTES] [-c BYTES] [-d BYTES] [-f BYTES] [-l BYTES] [-m BYTES] [-o N] [-p N] [-r BYTES] [-s BYTES] [-t SECONDS] PROG"); return 1 }
+    let map = Vec<str>("a", "m", "c", "d", "f", "l", "o", "p", "r", "s", "t")
+    let resource = Vec<i64>(9, 9, 4, 2, 1, 8, 7, 6, 5, 3, 0)
+    for k in 0..(map.len() as i64) {
+        let c = sys.at(map[k], 0)
+        if sys.has(o, c) {
+            let v = sys.parse_number(sys.val(o, c))
+            if !v.ok || !limit(resource[k], v.value) { say("softlimit", "unable to set limit"); return 1 }
+            if c == 109 { limit(2, v.value); limit(3, v.value) }
+        }
+    }
+    return proc.run_wait(program, proc.environment())
+}
+fn run_chpst(args: Vec<str>): i64 {
+    let cut = split_options(args, "uUe/nmdopfcb"); let program = tail_of(args, cut)
+    let o = sys.parse_opts(head_of(args, cut), "u:U:e:/:n:m:d:o:p:f:c:vP012b:")
+    if o.bad != 0 || o.missing != 0 || program.len() == 0 { say("chpst", "invalid usage: chpst [-vP012] [-u USER[:GRP]] [-U USER[:GRP]] [-e DIR] [-/ DIR] [-n NICE] [-m BYTES] [-d BYTES] [-o N] [-p N] [-f BYTES] [-c BYTES] PROG ARGS"); return 1 }
+    let env = proc.environment()
+    if sys.has(o, 101) { env = env_from_dir(env, sys.val(o, 101)) }
+    if sys.has(o, 85) { let a = account_of(sys.val(o, 85)); if !a.ok { say("chpst", "unknown account"); return 1 }; env = proc.set_variable(proc.set_variable(env, "UID", decimal(a.uid)), "GID", decimal(a.gid)) }
+    if sys.has(o, 110) { unsafe { nice(sys.parse_number(sys.val(o, 110)).value as i32) } }
+    if sys.has(o, 109) { let v = sys.parse_number(sys.val(o, 109)).value; limit(9, v); limit(2, v); limit(3, v) }
+    if sys.has(o, 100) { limit(2, sys.parse_number(sys.val(o, 100)).value) }
+    if sys.has(o, 111) { limit(7, sys.parse_number(sys.val(o, 111)).value) }
+    if sys.has(o, 112) { limit(6, sys.parse_number(sys.val(o, 112)).value) }
+    if sys.has(o, 102) { limit(1, sys.parse_number(sys.val(o, 102)).value) }
+    if sys.has(o, 99) { limit(4, sys.parse_number(sys.val(o, 99)).value) }
+    if sys.has(o, 47) { unsafe { if !fsx.change_dir(sys.val(o, 47)) { say("chpst", "unable to change root"); return 1 } } }
+    if sys.has(o, 117) { let a = account_of(sys.val(o, 117)); if !a.ok { say("chpst", "unknown account"); return 1 }; if !become(a) { say("chpst", "unable to set uid/gid: Operation not permitted"); return 1 } }
+    return proc.run_wait(program, env)
+}
+
+// ---- mkswap DEVICE_OR_FILE --------------------------------------------------------------------------------------------------------------------------------------------
+fn run_mkswap(args: Vec<str>): i64 {
+    if args.len() != 1 { say("mkswap", "invalid usage: mkswap BLOCKDEV"); return 1 }
+    let info = sys.file_info(args[0], true)
+    if !info.ok { sys.warn_path("mkswap", args[0]); return 1 }
+    let size = info.size
+    if size == 0 { let fd = sys.open_fd(args[0], 0, 0); if fd >= 0 { size = sys.seek_fd(fd, 0, 2); sys.close_fd(fd) } }
+    if size < 40960 { say("mkswap", "swap area needs to be at least 40 KiB"); return 1 }
+    let fd = sys.open_fd(args[0], 2, 0)
+    if fd < 0 { sys.warn_write("mkswap", args[0]); return 1 }
+    let pages = size / 4096
+    let head = sys.bytes_new(); for i in 0..4096 { sys.bytes_push(head, 0) }
+    sys.bptr_set(head, 1024, 1)
+    let last = pages - 1
+    for i in 0..4 { sys.bptr_set(head, 1032 + i, ((last / pow256(i)) % 256) as u8) }
+    for i in 0..16 { sys.bptr_set(head, 1036 + i, (65 + i * 3 % 26) as u8) }
+    let magic = "SWAPSPACE2"
+    for i in 0..10 { sys.bptr_set(head, 4086 + i, sys.at(magic, i)) }
+    sys.seek_fd(fd, 0, 0); sys.write_fd(fd, sys.bdata(head), 4096); sys.close_fd(fd)
+    let out = sys.out_new(1)
+    sys.out_str(out, sys.join2(sys.join2("Setting up swapspace version 1, size = ", decimal(size - 4096)), " bytes\n")); sys.out_flush(out)
+    return 0
+}

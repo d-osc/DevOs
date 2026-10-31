@@ -384,6 +384,24 @@ test.case("catv getopt run-parts ipcalc dc rdev",fn() {
     test.expect(strings.contains(outcome(d, bb + " rdev"), " /"), "rdev prints no root")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("adduser addgroup deluser delgroup envdir chpst softlimit mkswap (BusyBox only)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let setup = "mkdir etc && printf 'root:x:0:0:root:/root:/bin/sh\\n' > etc/passwd && printf 'root:x:0:\\n' > etc/group && export BUSYBOX_ETC=$PWD/etc; "
+    test.expect(strings.contains(outcome(d, setup + bb + " addgroup staff; " + bb + " adduser -D -H -s /bin/sh bob; cat etc/passwd etc/group"), "bob:x:1000:1001:bob:/home/bob:/bin/sh\nroot:x:0:\nstaff:x:1000:\nbob:x:1001:"), "adduser/addgroup wrote the wrong records:\n" + outcome(d, setup + bb + " addgroup staff; " + bb + " adduser -D -H -s /bin/sh bob; cat etc/passwd etc/group"))
+    test.expect(strings.contains(outcome(d, setup + bb + " addgroup staff; " + bb + " adduser -D -H -G staff amy; cat etc/passwd"), "amy:x:1000:1000"), "adduser -G did not use the existing group")
+    test.expect(strings.contains(outcome(d, setup + bb + " addgroup staff; " + bb + " adduser -D -H -G staff amy; " + bb + " addgroup amy root; cat etc/group"), "root:x:0:amy"), "addgroup USER GROUP failed")
+    test.expect(!strings.contains(outcome(d, setup + bb + " adduser -D -H bob; " + bb + " deluser bob; cat etc/passwd etc/group"), "bob"), "deluser left records behind")
+    test.expect(strings.contains(outcome(d, setup + bb + " adduser -D -H bob; " + bb + " adduser -D -H bob; echo rc=$?"), "rc=1"), "adduser accepted a duplicate")
+    test.expect(strings.contains(outcome(d, setup + bb + " addgroup g1; " + bb + " delgroup g1; cat etc/group"), "root:x:0:\nrc=0"), "delgroup failed")
+    test.expect(strings.contains(outcome(d, setup + bb + " delgroup nosuch; echo rc=$?"), "rc=1"), "delgroup of a missing group")
+    test.expect(strings.contains(outcome(d, "mkdir env && printf 'hello\\n' > env/GREETING && : > env/HOME && " + bb + " envdir env sh -c 'echo $GREETING:[$HOME]'"), "hello:[]"), "envdir did not set and unset variables")
+    test.expect(strings.contains(outcome(d, bb + " chpst -n 5 sh -c 'echo ok'"), "ok"), "chpst did not run the program")
+    test.expect(strings.contains(outcome(d, bb + " softlimit -o 64 sh -c 'ulimit -n'"), "64"), "softlimit -o did not apply")
+    test.expect(strings.contains(outcome(d, bb + " chpst -e nosuchdir true; echo rc=$?"), "rc="), "chpst -e")
+    test.expect(strings.contains(outcome(d, "head -c 100000 /dev/zero > sw.img; " + bb + " mkswap sw.img; file sw.img 2>/dev/null | grep -c swap; blkid sw.img 2>/dev/null | grep -c swap; od -An -c -j 4086 -N 10 sw.img"), "S   W   A   P   S   P   A   C   E   2"), "mkswap wrote no signature")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
