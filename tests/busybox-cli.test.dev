@@ -325,6 +325,15 @@ test.case("ar cpio (BusyBox against the system tools)",fn() {
     test.expect(strings.contains(outcome(d, cases[6]), "rc=1"), "ar accepted a missing archive")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("mount umount swapon dmesg setarch taskset who",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let sorted = " | sort | cut -d' ' -f1-5"
+    test.expect(strings.equal(outcome(d, "mount" + sorted + " | head -3"), outcome(d, bb + " mount" + sorted + " | head -3")), "mount listing differs:\n" + outcome(d, bb + " mount | head -3") + "\n" + outcome(d, "mount | head -3"))
+    all_same(d, Vec<str>("@who >/dev/null; echo rc=$?","@taskset -p $$ | cut -d' ' -f1,3-","@setarch linux64 echo ok","@setarch bogus echo ok; echo rc=$?","@swapon --show 2>/dev/null | wc -l","@umount /nonexistent/dir 2>/dev/null; test $? -ne 0 && echo failed","@mount /nonexistent/a /nonexistent/b 2>/dev/null; test $? -ne 0 && echo failed","@swapoff /nonexistent 2>/dev/null; test $? -ne 0 && echo failed","@insmod /nonexistent.ko 2>/dev/null; test $? -ne 0 && echo failed","@rmmod nosuchmodule_xyz 2>/dev/null; test $? -ne 0 && echo failed","@pivot_root 2>/dev/null; test $? -ne 0 && echo failed"))
+    test.expect(strings.contains(outcome(d, bb + " dmesg >/dev/null 2>&1; echo rc=$?"), "rc="), "dmesg did not run")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

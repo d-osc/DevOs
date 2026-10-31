@@ -1,0 +1,264 @@
+# mount, umount, swapon, swapoff, dmesg, setarch, taskset, insmod, rmmod, pivot_root, who: system calls and kernel state.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/clock.dev" as clock
+
+extern fn mount(source: str, target: str, fstype: str, flags: u64, data: str): i32
+extern fn umount2(target: str, flags: i32): i32
+extern fn swapon(path: str, flags: i32): i32
+extern fn swapoff(path: str): i32
+extern fn klogctl(kind: i32, buffer: *void, length: i32): i32
+extern fn personality(persona: u64): i32
+extern fn sched_setaffinity(pid: i32, size: usize, mask: *void): i32
+extern fn sched_getaffinity(pid: i32, size: usize, mask: *void): i32
+extern fn syscall(number: i64, a: i64, b: i64, c: i64): i64
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+fn unescape_mount(text: str): str {
+    let b = sys.bytes_new(); let n = sys.length(text); let i = 0
+    while i < n {
+        if sys.at(text, i) == 92 && i + 3 < n + 0 && sys.is_digit(sys.at(text, i + 1)) {
+            let v = 0; for k in 1..4 { v = v * 8 + (sys.at(text, i + k) - 48) as i64 }
+            sys.bytes_push(b, v as u8); i = i + 4
+        } else { sys.bytes_push(b, sys.at(text, i)); i = i + 1 }
+    }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+// Reads /proc/mounts: rows of [device, mount point, type, options].
+fn mount_table(): Vec<Vec<str>> {
+    let rows = Vec<Vec<str>>()
+    let input = sys.read_path("/proc/mounts")
+    if !input.ok { return rows }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) {
+        let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k]))
+        if parts.len() >= 4 { rows.push(Vec<str>(unescape_mount(parts[0]), unescape_mount(parts[1]), parts[2], parts[3])) }
+    }
+    return rows
+}
+fn flag_for(option: str): i64 {
+    if sys.same(option, "ro") { return 1 } if sys.same(option, "nosuid") { return 2 } if sys.same(option, "nodev") { return 4 } if sys.same(option, "noexec") { return 8 }
+    if sys.same(option, "sync") { return 16 } if sys.same(option, "remount") { return 32 } if sys.same(option, "mand") { return 64 } if sys.same(option, "dirsync") { return 128 }
+    if sys.same(option, "noatime") { return 1024 } if sys.same(option, "nodiratime") { return 2048 } if sys.same(option, "bind") { return 4096 } if sys.same(option, "rbind") { return 16384 + 4096 }
+    if sys.same(option, "relatime") { return 2097152 } if sys.same(option, "strictatime") { return 16777216 } if sys.same(option, "silent") { return 32768 }
+    return 0
+}
+fn is_flag_option(option: str): bool { return flag_for(option) != 0 || sys.same(option, "rw") || sys.same(option, "defaults") || sys.same(option, "atime") || sys.same(option, "suid") || sys.same(option, "dev") || sys.same(option, "exec") || sys.same(option, "async") || sys.same(option, "auto") || sys.same(option, "noauto") || sys.same(option, "user") || sys.same(option, "nouser") }
+fn do_mount(source: str, target: str, fstype: str, options: str, extra_flags: i64): i64 {
+    let flags = extra_flags; let data = sys.bytes_new(); let n = sys.length(options); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(options, i) == 44 {
+            let item = sys.join2(sys.slice(options, start, i), ""); start = i + 1
+            if sys.length(item) == 0 { continue }
+            if is_flag_option(item) { flags = flags - (flags & flag_for(item)) + flag_for(item) }
+            else { if sys.blen(data) > 0 { sys.bytes_push(data, 44) }; sys.bytes_str(data, item) }
+        }
+    }
+    let r = 0
+    unsafe { r = mount(source, target, sys.length(fstype) > 0 ? fstype : "none", flags as u64, sys.bytes_cstr(data)) as i64 }
+    return r
+}
+fn run_mount(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "t:o:rwnfavsl")
+    if o.bad != 0 || o.missing != 0 { sys.warn("mount", "invalid usage: mount [-t TYPE] [-o OPTIONS] [-r] [-w] DEVICE DIRECTORY"); return 1 }
+    let out = sys.out_new(1)
+    if o.rest.len() == 0 && !sys.has(o, 97) {
+        let rows = mount_table()
+        for k in 0..(rows.len() as i64) {
+            if sys.has(o, 116) && !sys.same(rows[k][2], sys.val(o, 116)) { continue }
+            sys.out_str(out, rows[k][0]); sys.out_str(out, " on "); sys.out_str(out, rows[k][1]); sys.out_str(out, " type "); sys.out_str(out, rows[k][2]); sys.out_str(out, " ("); sys.out_str(out, rows[k][3]); sys.out_str(out, ")\n")
+        }
+        sys.out_flush(out)
+        return 0
+    }
+    let options = sys.has(o, 111) ? sys.val(o, 111) : ""
+    if sys.has(o, 114) { options = sys.join2(sys.join2(options, sys.length(options) > 0 ? "," : ""), "ro") }
+    if sys.has(o, 102) { return 0 }
+    if sys.has(o, 97) {
+        let tab = sys.read_path("/etc/fstab"); if !tab.ok { return 0 }
+        let ls = lines.split_lines(tab.bytes, 10); let status = 0
+        for k in 0..(ls.starts.len() as i64) {
+            let p = fields_of(lines.text_of(tab.bytes, ls.starts[k], ls.ends[k]))
+            if p.len() < 4 || sys.starts(p[0], "#") || sys.same(p[2], "swap") || sys.find_char(p[3], 110) >= 0 && sys.starts(p[3], "noauto") { continue }
+            if do_mount(p[0], p[1], p[2], p[3], 0) != 0 { sys.warn("mount", sys.join2(sys.join2("mounting ", p[0]), " failed")); status = 1 }
+        }
+        return status
+    }
+    let source = ""; let target = ""
+    if o.rest.len() == 1 {
+        let tab = sys.read_path("/etc/fstab")
+        if tab.ok {
+            let ls = lines.split_lines(tab.bytes, 10)
+            for k in 0..(ls.starts.len() as i64) { let p = fields_of(lines.text_of(tab.bytes, ls.starts[k], ls.ends[k])); if p.len() >= 4 && (sys.same(p[0], o.rest[0]) || sys.same(p[1], o.rest[0])) { source = p[0]; target = p[1]; if !sys.has(o, 116) { o.value[116] = p[2] }; if !sys.has(o, 111) { options = p[3] } } }
+        }
+        if sys.length(target) == 0 { sys.warn("mount", sys.join2(o.rest[0], " is not in /etc/fstab")); return 1 }
+    } else if o.rest.len() == 2 { source = o.rest[0]; target = o.rest[1] } else { sys.warn("mount", "invalid usage"); return 1 }
+    if do_mount(source, target, sys.has(o, 116) ? sys.val(o, 116) : "", options, 0) != 0 {
+        sys.warn("mount", sys.join2(sys.join2("mounting ", source), sys.join2(" on ", sys.join2(target, " failed: Operation not permitted or no such device")))); return 1
+    }
+    return 0
+}
+fn run_umount(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "alfrdnvt:")
+    if o.bad != 0 || o.missing != 0 || (o.rest.len() == 0 && !sys.has(o, 97)) { sys.warn("umount", "invalid usage: umount [-alf] FILESYSTEM|DIRECTORY"); return 1 }
+    let flags = 0; if sys.has(o, 102) { flags = 1 }; if sys.has(o, 108) { flags = 2 }
+    let targets = Vec<str>()
+    if sys.has(o, 97) { let rows = mount_table(); let k = (rows.len() as i64) - 1; while k >= 0 { targets.push(rows[k][1]); k = k - 1 } } else { targets = o.rest }
+    let status = 0
+    for k in 0..(targets.len() as i64) {
+        let r = 0
+        unsafe { r = umount2(targets[k], flags as i32) as i64 }
+        if r != 0 { if !sys.has(o, 97) { sys.warn("umount", sys.join2(sys.join2("can't unmount ", targets[k]), ": Operation not permitted or not mounted")) }; status = 1 }
+    }
+    return status
+}
+fn run_swapon(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "ap:")
+    if o.rest.len() == 0 {
+        let input = sys.read_path("/proc/swaps"); if !input.ok { return 1 }
+        let out = sys.out_new(1); sys.out_data(out, sys.bdata(input.bytes), sys.blen(input.bytes)); sys.out_flush(out); return 0
+    }
+    let status = 0
+    for k in 0..(o.rest.len() as i64) { let r = 0; unsafe { r = swapon(o.rest[k], 0) as i64 }; if r != 0 { sys.warn("swapon", sys.join2(o.rest[k], ": Operation not permitted or invalid swap")); status = 1 } }
+    return status
+}
+fn run_swapoff(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("swapoff", "invalid usage: swapoff [-a] DEVICE"); return 1 }
+    let status = 0
+    for k in 0..(args.len() as i64) { let r = 0; unsafe { r = swapoff(args[k]) as i64 }; if r != 0 { sys.warn("swapoff", sys.join2(args[k], ": Operation not permitted or not a swap device")); status = 1 } }
+    return status
+}
+fn run_dmesg(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "cn:s:r")
+    if o.bad != 0 || o.missing != 0 { sys.warn("dmesg", "invalid usage: dmesg [-c] [-n LEVEL] [-s SIZE]"); return 1 }
+    if sys.has(o, 110) { let level = sys.parse_number(sys.val(o, 110)); let r = 0; unsafe { r = klogctl(8, 0 as *void, level.value as i32) as i64 }; if r < 0 { sys.warn("dmesg", "klogctl: Operation not permitted"); return 1 }; return 0 }
+    let size = 262144; if sys.has(o, 115) { size = sys.parse_number(sys.val(o, 115)).value }
+    let buffer = sys.bytes_new(); for i in 0..size { sys.bytes_push(buffer, 0) }
+    let n = 0
+    unsafe { n = klogctl(sys.has(o, 99) ? 4 : 3, sys.bdata(buffer) as *void, size as i32) as i64 }
+    if n < 0 { sys.warn("dmesg", "klogctl: Operation not permitted"); return 1 }
+    let out = sys.out_new(1); sys.out_data(out, sys.bdata(buffer), n)
+    if n > 0 && sys.bat(buffer, n - 1) != 10 { sys.out_byte(out, 10) }
+    sys.out_flush(out)
+    return 0
+}
+fn run_setarch(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("setarch", "invalid usage: setarch ARCH [PROG ARGS]"); return 1 }
+    let arch = args[0]; let persona = 0
+    if sys.same(arch, "i386") || sys.same(arch, "linux32") { persona = 8 } else if sys.same(arch, "linux64") || sys.same(arch, "x86_64") || sys.same(arch, "aarch64") || sys.same(arch, "uname26") { persona = 0 } else { sys.warn("setarch", sys.join2(arch, ": Unrecognized architecture")); return 1 }
+    unsafe { if persona != 0 { personality(persona as u64) } }
+    let cmd = Vec<str>(); for k in 1..(args.len() as i64) { cmd.push(args[k]) }
+    if cmd.len() == 0 { cmd.push("/bin/sh") }
+    return proc.run_wait(cmd, proc.environment())
+}
+fn run_taskset(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "pc")
+    if o.bad != 0 || o.rest.len() == 0 { sys.warn("taskset", "invalid usage: taskset [-p] [MASK] [PID | PROG ARGS]"); return 1 }
+    let mask_buf = sys.bytes_new(); for i in 0..128 { sys.bytes_push(mask_buf, 0) }
+    if sys.has(o, 112) {
+        let pid = sys.parse_number(o.rest[(o.rest.len() as i64) - 1]).value
+        if o.rest.len() == 1 {
+            let r = 0; unsafe { r = sched_getaffinity(pid as i32, 128, sys.bdata(mask_buf) as *void) as i64 }
+            if r < 0 { sys.warn("taskset", "failed to get pid affinity"); return 1 }
+            let value = 0; let p = 1; for i in 0..6 { value = value + (sys.bat(mask_buf, i) as i64) * p; p = p * 256 }
+            let out = sys.out_new(1); sys.out_str(out, sys.join2(sys.join2("pid ", decimal(pid)), sys.join2("'s current affinity mask: ", hex_of(value)))); sys.out_byte(out, 10); sys.out_flush(out); return 0
+        }
+        let mask = parse_hex(o.rest[0])
+        for i in 0..6 { sys.bptr_set(mask_buf, i, ((mask / pow256(i)) % 256) as u8) }
+        let r = 0; unsafe { r = sched_setaffinity(pid as i32, 128, sys.bdata(mask_buf) as *void) as i64 }
+        if r < 0 { sys.warn("taskset", "failed to set pid affinity"); return 1 }
+        return 0
+    }
+    if o.rest.len() < 2 { sys.warn("taskset", "invalid usage"); return 1 }
+    let mask = parse_hex(o.rest[0])
+    for i in 0..6 { sys.bptr_set(mask_buf, i, ((mask / pow256(i)) % 256) as u8) }
+    unsafe { sched_setaffinity(0, 128, sys.bdata(mask_buf) as *void) }
+    let cmd = Vec<str>(); for k in 1..(o.rest.len() as i64) { cmd.push(o.rest[k]) }
+    return proc.run_wait(cmd, proc.environment())
+}
+fn pow256(i: i64): i64 { let r = 1; for k in 0..i { r = r * 256 }; return r }
+fn parse_hex(text: str): i64 {
+    let v = 0; let start = sys.starts(text, "0x") ? 2 : 0
+    for i in start..sys.length(text) { let c = sys.at(text, i); let d = 0; if c >= 48 && c <= 57 { d = (c - 48) as i64 } else if c >= 97 && c <= 102 { d = (c - 87) as i64 } else if c >= 65 && c <= 70 { d = (c - 55) as i64 }; v = v * 16 + d }
+    return v
+}
+fn hex_of(v: i64): str {
+    if v == 0 { return "0" }
+    let digits = "0123456789abcdef"; let rest = v; let items = Vec<u8>()
+    while rest > 0 { items.push(sys.at(digits, rest % 16)); rest = rest / 16 }
+    let b = sys.bytes_new(); let i = (items.len() as i64) - 1
+    while i >= 0 { sys.bytes_push(b, items[i]); i = i - 1 }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn run_insmod(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("insmod", "invalid usage: insmod FILE [SYMBOL=VALUE]..."); return 1 }
+    let params = ""; for k in 1..(args.len() as i64) { params = sys.join2(sys.join2(params, sys.length(params) > 0 ? " " : ""), args[k]) }
+    let fd = sys.open_fd(args[0], 0, 0)
+    if fd < 0 { sys.warn_path("insmod", args[0]); return 1 }
+    let r = 0
+    unsafe { r = syscall(273, fd, str_addr(params), 0) }
+    sys.close_fd(fd)
+    if r != 0 { sys.warn("insmod", sys.join2(sys.join2("can't insert '", args[0]), "': Operation not permitted or invalid module")); return 1 }
+    return 0
+}
+fn str_addr(s: str): i64 { unsafe { return s as i64 } }
+fn run_rmmod(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "wfa")
+    if o.rest.len() == 0 { sys.warn("rmmod", "invalid usage: rmmod [-wfa] [MODULE]..."); return 1 }
+    let status = 0
+    for k in 0..(o.rest.len() as i64) {
+        let name = o.rest[k]
+        if sys.ends(name, ".ko") { name = sys.join2(sys.slice(name, 0, sys.length(name) - 3), "") }
+        let r = 0; unsafe { r = syscall(129, str_addr(name), 2048, 0) }
+        if r != 0 { sys.warn("rmmod", sys.join2(sys.join2("can't unload '", name), "': Operation not permitted or module in use")); status = 1 }
+    }
+    return status
+}
+fn run_pivot_root(args: Vec<str>): i64 {
+    if args.len() != 2 { sys.warn("pivot_root", "invalid usage: pivot_root NEW_ROOT PUT_OLD"); return 1 }
+    let r = 0; unsafe { r = syscall(155, str_addr(args[0]), str_addr(args[1]), 0) }
+    if r != 0 { sys.warn("pivot_root", "Operation not permitted or invalid argument"); return 1 }
+    return 0
+}
+// who: the login records of /var/run/utmp (struct utmp, 384 bytes each).
+fn run_who(args: Vec<str>): i64 {
+    let input = sys.read_path("/var/run/utmp")
+    if !input.ok { return 0 }
+    let b = input.bytes; let n = sys.blen(b); let out = sys.out_new(1)
+    let p = 0
+    while p + 384 <= n {
+        let kind = (sys.bat(b, p) as i64) + (sys.bat(b, p + 1) as i64) * 256
+        if kind == 7 {
+            let line = c_text(b, p + 8, 32); let user = c_text(b, p + 44, 32); let host = c_text(b, p + 76, 256)
+            let seconds = (sys.bat(b, p + 340) as i64) + (sys.bat(b, p + 341) as i64) * 256 + (sys.bat(b, p + 342) as i64) * 65536 + (sys.bat(b, p + 343) as i64) * 16777216
+            sys.out_str(out, pad_to(user, 8)); sys.out_byte(out, 32); sys.out_str(out, pad_to(line, 12)); sys.out_byte(out, 32)
+            sys.out_str(out, clock.format("%Y-%m-%d %H:%M", clock.fields(seconds, false), seconds, false))
+            if sys.length(host) > 0 { sys.out_str(out, " ("); sys.out_str(out, host); sys.out_byte(out, 41) }
+            sys.out_byte(out, 10)
+        }
+        p = p + 384
+    }
+    sys.out_flush(out)
+    return 0
+}
+fn c_text(b: *sys.Bytes, off: i64, width: i64): str {
+    let out = sys.bytes_new()
+    for i in 0..width { let c = sys.bat(b, off + i); if c == 0 { break }; sys.bytes_push(out, c) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn pad_to(text: str, width: i64): str { let b = sys.bytes_new(); sys.bytes_str(b, text); while sys.blen(b) < width { sys.bytes_push(b, 32) }; return sys.join2(sys.bytes_cstr(b), "") }
