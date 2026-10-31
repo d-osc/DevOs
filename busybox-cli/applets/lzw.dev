@@ -1,0 +1,80 @@
+# uncompress: decompress .Z files (compress(1) LZW, 9 to 16 bits, block mode or not).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "./gzip.dev" as gz
+
+fn cells(n: i64): *i64 { unsafe { return sys.calloc(n as usize, 8) as *i64 } }
+fn cg(c: *i64, i: i64): i64 { unsafe { return c[i] } }
+fn cs(c: *i64, i: i64, v: i64) { unsafe { c[i] = v } }
+fn pow2(n: i64): i64 { let r = 1; for i in 0..n { r = r * 2 }; return r }
+
+struct Unpacked { ok: bool, bytes: *sys.Bytes, message: str }
+fn unlzw(input: *sys.Bytes): Unpacked {
+    let out = sys.bytes_new(); let n = sys.blen(input)
+    if n < 3 || sys.bat(input, 0) != 31 || sys.bat(input, 1) != 157 { return Unpacked(false, out, "not in compress format") }
+    let flags = sys.bat(input, 2) as i64; let max_bits = flags % 32; let block_mode = flags >= 128
+    if max_bits < 9 || max_bits > 16 { return Unpacked(false, out, "unsupported code size") }
+    let max_max = pow2(max_bits)
+    let prefix = cells(max_max + 1); let suffix = cells(max_max + 1); let stack = cells(max_max + 2)
+    for i in 0..256 { cs(suffix, i, i) }
+    let nbits = 9; let max_code = pow2(nbits) - 1; let free_ent = block_mode ? 257 : 256
+    let total_bits = (n - 3) * 8; let pos = 0; let group_start = 0; let old = 0 - 1; let finchar = 0
+    while true {
+        if free_ent > max_code && nbits < max_bits {
+            # leave the rest of the current block of eight codes
+            let block = nbits * 8
+            pos = group_start + (pos - group_start + block - 1) / block * block; group_start = pos
+            nbits = nbits + 1; max_code = pow2(nbits) - 1
+        }
+        if pos + nbits > total_bits { break }
+        let code = 0
+        for b in 0..nbits { let bit = pos + b; let byte = sys.bat(input, 3 + bit / 8) as i64; code = code + ((byte / pow2(bit % 8)) % 2) * pow2(b) }
+        pos = pos + nbits
+        if code == 256 && block_mode {
+            let block = nbits * 8
+            pos = group_start + (pos - group_start + block - 1) / block * block; group_start = pos
+            nbits = 9; max_code = pow2(nbits) - 1; free_ent = 257; old = 0 - 1
+            continue
+        }
+        let incode = code
+        if old < 0 {
+            if code > 255 { return Unpacked(false, out, "corrupt input") }
+            sys.bytes_push(out, code as u8); old = code; finchar = code
+            continue
+        }
+        let top = 0
+        if code >= free_ent {
+            if code > free_ent { return Unpacked(false, out, "corrupt input") }
+            cs(stack, top, finchar); top = top + 1; code = old
+        }
+        while code >= 256 { cs(stack, top, cg(suffix, code)); top = top + 1; code = cg(prefix, code) }
+        finchar = cg(suffix, code); cs(stack, top, finchar); top = top + 1
+        let i = top - 1
+        while i >= 0 { sys.bytes_push(out, cg(stack, i) as u8); i = i - 1 }
+        if free_ent < max_max { cs(prefix, free_ent, old); cs(suffix, free_ent, finchar); free_ent = free_ent + 1 }
+        old = incode
+    }
+    return Unpacked(true, out, "")
+}
+fn run_uncompress(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "cfkv")
+    if o.bad != 0 { sys.warn("uncompress", "invalid usage: uncompress [-cf] [FILE]..."); return 1 }
+    let files = o.rest; if files.len() == 0 { files.push("-") }
+    let out = sys.out_new(1); let status = 0
+    for k in 0..(files.len() as i64) {
+        let path = files[k]; let from_stdin = sys.same(path, "-")
+        let input = sys.read_path(path)
+        if !input.ok { sys.warn_path("uncompress", path); status = 1; continue }
+        let r = unlzw(input.bytes)
+        if !r.ok { sys.warn("uncompress", sys.join2(sys.join2(from_stdin ? "stdin" : path, ": "), r.message)); status = 1; continue }
+        if sys.has(o, 99) || from_stdin { sys.out_data(out, sys.bdata(r.bytes), sys.blen(r.bytes)); continue }
+        if !sys.ends(path, ".Z") { sys.warn("uncompress", sys.join2(path, ": unknown suffix -- ignored")); status = 1; continue }
+        let target = sys.join2(sys.slice(path, 0, sys.length(path) - 2), "")
+        if sys.exists(target) && !sys.has(o, 102) { sys.warn("uncompress", sys.join2(target, " already exists; not overwritten")); status = 1; continue }
+        let info = sys.file_info(path, true)
+        if !gz.write_file(target, r.bytes, sys.permission_bits(info.mode)) { sys.warn_write("uncompress", target); status = 1; continue }
+        if !sys.has(o, 107) { fsx.do_unlink(path) }
+    }
+    sys.out_flush(out)
+    return status
+}

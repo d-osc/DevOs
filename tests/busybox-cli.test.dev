@@ -566,6 +566,18 @@ test.case("logger syslogd crond (BusyBox only)",fn() {
     test.expect(strings.contains(outcome(d, bb + " crond -f -c nosuchdir; echo rc=$?"), "rc=1"), "crond with a missing directory")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("uncompress (files made by a compress-compatible encoder, checked with gzip -d)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let enc = "python3 " + t.root() + "/tests/lib/lzw_compress.py"
+    let data = "head -c 100000 /dev/urandom > rnd.bin; yes 'the quick brown fox' | head -c 70000 > txt.dat; : > empty.dat; printf 'x' > one.dat; seq 1 30000 > seq.dat; head -c 9000 /dev/zero > zeros.dat; "
+    for f in Vec<str>("rnd.bin", "txt.dat", "empty.dat", "one.dat", "seq.dat", "zeros.dat", "a.txt") {
+        test.expect(strings.contains(outcome(d, data + enc + " < " + f + " > t.Z; gzip -dc t.Z > ref.out 2>/dev/null; cmp ref.out " + f + " && " + bb + " uncompress -c t.Z | cmp - " + f + "; echo cmp=$?"), "cmp=0"), "uncompress differs for " + f + ":\n" + outcome(d, data + enc + " < " + f + " > t.Z; gzip -dc t.Z > ref.out; cmp ref.out " + f + "; " + bb + " uncompress -c t.Z | cmp - " + f + "; echo cmp=$?"))
+    }
+    test.expect(strings.contains(outcome(d, data + enc + " < a.txt > q.Z; " + bb + " uncompress q.Z; cmp q a.txt; echo cmp=$?"), "cmp=0"), "in-place uncompress")
+    test.expect(strings.contains(outcome(d, "printf plain > p.Z; " + bb + " uncompress -c p.Z; echo rc=$?"), "rc=1"), "uncompress accepted garbage")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",
