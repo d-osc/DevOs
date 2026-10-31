@@ -506,6 +506,28 @@ test.case("ed",fn() {
     all_same(d, Vec<str>(base + "printf '1p\\nq\\n' | @ed f.txt",base + "printf 'w\\nq\\n' | @ed f.txt",base + "printf 'a\\nx\\n.\\nq\\nq\\n' | @ed -s f.txt; echo rc=$?; cat f.txt",base + "printf 'a\\nx\\n.\\nwq\\n' | @ed -s f.txt; cat f.txt","printf 'a\\nnew\\n.\\nw made.txt\\nq\\n' | @ed -s; cat made.txt",base + "printf 'e f.txt\\n,n\\nq\\n' | @ed -s",base + "printf 'f\\nq\\n' | @ed -s f.txt"))
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("cryptpw mkpasswd passwd chpasswd su (against openssl passwd)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    for pw in Vec<str>("secret", "a", "a much longer pass phrase than sixteen chars, to cover repeats", "p@ss w0rd") {
+        for variant in Vec<Vec<str>>(Vec<str>("md5", "-1", "abcdefgh"), Vec<str>("sha256", "-5", "saltysalt12345"), Vec<str>("sha512", "-6", "abcdefgh")) {
+            let mine = outcome(d, bb + " cryptpw -m " + variant[0] + " -S " + variant[2] + " '" + pw + "'")
+            let reference = outcome(d, "openssl passwd " + variant[1] + " -salt " + variant[2] + " '" + pw + "'")
+            test.expect(strings.equal(strings.replaceAll(mine, "rc=0\n", ""), strings.replaceAll(reference, "rc=0\n", "")), "crypt " + variant[0] + " differs for '" + pw + "':\n" + mine + "\n" + reference)
+        }
+    }
+    test.expect(strings.equal(outcome(d, bb + " mkpasswd -m sha512 -S abcdefgh secret"), outcome(d, "openssl passwd -6 -salt abcdefgh secret")), "mkpasswd differs")
+    test.expect(strings.equal(outcome(d, "printf 'secret\\n' | " + bb + " cryptpw -m md5 -S abcdefgh"), outcome(d, "openssl passwd -1 -salt abcdefgh secret")), "cryptpw from stdin differs")
+    test.expect(strings.contains(outcome(d, bb + " cryptpw -m des x; echo rc=$?"), "rc=1"), "cryptpw accepted DES")
+    let etc = "mkdir etc && printf 'root:x:0:0:root:/root:/bin/sh\\nbob:x:1000:1000:bob:/home/bob:/bin/sh\\n' > etc/passwd && printf 'root:!:19000:0:99999:7:::\\nbob:!:19000:0:99999:7:::\\n' > etc/shadow && export BUSYBOX_ETC=$PWD/etc; "
+    test.expect(strings.contains(outcome(d, etc + "printf 'newpw\\nnewpw\\n' | " + bb + " passwd bob; grep '^bob:' etc/shadow | cut -d: -f2 | cut -c1-3"), "$6$"), "passwd did not store a SHA-512 hash")
+    test.expect(strings.contains(outcome(d, etc + "printf 'newpw\\nnewpw\\n' | " + bb + " passwd -a md5 bob; H=$(grep '^bob:' etc/shadow | cut -d: -f2); S=$(echo $H | cut -d$ -f3); openssl passwd -1 -salt $S newpw | grep -c \"^$H$\""), "1"), "the stored MD5 hash does not verify with openssl")
+    test.expect(strings.contains(outcome(d, etc + "printf 'a\\nb\\n' | " + bb + " passwd bob; echo rc=$?"), "rc=1"), "passwd accepted mismatching passwords")
+    test.expect(strings.contains(outcome(d, etc + "printf 'bob:pw1\\n' | " + bb + " chpasswd; grep -c '^bob:\\$6\\$' etc/shadow"), "1"), "chpasswd did not store a hash")
+    test.expect(strings.contains(outcome(d, etc + bb + " passwd nosuch </dev/null; echo rc=$?"), "rc=1"), "passwd of an unknown user")
+    test.expect(strings.contains(outcome(d, etc + "printf 'x\\nx\\n' | " + bb + " passwd bob >/dev/null; " + bb + " passwd -l bob; grep '^bob:!' etc/shadow | wc -l; " + bb + " passwd -u bob; grep '^bob:\\$' etc/shadow | wc -l"), "1\n1\n"), "passwd -l / -u")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

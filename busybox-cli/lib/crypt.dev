@@ -1,0 +1,106 @@
+# crypt(3) password hashes: MD5 ($1$), SHA-256 ($5$) and SHA-512 ($6$).
+use "./sys.dev" as sys
+use "../applets/hash.dev" as hs
+
+fn alphabet(): str { return "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" }
+fn hex_value(c: u8): i64 { if c >= 48 && c <= 57 { return (c - 48) as i64 }; if c >= 97 && c <= 102 { return (c - 87) as i64 }; return 0 }
+fn digest(kind: i64, data: *sys.Bytes): *sys.Bytes {
+    let hex = hs.digest_of(kind, data); let out = sys.bytes_new()
+    for i in 0..(sys.length(hex) / 2) { sys.bytes_push(out, (hex_value(sys.at(hex, i * 2)) * 16 + hex_value(sys.at(hex, i * 2 + 1))) as u8) }
+    return out
+}
+fn add_text(b: *sys.Bytes, s: str) { sys.bytes_str(b, s) }
+fn add_range(b: *sys.Bytes, from: *sys.Bytes, count: i64) { sys.bytes_append(b, sys.bdata(from), count) }
+fn to64(out: *sys.Bytes, value: i64, count: i64) {
+    let v = value; let a = alphabet()
+    for i in 0..count { sys.bytes_push(out, sys.at(a, v % 64)); v = v / 64 }
+}
+fn triple(out: *sys.Bytes, f: *sys.Bytes, a: i64, b: i64, c: i64, count: i64) { to64(out, (sys.bat(f, a) as i64) * 65536 + (sys.bat(f, b) as i64) * 256 + (sys.bat(f, c) as i64), count) }
+fn clip_salt(salt: str, limit: i64): str {
+    let s = salt; let dollar = sys.find_char(s, 36)
+    if dollar >= 0 { s = sys.join2(sys.slice(s, 0, dollar), "") }
+    if sys.length(s) > limit { s = sys.join2(sys.slice(s, 0, limit), "") }
+    return s
+}
+fn md5_crypt(pw: str, salt0: str): str {
+    let salt = clip_salt(salt0, 8); let n = sys.length(pw)
+    let alt = sys.bytes_new(); add_text(alt, pw); add_text(alt, salt); add_text(alt, pw)
+    let fin = digest(0, alt)
+    let ctx = sys.bytes_new(); add_text(ctx, pw); add_text(ctx, "$1$"); add_text(ctx, salt)
+    let pl = n
+    while pl > 0 { add_range(ctx, fin, pl > 16 ? 16 : pl); pl = pl - 16 }
+    let i = n
+    while i > 0 { if i % 2 == 1 { sys.bytes_push(ctx, 0) } else if n > 0 { sys.bytes_push(ctx, sys.at(pw, 0)) }; i = i / 2 }
+    fin = digest(0, ctx)
+    for round in 0..1000 {
+        let c = sys.bytes_new()
+        if round % 2 == 1 { add_text(c, pw) } else { add_range(c, fin, 16) }
+        if round % 3 != 0 { add_text(c, salt) }
+        if round % 7 != 0 { add_text(c, pw) }
+        if round % 2 == 1 { add_range(c, fin, 16) } else { add_text(c, pw) }
+        fin = digest(0, c)
+    }
+    let out = sys.bytes_new(); add_text(out, "$1$"); add_text(out, salt); add_text(out, "$")
+    triple(out, fin, 0, 6, 12, 4); triple(out, fin, 1, 7, 13, 4); triple(out, fin, 2, 8, 14, 4); triple(out, fin, 3, 9, 15, 4); triple(out, fin, 4, 10, 5, 4)
+    to64(out, sys.bat(fin, 11) as i64, 2)
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn repeat_to(source: *sys.Bytes, length: i64): *sys.Bytes {
+    let out = sys.bytes_new(); let n = sys.blen(source)
+    for i in 0..length { sys.bytes_push(out, sys.bat(source, i % n)) }
+    return out
+}
+// kind 2 = SHA-256 ($5$), 3 = SHA-512 ($6$)
+fn sha_crypt(pw: str, salt0: str, rounds0: i64, kind: i64): str {
+    let hash_len = kind == 2 ? 32 : 64
+    let salt = clip_salt(salt0, 16); let n = sys.length(pw); let sn = sys.length(salt)
+    let rounds = rounds0 > 0 ? rounds0 : 5000
+    let b = sys.bytes_new(); add_text(b, pw); add_text(b, salt); add_text(b, pw)
+    let bd = digest(kind, b)
+    let a = sys.bytes_new(); add_text(a, pw); add_text(a, salt)
+    let cnt = n
+    while cnt > hash_len { add_range(a, bd, hash_len); cnt = cnt - hash_len }
+    add_range(a, bd, cnt)
+    cnt = n
+    while cnt > 0 { if cnt % 2 == 1 { add_range(a, bd, hash_len) } else { add_text(a, pw) }; cnt = cnt / 2 }
+    let ad = digest(kind, a)
+    let dp = sys.bytes_new(); for i in 0..n { add_text(dp, pw) }
+    let dpd = digest(kind, dp); let p = repeat_to(dpd, n)
+    let ds = sys.bytes_new(); for i in 0..(16 + (sys.bat(ad, 0) as i64)) { add_text(ds, salt) }
+    let dsd = digest(kind, ds); let s = repeat_to(dsd, sn)
+    for round in 0..rounds {
+        let c = sys.bytes_new()
+        if round % 2 == 1 { add_range(c, p, n) } else { add_range(c, ad, hash_len) }
+        if round % 3 != 0 { add_range(c, s, sn) }
+        if round % 7 != 0 { add_range(c, p, n) }
+        if round % 2 == 1 { add_range(c, ad, hash_len) } else { add_range(c, p, n) }
+        ad = digest(kind, c)
+    }
+    let out = sys.bytes_new(); add_text(out, kind == 2 ? "$5$" : "$6$")
+    if rounds0 > 0 && rounds0 != 5000 { add_text(out, "rounds="); sys.bytes_num(out, rounds0); add_text(out, "$") }
+    add_text(out, salt); add_text(out, "$")
+    if kind == 2 {
+        triple(out, ad, 0, 10, 20, 4); triple(out, ad, 21, 1, 11, 4); triple(out, ad, 12, 22, 2, 4); triple(out, ad, 3, 13, 23, 4); triple(out, ad, 24, 4, 14, 4)
+        triple(out, ad, 15, 25, 5, 4); triple(out, ad, 6, 16, 26, 4); triple(out, ad, 27, 7, 17, 4); triple(out, ad, 18, 28, 8, 4); triple(out, ad, 9, 19, 29, 4)
+        to64(out, (sys.bat(ad, 31) as i64) * 256 + (sys.bat(ad, 30) as i64), 3)
+    } else {
+        triple(out, ad, 0, 21, 42, 4); triple(out, ad, 22, 43, 1, 4); triple(out, ad, 44, 2, 23, 4); triple(out, ad, 3, 24, 45, 4); triple(out, ad, 25, 46, 4, 4)
+        triple(out, ad, 47, 5, 26, 4); triple(out, ad, 6, 27, 48, 4); triple(out, ad, 28, 49, 7, 4); triple(out, ad, 50, 8, 29, 4); triple(out, ad, 9, 30, 51, 4)
+        triple(out, ad, 31, 52, 10, 4); triple(out, ad, 53, 11, 32, 4); triple(out, ad, 12, 33, 54, 4); triple(out, ad, 34, 55, 13, 4); triple(out, ad, 56, 14, 35, 4)
+        triple(out, ad, 15, 36, 57, 4); triple(out, ad, 37, 58, 16, 4); triple(out, ad, 59, 17, 38, 4); triple(out, ad, 18, 39, 60, 4); triple(out, ad, 40, 61, 19, 4)
+        triple(out, ad, 62, 20, 41, 4)
+        to64(out, sys.bat(ad, 63) as i64, 2)
+    }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+// crypt(password, setting): the setting is "$1$salt", "$5$salt", "$6$salt" (optionally "rounds=N$" after the id); "" when the algorithm is unknown.
+fn crypt(pw: str, setting: str): str {
+    if sys.starts(setting, "$1$") { return md5_crypt(pw, sys.join2(sys.slice(setting, 3, sys.length(setting)), "")) }
+    if sys.starts(setting, "$5$") || sys.starts(setting, "$6$") {
+        let kind = sys.at(setting, 1) == 53 ? 2 : 3
+        let rest = sys.join2(sys.slice(setting, 3, sys.length(setting)), ""); let rounds = 0
+        if sys.starts(rest, "rounds=") { let d = sys.find_char(rest, 36); if d > 0 { rounds = sys.parse_number(sys.join2(sys.slice(rest, 7, d), "")).value; rest = sys.join2(sys.slice(rest, d + 1, sys.length(rest)), "") } }
+        return sha_crypt(pw, rest, rounds, kind)
+    }
+    return ""
+}

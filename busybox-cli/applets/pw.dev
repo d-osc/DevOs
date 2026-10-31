@@ -1,0 +1,165 @@
+# cryptpw, mkpasswd, passwd, chpasswd, su, login: password hashing and account switching.
+# Password files are read from /etc, or from $BUSYBOX_ETC when set (used by the tests). Only the MD5, SHA-256 and SHA-512 schemes exist (no DES).
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/proc.dev" as proc
+use "../lib/crypt.dev" as cr
+use "./gzip.dev" as gz
+use "./accounts.dev" as ac
+
+fn random_salt(count: i64): str {
+    let alphabet = cr.alphabet(); let b = sys.bytes_new()
+    let fd = sys.open_fd("/dev/urandom", 0, 0); let bytes = sys.bytes_new(); for i in 0..count { sys.bytes_push(bytes, 0) }
+    if fd >= 0 { sys.read_into(fd, sys.bdata(bytes), count); sys.close_fd(fd) }
+    for i in 0..count { sys.bytes_push(b, sys.at(alphabet, (sys.bat(bytes, i) as i64) % 64)) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+fn setting_for(method: str, salt: str): str {
+    if sys.same(method, "md5") { return sys.join2("$1$", sys.length(salt) > 0 ? salt : random_salt(8)) }
+    if sys.same(method, "sha256") { return sys.join2("$5$", sys.length(salt) > 0 ? salt : random_salt(16)) }
+    if sys.same(method, "sha512") { return sys.join2("$6$", sys.length(salt) > 0 ? salt : random_salt(16)) }
+    return ""
+}
+fn hash_password(password: str, method: str): str {
+    let setting = setting_for(method, "")
+    if sys.length(setting) == 0 { return "" }
+    return cr.crypt(password, setting)
+}
+fn read_line_from(fd: i64): str {
+    let b = sys.bytes_new(); let c = sys.bytes_new(); sys.bytes_push(c, 0)
+    while true { let n = sys.read_into(fd, sys.bdata(c), 1); if n <= 0 { break }; if sys.bat(c, 0) == 10 { break }; sys.bytes_push(b, sys.bat(c, 0)) }
+    return sys.join2(sys.bytes_cstr(b), "")
+}
+// cryptpw / mkpasswd: with -P FD the password is read from that descriptor, else from the arguments, else from standard input.
+fn run_hash_command(args: Vec<str>, prog: str, password_first: bool): i64 {
+    let o = sys.parse_opts(args, "P:m:S:s")
+    if o.bad != 0 || o.missing != 0 { sys.warn(prog, "invalid usage: cryptpw [-P FD] [-m md5|sha256|sha512] [-S SALT] [PASSWORD] [SALT]"); return 1 }
+    let method = sys.has(o, 109) ? sys.val(o, 109) : "sha512"
+    let salt = sys.has(o, 83) ? sys.val(o, 83) : ""
+    let rest = o.rest; let password = ""
+    if sys.has(o, 80) { password = read_line_from(sys.parse_number(sys.val(o, 80)).value) }
+    else if rest.len() > 0 { password = rest[0] }
+    else { password = read_line_from(0) }
+    if rest.len() > 1 && !sys.has(o, 83) { salt = rest[1] }
+    if sys.same(method, "des") { sys.warn(prog, "the DES scheme is not available"); return 1 }
+    let setting = setting_for(method, salt)
+    if sys.length(setting) == 0 { sys.warn(prog, sys.join2("unknown method ", method)); return 1 }
+    let out = sys.out_new(1); sys.out_str(out, cr.crypt(password, setting)); sys.out_byte(out, 10); sys.out_flush(out)
+    return 0
+}
+fn run_cryptpw(args: Vec<str>): i64 { return run_hash_command(args, "cryptpw", true) }
+fn run_mkpasswd(args: Vec<str>): i64 { return run_hash_command(args, "mkpasswd", false) }
+
+// ---- the shadow file --------------------------------------------------------------------------------------------------------------------------------------------------------
+fn colon_join(parts: Vec<str>): str { let b = sys.bytes_new(); for k in 0..(parts.len() as i64) { if k > 0 { sys.bytes_push(b, 58) }; sys.bytes_str(b, parts[k]) }; return sys.join2(sys.bytes_cstr(b), "") }
+fn store_hash(user: str, hash: str): bool {
+    let shadow_path = ac.etc_file("shadow"); let passwd_path = ac.etc_file("passwd")
+    let shadow = ac.read_all_lines(shadow_path); let at = ac.find_line(shadow, user, 0)
+    if at >= 0 {
+        let line = shadow[at]; let colon = sys.find_char(line, 58)
+        let tail = sys.join2(sys.slice(line, colon + 1, sys.length(line)), ""); let colon2 = sys.find_char(tail, 58)
+        shadow[at] = sys.join2(sys.join2(sys.join2(user, ":"), hash), sys.join2(":", sys.join2(sys.slice(tail, colon2 + 1, sys.length(tail)), "")))
+        return ac.write_all_lines(shadow_path, shadow)
+    }
+    let users = ac.read_all_lines(passwd_path); let u = ac.find_line(users, user, 0)
+    if u < 0 { return false }
+    let line = users[u]
+    users[u] = colon_join(Vec<str>(ac.field(line, 0), hash, ac.field(line, 2), ac.field(line, 3), ac.field(line, 4), ac.field(line, 5), ac.field(line, 6)))
+    return ac.write_all_lines(passwd_path, users)
+}
+fn stored_hash(user: str): str {
+    let shadow = ac.read_all_lines(ac.etc_file("shadow")); let at = ac.find_line(shadow, user, 0)
+    if at >= 0 { return ac.field(shadow[at], 1) }
+    let users = ac.read_all_lines(ac.etc_file("passwd")); let u = ac.find_line(users, user, 0)
+    return u >= 0 ? ac.field(users[u], 1) : ""
+}
+fn password_ok(user: str, password: str): bool {
+    let hash = stored_hash(user)
+    if sys.length(hash) == 0 { return true }
+    if sys.starts(hash, "!") || sys.starts(hash, "*") { return false }
+    return sys.same(cr.crypt(password, hash), hash)
+}
+fn run_passwd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "a:dlu")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() > 1 { sys.warn("passwd", "invalid usage: passwd [-a md5|sha256|sha512] [USER]"); return 1 }
+    let user = o.rest.len() == 1 ? o.rest[0] : fsx.user_name(fsx.uid())
+    let users = ac.read_all_lines(ac.etc_file("passwd"))
+    if ac.find_line(users, user, 0) < 0 { sys.warn("passwd", sys.join2(sys.join2("unknown user ", user), "")); return 1 }
+    if sys.has(o, 100) { return store_hash(user, "") ? 0 : 1 }
+    if sys.has(o, 108) { let h = stored_hash(user); if !sys.starts(h, "!") { return store_hash(user, sys.join2("!", h)) ? 0 : 1 }; return 0 }
+    if sys.has(o, 117) { let h = stored_hash(user); if sys.starts(h, "!") { return store_hash(user, sys.join2(sys.slice(h, 1, sys.length(h)), "")) ? 0 : 1 }; return 0 }
+    let first = read_line_from(0); let second = read_line_from(0)
+    if !sys.same(first, second) { sys.warn("passwd", "passwords don't match"); return 1 }
+    if sys.length(first) == 0 { sys.warn("passwd", "password for root is empty") ; return 1 }
+    let method = sys.has(o, 97) ? sys.val(o, 97) : "sha512"
+    let hash = hash_password(first, method)
+    if sys.length(hash) == 0 { sys.warn("passwd", "unknown algorithm"); return 1 }
+    if !store_hash(user, hash) { sys.warn("passwd", "cannot update the password file"); return 1 }
+    let out = sys.out_new(1); sys.out_str(out, "Password for "); sys.out_str(out, user); sys.out_str(out, " changed\n"); sys.out_flush(out)
+    return 0
+}
+fn run_chpasswd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "emc:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("chpasswd", "invalid usage: chpasswd [-e] [-m] [-c md5|sha256|sha512]"); return 1 }
+    let method = sys.has(o, 99) ? sys.val(o, 99) : "sha512"; if sys.has(o, 109) { method = "md5" }
+    let input = sys.read_path("-"); let ls = lines.split_lines(input.bytes, 10); let status = 0
+    for k in 0..(ls.starts.len() as i64) {
+        let line = lines.text_of(input.bytes, ls.starts[k], ls.ends[k]); let colon = sys.find_char(line, 58)
+        if colon <= 0 { sys.warn("chpasswd", "line must be in the form user:password"); status = 1; continue }
+        let user = sys.join2(sys.slice(line, 0, colon), ""); let secret = sys.join2(sys.slice(line, colon + 1, sys.length(line)), "")
+        let hash = sys.has(o, 101) ? secret : hash_password(secret, method)
+        if sys.length(hash) == 0 || !store_hash(user, hash) { sys.warn("chpasswd", sys.join2(sys.join2("cannot update ", user), "")); status = 1 }
+    }
+    return status
+}
+fn shell_of(user: str): str {
+    let users = ac.read_all_lines(ac.etc_file("passwd")); let at = ac.find_line(users, user, 0)
+    let shell = at >= 0 ? ac.field(users[at], 6) : ""
+    return sys.length(shell) > 0 ? shell : "/bin/sh"
+}
+fn home_of(user: str): str {
+    let users = ac.read_all_lines(ac.etc_file("passwd")); let at = ac.find_line(users, user, 0)
+    return at >= 0 ? ac.field(users[at], 5) : "/"
+}
+fn switch_user(user: str, command: str, login_shell: bool, need_password: bool): i64 {
+    let users = ac.read_all_lines(ac.etc_file("passwd"))
+    if ac.find_line(users, user, 0) < 0 { sys.warn("su", sys.join2("unknown id: ", user)); return 1 }
+    if need_password {
+        let password = read_line_from(0)
+        if !password_ok(user, password) { sys.warn("su", "incorrect password"); return 1 }
+    }
+    let account = ac.account_of(user)
+    if !ac.become(account) { sys.warn("su", "cannot set user id: Operation not permitted"); return 1 }
+    let env = proc.environment()
+    if login_shell { env = proc.set_variable(proc.set_variable(proc.set_variable(env, "HOME", home_of(user)), "USER", user), "LOGNAME", user) }
+    let shell = shell_of(user)
+    let cmd = Vec<str>(shell); if sys.length(command) > 0 { cmd.push("-c"); cmd.push(command) }
+    return proc.run_wait(cmd, env)
+}
+fn run_su(args: Vec<str>): i64 {
+    let command = ""; let login_shell = false; let user = "root"; let i = 0; let n = args.len() as i64
+    while i < n {
+        let a = args[i]
+        if sys.same(a, "-c") && i + 1 < n { i = i + 1; command = args[i] } else if sys.starts(a, "--command=") { command = sys.join2(sys.slice(a, 10, sys.length(a)), "") }
+        else if sys.same(a, "-" ) || sys.same(a, "-l") || sys.same(a, "--login") { login_shell = true } else if sys.same(a, "-m") || sys.same(a, "-p") || sys.same(a, "--preserve-environment") { }
+        else if sys.length(a) > 0 && sys.at(a, 0) != 45 { user = a }
+        i = i + 1
+    }
+    return switch_user(user, command, login_shell, fsx.euid() != 0)
+}
+fn run_login(args: Vec<str>): i64 {
+    let user = ""; let preauth = false
+    for k in 0..(args.len() as i64) { let a = args[k]; if sys.same(a, "-f") { preauth = true } else if sys.same(a, "-p") { } else if sys.same(a, "-h") { } else if sys.length(a) > 0 && sys.at(a, 0) != 45 { user = a } }
+    if sys.length(user) == 0 {
+        let out = sys.out_new(1); sys.out_str(out, "login: "); sys.out_flush(out)
+        user = read_line_from(0)
+    }
+    if sys.length(user) == 0 { return 1 }
+    if !preauth {
+        let out = sys.out_new(1); sys.out_str(out, "Password: "); sys.out_flush(out)
+        let password = read_line_from(0)
+        if !password_ok(user, password) { sys.warn("login", "Login incorrect"); return 1 }
+    }
+    return switch_user(user, "", true, false)
+}
