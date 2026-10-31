@@ -2,9 +2,6 @@ import {React, type UIContext} from '@dev-os/core';
 import {ExtensionManager} from '@dev-os/extensions';
 import {AppUpdates as Updates} from './app-data.js';
 import {sendCommand, processApplicationId, missingProcess} from '@dev-os/runtime/processes';
-import {UpdatesView} from './apps/org.devos.updates/view.js';
-import {TaskManagerSettings} from './apps/org.devos.taskmanager/settings.js';
-import {DiskManagerSettings} from './apps/org.devos.diskmanager/settings.js';
 import {AppStoreSettings} from './apps/org.devos.appstore/settings.js';
 
 /** Settings pages are views, not app activations: opening Settings never starts other apps or desktop surfaces. */
@@ -15,10 +12,7 @@ export function registerAppSettings(context: UIContext): () => void {
     });};
     const updater = new Updates();
     const pages = {
-        taskmanager: () => <TaskManagerSettings openManager={() => context.invoke('task-manager')}/>,
-        diskmanager: () => <DiskManagerSettings openManager={() => context.invoke('disk-manager')}/>,
         appstore: () => <AppStoreSettings openStore={() => context.invoke('app-store')} openExtensions={openExtensions}/>,
-        updates: () => <UpdatesView updater={updater} preferences={preferences} useVersion={context.useInstalledVersion}/>,
     };
     const cleanups = Object.entries(pages).map(([id, page]) => context.registerSettingsPage!(`org.devos.${id}`, page));
     return () => {for (const cleanup of cleanups) cleanup(); updater.dispose();};

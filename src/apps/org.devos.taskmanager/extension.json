@@ -6,7 +6,7 @@
   "apiVersion": 1,
   "kind": "ui",
   "system": true,
-  "entry": "org.devos.taskmanager.js",
+  "native": "taskmanager",
   "order": 28,
   "settingsVersion": 1,
   "enabledByDefault": true,

@@ -7,8 +7,6 @@ export const serviceControllers: Record<string, {create(args: any[]): Promise<an
     'screenshot/capture.ScreenshotData': {create: async () => new (await import('../apps/org.devos.screenshot/capture.backend.js')).ScreenshotData(), properties: []},
     'editor/assets.AssetsData': {create: async () => new (await import('../apps/org.devos.editor/assets.backend.js')).AssetsData(), properties: []},
     'editor/document.EditorDocument': {create: async args => new ((await import('../apps/org.devos.editor/document.backend.js')).EditorDocument as any)(...args), properties: ["path","content","loading","saving","error","dirty","language","title"]},
-    'taskmanager/processes.Processes': {create: async args => new ((await import('../apps/org.devos.taskmanager/processes.backend.js')).Processes as any)(...args), properties: []},
-    'diskmanager/disks.Disks': {create: async args => new ((await import('../apps/org.devos.diskmanager/disks.backend.js')).Disks as any)(...args), properties: []},
     'appstore/backend.AppStore': {create: async args => new ((await import('../apps/org.devos.appstore/backend.backend.js')).AppStore as any)(...args), properties: ["busy"]},
     'appstore/package-backend.PackageManagerCli': {create: async args => new ((await import('../apps/org.devos.appstore/package-backend.backend.js')).PackageManagerCli as any)(...args), properties: ["busy"]},
     'appstore/registry-backend.RegistryManager': {create: async args => new ((await import('../apps/org.devos.appstore/registry-backend.backend.js')).RegistryManager as any)(...args), properties: ["busy","bindings"]},
