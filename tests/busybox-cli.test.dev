@@ -417,6 +417,25 @@ test.case("route arp netstat ifconfig top (BusyBox only, pattern checks)",fn() {
     test.expect(strings.contains(outcome(d, bb + " arp; echo rc=$?"), "rc="), "arp did not run")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("nc wget ping nslookup (against local servers)",fn() {
+    let d = sandbox()
+    let bb = busybox()
+    let serve0 = "mkdir -p web && printf 'hello from the server\\n' > web/page.txt && head -c 70000 /dev/urandom > web/big.bin && python3 -m http.server 18800 --bind 127.0.0.1 --directory web >/dev/null 2>&1 & echo $! > srv.pid; sleep 1; "
+    let stop = "; kill $(cat srv.pid) 2>/dev/null; sleep 1"
+    test.expect(strings.contains(outcome(d, serve0 + bb + " wget -q -O - http://127.0.0.1:18800/page.txt" + stop), "hello from the server"), "wget -O - failed:\n" + outcome(d, serve0 + bb + " wget -q -O - http://127.0.0.1:18800/page.txt" + stop))
+    test.expect(strings.contains(outcome(d, serve0 + bb + " wget -q http://127.0.0.1:18800/page.txt; cat page.txt" + stop), "hello from the server"), "wget did not save the file:\n" + outcome(d, serve0 + bb + " wget -q http://127.0.0.1:18800/page.txt; ls; cat page.txt" + stop))
+    test.expect(strings.contains(outcome(d, serve0 + bb + " wget -q -O got.bin http://127.0.0.1:18800/big.bin; cmp got.bin web/big.bin; echo cmp=$?" + stop), "cmp=0"), "wget corrupted a binary download")
+    test.expect(strings.contains(outcome(d, serve0 + bb + " wget -q -O - http://127.0.0.1:18800/nosuchfile; echo rc=$?" + stop), "rc=1"), "wget accepted a 404")
+    test.expect(strings.contains(outcome(d, serve0 + bb + " wget -q http://localhost:18800/page.txt -O l.txt; cat l.txt" + stop), "hello from the server"), "wget could not resolve localhost")
+    test.expect(strings.contains(outcome(d, serve0 + "printf 'GET /page.txt HTTP/1.0\\r\\n\\r\\n' | " + bb + " nc 127.0.0.1 18800" + stop), "hello from the server"), "nc client failed")
+    test.expect(strings.contains(outcome(d, bb + " nc -z 127.0.0.1 1; echo rc=$?"), "rc=1"), "nc connected to a closed port")
+    test.expect(strings.contains(outcome(d, "printf 'ping\\n' | " + bb + " nc -l -p 18766 > got.txt & sleep 1; printf 'from client\\n' | " + bb + " nc 127.0.0.1 18766 > reply.txt; wait; cat got.txt"), "from client"), "nc listen mode failed")
+    test.expect(strings.contains(outcome(d, bb + " nslookup localhost"), "Address: 127.0.0.1"), "nslookup localhost")
+    test.expect(strings.contains(outcome(d, bb + " nslookup 10.1.2.3"), "Address: 10.1.2.3"), "nslookup of an address")
+    test.expect(strings.contains(outcome(d, bb + " ping -c 1 -W 1 127.0.0.1; echo rc=$?"), "PING 127.0.0.1 (127.0.0.1): 56 data bytes"), "ping header")
+    test.expect(strings.contains(outcome(d, bb + " ping -c 1 nosuch-host.invalid; echo rc=$?"), "rc=1"), "ping accepted an unknown host")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("printf",fn() {
     let d = sandbox()
     all_same(d, Vec<str>("@printf 'hello\\n'","@printf '%s\\n' a b c","@printf '%d %d\\n' 1 2 3 4","@printf '%5d|%-5d|%05d\\n' 42 42 42","@printf '%x %X %o %#x %#o\\n' 255 255 8 255 8","@printf '%+d % d %d\\n' 5 5 -5","@printf '%s|%10s|%-10s|%.2s\\n' abc abc abc abc","@printf '%c%c\\n' hello world","@printf '%%\\n'",

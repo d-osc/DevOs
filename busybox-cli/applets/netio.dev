@@ -1,0 +1,197 @@
+# nc, wget, ping, nslookup: sockets.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lines.dev" as lines
+use "../lib/net.dev" as net
+use "./gzip.dev" as gz
+use "../lib/proc.dev" as proc
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn copy_range(b: *sys.Bytes, from: i64, to: i64): str {
+    let out = sys.bytes_new()
+    for q in from..to { sys.bytes_push(out, sys.bat(b, q)) }
+    return sys.join2(sys.bytes_cstr(out), "")
+}
+fn read_socket(fd: i64): *sys.Bytes {
+    let out = sys.bytes_new(); let chunk = sys.bytes_new(); for i in 0..16384 { sys.bytes_push(chunk, 0) }
+    while true { let n = sys.read_into(fd, sys.bdata(chunk), 16384); if n <= 0 { break }; sys.bytes_append(out, sys.bdata(chunk), n) }
+    return out
+}
+
+// ---- nc [-l] [-p PORT] [-w SECONDS] [HOST] PORT -----------------------------------------------------------------------------------------------------------------------
+fn run_nc(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "lp:w:vnuzi:s:e:")
+    if o.bad != 0 || o.missing != 0 { sys.warn("nc", "invalid usage: nc [-l] [-p PORT] [-w SECS] [HOST] PORT"); return 1 }
+    let timeout = sys.has(o, 119) ? sys.parse_number(sys.val(o, 119)).value : 0
+    let out = sys.out_new(1)
+    if sys.has(o, 108) {
+        let port = sys.has(o, 112) ? sys.parse_number(sys.val(o, 112)).value : (o.rest.len() > 0 ? sys.parse_number(o.rest[(o.rest.len() as i64) - 1]).value : 0)
+        let server = net.listen_on(port)
+        if server < 0 { sys.warn("nc", "can't listen on that port"); return 1 }
+        let client = net.accept_one(server)
+        if client < 0 { sys.warn("nc", "accept failed"); return 1 }
+        if timeout > 0 { net.set_timeout(client, timeout) }
+        let tty = sys.is_tty(0)
+        if !tty { let input = sys.read_fd(0); if input.ok && sys.blen(input.bytes) > 0 { net.send_all(client, sys.bdata(input.bytes), sys.blen(input.bytes)) }; net.half_close(client) }
+        let data = read_socket(client)
+        sys.out_data(out, sys.bdata(data), sys.blen(data)); sys.out_flush(out)
+        sys.close_fd(client); sys.close_fd(server)
+        return 0
+    }
+    if o.rest.len() < 2 { sys.warn("nc", "invalid usage: nc [-l] [-p PORT] [-w SECS] [HOST] PORT"); return 1 }
+    let ip = net.resolve(o.rest[0]); if ip < 0 { sys.warn("nc", sys.join2(sys.join2("bad address '", o.rest[0]), "'")); return 1 }
+    let port = sys.parse_number(o.rest[1]); if !port.ok { sys.warn("nc", "bad port"); return 1 }
+    let fd = net.connect_to(ip, port.value, timeout > 0 ? timeout : 10)
+    if fd < 0 { sys.warn("nc", sys.join2(sys.join2(o.rest[0], " ("), sys.join2(net.ip_text(ip), sys.join2(sys.join2(":", decimal(port.value)), "): Connection refused")))); return 1 }
+    if sys.has(o, 122) { sys.close_fd(fd); return 0 }
+    if !sys.is_tty(0) { let input = sys.read_fd(0); if input.ok && sys.blen(input.bytes) > 0 { net.send_all(fd, sys.bdata(input.bytes), sys.blen(input.bytes)) } }
+    net.half_close(fd)
+    let data = read_socket(fd)
+    sys.out_data(out, sys.bdata(data), sys.blen(data)); sys.out_flush(out); sys.close_fd(fd)
+    return 0
+}
+
+// ---- wget [-qO FILE] URL (http only) ------------------------------------------------------------------------------------------------------------------------------------
+struct Url { ok: bool, host: str, port: i64, path: str }
+fn parse_url(url: str): Url {
+    if !sys.starts(url, "http://") { return Url(false, "", 0, "") }
+    let rest = sys.join2(sys.slice(url, 7, sys.length(url)), ""); let slash = sys.find_char(rest, 47)
+    let hostport = slash < 0 ? rest : sys.join2(sys.slice(rest, 0, slash), ""); let path = slash < 0 ? "/" : sys.join2(sys.slice(rest, slash, sys.length(rest)), "")
+    let colon = sys.find_char(hostport, 58)
+    let host = colon < 0 ? hostport : sys.join2(sys.slice(hostport, 0, colon), ""); let port = colon < 0 ? 80 : sys.parse_number(sys.join2(sys.slice(hostport, colon + 1, sys.length(hostport)), "")).value
+    return Url(sys.length(host) > 0, host, port, path)
+}
+fn header_value(head: str, name: str): str {
+    let n = sys.length(head); let start = 0
+    for i in 0..(n + 1) {
+        if i == n || sys.at(head, i) == 10 {
+            let line = sys.join2(sys.slice(head, start, i), ""); start = i + 1
+            let colon = sys.find_char(line, 58)
+            if colon > 0 && lower_equal(sys.join2(sys.slice(line, 0, colon), ""), name) {
+                let v = sys.join2(sys.slice(line, colon + 1, sys.length(line)), "")
+                let a = 0; while a < sys.length(v) && sys.at(v, a) == 32 { a = a + 1 }
+                let e = sys.length(v); while e > a && (sys.at(v, e - 1) == 13 || sys.at(v, e - 1) == 32) { e = e - 1 }
+                return sys.join2(sys.slice(v, a, e), "")
+            }
+        }
+    }
+    return ""
+}
+fn lower_equal(a: str, b: str): bool {
+    if sys.length(a) != sys.length(b) { return false }
+    for i in 0..sys.length(a) { let x = sys.at(a, i); let y = sys.at(b, i); if x >= 65 && x <= 90 { x = x + 32 }; if y >= 65 && y <= 90 { y = y + 32 }; if x != y { return false } }
+    return true
+}
+fn dechunk(body: *sys.Bytes, start: i64): *sys.Bytes {
+    let out = sys.bytes_new(); let pos = start; let n = sys.blen(body)
+    while pos < n {
+        let size = 0; let e = pos
+        while e < n && sys.bat(body, e) != 10 { let c = sys.bat(body, e); let d = 0 - 1; if c >= 48 && c <= 57 { d = (c - 48) as i64 } else if c >= 97 && c <= 102 { d = (c - 87) as i64 } else if c >= 65 && c <= 70 { d = (c - 55) as i64 }; if d >= 0 { size = size * 16 + d }; if c == 59 { while e < n && sys.bat(body, e) != 10 { e = e + 1 }; break }; e = e + 1 }
+        pos = e + 1
+        if size == 0 { break }
+        if pos + size > n { size = n - pos }
+        sys.bytes_append(out, sys.bptr(body, pos), size); pos = pos + size + 2
+    }
+    return out
+}
+fn run_wget(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "qO:cT:U:P:Y:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("wget", "invalid usage: wget [-q] [-O FILE] URL"); return 1 }
+    let url = o.rest[0]; let hops = 0
+    while hops < 6 {
+        let u = parse_url(url)
+        if !u.ok { sys.warn("wget", sys.join2(url, ": unsupported URL (only http:// is available)")); return 1 }
+        let ip = net.resolve(u.host); if ip < 0 { sys.warn("wget", sys.join2(sys.join2("bad address '", u.host), "'")); return 1 }
+        let fd = net.connect_to(ip, u.port, 10); if fd < 0 { sys.warn("wget", sys.join2(sys.join2("can't connect to remote host (", net.ip_text(ip)), "): Connection refused")); return 1 }
+        let req = sys.join2(sys.join2(sys.join2("GET ", u.path), " HTTP/1.1\r\nHost: "), sys.join2(u.host, "\r\nUser-Agent: Wget\r\nConnection: close\r\n\r\n"))
+        let rb = sys.bytes_new(); sys.bytes_str(rb, req); net.send_all(fd, sys.bdata(rb), sys.blen(rb))
+        let data = read_socket(fd); sys.close_fd(fd)
+        let split = 0 - 1
+        for i in 0..(sys.blen(data) - 3) { if sys.bat(data, i) == 13 && sys.bat(data, i + 1) == 10 && sys.bat(data, i + 2) == 13 && sys.bat(data, i + 3) == 10 { split = i; break } }
+        if split < 0 { sys.warn("wget", "invalid HTTP response"); return 1 }
+        let head = copy_range(data, 0, split); let status_line = sys.join2(sys.slice(head, 0, sys.find_char(head, 13) < 0 ? sys.length(head) : sys.find_char(head, 13)), "")
+        let parts = status_line; let code = 0
+        let sp = sys.find_char(parts, 32); if sp > 0 { code = sys.parse_number(sys.join2(sys.slice(parts, sp + 1, sp + 4), "")).value }
+        if code >= 300 && code < 400 && sys.length(header_value(head, "location")) > 0 {
+            let loc = header_value(head, "location")
+            url = sys.starts(loc, "http") ? loc : sys.join2(sys.join2(sys.join2("http://", u.host), sys.starts(loc, "/") ? "" : "/"), loc)
+            hops = hops + 1; continue
+        }
+        if code < 200 || code >= 300 { sys.warn("wget", sys.join2("server returned error: ", status_line)); return 1 }
+        let body = sys.bytes_new(); sys.bytes_append(body, sys.bptr(data, split + 4), sys.blen(data) - split - 4)
+        if lower_equal(header_value(head, "transfer-encoding"), "chunked") { body = dechunk(body, 0) }
+        if sys.has(o, 79) && sys.same(sys.val(o, 79), "-") { let out = sys.out_new(1); sys.out_data(out, sys.bdata(body), sys.blen(body)); sys.out_flush(out); return 0 }
+        let name = sys.has(o, 79) ? sys.val(o, 79) : sys.base_name(u.path)
+        let q = sys.find_char(name, 63); if q >= 0 { name = sys.join2(sys.slice(name, 0, q), "") }
+        if sys.length(name) == 0 || sys.same(name, "/") { name = "index.html" }
+        if !gz.write_file(name, body, 420) { sys.warn_write("wget", name); return 1 }
+        if !sys.has(o, 113) { sys.put_fd(2, sys.join2(sys.join2("saved to '", name), "'\n")) }
+        return 0
+    }
+    sys.warn("wget", "too many redirections")
+    return 1
+}
+
+// ---- ping [-c COUNT] [-W SECONDS] HOST ------------------------------------------------------------------------------------------------------------------------------
+fn checksum(b: *sys.Bytes): i64 {
+    let sum = 0; let n = sys.blen(b)
+    let i = 0
+    while i + 1 < n { sum = sum + (sys.bat(b, i) as i64) * 256 + (sys.bat(b, i + 1) as i64); i = i + 2 }
+    if i < n { sum = sum + (sys.bat(b, i) as i64) * 256 }
+    while sum > 65535 { sum = (sum % 65536) + sum / 65536 }
+    return 65535 - sum
+}
+fn run_ping(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "c:W:w:s:qI:t:4")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("ping", "invalid usage: ping [-c COUNT] [-W SECONDS] HOST"); return 1 }
+    let count = sys.has(o, 99) ? sys.parse_number(sys.val(o, 99)).value : 4
+    let wait = sys.has(o, 87) ? sys.parse_number(sys.val(o, 87)).value : 1
+    let ip = net.resolve(o.rest[0]); if ip < 0 { sys.warn("ping", sys.join2(sys.join2("bad address '", o.rest[0]), "'")); return 1 }
+    let fd = net.open_socket(2, 1)
+    if fd < 0 { sys.warn("ping", "permission denied (are you root?)"); return 1 }
+    net.set_timeout(fd, wait)
+    let out = sys.out_new(1)
+    sys.out_str(out, sys.join2(sys.join2(sys.join2("PING ", o.rest[0]), sys.join2(" (", net.ip_text(ip))), "): 56 data bytes\n")); sys.out_flush(out)
+    let sent = 0; let received = 0; let total = 0; let low = 1000000000; let high = 0
+    let addr = net.make_address(ip, 0)
+    for seq in 0..count {
+        let pkt = sys.bytes_new()
+        sys.bytes_push(pkt, 8); sys.bytes_push(pkt, 0); sys.bytes_push(pkt, 0); sys.bytes_push(pkt, 0)
+        sys.bytes_push(pkt, 18); sys.bytes_push(pkt, 52); sys.bytes_push(pkt, ((seq / 256) % 256) as u8); sys.bytes_push(pkt, (seq % 256) as u8)
+        for i in 0..56 { sys.bytes_push(pkt, (i + 8) as u8) }
+        let sum = checksum(pkt); sys.bptr_set(pkt, 2, ((sum / 256) % 256) as u8); sys.bptr_set(pkt, 3, (sum % 256) as u8)
+        let t0 = net.now_us()
+        if net.send_to(fd, sys.bdata(pkt), sys.blen(pkt), addr) < 0 { continue }
+        sent = sent + 1
+        let reply = sys.bytes_new(); for i in 0..256 { sys.bytes_push(reply, 0) }
+        let n = 0
+        n = net.recv_some(fd, sys.bdata(reply), 256)
+        if n >= 8 && sys.bat(reply, 0) == 0 {
+            let us = net.now_us() - t0; received = received + 1; total = total + us; if us < low { low = us }; if us > high { high = us }
+            sys.out_str(out, sys.join2(sys.join2(decimal(n), " bytes from "), sys.join2(net.ip_text(ip), sys.join2(sys.join2(": seq=", decimal(seq)), sys.join2(sys.join2(" time=", sys.join2(decimal(us / 1000), sys.join2(".", pad3(us % 1000)))), " ms\n")))))
+        }
+        sys.out_flush(out)
+        if seq + 1 < count { proc_sleep(1000000) }
+    }
+    sys.out_str(out, sys.join2(sys.join2("\n--- ", o.rest[0]), " ping statistics ---\n"))
+    sys.out_str(out, sys.join2(sys.join2(decimal(sent), " packets transmitted, "), sys.join2(sys.join2(decimal(received), " packets received, "), sys.join2(decimal(sent == 0 ? 100 : (sent - received) * 100 / sent), "% packet loss\n"))))
+    if received > 0 { sys.out_str(out, sys.join2("round-trip min/avg/max = ", sys.join2(ms(low), sys.join2("/", sys.join2(ms(total / received), sys.join2("/", sys.join2(ms(high), " ms\n"))))))) }
+    sys.out_flush(out)
+    return received > 0 ? 0 : 1
+}
+fn pad3(v: i64): str { let t = decimal(v); let b = sys.bytes_new(); for i in 0..(3 - sys.length(t)) { sys.bytes_push(b, 48) }; sys.bytes_str(b, t); return sys.join2(sys.bytes_cstr(b), "") }
+fn ms(us: i64): str { return sys.join2(sys.join2(decimal(us / 1000), "."), pad3(us % 1000)) }
+fn proc_sleep(us: i64) { proc.pause_us(us) }
+
+// ---- nslookup HOST [SERVER] ---------------------------------------------------------------------------------------------------------------------------------------------------
+fn run_nslookup(args: Vec<str>): i64 {
+    if args.len() == 0 || args.len() > 2 { sys.warn("nslookup", "invalid usage: nslookup HOST [SERVER]"); return 1 }
+    let server = args.len() == 2 ? net.resolve(args[1]) : net.nameserver()
+    let out = sys.out_new(1)
+    sys.out_str(out, sys.join2(sys.join2("Server:\t\t", net.ip_text(server)), sys.join2(sys.join2("\nAddress:\t", net.ip_text(server)), "#53\n\n")))
+    let ip = net.parse_ip(args[0]) >= 0 ? net.parse_ip(args[0]) : (net.hosts_lookup(args[0]) >= 0 ? net.hosts_lookup(args[0]) : net.dns_query(args[0], server))
+    if ip < 0 { sys.out_str(out, sys.join2(sys.join2("** server can't find ", args[0]), ": NXDOMAIN\n")); sys.out_flush(out); return 1 }
+    sys.out_str(out, sys.join2(sys.join2("Name:\t", args[0]), sys.join2(sys.join2("\nAddress: ", net.ip_text(ip)), "\n")))
+    sys.out_flush(out)
+    return 0
+}

@@ -28,10 +28,11 @@ use "./applets/awk.dev" as ak
 use "./applets/util2.dev" as u2
 use "./applets/accounts.dev" as ac2
 use "./applets/netinfo.dev" as ni
+use "./applets/netio.dev" as nio
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "addgroup", "adduser", "ar", "arp", "awk", "basename", "cal", "cat", "catv", "chgrp", "chmod", "chown", "chpst", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "cut", "date", "dc", "dd", "delgroup", "deluser", "df", "diff", "dirname", "dmesg", "dos2unix", "du", "echo", "egrep", "env", "envdir", "envuidgid", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "getopt", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "ifconfig", "insmod", "install", "ionice", "ipcalc", "kill", "killall", "killall5", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mkswap", "mktemp", "more", "mount", "mountpoint", "mv", "netstat", "nice", "nohup", "od", "patch", "pgrep", "pidof", "pivot_root", "pkill", "printenv", "printf", "ps", "pwd", "rdev", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "route", "run-parts", "runlevel", "sed", "seq", "setarch", "setsid", "setuidgid", "sha1sum", "sha256sum", "sha512sum", "sleep", "softlimit", "sort", "split", "stat", "strings", "sum", "swapoff", "swapon", "sync", "sysctl", "tac", "tail", "tar", "taskset", "tee", "test", "time", "timeout", "top", "touch", "tr", "true", "tty", "ttysize", "umount", "uname", "unexpand", "uniq", "unix2dos", "unzip", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "which", "who", "whoami", "xargs", "yes", "zcat")
+    return Vec<str>("[", "[[", "addgroup", "adduser", "ar", "arp", "awk", "basename", "cal", "cat", "catv", "chgrp", "chmod", "chown", "chpst", "chroot", "cksum", "clear", "cmp", "comm", "cp", "cpio", "cut", "date", "dc", "dd", "delgroup", "deluser", "df", "diff", "dirname", "dmesg", "dos2unix", "du", "echo", "egrep", "env", "envdir", "envuidgid", "expand", "expr", "false", "fgrep", "find", "fold", "free", "fsync", "getopt", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "id", "ifconfig", "insmod", "install", "ionice", "ipcalc", "kill", "killall", "killall5", "length", "less", "ln", "logname", "ls", "lsmod", "md5sum", "mesg", "mkdir", "mkfifo", "mknod", "mkswap", "mktemp", "more", "mount", "mountpoint", "mv", "nc", "netstat", "nice", "nohup", "nslookup", "od", "patch", "pgrep", "pidof", "ping", "pivot_root", "pkill", "printenv", "printf", "ps", "pwd", "rdev", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "route", "run-parts", "runlevel", "sed", "seq", "setarch", "setsid", "setuidgid", "sha1sum", "sha256sum", "sha512sum", "sleep", "softlimit", "sort", "split", "stat", "strings", "sum", "swapoff", "swapon", "sync", "sysctl", "tac", "tail", "tar", "taskset", "tee", "test", "time", "timeout", "top", "touch", "tr", "true", "tty", "ttysize", "umount", "uname", "unexpand", "uniq", "unix2dos", "unzip", "uptime", "usleep", "uudecode", "uuencode", "watch", "wc", "wget", "which", "who", "whoami", "xargs", "yes", "zcat")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -192,6 +193,10 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "netstat") { return ni.run_netstat(args) }
     if sys.same(name, "ifconfig") { return ni.run_ifconfig(args) }
     if sys.same(name, "top") { return ni.run_top(args) }
+    if sys.same(name, "nc") { return nio.run_nc(args) }
+    if sys.same(name, "wget") { return nio.run_wget(args) }
+    if sys.same(name, "ping") { return nio.run_ping(args) }
+    if sys.same(name, "nslookup") { return nio.run_nslookup(args) }
     sys.warn(name, "applet not found")
     return 127
 }

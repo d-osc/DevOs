@@ -1,0 +1,161 @@
+# IPv4 sockets: connecting, listening, and name resolution (/etc/hosts, then a DNS A query to the first nameserver of /etc/resolv.conf).
+use "./sys.dev" as sys
+use "./lines.dev" as lines
+
+extern fn socket(domain: i32, kind: i32, protocol: i32): i32
+extern fn connect(fd: i32, address: *void, length: u32): i32
+extern fn bind(fd: i32, address: *void, length: u32): i32
+extern fn listen(fd: i32, backlog: i32): i32
+extern fn accept(fd: i32, address: *void, length: *void): i32
+extern fn setsockopt(fd: i32, level: i32, name: i32, value: *void, length: u32): i32
+extern fn shutdown(fd: i32, how: i32): i32
+extern fn sendto(fd: i32, data: *void, length: usize, flags: i32, address: *void, address_length: u32): isize
+extern fn recvfrom(fd: i32, data: *void, length: usize, flags: i32, address: *void, address_length: *void): isize
+extern fn clock_gettime(clock: i32, spec: *void): i32
+
+fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
+fn fields_of(line: str): Vec<str> {
+    let out = Vec<str>(); let start = 0 - 1; let n = sys.length(line)
+    for i in 0..(n + 1) {
+        let blank = i == n || sys.at(line, i) == 32 || sys.at(line, i) == 9
+        if blank { if start >= 0 { out.push(sys.join2(sys.slice(line, start, i), "")); start = 0 - 1 } } else if start < 0 { start = i }
+    }
+    return out
+}
+// "a.b.c.d" as a number (a is the high byte), or -1.
+fn parse_ip(text: str): i64 {
+    let value = 0; let part = 0; let parts = 0; let digits = 0
+    for i in 0..(sys.length(text) + 1) {
+        let c = i < sys.length(text) ? sys.at(text, i) : 46
+        if c == 46 {
+            if digits == 0 || part > 255 { return 0 - 1 }
+            value = value * 256 + part; part = 0; digits = 0; parts = parts + 1
+        } else if sys.is_digit(c) { part = part * 10 + (c - 48) as i64; digits = digits + 1 } else { return 0 - 1 }
+    }
+    return parts == 4 ? value : 0 - 1
+}
+fn ip_text(v: i64): str { return sys.join2(sys.join2(sys.join2(decimal((v / 16777216) % 256), "."), sys.join2(decimal((v / 65536) % 256), ".")), sys.join2(sys.join2(decimal((v / 256) % 256), "."), decimal(v % 256))) }
+// A sockaddr_in for ip:port in a fresh 16 byte buffer.
+fn make_address(ip: i64, port: i64): *u8 { unsafe {
+    let a = sys.calloc(16, 1) as *u8
+    a[0] = 2; a[1] = 0
+    a[2] = ((port / 256) % 256) as u8; a[3] = (port % 256) as u8
+    a[4] = ((ip / 16777216) % 256) as u8; a[5] = ((ip / 65536) % 256) as u8; a[6] = ((ip / 256) % 256) as u8; a[7] = (ip % 256) as u8
+    return a
+} }
+fn open_socket(kind: i64, protocol: i64): i64 { unsafe { return socket(2, kind as i32, protocol as i32) as i64 } }
+fn set_timeout(fd: i64, seconds: i64) { unsafe {
+    let tv = sys.calloc(16, 1) as *u8
+    tv[0] = (seconds % 256) as u8; tv[1] = ((seconds / 256) % 256) as u8
+    setsockopt(fd as i32, 1, 20, tv as *void, 16); setsockopt(fd as i32, 1, 21, tv as *void, 16)
+    sys.free(tv as *void)
+} }
+fn connect_to(ip: i64, port: i64, timeout: i64): i64 { unsafe {
+    let fd = open_socket(1, 0); if fd < 0 { return 0 - 1 }
+    if timeout > 0 { set_timeout(fd, timeout) }
+    let a = make_address(ip, port)
+    let r = connect(fd as i32, a as *void, 16)
+    sys.free(a as *void)
+    if r != 0 { sys.close_fd(fd); return 0 - 1 }
+    return fd
+} }
+fn listen_on(port: i64): i64 { unsafe {
+    let fd = open_socket(1, 0); if fd < 0 { return 0 - 1 }
+    let one = sys.calloc(4, 1) as *u8; one[0] = 1; setsockopt(fd as i32, 1, 2, one as *void, 4)
+    let a = make_address(0, port)
+    if bind(fd as i32, a as *void, 16) != 0 || listen(fd as i32, 4) != 0 { sys.close_fd(fd); return 0 - 1 }
+    return fd
+} }
+fn accept_one(fd: i64): i64 { unsafe { return accept(fd as i32, 0 as *void, 0 as *void) as i64 } }
+fn half_close(fd: i64) { unsafe { shutdown(fd as i32, 1) } }
+fn send_all(fd: i64, data: *u8, count: i64): bool {
+    let done = 0
+    while done < count { let w = sys.write_fd(fd, sys.bptr_at(data, done), count - done); if w <= 0 { return false }; done = done + w }
+    return true
+}
+fn send_to(fd: i64, data: *u8, count: i64, address: *u8): i64 { unsafe { return sendto(fd as i32, data as *void, count as usize, 0, address as *void, 16) as i64 } }
+fn recv_some(fd: i64, data: *u8, count: i64): i64 { unsafe { return recvfrom(fd as i32, data as *void, count as usize, 0, 0 as *void, 0 as *void) as i64 } }
+fn now_ms(): i64 { unsafe {
+    let ts = sys.calloc(16, 1) as *u8
+    clock_gettime(1, ts as *void)
+    let sec = sys.le(ts, 0, 8); let nsec = sys.le(ts, 8, 8)
+    sys.free(ts as *void)
+    return sec * 1000 + nsec / 1000000
+} }
+fn now_us(): i64 { unsafe {
+    let ts = sys.calloc(16, 1) as *u8
+    clock_gettime(1, ts as *void)
+    let sec = sys.le(ts, 0, 8); let nsec = sys.le(ts, 8, 8)
+    sys.free(ts as *void)
+    return sec * 1000000 + nsec / 1000
+} }
+
+// ---- resolver ----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+fn hosts_lookup(name: str): i64 {
+    let input = sys.read_path("/etc/hosts"); if !input.ok { return 0 - 1 }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) {
+        let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k]))
+        if parts.len() < 2 || sys.starts(parts[0], "#") { continue }
+        let ip = parse_ip(parts[0]); if ip < 0 { continue }
+        for q in 1..(parts.len() as i64) { if sys.starts(parts[q], "#") { break }; if sys.same(parts[q], name) { return ip } }
+    }
+    return 0 - 1
+}
+fn nameserver(): i64 {
+    let input = sys.read_path("/etc/resolv.conf"); if !input.ok { return parse_ip("127.0.0.1") }
+    let ls = lines.split_lines(input.bytes, 10)
+    for k in 0..(ls.starts.len() as i64) {
+        let parts = fields_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k]))
+        if parts.len() >= 2 && sys.same(parts[0], "nameserver") { let ip = parse_ip(parts[1]); if ip >= 0 { return ip } }
+    }
+    return parse_ip("127.0.0.1")
+}
+fn skip_name(p: *u8, pos: i64, len: i64): i64 { unsafe {
+    let i = pos
+    while i < len {
+        let c = p[i] as i64
+        if c == 0 { return i + 1 }
+        if c >= 192 { return i + 2 }
+        i = i + c + 1
+    }
+    return len
+} }
+fn dns_query(name: str, server: i64): i64 { unsafe {
+    let q = sys.bytes_new()
+    sys.bytes_push(q, 18); sys.bytes_push(q, 52); sys.bytes_push(q, 1); sys.bytes_push(q, 0); sys.bytes_push(q, 0); sys.bytes_push(q, 1)
+    for i in 0..6 { sys.bytes_push(q, i < 0 ? 1 : 0) }
+    let label = 0; let start = 0
+    for i in 0..(sys.length(name) + 1) {
+        if i == sys.length(name) || sys.at(name, i) == 46 {
+            let len = i - start; if len == 0 || len > 63 { return 0 - 1 }
+            sys.bytes_push(q, len as u8); for k in start..i { sys.bytes_push(q, sys.at(name, k)) }
+            start = i + 1
+        }
+    }
+    sys.bytes_push(q, 0); sys.bytes_push(q, 0); sys.bytes_push(q, 1); sys.bytes_push(q, 0); sys.bytes_push(q, 1)
+    let fd = open_socket(2, 0); if fd < 0 { return 0 - 1 }
+    set_timeout(fd, 3)
+    let a = make_address(server, 53)
+    if sendto(fd as i32, sys.bdata(q) as *void, sys.blen(q) as usize, 0, a as *void, 16) < 0 { sys.close_fd(fd); return 0 - 1 }
+    let reply = sys.calloc(1500, 1) as *u8
+    let n = recvfrom(fd as i32, reply as *void, 1500, 0, 0 as *void, 0 as *void) as i64
+    sys.close_fd(fd)
+    if n < 12 { return 0 - 1 }
+    let answers = (reply[6] as i64) * 256 + (reply[7] as i64)
+    let pos = skip_name(reply, 12, n) + 4
+    for k in 0..answers {
+        pos = skip_name(reply, pos, n)
+        if pos + 10 > n { break }
+        let kind = (reply[pos] as i64) * 256 + (reply[pos + 1] as i64); let rdlen = (reply[pos + 8] as i64) * 256 + (reply[pos + 9] as i64)
+        if kind == 1 && rdlen == 4 && pos + 14 <= n { return (reply[pos + 10] as i64) * 16777216 + (reply[pos + 11] as i64) * 65536 + (reply[pos + 12] as i64) * 256 + (reply[pos + 13] as i64) }
+        pos = pos + 10 + rdlen
+    }
+    return 0 - 1
+} }
+fn resolve(name: str): i64 {
+    let direct = parse_ip(name); if direct >= 0 { return direct }
+    if sys.same(name, "localhost") { return parse_ip("127.0.0.1") }
+    let h = hosts_lookup(name); if h >= 0 { return h }
+    return dns_query(name, nameserver())
+}
