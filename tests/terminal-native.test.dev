@@ -13,7 +13,7 @@ fn build():str {
     return executable
 }
 fn run(executable:str, command:str, smoke:str):child_process.Output {
-    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("DEVOS_TERMINAL_COMMAND",command)
+    let env = Map<str,str>(); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("DEVOS_TERMINAL_COMMAND",command)
     if !strings.equal(smoke,"") { env.set("DEVOS_TERMINAL_SMOKE",smoke) }
     return tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","terminal-native","xvfb-run","-a",executable),env,"",60000)
 }

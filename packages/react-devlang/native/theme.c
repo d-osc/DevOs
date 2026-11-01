@@ -2,15 +2,37 @@
 #include <stdint.h>
 #include <string.h>
 extern void *rd_window(void *root);
+extern void rd_schedule(void *root);
 extern int32_t rd_css(void *root,const char *css);
 const char *rd_default_theme(void) { GDateTime *now=g_date_time_new_now_local(); int hour=g_date_time_get_hour(now); g_date_time_unref(now); return hour>=7 && hour<19 ? "light" : "dark"; }
 int32_t rd_theme_is_dark(void){gboolean dark=FALSE;g_object_get(gtk_settings_get_default(),"gtk-application-prefer-dark-theme",&dark,NULL);return dark;}
+/* Applied after the live theme snapshot so existing sessions receive tab styles too. */
+static const char *rd_tabs_css =
+"\n"
+"/* Browser-style document/folder tabs share the window title bar. */\n"
+"headerbar.chrome-titlebar { background: @dv_s1; padding: 4px 6px 0; min-height: 38px; border-bottom: 1px solid @dv_border_soft; }\n"
+".chrome-tabstrip { padding: 0; background: transparent; }\n"
+"headerbar.chrome-titlebar .chrome-tab, headerbar.chrome-titlebar .chrome-tab * { -GtkWidget-window-dragging: false; }\n"
+".chrome-tabstrip scrolledwindow, .chrome-tabstrip viewport { background: transparent; border: 0; }\n"
+".chrome-tab { background: transparent; border-radius: 10px 10px 0 0; margin: 2px 1px 0; padding: 0 4px; border: 0; }\n"
+".chrome-tab:hover { background: alpha(@dv_fg, 0.06); }\n"
+".chrome-tab.chrome-tab-active { background: @dv_s0; box-shadow: 0 -1px 0 alpha(@dv_fg, 0.08); }\n"
+".chrome-tab button.chrome-tab-select { background: transparent; background-image: none; border: 0; border-radius: 8px 8px 0 0; box-shadow: none; color: @dv_fg_muted; padding: 6px 8px; min-height: 24px; }\n"
+".chrome-tab-active button.chrome-tab-select { color: @dv_fg_strong; }\n"
+".chrome-tab button.chrome-tab-close, button.chrome-tab-add { background: transparent; background-image: none; border: 0; border-radius: 50%; box-shadow: none; color: @dv_fg_muted; padding: 4px; min-width: 18px; min-height: 18px; margin: 4px 0; }\n"
+".chrome-tab button.chrome-tab-close:hover, button.chrome-tab-add:hover { background: alpha(@dv_fg, 0.12); color: @dv_fg_strong; }\n"
+".chrome-tab button.chrome-tab-close:disabled { opacity: 0; }\n"
+"button.chrome-tab-add { margin: 4px 8px; }\n"
+"\n"
+".chrome-tab label { color: @dv_fg_muted; font-size: 12px; }\n"
+".chrome-tab-active label { color: @dv_fg_strong; }\n"
+".chrome-tab image { color: @dv_fg_muted; }\n";
 typedef struct { void *root; GFileMonitor *monitor; char *snapshot; } RdTheme;
 static void rd_theme_load(RdTheme *theme,const char *path) {
     char *css=NULL;
     if (theme->root && g_file_get_contents(path,&css,NULL,NULL)) {
         gboolean dark=g_str_has_prefix(css,"/* devos-theme:dark */");
-        char *styled=g_strconcat(css,
+        char *styled=g_strconcat(css,rd_tabs_css,
             "\n#task-manager .app-titlebar button.titlebutton { background: transparent; background-image: none; color: @dv_fg_muted; border: 1px solid transparent; border-radius: 6px; box-shadow: none; text-shadow: none; min-height: 16px; min-width: 16px; padding: 3px 4px; margin: 0; }"
             "#task-manager .app-titlebar button.titlebutton image { color: @dv_fg_muted; }"
             "#task-manager .app-titlebar button.titlebutton:hover { background: @dv_hover; }"
@@ -45,7 +67,7 @@ static void rd_snap(GtkButton *button,void *data) {
     g_dbus_connection_call(bus,id,path,"org.devos.Shell.Control","Execute",g_variant_new("(^ass)",args,""),NULL,G_DBUS_CALL_FLAGS_NO_AUTO_START,10000,NULL,NULL,NULL);
     g_free(path); g_object_unref(bus);
 }
-void rd_app_header_for(void *root,const char *title,const char *icons,const char *name,const char *icon) {
+void rd_app_header_for(void *root,const char *title,const char *icons,const char *name,const char *icon) {if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("header ready %s\n",title);
     GtkWidget *window=rd_window(root); gtk_widget_set_name(window,name);
     if(!strcmp(name,"camera")||!strcmp(name,"microphone")) gtk_style_context_add_class(gtk_widget_get_style_context(window),"media-window"); /* the theme styles Camera and Microphone as .media-window */
     if(g_object_get_data(G_OBJECT(window),"rd-layer")) {gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(),icons); return;} /* a full-screen overlay has no title bar */
@@ -56,10 +78,11 @@ void rd_app_header_for(void *root,const char *title,const char *icons,const char
     gtk_header_bar_set_has_subtitle(GTK_HEADER_BAR(header),FALSE);
     gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header),TRUE); gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(header),":minimize,maximize,close");
     gtk_style_context_add_class(gtk_widget_get_style_context(header),"app-titlebar");
-    char *symbolic=g_strconcat(icon,"-symbolic",NULL); GtkWidget *glyph=gtk_image_new_from_icon_name(symbolic,GTK_ICON_SIZE_MENU); g_free(symbolic); gtk_header_bar_pack_start(GTK_HEADER_BAR(header),glyph);
+    if(!strcmp(name,"editor") || !strcmp(name,"files") || !strcmp(name,"browser") || !strcmp(name,"terminal"))gtk_style_context_add_class(gtk_widget_get_style_context(header),"chrome-titlebar");
+    else {char *symbolic=g_strconcat(icon,"-symbolic",NULL); GtkWidget *glyph=gtk_image_new_from_icon_name(symbolic,GTK_ICON_SIZE_MENU); g_free(symbolic); gtk_header_bar_pack_start(GTK_HEADER_BAR(header),glyph);}
     GtkWidget *snap=gtk_button_new_from_icon_name("view-grid-symbolic",GTK_ICON_SIZE_MENU); gtk_widget_set_tooltip_text(snap,"Snap Layouts - Super+Z");
     gtk_style_context_add_class(gtk_widget_get_style_context(snap),"titlebutton"); gtk_header_bar_pack_end(GTK_HEADER_BAR(header),snap); g_signal_connect(snap,"clicked",G_CALLBACK(rd_snap),NULL);
-    gtk_window_set_titlebar(GTK_WINDOW(window),header); gtk_widget_show_all(header);
+    gtk_window_set_titlebar(GTK_WINDOW(window),header); gtk_widget_show_all(header); rd_schedule(root);
 }
 void rd_app_header(void *root,const char *title,const char *icons) { rd_app_header_for(root,title,icons,"task-manager","dev-os-task-manager"); }
 static gboolean rd_close_blocked=FALSE;

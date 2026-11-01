@@ -5,14 +5,30 @@ use "std/module"
 use "std/args"
 use "std/strings"
 use "std/result"
+# wlroots' drag grab must receive the release even when the pointer is over the desktop.
+# Modern labwc already forwards all unbound releases; 0.7.x only forwards over a surface.
+fn patchRelease(source:str) {
+    let file=source+"/src/input/cursor.c"
+    let text=strings.replaceAll(fs.readFileSync(file,"utf8"),"\r\n","\n")
+    if strings.contains(text,"DEVOS_DND_DESKTOP_RELEASE") {return}
+    if strings.contains(text,"cursor_process_button_release(") {return}
+    let anchor="cursor_button_release(struct seat *seat, uint32_t button,\n\t\tenum wlr_button_state button_state, uint32_t time_msec)\n{\n"
+    if strings.split(text,anchor).len()!=2 {result.raise("Tab drag release anchor missing or ambiguous")}
+    let fix="\t/* DEVOS_DND_DESKTOP_RELEASE: finish the drag grab outside client surfaces. */\n\tif (seat->drag.active) {\n\t\twlr_seat_pointer_notify_button(seat->seat, time_msec, button, button_state);\n\t\tseat_reset_pressed(seat);\n\t\treturn;\n\t}\n"
+    fs.writeFileSync(file,strings.replace(text,anchor,anchor+fix))
+}
 fn main(): i32 {
     if args.len() == 1 && strings.equal(args.get(0), "--validate") {return 0}
     if args.len() != 1 {result.raise("Usage: d patch-tab-drag.dev -- LABWC_SOURCE")}
     let source = args.get(0)
+    patchRelease(source)
     fs.copyFileSync(path.dirname(module.entry()) + "/devos-tab-drag.h", source + "/include/devos-tab-drag.h")
     let file = source + "/src/input/keyboard.c"
     let text = strings.replaceAll(fs.readFileSync(file, "utf8"), "\r\n", "\n")
-    if strings.contains(text, "#include \"devos-tab-drag.h\"") {print("Dev OS tab drag cancellation is current"); return 0}
+    if strings.contains(text, "#include \"devos-tab-drag.h\"") {
+        text=strings.replaceAll(text,"devos_tab_drag_key(server, event,","devos_tab_drag_key(server, keyboard->wlr_keyboard, event,")
+        fs.writeFileSync(file,text);print("Dev OS tab drag cancellation is current");return 0
+    }
     let modern = !strings.contains(text, "server->osd_state.cycle_view")
     let anchor = modern ? "\t/*\n\t * Handle compositor keybinds\n\t */" : "\tif (server->osd_state.cycle_view) {\n\t\tkey_state_store_pressed_key_as_bound(event->keycode);"
     # Replace the old server-only Escape handler when upgrading a WSL checkout.
@@ -23,7 +39,7 @@ fn main(): i32 {
         text = old[0] + anchor + tail[1]
     }
     if strings.split(text, anchor).len() != 2 {result.raise("Tab drag keyboard anchor missing or ambiguous")}
-    text = strings.replace(text, anchor, "\tif (" + (modern ? "!locked && " : "") + "devos_tab_drag_key(server, event, keyinfo.translated.syms, keyinfo.translated.nr_syms)) {\n\t\treturn " + (modern ? "LAB_KEY_HANDLED_TRUE" : "true") + ";\n\t}\n\n" + anchor)
+    text = strings.replace(text, anchor, "\tif (" + (modern ? "!locked && " : "") + "devos_tab_drag_key(server, keyboard->wlr_keyboard, event, keyinfo.translated.syms, keyinfo.translated.nr_syms)) {\n\t\treturn " + (modern ? "LAB_KEY_HANDLED_TRUE" : "true") + ";\n\t}\n\n" + anchor)
     if strings.split(text, "#include \"workspaces.h\"").len() != 2 {result.raise("Tab drag include anchor missing")}
     text = strings.replace(text, "#include \"workspaces.h\"", "#include \"workspaces.h\"\n#include \"devos-tab-drag.h\"")
     fs.writeFileSync(file, text)

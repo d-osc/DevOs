@@ -1,4 +1,12 @@
 use "react_devlang/ui" as ui
+use "react_devlang/tabs" as tabs
+use "react_devlang/channel" as channel
+extern fn rd_host_child(host:*void):*void
+extern fn rd_watch_child(widget:*void)
+extern fn rd_child_exited(widget:*void):i32
+extern fn rd_terminal_spawn_callback():*void
+extern fn rd_terminal_cwd(widget:*void):*u8
+extern fn g_free(pointer:*void)
 extern fn rc_env(name:str):str
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
@@ -7,7 +15,7 @@ extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
 extern fn rd_default_theme():str
 # libvte is linked by path (tools/build/native-apps.sh), so no VTE header is needed: only the calls below are declared.
 extern fn vte_terminal_new():*void
-extern fn vte_terminal_spawn_async(terminal:*void, ptyFlags:i32, workingDirectory:str, argv:*u8, envv:*u8, spawnFlags:i32, childSetup:*void, childSetupData:*void, childSetupDestroy:*void, timeout:i32, cancellable:*void, callback:*void, userData:*void)
+extern fn vte_terminal_spawn_async(terminal:*void, ptyFlags:i32, workingDirectory:*u8, argv:*u8, envv:*u8, spawnFlags:i32, childSetup:*void, childSetupData:*void, childSetupDestroy:*void, timeout:i32, cancellable:*void, callback:*void, userData:*void)
 extern fn vte_terminal_set_scrollback_lines(terminal:*void, lines:i64)
 extern fn gtk_container_add(container:*void, widget:*void)
 extern fn gtk_widget_show(widget:*void)
@@ -25,8 +33,7 @@ extern fn vte_terminal_set_color_cursor(terminal:*void, color:*void)
 extern fn gtk_widget_set_hexpand(widget:*void, expand:i32)
 extern fn gtk_widget_set_vexpand(widget:*void, expand:i32)
 
-# Native Terminal window: one VTE terminal running the user's shell (or DEVOS_TERMINAL_COMMAND with `sh -c`, which the tests use).
-# The terminal widget is created here and placed in an empty host box of the toolkit; the window closes when the shell exits.
+# Each mounted tab owns a VTE and shell. A child exit closes its tab; the final exit closes the window.
 fn environment(name:str):str { unsafe { return rc_env(name) } }
 # Terminal colors per theme: foreground, background, cursor, then the 16 ANSI colors (data/themes/palettes.json: terminalFg, terminalBg, cursor, ansi0..ansi15).
 fn same(a:str, b:str):bool { return ui.equalText(ui.text(a),ui.text(b)) }
@@ -51,45 +58,54 @@ fn argvOf(items:Vec<str>):*u8 { unsafe {
     return table
 } }
 
+fn plain(value:str):ui.Text {return ui.text(value)}
+fn has(value:ui.Text):bool {return value.bytes.len()>0}
+fn terminalFor(context:*ui.Context,id:i64):*void {unsafe {return rd_host_child(ui.find(context,id==0 ? "terminal-host" : "terminal-host-${id}"))}}
+fn owned(pointer:*u8):ui.Text {unsafe {if pointer==null {return ui.emptyText()};let out=Vec<u8>();let i:i64=0;while pointer[i]!=0 {out.push(pointer[i]);i=i+1};g_free(pointer as *void);return ui.Text(out)}}
+fn directory(context:*ui.Context,id:i64,fallback:ui.Text):ui.Text {unsafe {let cwd=owned(rd_terminal_cwd(terminalFor(context,id)));return has(cwd) ? cwd : fallback}}
+fn Page(context:*ui.Context,id:i64,cwd:ui.Text):ui.Node {
+    ui.useEffect(context,fn():fn():void {unsafe {
+        let host=ui.find(context,id==0 ? "terminal-host" : "terminal-host-${id}");if rd_host_child(host)!=null {return ui.noop};let terminal=vte_terminal_new()
+        vte_terminal_set_scrollback_lines(terminal,10000);gtk_container_add(host,terminal);gtk_widget_set_hexpand(terminal,1);gtk_widget_set_vexpand(terminal,1)
+        let mode=environment("DEV_OS_THEME");if !has(plain(mode)) {mode=rd_default_theme()};paint(terminal,environment("DEV_OS_THEME_FAMILY"),mode)
+        gtk_widget_show(terminal);rd_watch_child(terminal);rd_terminal_keys(terminal)
+        if has(plain(environment("DEVOS_TERMINAL_SMOKE"))) && g_signal_lookup("copy-clipboard",vte_terminal_get_type())!=0 && g_signal_lookup("paste-clipboard",vte_terminal_get_type())!=0 {print("PASS native Terminal has copy-clipboard and paste-clipboard")}
+        let command=environment("DEVOS_TERMINAL_COMMAND");let shell=environment("SHELL");if !has(plain(shell)) {shell="/bin/sh"}
+        let argv=has(plain(command)) ? argvOf(Vec<str>("/bin/sh","-c",command)) : argvOf(Vec<str>(shell))
+        let native=ui.nativeText(cwd)
+        # The spawn callback records the shell PID, allowing a new tab to inherit its actual cwd.
+        vte_terminal_spawn_async(terminal,0,native,argv,null,0x4,null,null,null,-1,null,rd_terminal_spawn_callback(),null)
+        ui.rd_buffer_free(native as *void);gtk_widget_grab_focus(terminal)
+        return ui.noop
+    }},Vec<i64>())
+    let host=ui.named(id==0 ? "terminal-host" : "terminal-host-${id}");host.expand=true;return ui.Box(host,Vec<ui.Node>())
+}
 fn App(context:*ui.Context):ui.Node {
+    let initial=environment("DEVOS_TERMINAL_DIRECTORY");if !has(plain(initial)) {initial=environment("HOME")};if !has(plain(initial)) {initial="/"}
+    let initialTab=tabs.seed(context,tabs.pack(Vec<ui.Text>(plain("0"),plain(initial))));let initialFields=tabs.unpack(initialTab)
+    let sessions=ui.useText(context,tabs.pack(Vec<ui.Text>(initialTab)))
+    let active=ui.useState(context,channel.integer(initialFields[0]));let next=ui.useRef(context,1)
+    let choose=fn(id:i64){active.set(id);unsafe {let terminal=terminalFor(context,id);if terminal!=null {gtk_widget_grab_focus(terminal)}}}
+    let added=fn(folder:ui.Text){let id=tabs.newId();next.set(id+1);let rows=tabs.unpack(sessions.get());rows.push(tabs.pack(Vec<ui.Text>(plain("${id}"),folder)));sessions.set(tabs.pack(rows));active.set(id)}
+    let closed=fn(id:i64){let rows=Vec<ui.Text>();let neighbor:i64=0-1;for row in tabs.unpack(sessions.get()) {let f=tabs.unpack(row);let other=channel.integer(f[0]);if other!=id {rows.push(row);if neighbor<0 {neighbor=other}}};if rows.len()==0 {ui.close(context);return};sessions.set(tabs.pack(rows));if active.get()==id {choose(neighbor)}}
+    let detached=fn(id:i64,targetWindow:i64){for row in tabs.unpack(sessions.get()){let f=tabs.unpack(row);if channel.integer(f[0])==id {let metadata=tabs.pack(Vec<ui.Text>(f[0],directory(context,id,f[1])));tabs.transfer(context,targetWindow,"Terminal",960,640,metadata,plain(id==0 ? "terminal-host" : "terminal-host-${id}"),fn(){closed(id)},App)}}}
     ui.useEffect(context,fn():fn():void {
-        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
-        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
-        if ui.text(family).bytes.len() == 0 { family = "vscode" }
-        unsafe {
-            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
-            rd_app_header_for((*context).native,"Terminal","${root}/data/icons","terminal","dev-os-terminal")
-            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"terminal")
-        }
-        # `terminal.native <folder>` from the shell only brings this window to the front.
-        ui.onCommand(context,"terminal.",fn(line:ui.Text) {})
+        let root=environment("DEV_OS_ROOT");let mode=environment("DEV_OS_THEME");let family=environment("DEV_OS_THEME_FAMILY")
+        if !has(plain(mode)) {unsafe {mode=rd_default_theme()}};if !has(plain(family)) {family="vscode"}
+        unsafe {rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css");rd_app_header_for((*context).native,"Terminal","${root}/data/icons","terminal","dev-os-terminal");rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"terminal")}
+        ui.onCommand(context,"terminal.",fn(line:ui.Text){if ui.equalText(line,plain("tabs:receive")){let row=tabs.received(context);if has(row){let rows=tabs.unpack(sessions.get());rows.push(row);sessions.set(tabs.pack(rows));choose(channel.integer(tabs.unpack(row)[0]))};return};let parts=channel.split(line,31);if parts.len()>1 && has(parts[1]) {added(parts[1])}})
+        ui.onTick(context,100,fn(){unsafe {for row in tabs.unpack(sessions.get()) {let id=channel.integer(tabs.unpack(row)[0]);let terminal=terminalFor(context,id);if terminal!=null && rd_child_exited(terminal)!=0 {closed(id)}}}})
         return ui.noop
     },Vec<i64>())
-    ui.useEffect(context,fn():fn():void {
-        unsafe {
-            let host = ui.find(context,"terminal-host")
-            let terminal = vte_terminal_new()
-            vte_terminal_set_scrollback_lines(terminal,10000)
-            gtk_container_add(host,terminal)
-            gtk_widget_set_hexpand(terminal,1); gtk_widget_set_vexpand(terminal,1)
-            let mode = environment("DEV_OS_THEME"); if ui.text(mode).bytes.len() == 0 { mode = rd_default_theme() }
-            paint(terminal,environment("DEV_OS_THEME_FAMILY"),mode)
-            gtk_widget_show(terminal)
-            rd_close_on(terminal,"child-exited",(*context).native)
-            rd_terminal_keys(terminal)
-            # DEVOS_TERMINAL_SMOKE=signals: the two action signals the shortcuts rely on exist on this VTE.
-            if ui.text(environment("DEVOS_TERMINAL_SMOKE")).bytes.len() > 0 && g_signal_lookup("copy-clipboard",vte_terminal_get_type()) != 0 && g_signal_lookup("paste-clipboard",vte_terminal_get_type()) != 0 { print("PASS native Terminal has copy-clipboard and paste-clipboard") }
-            let command = environment("DEVOS_TERMINAL_COMMAND")
-            let shell = environment("SHELL"); if ui.text(shell).bytes.len() == 0 { shell = "/bin/sh" }
-            let argv = ui.text(command).bytes.len() > 0 ? argvOf(Vec<str>("/bin/sh","-c",command)) : argvOf(Vec<str>(shell))
-            let directory = environment("DEVOS_TERMINAL_DIRECTORY")
-            vte_terminal_spawn_async(terminal,0,directory,argv,null,0x4,null,null,null,-1,null,null,null)
-            gtk_widget_grab_focus(terminal)
-        }
-        return ui.noop
-    },Vec<i64>())
-    let host = ui.props(); host.expand = true; host.id = ui.text("terminal-host")
-    return ui.Box(host,Vec<ui.Node>())
+    ui.useEffect(context,fn():fn():void {unsafe {let terminal=terminalFor(context,active.get());if terminal!=null {gtk_widget_grab_focus(terminal)}};return ui.noop},Vec<i64>(active.value))
+    let buttons=Vec<ui.Node>();let views=Vec<ui.Node>();let at:i64=0;let position:i64=0;let here=plain(initial)
+    for row in tabs.unpack(sessions.value) {let f=tabs.unpack(row);let id=channel.integer(f[0]);if id==active.value {at=position;here=f[1]};position=position+1
+        buttons.push(tabs.ChromeTab("terminal",id,plain("Terminal ${id+1}"),"utilities-terminal-symbolic",id==active.value,true,true,fn(){choose(id)},fn(){closed(id)},fn(targetWindow:i64){detached(id,targetWindow)},fn(source:i64){sessions.set(tabs.pack(tabs.move(tabs.unpack(sessions.get()),source,id)))}))
+        let props=ui.keyed(id);props.expand=true;views.push(ui.component(8002,props,fn(child:*ui.Context):ui.Node{return Page(child,id,f[1])}))
+    }
+    let strip=tabs.ChromeStrip("terminal",buttons,true,fn(){added(directory(context,active.get(),here))})
+    let stack=ui.named("terminal-sessions");stack.expand=true;stack.key=1000000000
+    let frame=ui.props();frame.expand=true;return ui.Box(frame,Vec<ui.Node>(strip,ui.Stack(stack,at,views)))
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.terminal.Native" }

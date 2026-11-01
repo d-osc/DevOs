@@ -1,6 +1,6 @@
 # Dev OS Files
 
-Native file manager ของ shell เขียนด้วย React + TypeScript + GTK 3
+Native file manager ของ shell เขียนด้วย DevLang + GTK 3
 เปิดจากปุ่ม Files บน panel, launcher, Super + E หรือ `bin/dev-os-shell files`
 Extension มี command `files`; base ส่ง Files action ให้ extension ก่อน external fallback
 
@@ -11,14 +11,14 @@ Extension มี command `files`; base ส่ง Files action ให้ extensio
 - ธีม dark graphite, path และชื่อไฟล์ monospace พร้อมสีระบุชนิดไฟล์
 - List เป็นค่าเริ่มต้น พร้อมคอลัมน์ชนิด ขนาด เวลาแก้ไข; สลับ grid พร้อมไอคอน GTK
 - Sidebar แสดงโฟลเดอร์ย่อย
-- Header เป็นแท็บแบบ Chrome พร้อมไอคอนโฟลเดอร์ ปุ่ม + และปุ่มปิดแต่ละแท็บ
+- แถบแท็บโฟลเดอร์แบบ Chrome อยู่ในหัวหน้าต่าง ลากสลับลำดับและคลิกเมาส์กลางเพื่อปิดได้ มีปุ่ม + และปุ่มปิดแต่ละแท็บ; เมนูโฟลเดอร์มี Open in new tab
 - แต่ละแท็บเก็บโฟลเดอร์ ประวัติ การเลือกไฟล์ และ Quick Open แยกกัน
 - คลิกขวาบนแถบชื่อเปิดเมนูหน้าต่างของ compositor รวมคำสั่ง workspace
 - Terminal เปิดในโฟลเดอร์ปัจจุบันด้วย terminal command จากการตั้งค่าระบบ
 - Copy path คัดลอก path ของ item ที่เลือก หรือโฟลเดอร์ปัจจุบัน
 - แสดงหรือซ่อน hidden files
 - Quick Open แบบ VS Code: ค้นหาชื่อหรือ relative path แบบ fuzzy รวมโฟลเดอร์ย่อย
-- ดับเบิลคลิกหรือ Enter เปิดโฟลเดอร์; ไฟล์เปิดผ่าน GIO default application
+- ดับเบิลคลิกหรือ Enter เปิดโฟลเดอร์; ไฟล์ข้อความ/โค้ดเปิดใน DevOs Editor ส่วนไฟล์อื่นเปิดผ่าน GIO default application
 - สร้างโฟลเดอร์และเปลี่ยนชื่อไฟล์/โฟลเดอร์ โดยไม่เขียนทับชื่อที่มีอยู่
 
 คีย์ลัด: Ctrl + L ไปช่อง path, Alt + Left/Right ย้อน/ไปข้างหน้า,
@@ -125,3 +125,6 @@ targeting in both layouts.
 คือมี `package.json`/`dev-package.json` ที่รากของ archive หรือไฟล์ `.desktop`; archive ทั่วไปทำงานเหมือนเดิม
 คลิกขวาที่ไฟล์เหล่านี้จะมีเมนู **Install** (ไม่แสดงบนโฟลเดอร์หรือพื้นที่ว่าง ปิดได้ที่ Settings → Files → `contextInstall`)
 การติดตั้งเป็นของผู้ใช้คนเดียวผ่าน `devospm` ไม่รันสคริปต์ในแพ็กเกจ และไม่มีการตรวจลายเซ็น รายละเอียดและข้อจำกัดดู `docs/package-install.md`
+
+
+Drag a tab outside its window to move it into a separate window. Drag it onto another tab strip from the same app instance to merge it back. The live editor buffer (including unsaved changes and undo), browser view/history, terminal shell/PTY, or Files navigation state moves with the tab. Moving the final tab closes only the empty source window; other windows continue running.

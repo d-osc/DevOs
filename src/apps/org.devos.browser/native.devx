@@ -1,7 +1,9 @@
 use "react_devlang/ui" as ui
 use "react_devlang/channel" as channel
+use "react_devlang/tabs" as tabs
 use "../org.devos.settings/native-kit.devx" as k
 use "../org.devos.settings/native-extensions-page.devx" as ext
+extern fn rd_host_child(host:*void):*void
 extern fn rc_env(name:str):str
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
@@ -76,73 +78,65 @@ fn address(entered:ui.Text):ui.Text {
     return ui.concatText(Vec<ui.Text>(plain("https://"),t))
 }
 
-# The old browser's toolbar and its single tab (the theme's .browser-toolbar, .window-tabs and .window-tab rules).
+# The toolbar controls only the selected tab. Keyed Page components keep every WebKit view alive.
 fn toolbar(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = 8; options.className = ui.text("browser-toolbar"); return ui.Box(options,children) }
-fn tabStrip(title:ui.Node):ui.Node {
-    let tab = ui.props(); tab.vertical = false; tab.className = ui.text("window-tab window-tab-active")
-    let strip = ui.props(); strip.vertical = false; strip.className = ui.text("window-tabs")
-    return ui.Box(strip,Vec<ui.Node>(ui.Box(tab,Vec<ui.Node>(title))))
+fn viewFor(context:*ui.Context,id:i64):*void { unsafe { return rd_host_child(ui.find(context,id == 0 ? "browser-host" : "browser-host-${id}")) } }
+fn Page(context:*ui.Context,id:i64,start:ui.Text):ui.Node {
+    ui.useEffect(context,fn():fn():void { unsafe {
+        let host=ui.find(context,id == 0 ? "browser-host" : "browser-host-${id}");if rd_host_child(host)!=null {return ui.noop};let web=webkit_web_view_new()
+        gtk_box_pack_start(host,web,1,1,0);gtk_widget_show(web);load(web,start);return ui.noop
+    } },Vec<i64>())
+    let host=ui.named(id == 0 ? "browser-host" : "browser-host-${id}");host.expand=true;return ui.Box(host,Vec<ui.Node>())
 }
 fn App(context:*ui.Context):ui.Node {
-    let step = ui.useRef(context,0); let view = ui.useRef(context,0); let current = ui.useText(context,ui.emptyText()); let title = ui.useText(context,ui.emptyText())
-    let back = ui.useState(context,0); let forward = ui.useState(context,0); let loading = ui.useState(context,0); let draft = ui.useText(context,ui.emptyText())
+    let initialTab=tabs.seed(context,tabs.pack(Vec<ui.Text>(plain("0"),plain("New tab"),ui.emptyText(),ui.emptyText(),plain(environment("DEVOS_BROWSER_START")))))
+    let initialFields=tabs.unpack(initialTab)
+    let step=ui.useRef(context,0);let active=ui.useState(context,channel.integer(initialFields[0]));let next=ui.useRef(context,1)
+    let pages=ui.useText(context,tabs.pack(Vec<ui.Text>(initialTab)))
+    let current=ui.useText(context,initialFields[2]);let title=ui.useText(context,initialFields[1]);let draft=ui.useText(context,initialFields[3])
+    let back=ui.useState(context,0);let forward=ui.useState(context,0);let loading=ui.useState(context,0)
+    let snapshot=fn() {let out=Vec<ui.Text>();for row in tabs.unpack(pages.get()) {let f=tabs.unpack(row);if channel.integer(f[0])==active.get() {f[3]=draft.get()};out.push(tabs.pack(f))};pages.set(tabs.pack(out))}
+    let choose=fn(id:i64) {snapshot();for row in tabs.unpack(pages.get()) {let f=tabs.unpack(row);if channel.integer(f[0])==id {active.set(id);draft.set(f[3]);current.set(f[2]);title.set(f[1]);unsafe {let w=viewFor(context,id);if w!=null {back.set(webkit_web_view_can_go_back(w) as i64);forward.set(webkit_web_view_can_go_forward(w) as i64);loading.set(webkit_web_view_is_loading(w) as i64)}}}}}
+    let added=fn(uri:ui.Text) {snapshot();let id=tabs.newId();next.set(id+1);let out=tabs.unpack(pages.get());out.push(tabs.pack(Vec<ui.Text>(plain("${id}"),plain("New tab"),ui.emptyText(),uri,uri)));pages.set(tabs.pack(out));choose(id)}
+    let closed=fn(id:i64) {snapshot();let out=Vec<ui.Text>();let neighbor:i64=0-1;for row in tabs.unpack(pages.get()) {let f=tabs.unpack(row);let other=channel.integer(f[0]);if other!=id {out.push(row);if neighbor<0 {neighbor=other}}};if out.len()==0 {ui.close(context);return};pages.set(tabs.pack(out));if active.get()==id {choose(neighbor)}}
+    let detached=fn(id:i64,targetWindow:i64){snapshot();for row in tabs.unpack(pages.get()){if channel.integer(tabs.unpack(row)[0])==id {tabs.transfer(context,targetWindow,"Browser",1100,720,row,plain(id==0 ? "browser-host" : "browser-host-${id}"),fn(){closed(id)},App)}}}
     ui.useEffect(context,fn():fn():void {
-        let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
-        if ui.text(mode).bytes.len() == 0 { unsafe { mode = rd_default_theme() } }
-        if ui.text(family).bytes.len() == 0 { family = "vscode" }
-        unsafe {
-            rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css")
-            rd_app_header_for((*context).native,"Browser","${root}/data/icons","browser","dev-os-browser")
-            rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"browser")
-        }
-        # `browser <address>` from the shell loads that address in the running window.
-        ui.onCommand(context,"browser.",fn(line:ui.Text) {
-            let parts = channel.split(line,31)
-            if parts.len() > 1 && has(parts[1]) && view.get() != 0 { unsafe { load(view.get() as *void,parts[1]) } }
-        })
-        return ui.noop
-    },Vec<i64>())
-    ui.useEffect(context,fn():fn():void {
-        unsafe {
-            let host = ui.find(context,"browser-host")
-            let web = webkit_web_view_new()
-            gtk_box_pack_start(host,web,1,1,0)
-            gtk_widget_show(web)
-            view.set(web as i64)
-            load(web,ui.text(environment("DEVOS_BROWSER_START")))
-            ui.onTick(context,500,fn() { unsafe {
-                let w = view.get() as *void
-                let uri = owned(webkit_web_view_get_uri(w)); let heading = owned(webkit_web_view_get_title(w))
-                if !ui.equalText(uri,current.get()) { current.set(uri); draft.set(uri) }
-                if !ui.equalText(heading,title.get()) { title.set(heading) }
-                let b = webkit_web_view_can_go_back(w); if b != back.get() as i32 { back.set(b as i64) }
-                let f = webkit_web_view_can_go_forward(w); if f != forward.get() as i32 { forward.set(f as i64) }
-                let l = webkit_web_view_is_loading(w); if l != loading.get() as i32 { loading.set(l as i64) }
-                # DEVOS_BROWSER_SMOKE=1: wait for the first title; with DEVOS_BROWSER_NEXT, type that address, press Go and wait for DEVOS_BROWSER_NEXT_TITLE.
-                if ui.text(environment("DEVOS_BROWSER_SMOKE")).bytes.len() > 0 {
-                    let next = environment("DEVOS_BROWSER_NEXT")
-                    if step.get() == 0 && ui.equalText(heading,ui.text(environment("DEVOS_BROWSER_EXPECT_TITLE"))) {
-                        if ui.text(next).bytes.len() == 0 { print("PASS native Browser loaded a page and read its title"); ui.close(context) }
-                        else { step.set(1); ui.change(context,"browser-url",next); ui.click(context,"browser-go") }
-                    } else if step.get() == 1 && ui.equalText(heading,ui.text(environment("DEVOS_BROWSER_NEXT_TITLE"))) { print("PASS native Browser followed the typed address"); ui.close(context) }
+        let root=environment("DEV_OS_ROOT");let mode=environment("DEV_OS_THEME");let family=environment("DEV_OS_THEME_FAMILY")
+        if !has(plain(mode)) {unsafe {mode=rd_default_theme()}};if !has(plain(family)) {family="vscode"}
+        unsafe {rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css");rd_app_header_for((*context).native,"Browser","${root}/data/icons","browser","dev-os-browser");rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"browser")}
+        ui.onCommand(context,"browser.",fn(line:ui.Text) {if ui.equalText(line,plain("tabs:receive")){let row=tabs.received(context);if has(row){snapshot();let rows=tabs.unpack(pages.get());rows.push(row);pages.set(tabs.pack(rows));choose(channel.integer(tabs.unpack(row)[0]))};return};let parts=channel.split(line,31);if parts.len()>1 && has(parts[1]) {added(parts[1])}})
+        ui.onTick(context,250,fn() {unsafe {
+            let rows=Vec<ui.Text>()
+            for row in tabs.unpack(pages.get()) {
+                let f=tabs.unpack(row);let id=channel.integer(f[0]);let w=viewFor(context,id)
+                if w!=null {
+                    let uri=owned(webkit_web_view_get_uri(w));let heading=owned(webkit_web_view_get_title(w))
+                    if !ui.equalText(uri,f[2]) {f[2]=uri;f[3]=uri;if id==active.get() {current.set(uri);draft.set(uri)}}
+                    f[1]=has(heading) ? heading : plain(webkit_web_view_is_loading(w)!=0 ? "Loading…" : "New tab")
+                    if id==active.get() {title.set(heading);back.set(webkit_web_view_can_go_back(w) as i64);forward.set(webkit_web_view_can_go_forward(w) as i64);loading.set(webkit_web_view_is_loading(w) as i64);f[3]=draft.get()}
                 }
-            } })
-        }
+                rows.push(tabs.pack(f))
+            }
+            pages.set(tabs.pack(rows))
+            if has(plain(environment("DEVOS_BROWSER_SMOKE"))) {
+                let heading=title.get();let nextUri=environment("DEVOS_BROWSER_NEXT")
+                if step.get()==0 && ui.equalText(heading,plain(environment("DEVOS_BROWSER_EXPECT_TITLE"))) {
+                    if !has(plain(nextUri)) {print("PASS native Browser loaded a page and read its title");ui.close(context)} else {step.set(1);ui.change(context,"browser-url",nextUri);ui.click(context,"browser-go")}
+                } else if step.get()==1 && ui.equalText(heading,plain(environment("DEVOS_BROWSER_NEXT_TITLE"))) {print("PASS native Browser followed the typed address");ui.close(context)}
+            }
+        }})
         return ui.noop
     },Vec<i64>())
-    let backButton = ui.named("browser-back"); backButton.sensitive = back.value != 0
-    let forwardButton = ui.named("browser-forward"); forwardButton.sensitive = forward.value != 0
-    let reload = ui.named("browser-reload")
-    let url = ui.named("browser-url"); url.expand = true; url.placeholder = plain("Search or type an address")
-    let go = ui.named("browser-go")
-    let bar = toolbar(Vec<ui.Node>(
-        ui.Button(backButton,"Back",fn() { unsafe { webkit_web_view_go_back(view.get() as *void) } }),
-        ui.Button(forwardButton,"Forward",fn() { unsafe { webkit_web_view_go_forward(view.get() as *void) } }),
-        ui.Button(reload,"Reload",fn() { unsafe { webkit_web_view_reload(view.get() as *void) } }),
-        ui.Entry(url,draft.value,fn(value:ui.Text) { draft.set(value) }),
-        ui.Button(go,"Go",fn() { unsafe { load(view.get() as *void,draft.get()) } })))
-    let host = ui.props(); host.expand = true; host.id = ui.text("browser-host")
-    return ext.column(0,Vec<ui.Node>(bar,tabStrip(ext.named(k.caption(has(title.value) ? title.value : plain(loading.value != 0 ? "Loading…" : "New tab"),"settings-description"),"browser-title")),ui.Box(host,Vec<ui.Node>())))
+    let buttons=Vec<ui.Node>();let views=Vec<ui.Node>();let at:i64=0;let position:i64=0
+    for row in tabs.unpack(pages.value) {let f=tabs.unpack(row);let id=channel.integer(f[0]);if id==active.value {at=position};position=position+1
+        buttons.push(tabs.ChromeTab("browser",id,f[1],"web-browser-symbolic",id==active.value,true,true,fn(){choose(id)},fn(){closed(id)},fn(targetWindow:i64){detached(id,targetWindow)},fn(source:i64){snapshot();pages.set(tabs.pack(tabs.move(tabs.unpack(pages.get()),source,id)))}))
+        let props=ui.keyed(id);props.expand=true;views.push(ui.component(8001,props,fn(child:*ui.Context):ui.Node{return Page(child,id,f[4])}))
+    }
+    let backButton=ui.named("browser-back");backButton.sensitive=back.value!=0;let forwardButton=ui.named("browser-forward");forwardButton.sensitive=forward.value!=0
+    let url=ui.named("browser-url");url.expand=true;url.placeholder=plain("Search or type an address")
+    let bar=toolbar(Vec<ui.Node>(ui.Button(backButton,"Back",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_go_back(w)}}}),ui.Button(forwardButton,"Forward",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_go_forward(w)}}}),ui.Button(ui.named("browser-reload"),"Reload",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_reload(w)}}}),ui.Entry(url,draft.value,fn(value:ui.Text){draft.set(value)}),ui.Button(ui.named("browser-go"),"Go",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {load(w,draft.get())}}})))
+    let stack=ui.named("browser-pages");stack.expand=true;stack.key=1000000000
+    return ext.column(0,Vec<ui.Node>(tabs.ChromeStrip("browser",buttons,true,fn(){added(plain("about:blank"))}),bar,ui.Stack(stack,at,views)))
 }
 fn run():i32 {
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.browser.Native" }

@@ -1,0 +1,32 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+
+fn run(role:str) {
+    let root=t.root();let binary=root+"/build/react-devlang/tests/"+role+"-tabs";let object=binary+".o"
+    tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror -fPIC -c \"$1\" $(pkg-config --cflags gtk+-3.0) -o \"$2\"","tabs-build",root+"/tests/react-devlang/native-tabs.c",object),Map<str,str>(),"",30000)
+    let build=Vec<str>("sh",t.library()+"/tools/build.sh",root+"/src/apps/org.devos."+role+"/native-main.devx",binary,object)
+    if strings.equal(role,"browser") || strings.equal(role,"terminal") {build.push(strings.trim(tool.exec(Vec<str>("cc","-print-file-name="+(strings.equal(role,"browser") ? "libwebkit2gtk-4.1.so.0" : "libvte-2.91.so.0")))))}
+    tool.checked(build,Map<str,str>(),"",240000)
+    tool.scope("native-tabs-",fn(dir:str) {
+        tool.checked(Vec<str>("mkdir","-p",dir+"/home/Docs"),Map<str,str>(),"",5000)
+        tool.write(dir+"/alpha.txt","alpha\n");tool.write(dir+"/beta.txt","beta\n")
+        tool.write(dir+"/one.html","<title>First page</title><input value='first tab'>");tool.write(dir+"/two.html","<title>Second page</title><input value='second tab'>")
+        let env=Map<str,str>();env.set("GDK_BACKEND","x11");env.set("G_DEBUG","fatal-warnings");env.set("NO_AT_BRIDGE","1");env.set("DEV_OS_ROOT",root);env.set("DEVOS_TABS_CAPTURE",root+"/build/"+role+"-chrome-tabs.png");env.set("DEVOS_TABS_TEST",role)
+        env.set("DEVOS_EDITOR_FILE",dir+"/alpha.txt");env.set("DEVOS_TABS_SECOND",dir+"/beta.txt");env.set("DEVOS_FILES_TEST","1");env.set("DEVOS_FILES_HOME",dir+"/home");env.set("DEVOS_PREFERENCES_DIR",dir+"/preferences")
+        env.set("DEVOS_TABS_FIXTURE",dir);env.set("SHELL","/bin/sh");env.set("DEVOS_TERMINAL_DIRECTORY",dir+"/home");env.set("DEVOS_BROWSER_START","file://"+dir+"/one.html")
+        if strings.equal(role,"browser") {env.set("DEVOS_TABS_SECOND","file://"+dir+"/two.html")}
+        env.set("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS","1");env.set("WEBKIT_DISABLE_COMPOSITING_MODE","1");env.set("LIBGL_ALWAYS_SOFTWARE","1")
+        let launch=Vec<str>()
+        if strings.equal(role,"browser") {launch=Vec<str>("env","-u","AT_SPI_BUS_ADDRESS","dbus-run-session","--")}
+        for arg in Vec<str>("xvfb-run","-a",binary) {launch.push(arg)}
+        let done=tool.run(launch,env,"",60000)
+        t.success(done);t.contains(t.out(done),strings.equal(role,"editor") ? "PASS Editor tabs" : strings.equal(role,"files") ? "PASS Files tabs" : strings.equal(role,"browser") ? "PASS Browser tabs" : "PASS Terminal tabs")
+    })
+}
+test.case("Editor tabs keep unsaved documents and undo, and confirm closing",fn(){run("editor")})
+test.case("Files tabs keep independent folders and navigation history",fn(){run("files")})
+test.case("Browser tabs preserve separate pages and navigation history",fn(){run("browser")})
+test.case("Terminal tabs preserve independent shells and inherit the current folder",fn(){run("terminal")})
+return t.finish()

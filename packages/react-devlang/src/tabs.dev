@@ -1,0 +1,83 @@
+use "./ui.dev" as ui
+use "./channel.dev" as channel
+
+extern fn rd_tab_id():i64
+extern fn rd_initial_text(root:*void):str
+extern fn rd_take_incoming(root:*void):*u8
+extern fn rd_park(root:*void,name:*u8):*void
+extern fn rd_deliver(target:i64,metadata:*u8,widget:*void):i32
+fn newId():i64 {unsafe {return rd_tab_id()}}
+fn seed(context:*ui.Context,fallback:ui.Text):ui.Text {unsafe {let value=ui.text(rd_initial_text((*context).native));return value.bytes.len()>0 ? value : fallback}}
+fn transferred(context:*ui.Context):bool {unsafe {return ui.text(rd_initial_text((*context).native)).bytes.len()>0}}
+fn received(context:*ui.Context):ui.Text {unsafe {let value=rd_take_incoming((*context).native);let bytes=Vec<u8>();let i:i64=0;while value[i]!=0 {bytes.push(value[i]);i=i+1};let result=ui.Text(bytes);ui.rd_buffer_free(value as *void);return result}}
+fn transfer(context:*ui.Context,target:i64,title:str,width:i32,height:i32,row:ui.Text,name:ui.Text,removed:fn():void,render:fn(*ui.Context):ui.Node) {unsafe {
+    let nativeName=ui.nativeText(name);let widget=rd_park((*context).native,nativeName);ui.rd_buffer_free(nativeName as *void)
+    if name.bytes.len()>0 && widget==null {return}
+    removed();ui.flush(context)
+    if target>0 {let metadata=ui.nativeText(row);let accepted=rd_deliver(target,metadata,widget);ui.rd_buffer_free(metadata as *void);if accepted!=0 {return}}
+    ui.runTransferred(title,width,height,render,row,widget)
+}}
+
+fn move(rows:Vec<ui.Text>,source:i64,target:i64):Vec<ui.Text> {
+    if source==target {return rows}
+    let moving=ui.emptyText();let forward=false;let seen=false
+    for row in rows {let fields=unpack(row);let id=channel.integer(fields[0]);if id==source {moving=row;seen=true};if id==target {forward=seen}}
+    if moving.bytes.len()==0 {return rows}
+    let out=Vec<ui.Text>();let inserted=false
+    for row in rows {let id=channel.integer(unpack(row)[0]);if id==source {continue};if id==target && !forward {out.push(moving);inserted=true};out.push(row);if id==target && forward {out.push(moving);inserted=true}}
+    return inserted ? out : rows
+}
+
+fn ChromeTab(prefix:str,id:i64,title:ui.Text,icon:str,active:bool,enabled:bool,closable:bool,selected:fn():void,closed:fn():void,detached:fn(i64):void,moved:fn(i64):void):ui.Node {
+    let main=ui.named(prefix+"-tab-${id}");main.expand=true;main.sensitive=enabled;main.className=ui.text("chrome-tab-select")
+    let image=ui.props();image.iconSize=16
+    let label=ui.props();label.expand=true;label.ellipsize=true;label.widthChars=18;label.xalign=0.0
+    let contents=ui.props();contents.vertical=false;contents.spacing=8
+    let select=ui.onPointer(ui.WidgetButton(main,ui.Box(contents,Vec<ui.Node>(ui.Icon(image,icon),ui.withProps(ui.TextLabel(title),label))),selected),fn(kind:ui.Text) {
+        if !enabled {return}
+        if ui.equalText(kind,ui.text("close")) && closable {closed()}
+        let parts=channel.split(kind,58);if parts.len()==2 {
+            if ui.equalText(parts[0],ui.text("reorder")) {moved(channel.integer(parts[1]))}
+            if ui.equalText(parts[0],ui.text("detach")) {detached(channel.integer(parts[1]))}
+        }
+    })
+    let close=ui.named(prefix+"-tab-close-${id}");close.sensitive=enabled && closable;close.className=ui.text("chrome-tab-close")
+    let shell=ui.keyed(id);shell.vertical=false;shell.className=ui.text(active ? "chrome-tab chrome-tab-active" : "chrome-tab");shell.width=210
+    return ui.Box(shell,Vec<ui.Node>(select,ui.WidgetButton(close,ui.Icon(image,"window-close-symbolic"),closed)))
+}
+fn ChromeStrip(prefix:str,children:Vec<ui.Node>,enabled:bool,added:fn():void):ui.Node {
+    let row=ui.props();row.vertical=false;row.spacing=0
+    let scroll=ui.props();scroll.expand=true;scroll.width=1
+    let add=ui.named(prefix+"-tab-new");add.sensitive=enabled;add.className=ui.text("chrome-tab-add")
+    let icon=ui.props();icon.iconSize=16
+    let strip=ui.named(prefix+"-tabs");strip.className=ui.text("chrome-tabstrip");strip.expand=true
+    let items=children;items.push(ui.WidgetButton(add,ui.Icon(icon,"list-add-symbolic"),added))
+    return ui.element(22,strip,ui.emptyText(),Vec<ui.Node>(ui.ScrollX(scroll,ui.Box(row,items))))
+}
+
+# Length-prefixed fields preserve paths containing tabs, newlines or separators.
+fn pack(fields:Vec<ui.Text>):ui.Text {
+    let out=Vec<u8>()
+    for field in fields {
+        for byte in ui.text("${field.bytes.len()}:").bytes {out.push(byte)}
+        for byte in field.bytes {out.push(byte)}
+    }
+    return ui.Text(out)
+}
+fn unpack(value:ui.Text):Vec<ui.Text> {
+    let out=Vec<ui.Text>();let at:i64=0;let n=value.bytes.len() as i64
+    while at<n {
+        let length:i64=0;let digits:i64=0
+        while at<n && value.bytes[at]>=48 && value.bytes[at]<=57 {
+            length=length*10+(value.bytes[at]-48) as i64;at=at+1;digits=digits+1
+            if length>n {return Vec<ui.Text>()}
+        }
+        if digits==0 || at>=n || value.bytes[at]!=58 || length>n-at-1 {return Vec<ui.Text>()}
+        at=at+1;let bytes=Vec<u8>();for i in at..(at+length) {bytes.push(value.bytes[i])};out.push(ui.Text(bytes));at=at+length
+    }
+    return out
+}
+fn basename(path:ui.Text):ui.Text {
+    let at:i64=0;for i in 0..(path.bytes.len() as i64) {if path.bytes[i]==47 {at=i+1}}
+    let out=Vec<u8>();for i in at..(path.bytes.len() as i64) {out.push(path.bytes[i])};return ui.Text(out)
+}

@@ -3,9 +3,22 @@
 #include <string.h>
 #include <dlfcn.h>
 void *rd_find_name(void *data,const char *name);
+static void rd_tab_drag(GtkWidget *widget);
 
 typedef void (*RdDispatch)(int32_t, void *, const unsigned char *, int64_t, void *);
-typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; gboolean layer, closing; gint pointer_x, pointer_y; gint64 fade_start; double fade_from; } RdRoot;
+typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; gboolean layer, closing; gint pointer_x, pointer_y; GMainLoop *loop; guint tick; guint close_idle; gboolean asynchronous; void *ui_context; guint64 serial; char *initial; GHashTable *adoptions; GQueue *incoming; GtkWidget *drag_tab; GdkDragContext *drag_context; gboolean drag_cancelled; gint64 fade_start; double fade_from; } RdRoot;
+static GPtrArray *rd_roots;
+static guint64 rd_root_sequence;
+static int64_t rd_tab_sequence=1;
+int64_t rd_tab_id(void){return rd_tab_sequence++;}
+static gboolean rd_event_handler_installed;
+static void rd_event_handler(GdkEvent *event,void *unused){
+    (void)unused;
+    if(event->type==GDK_KEY_PRESS && event->key.keyval==GDK_KEY_Escape && rd_roots){
+        for(guint i=0;i<rd_roots->len;i++){RdRoot *root=g_ptr_array_index(rd_roots,i);if(!root->closed && root->drag_context){root->drag_cancelled=TRUE;GdkDragContext *context=g_object_ref(root->drag_context);gtk_drag_cancel(context);g_object_unref(context);return;}}
+    }
+    gtk_main_do_event(event);
+}
 static int64_t rd_live_widgets = 0;
 static void rd_widget_destroyed(GtkWidget *widget, void *data) { (void)widget; (void)data; rd_live_widgets--; }
 int64_t rd_widget_live_count(void) { return rd_live_widgets; }
@@ -20,6 +33,7 @@ static gboolean rd_crossing(GtkWidget *widget,GdkEventCrossing *event,void *data
     return FALSE;
 }
 static gboolean rd_pressed(GtkWidget *widget,GdkEventButton *event,void *data){
+    if(event->type==GDK_BUTTON_PRESS && event->button==2 && gtk_style_context_has_class(gtk_widget_get_style_context(widget),"chrome-tab-select")){rd_emit(data,6,widget,"close");return TRUE;}
     if(!g_object_get_data(G_OBJECT(widget),"rd-pointer-enabled") || (event->type!=GDK_BUTTON_PRESS && !(event->type==GDK_2BUTTON_PRESS && event->button==1)) || (event->button!=1 && event->button!=3))return FALSE;
     RdRoot *root=data;
     if(event->button==3){
@@ -56,10 +70,21 @@ static void rd_scaled(GtkRange *widget,void *data){
     if(timer)g_source_remove(timer);
     g_object_set_data(G_OBJECT(widget),"rd-scale-timer",GUINT_TO_POINTER(g_timeout_add(400,rd_scale_commit,widget)));
 }
+static void rd_maybe_quit(void){
+    if(!rd_roots)return;
+    for(guint i=0;i<rd_roots->len;i++){RdRoot *root=g_ptr_array_index(rd_roots,i);if(!root->closed || root->close_idle)return;}
+    for(guint i=0;i<rd_roots->len;i++){RdRoot *root=g_ptr_array_index(rd_roots,i);if(root->loop)g_main_loop_quit(root->loop);}
+}
+static gboolean rd_async_closed(void *data){RdRoot *root=data;root->close_idle=0;if(root->dispatch)root->dispatch(9,NULL,NULL,0,root->data);rd_maybe_quit();return G_SOURCE_REMOVE;}
+void rd_track_context(void *data,void *context,int32_t asynchronous){RdRoot *root=data;root->ui_context=context;root->asynchronous=asynchronous!=0;}
+void *rd_child_context(void){if(rd_roots)for(guint i=0;i<rd_roots->len;i++){RdRoot *root=g_ptr_array_index(rd_roots,i);if(root->asynchronous && root->ui_context)return root->ui_context;}return NULL;}
+void rd_show(void *data){RdRoot *root=data;if(!root->closed){gtk_widget_show(root->window);gtk_widget_show(root->host);if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("shown %" G_GUINT64_FORMAT " visible=%d mapped=%d\n",root->serial,gtk_widget_get_visible(root->window),gtk_widget_get_mapped(root->window));}}
 static void rd_closed(GtkWidget *widget, void *data) {
     (void)widget; RdRoot *root = data; root->closed = TRUE;
     if (root->idle) { g_source_remove(root->idle); root->idle = 0; }
-    if (gtk_main_level()) gtk_main_quit();
+    if(root->tick){g_source_remove(root->tick);root->tick=0;}
+    if(!root->close_idle)root->close_idle=g_idle_add(rd_async_closed,root);
+    rd_maybe_quit();
 }
 /* Puts text on the clipboard of the default display. */
 void rd_clipboard(const char *text) { if (text) gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), text, -1); }
@@ -181,8 +206,11 @@ static void rd_app_css(RdRoot *root) {
 }
 void *rd_new(const char *title, int32_t width, int32_t height) {
     if (!gtk_init_check(NULL, NULL)) return NULL;
+    if(!rd_event_handler_installed){gdk_event_handler_set(rd_event_handler,NULL,NULL);rd_event_handler_installed=TRUE;}
     RdRoot *root = g_new0(RdRoot, 1);
+    root->serial=++rd_root_sequence;if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("new window %" G_GUINT64_FORMAT " %s\n",root->serial,title);if(!rd_roots)rd_roots=g_ptr_array_new();g_ptr_array_add(rd_roots,root);
     root->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    g_object_set_data(G_OBJECT(root->window),"rd-root",root);rd_tab_drag(root->window);
     root->screen = g_object_ref(gtk_widget_get_screen(root->window));
     gtk_window_set_title(GTK_WINDOW(root->window), title);
     gtk_window_set_default_size(GTK_WINDOW(root->window), width, height);
@@ -196,12 +224,12 @@ void *rd_new(const char *title, int32_t width, int32_t height) {
 void *rd_host(void *data) { return ((RdRoot *)data)->host; }
 void *rd_window(void *data) { return ((RdRoot *)data)->window; }
 void rd_identity(const char *id) { g_set_prgname(id); gdk_set_program_class(id); }
-void rd_callback(void *data, RdDispatch dispatch, void *context) { RdRoot *root = data; root->dispatch = dispatch; root->data = context; }
+void rd_callback(void *data, RdDispatch dispatch, void *context) { RdRoot *root = data;if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("callback ready %" G_GUINT64_FORMAT "\n",root->serial); root->dispatch = dispatch; root->data = context; }
 void rd_schedule(void *data) { RdRoot *root = data; if (!root->closed && !root->idle) root->idle = g_idle_add(rd_idle, root); }
 void rd_applying(void *data, int32_t applying) { ((RdRoot *)data)->applying = applying != 0; }
 /* RD_HIDDEN=1: a program with no window (the shell) that only answers the D-Bus control interface; its window is never shown. */
 static gboolean rd_hidden(void) { const char *mode = g_getenv("RD_HIDDEN"); return mode && *mode; }
-void rd_run(void *data) { RdRoot *root = data; if (!root->closed) {if (!rd_hidden()) {gtk_widget_show(root->window); gtk_widget_show(root->host);} gtk_main();} }
+void rd_run(void *data) { RdRoot *root=data;if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("run window %" G_GUINT64_FORMAT " closed=%d\n",root->serial,root->closed);if(!root->closed){root->loop=g_main_loop_new(NULL,FALSE);if(!rd_hidden()){gtk_widget_show(root->window);gtk_widget_show(root->host);}g_main_loop_run(root->loop);g_main_loop_unref(root->loop);root->loop=NULL;} }
 void rd_close(void *data) {
     RdRoot *root = data; if (root->closed) return;
     if (root->layer && !root->closing && gtk_widget_get_mapped(root->window)) { root->closing = TRUE; root->fade_start = 0; root->fade_from = gtk_widget_get_opacity(root->window); gtk_widget_add_tick_callback(root->window, rd_fade_out, root, NULL); return; }
@@ -223,11 +251,15 @@ int32_t rd_css(void *data, const char *text) {
 }
 int64_t rd_css_revision(void *data){return ((RdRoot *)data)->css_revision;}
 double rd_named_color(void *data,const char *name,int32_t channel){RdRoot *root=data;GdkRGBA color;if(!gtk_style_context_lookup_color(gtk_widget_get_style_context(root->window),name,&color))return -1;return channel==0?color.red:channel==1?color.green:channel==2?color.blue:color.alpha;}
-void rd_free(void *data) { RdRoot *root = data; root->layer = FALSE; root->closing = FALSE; rd_close(root); root->dispatch = NULL; rd_css(root, "");
+void rd_free(void *data) { RdRoot *root = data;if(root->close_idle){g_source_remove(root->close_idle);root->close_idle=0;} root->layer = FALSE; root->closing = FALSE; rd_close(root);if(root->close_idle){g_source_remove(root->close_idle);root->close_idle=0;} root->dispatch = NULL; rd_css(root, "");
     if(root->popovers){for(guint i=0;i<root->popovers->len;i++)gtk_widget_destroy(g_ptr_array_index(root->popovers,i));g_ptr_array_unref(root->popovers);}
     if (root->bus_object) g_dbus_connection_unregister_object(root->bus, root->bus_object);
     if (root->bus_name) g_bus_unown_name(root->bus_name);
-    g_clear_object(&root->bus); g_free(root->command); g_free(root->prefixes); g_object_unref(root->screen); g_free(root); }
+    g_clear_object(&root->bus); g_free(root->command); g_free(root->prefixes); g_object_unref(root->screen);g_free(root->initial);g_clear_object(&root->drag_context);g_clear_object(&root->drag_tab);
+    if(root->adoptions)g_hash_table_unref(root->adoptions);
+    if(root->incoming)g_queue_free_full(root->incoming,g_free);
+    if(rd_roots){g_ptr_array_remove(rd_roots,root);if(!rd_roots->len){g_ptr_array_unref(rd_roots);rd_roots=NULL;}}
+    g_free(root); }
 /* rd_accept lists extra command prefixes ("settings.,session.") the app also answers; its exact command is always accepted. */
 static gboolean rd_prefixed(RdRoot *root, const char *name) {
     if (!root->prefixes) return FALSE;
@@ -241,6 +273,7 @@ static void rd_execute(GDBusConnection *connection, const char *sender, const ch
     (void)connection; (void)sender; (void)path; (void)interface; (void)method;
     RdRoot *root = data; char **args = NULL; const char *cwd = NULL;
     g_variant_get(parameters, "(^as&s)", &args, &cwd); (void)cwd;
+    if(root->closed && rd_roots)for(guint i=0;i<rd_roots->len;i++){RdRoot *other=g_ptr_array_index(rd_roots,i);if(!other->closed && g_strcmp0(other->command,root->command)==0){root=other;break;}}
     gboolean valid = args && args[0] && (g_str_equal(args[0], root->command) || rd_prefixed(root, args[0]));
     if (valid && !root->closed) {
         /* The whole command line reaches the app as event kind 7, arguments separated by ASCII 31 (a hidden program gets the caller's folder first). */
@@ -258,6 +291,7 @@ static void rd_name_lost(GDBusConnection *connection, const char *name, void *da
 int32_t rd_control(void *data, const char *id, const char *command) {
     RdRoot *root = data;
     if (!*id) return 1;
+    char window_id[512];if(root->serial>1){g_snprintf(window_id,sizeof window_id,"%s.w%" G_GUINT64_FORMAT,id,root->serial);id=window_id;}
     GError *error = NULL;
     root->bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error);
     if (!root->bus) { g_clear_error(&error); return 0; }
@@ -285,6 +319,7 @@ void *rd_widget(void *data, int32_t kind) {
         if(!root->popovers)root->popovers=g_ptr_array_new_with_free_func(g_object_unref);
         g_ptr_array_add(root->popovers,widget);g_object_set_data(G_OBJECT(widget),"rd-root",root);
         g_signal_connect(widget,"closed",G_CALLBACK(rd_clicked),root);break;
+    case 22: widget=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0);g_object_set_data(G_OBJECT(widget),"rd-titlebar-strip",GINT_TO_POINTER(1));break;
     case 0: case 9: widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); break;
     case 1: widget = gtk_label_new(""); gtk_label_set_xalign(GTK_LABEL(widget), 0); break;
     case 2: widget = gtk_button_new(); g_signal_connect(widget, "clicked", G_CALLBACK(rd_clicked), root); break;
@@ -375,6 +410,49 @@ ICON" looks ICON up in the icon theme NAME (Icons settings previews). */
     g_free(text);
 }
 void rd_name(void *data, const unsigned char *bytes, int64_t length) { char *text = rd_string(bytes, length); gtk_widget_set_name(data, text); g_free(text); }
+typedef struct {guint64 source;GtkWidget *widget;guint64 target;} RdTabDrop;
+static gboolean rd_tab_drop_idle(void *data){RdTabDrop *drop=data;char event[64];g_snprintf(event,sizeof event,"detach:%" G_GUINT64_FORMAT,drop->target);if(rd_roots)for(guint i=0;i<rd_roots->len;i++){RdRoot *root=g_ptr_array_index(rd_roots,i);if(root->serial==drop->source && !root->drag_cancelled){if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("drop dispatch %s widget=%s closed=%d applying=%d\n",event,gtk_widget_get_name(drop->widget),root->closed,root->applying);rd_emit(root,6,drop->widget,event);if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("drop dispatch returned\n");break;}}g_object_unref(drop->widget);g_free(drop);return G_SOURCE_REMOVE;}
+static void rd_tab_drop(RdRoot *root,GtkWidget *widget,guint64 target){RdTabDrop *drop=g_new0(RdTabDrop,1);drop->source=root->serial;drop->widget=g_object_ref(widget);drop->target=target;g_idle_add(rd_tab_drop_idle,drop);}
+static void rd_tab_drag_get(GtkWidget *widget,GdkDragContext *context,GtkSelectionData *selection,guint info,guint time,void *unused){
+    (void)context;(void)time;(void)unused;RdRoot *root=g_object_get_data(G_OBJECT(widget),"rd-root");
+    if(info==1){if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("tab cancellation marker received\n");root->drag_cancelled=TRUE;gtk_selection_data_set(selection,gtk_selection_data_get_target(selection),8,(const guchar *)"",0);return;}
+    char *value=g_strdup_printf("%" G_GUINT64_FORMAT ":%s",root->serial,gtk_widget_get_name(widget));gtk_selection_data_set(selection,gtk_selection_data_get_target(selection),8,(const guchar *)value,(gint)strlen(value));g_free(value);
+}
+static void rd_tab_drag_received(GtkWidget *widget,GdkDragContext *context,gint x,gint y,GtkSelectionData *selection,guint info,guint time,void *unused){
+    (void)x;(void)y;(void)info;(void)unused;gint length=gtk_selection_data_get_length(selection);const guchar *bytes=gtk_selection_data_get_data(selection);gboolean valid=length>0 && length<160 && gtk_widget_is_sensitive(widget);
+    RdRoot *target=g_object_get_data(G_OBJECT(widget),"rd-root");
+    if(valid){char *value=g_strndup((const char *)bytes,length),*end=NULL;guint64 serial=g_ascii_strtoull(value,&end,10);valid=end && *end==':';RdRoot *source=NULL;
+        if(valid && rd_roots)for(guint i=0;i<rd_roots->len;i++){RdRoot *candidate=g_ptr_array_index(rd_roots,i);if(candidate->serial==serial && !candidate->closed){source=candidate;break;}}
+        GtkWidget *tab=source ? rd_find_name(source,end+1) : NULL;valid=tab && gtk_style_context_has_class(gtk_widget_get_style_context(tab),"chrome-tab-select") && g_strcmp0(source->command,target->command)==0 && !source->drag_cancelled;
+        if(valid && source!=target)rd_tab_drop(source,tab,target->serial);
+        else if(valid){const char *name=gtk_widget_get_name(tab),*id=strrchr(name,'-');if(GTK_IS_BUTTON(widget) && id){char *event=g_strconcat("reorder:",id+1,NULL);rd_emit(target,6,widget,event);g_free(event);}else if(GTK_IS_WINDOW(widget)){rd_tab_drop(source,tab,0);} /* Leaving the tab strip also detaches from a maximized window. */}
+        g_free(value);
+    }
+    gtk_drag_finish(context,valid,FALSE,time);
+}
+static gboolean rd_tab_drag_failed(GtkWidget *widget,GdkDragContext *context,GtkDragResult result,void *unused){
+    (void)context;(void)unused;
+    if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("tab drag failed: %d\n",result);
+    RdRoot *root=g_object_get_data(G_OBJECT(widget),"rd-root");
+    if(root->drag_cancelled || (result!=GTK_DRAG_RESULT_NO_TARGET && result!=GTK_DRAG_RESULT_ERROR))return FALSE;
+    /* GTK Wayland reports unaccepted drops as ERROR; explicit Escape remains USER_CANCELLED. */
+    rd_tab_drop(root,widget,0);return TRUE;
+}
+static void rd_tab_drag_begin_debug(GtkWidget *widget,GdkDragContext *context,void *unused){
+    (void)unused;RdRoot *root=g_object_get_data(G_OBJECT(widget),"rd-root");root->drag_cancelled=FALSE;g_set_object(&root->drag_context,context);g_set_object(&root->drag_tab,widget);
+    if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("tab drag begin: %s\n",gtk_widget_get_name(widget));
+}
+static void rd_tab_drag_end_debug(GtkWidget *widget,GdkDragContext *context,void *unused){
+    (void)unused;RdRoot *root=g_object_get_data(G_OBJECT(widget),"rd-root");if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("tab drag end: %s action=%d cancelled=%d\n",gtk_widget_get_name(widget),gdk_drag_context_get_selected_action(context),root->drag_cancelled);
+    g_clear_object(&root->drag_context);g_clear_object(&root->drag_tab);
+}
+static void rd_tab_drag(GtkWidget *widget){
+    gboolean tab=GTK_IS_BUTTON(widget) && gtk_style_context_has_class(gtk_widget_get_style_context(widget),"chrome-tab-select");gboolean strip=g_object_get_data(G_OBJECT(widget),"rd-titlebar-strip")!=NULL;
+    if((!tab && !strip && !GTK_IS_WINDOW(widget)) || g_object_get_data(G_OBJECT(widget),"rd-tab-drag"))return;
+    GtkTargetEntry target={(gchar *)"application/x-dev-os-window-tab",GTK_TARGET_SAME_APP,0};
+    if(tab){GtkTargetEntry sources[2]={target,{(gchar *)"application/x-dev-os-window-tab-cancel",GTK_TARGET_SAME_APP,1}};gtk_drag_source_set(widget,GDK_BUTTON1_MASK,sources,2,GDK_ACTION_MOVE);g_signal_connect(widget,"drag-data-get",G_CALLBACK(rd_tab_drag_get),NULL);g_signal_connect(widget,"drag-failed",G_CALLBACK(rd_tab_drag_failed),NULL);g_signal_connect(widget,"drag-begin",G_CALLBACK(rd_tab_drag_begin_debug),NULL);g_signal_connect(widget,"drag-end",G_CALLBACK(rd_tab_drag_end_debug),NULL);}
+    gtk_drag_dest_set(widget,GTK_DEST_DEFAULT_ALL,&target,1,GDK_ACTION_MOVE);g_signal_connect(widget,"drag-data-received",G_CALLBACK(rd_tab_drag_received),NULL);g_object_set_data(G_OBJECT(widget),"rd-tab-drag",GINT_TO_POINTER(1));
+}
 void rd_class(void *data, const unsigned char *bytes, int64_t length) {
     GtkWidget *widget = data; char *text = rd_string(bytes, length);
     const char *previous = g_object_get_data(G_OBJECT(widget), "rd-classes");
@@ -386,12 +464,12 @@ void rd_class(void *data, const unsigned char *bytes, int64_t length) {
         g_strfreev(old); g_strfreev(next);
         g_object_set_data_full(G_OBJECT(widget), "rd-classes", g_strdup(text), g_free);
     }
-    g_free(text);
+    g_free(text);rd_tab_drag(widget);
 }
 void rd_layout(void *data, int32_t kind, int32_t vertical, int32_t spacing, int32_t expand, int32_t sensitive, int32_t visible, int32_t width, int32_t height) {
     GtkWidget *widget = data;
     if (kind == 0 || kind == 9) { gtk_orientable_set_orientation(GTK_ORIENTABLE(widget), vertical ? GTK_ORIENTATION_VERTICAL : GTK_ORIENTATION_HORIZONTAL); gtk_box_set_spacing(GTK_BOX(widget), spacing); gtk_box_set_homogeneous(GTK_BOX(widget), gtk_style_context_has_class(gtk_widget_get_style_context(widget), "homogeneous")); }
-    gtk_widget_set_hexpand(widget, expand); gtk_widget_set_vexpand(widget, expand);
+    gtk_widget_set_hexpand(widget, expand); gtk_widget_set_vexpand(widget, kind==22 ? FALSE : expand);
     gtk_widget_set_sensitive(widget, sensitive); gtk_widget_set_size_request(widget, width, height);
     if(kind==18)g_object_set_data(G_OBJECT(widget),"rd-popover-visible",GINT_TO_POINTER(visible));else gtk_widget_set_visible(widget, visible);
 }
@@ -431,10 +509,11 @@ void rd_fraction(void *widget, double value) {
     g_object_set_data(G_OBJECT(widget), "rd-pulse", NULL);
     gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(widget), CLAMP(value, 0, 1));
 }
-/* Shows the stack page at `index`; pages are named by position, so call after attaching children. */
+/* Position is separate from GTK page names so keyed removal cannot collide with an old page. */
 void rd_stack_select(void *widget,int32_t index){
-    char name[24]; g_snprintf(name,sizeof name,"%d",index);
-    if(gtk_stack_get_child_by_name(GTK_STACK(widget),name))gtk_stack_set_visible_child_name(GTK_STACK(widget),name);
+    GList *children=gtk_container_get_children(GTK_CONTAINER(widget));
+    for(GList *p=children;p;p=p->next)if(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(p->data),"rd-stack-index"))==index+1){gtk_stack_set_visible_child(GTK_STACK(widget),p->data);break;}
+    g_list_free(children);
 }
 void rd_selected(void *widget,int32_t index) { gtk_combo_box_set_active(GTK_COMBO_BOX(widget),index); }
 void rd_label_options(void *widget,double xalign,int32_t width,int32_t wrap,int32_t ellipsize) {
@@ -444,7 +523,34 @@ void rd_label_options(void *widget,double xalign,int32_t width,int32_t wrap,int3
 }
 void rd_placeholder(void *widget,const unsigned char *bytes,int64_t length) { char *value=rd_string(bytes,length); gtk_entry_set_placeholder_text(GTK_ENTRY(widget),value); g_free(value); }
 int32_t rd_select_name(void *root,const char *name,int32_t index) { GtkWidget *widget=rd_find_name(root,name); if (!widget || !GTK_IS_COMBO_BOX(widget)) return 0; gtk_combo_box_set_active(GTK_COMBO_BOX(widget),index); return 1; }
+int32_t rd_owns(void *data,void *widget){return g_object_get_data(G_OBJECT(widget),"rd-root")==data;}
+void *rd_park(void *data,const char *name){
+    if(!*name)return NULL;
+    GtkWidget *widget=rd_find_name(data,name);if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("park %s found=%d\n",name,widget!=NULL);if(!widget)return NULL;
+    g_object_ref(widget);GtkWidget *parent=gtk_widget_get_parent(widget);if(parent)gtk_container_remove(GTK_CONTAINER(parent),widget);
+    g_object_set_data(G_OBJECT(widget),"rd-root",NULL);g_object_set_data(G_OBJECT(widget),"rd-park-ref",GINT_TO_POINTER(1));return widget;
+}
+void rd_initial(void *data,const char *value){RdRoot *root=data;if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("initial window %" G_GUINT64_FORMAT "\n",root->serial);g_free(root->initial);root->initial=g_strdup(value);}
+const char *rd_initial_text(void *data){RdRoot *root=data;return root->initial ? root->initial : "";}
+static void rd_offer(RdRoot *root,GtkWidget *widget){if(!widget)return;if(!root->adoptions)root->adoptions=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,g_object_unref);g_object_set_data(G_OBJECT(widget),"rd-root",root);RdCode *code=rd_code_of(widget);if(code)code->root=root;g_hash_table_insert(root->adoptions,g_strdup(gtk_widget_get_name(widget)),widget);}
+void rd_offer_widget(void *data,void *widget){if(g_getenv("DEVOS_TAB_DEBUG"))g_printerr("offer widget\n");rd_offer(data,widget);}
+void *rd_take_widget(void *data,const char *name){RdRoot *root=data;if(!root->adoptions || !*name)return NULL;gpointer key=NULL,value=NULL;if(!g_hash_table_lookup_extended(root->adoptions,name,&key,&value))return NULL;g_hash_table_steal(root->adoptions,key);g_free(key);return value;}
+char *rd_take_incoming(void *data){RdRoot *root=data;return root->incoming && !g_queue_is_empty(root->incoming) ? g_queue_pop_head(root->incoming) : g_strdup("");}
+int32_t rd_deliver(int64_t target,const char *metadata,void *widget){
+    if(rd_roots)for(guint i=0;i<rd_roots->len;i++){RdRoot *root=g_ptr_array_index(rd_roots,i);if(root->serial==(guint64)target && !root->closed){rd_offer(root,widget);if(!root->incoming)root->incoming=g_queue_new();g_queue_push_tail(root->incoming,g_strdup(metadata));rd_emit(root,7,NULL,"tabs:receive");return 1;}}
+    return 0;
+}
 void rd_attach(void *parent, void *child, int32_t index) {
+    if(g_object_get_data(G_OBJECT(child),"rd-titlebar-strip")){
+        RdRoot *root=g_object_get_data(G_OBJECT(child),"rd-root");GtkWidget *header=gtk_window_get_titlebar(GTK_WINDOW(root->window));
+        if(GTK_IS_HEADER_BAR(header)){
+            if(gtk_header_bar_get_custom_title(GTK_HEADER_BAR(header))!=child){
+                g_object_ref(child);GtkWidget *old=gtk_widget_get_parent(child);if(old)gtk_container_remove(GTK_CONTAINER(old),child);
+                gtk_header_bar_set_custom_title(GTK_HEADER_BAR(header),child);g_object_unref(child);
+            }
+            return;
+        }
+    }
     if(GTK_IS_POPOVER(child)){
         RdRoot *root=g_object_get_data(G_OBJECT(child),"rd-root");const char *name=g_object_get_data(G_OBJECT(child),"rd-anchor");
         gboolean pointer=name && g_str_has_prefix(name,"@pointer:");
@@ -482,9 +588,9 @@ void rd_attach(void *parent, void *child, int32_t index) {
         else if(GTK_IS_POPOVER(parent))gtk_container_add(parent,child);
         else rd_fail("This widget cannot contain children");
     }
+    if(g_object_get_data(G_OBJECT(child),"rd-park-ref") && gtk_widget_get_parent(child)){g_object_set_data(G_OBJECT(child),"rd-park-ref",NULL);g_object_unref(child);}
     if (GTK_IS_STACK(parent)) {
-        char name[24]; g_snprintf(name,sizeof name,"%d",index);
-        gtk_container_child_set(GTK_CONTAINER(parent),child,"name",name,NULL);
+        g_object_set_data(G_OBJECT(child),"rd-stack-index",GINT_TO_POINTER(index+1));
     }
     if (GTK_IS_BOX(parent)) {
         gtk_box_set_child_packing(parent, child, gtk_widget_get_vexpand(child), TRUE, 0, GTK_PACK_START);
@@ -512,11 +618,23 @@ const char *rd_text_name(void *data, const char *name) { GtkWidget *widget = rd_
 /* A clock for the window: every `milliseconds` the app gets an event of kind 8 through the normal dispatch path (ui.onTick). Apps use it to read the
  * state of a widget that a C library owns (a web view's address, a terminal's title) without handing a callback to GLib. Stops when the window closes. */
 static gboolean rd_tick_event(void *data) { RdRoot *root = data; if (root->closed) return G_SOURCE_REMOVE; rd_emit(root, 8, NULL, NULL); return G_SOURCE_CONTINUE; }
-void rd_tick(void *data, int32_t milliseconds) { g_timeout_add(milliseconds < 50 ? 50 : (guint)milliseconds, rd_tick_event, data); }
+void rd_tick(void *data,int32_t milliseconds){RdRoot *root=data;if(root->tick)g_source_remove(root->tick);root->tick=g_timeout_add(milliseconds<50 ? 50 : (guint)milliseconds,rd_tick_event,data);}
 /* Closes the window when `widget` emits `signal` (for example a terminal's "child-exited", whose handler takes an int status). The close runs from
  * an idle callback, after the signal has returned. The library that owns the widget needs no header here: the signal is connected by name. */
 static gboolean rd_close_idle(void *data) { rd_close(data); return G_SOURCE_REMOVE; }
 static void rd_signal_close(void *instance, int status, void *data) { (void)instance; (void)status; g_idle_add(rd_close_idle, data); }
+void *rd_host_child(void *host){if(!host || !GTK_IS_CONTAINER(host))return NULL;GList *children=gtk_container_get_children(GTK_CONTAINER(host));void *child=children ? children->data : NULL;g_list_free(children);return child;}
+static void rd_tab_child_exited(GtkWidget *widget,gint status,void *unused){(void)status;(void)unused;g_object_set_data(G_OBJECT(widget),"rd-child-exited",GINT_TO_POINTER(1));}
+static void rd_terminal_spawned(void *widget,GPid pid,GError *error,void *unused){(void)unused;if(!widget)return;if(error)g_object_set_data(G_OBJECT(widget),"rd-child-exited",GINT_TO_POINTER(1));else g_object_set_data(G_OBJECT(widget),"rd-child-pid",GINT_TO_POINTER(pid));}
+void *rd_terminal_spawn_callback(void){return rd_terminal_spawned;}
+char *rd_terminal_cwd(void *widget){
+    if(!widget)return NULL;
+    gint pid=GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget),"rd-child-pid"));
+    if(pid>0){char *name=g_strdup_printf("/proc/%d/cwd",pid);char *cwd=g_file_read_link(name,NULL);g_free(name);if(cwd)return cwd;}
+    char *uri=NULL;g_object_get(widget,"current-directory-uri",&uri,NULL);char *cwd=uri ? g_filename_from_uri(uri,NULL,NULL) : NULL;g_free(uri);return cwd;
+}
+void rd_watch_child(void *widget){g_signal_connect(widget,"child-exited",G_CALLBACK(rd_tab_child_exited),NULL);}
+int32_t rd_child_exited(void *widget){return widget && g_object_get_data(G_OBJECT(widget),"rd-child-exited") ? 1 : 0;}
 void rd_close_on(void *widget, const char *signal, void *root) { g_signal_connect(widget, signal, G_CALLBACK(rd_signal_close), root); }
 /* Ctrl+Shift+C and Ctrl+Shift+V on a VTE terminal run its "copy-clipboard" and "paste-clipboard" action signals (connected by name, no VTE header). */
 static gboolean rd_terminal_key(GtkWidget *widget, GdkEventKey *event, void *data) {

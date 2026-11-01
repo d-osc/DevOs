@@ -3,6 +3,13 @@ extern fn rd_strlen(value: str): i64
 extern fn rd_buffer_new(length: i64): *u8
 extern fn rd_buffer_free(buffer: *void)
 extern fn rd_fail(message: str)
+extern fn rd_track_context(root:*void,context:*void,asynchronous:i32)
+extern fn rd_child_context():*void
+extern fn rd_show(root:*void)
+extern fn rd_owns(root:*void,widget:*void):i32
+extern fn rd_take_widget(root:*void,name:*u8):*void
+extern fn rd_initial(root:*void,value:*u8)
+extern fn rd_offer_widget(root:*void,widget:*void)
 extern fn rd_new(title: str, width: i32, height: i32): *void
 extern fn rd_host(root: *void): *void
 extern fn rd_callback(root: *void, handler: callback(i32, *void, *u8, i64, *void): void, context: *void)
@@ -42,7 +49,7 @@ struct Frame { id: i64, alive: bool, initialized: bool, cursor: i64, hooks: Vec<
 struct Mounted { widget: *void, node: Node, children: Vec<Mounted>, frame: i64 }
 struct Context {
     native: *void, frames: Vec<Frame>, sequence: i64, active: i64,
-    rendering: bool, alive: bool, tree: Vec<Mounted>, render: fn(*Context): Node, cleanups: Vec<fn(): void>, command: fn(Text): void, tick: fn(): void
+    rendering: bool, alive: bool, tree: Vec<Mounted>, render: fn(*Context): Node, cleanups: Vec<fn(): void>, command: fn(Text): void, tick: fn(): void, callbacks:Vec<ContextCallback<fn(i32,*void,*u8,i64):void>>
 }
 struct State { value: i64, get: fn(): i64, set: fn(i64): void }
 struct TextState { value: Text, get: fn(): Text, set: fn(Text): void, revision: i64 }
@@ -251,6 +258,7 @@ fn dropFrame(context: *Context, id: i64) { unsafe {
     for i in 0..(hooks.len() as i64) { if hooks[i].kind == 2 && hooks[i].number != 0 { (*context).cleanups.push(hooks[i].cleanup) } }
 } }
 fn dispose(context: *Context, mounted: Mounted) {
+    unsafe {if rd_owns((*context).native,mounted.widget)==0 {return}}
     for i in 0..(mounted.children.len() as i64) { dispose(context, mounted.children[i]) }
     if mounted.frame >= 0 { dropFrame(context, mounted.frame) }
     unsafe { rd_destroy(mounted.widget) }
@@ -311,7 +319,7 @@ fn reconcile(context: *Context, parent: *void, previous: Vec<Mounted>, nodes: Ve
         }
         let mounted = Mounted(null, node, Vec<Mounted>(), -1)
         if found >= 0 { used[found] = true; mounted = previous[found]; mounted.node = node }
-        else { mounted.widget = rd_widget((*context).native, node.kind) }
+        else { let name=nativeText(node.props.id);mounted.widget=rd_take_widget((*context).native,name);rd_buffer_free(name as *void);if mounted.widget==null {mounted.widget=rd_widget((*context).native,node.kind)} }
         mounted = apply(context, mounted)
         result.push(mounted)
     }
@@ -377,25 +385,47 @@ fn runStyled(title: str, width: i32, height: i32, css: str, render: fn(*Context)
     let native = rd_new(title, width, height)
     if native == null { return false }
     if rd_css(native, css) == 0 { rd_free(native); return false }
-    let context = Context(native, Vec<Frame>(), 0, -1, false, true, Vec<Mounted>(), render, Vec<fn(): void>(), ignoreCommand, ignoreTick)
-    let pointer = &context
-    let handler = callback_context(fn(kind: i32, widget: *void, bytes: *u8, length: i64) { unsafe {
-        if kind == 0 { commit(pointer); return }
-        if kind == 5 {paint((*pointer).tree,widget,bytes as *void);return}
-        if kind == 8 { (*pointer).tick(); return }
-        let owned = Vec<u8>()
-        for i in 0..length { owned.push(bytes[i]) }
-        if kind == 7 { (*pointer).command(Text(owned)); return }
-        event((*pointer).tree, kind, widget, Text(owned))
-    } })
-    rd_callback(native, handler.call, handler.data)
-    commit(pointer)
-    rd_run(native)
-    context.alive = false
-    for i in 0..(context.frames.len() as i64) { if context.frames[i].alive { dropFrame(pointer, context.frames[i].id) } }
-    let cleanups = context.cleanups
-    context.cleanups.clear()
-    for i in 0..(cleanups.len() as i64) { cleanups[i]() }
-    rd_free(native)
+    return runPrepared(native,render)
+} }
+# Detached windows return immediately; the primary main loop owns all live windows.
+fn runTransferred(title:str,width:i32,height:i32,render:fn(*Context):Node,metadata:Text,widget:*void):bool {unsafe {
+    let native=rd_new(title,width,height);if native==null {return false}
+    let value=nativeText(metadata);rd_initial(native,value);rd_buffer_free(value as *void);rd_offer_widget(native,widget)
+    let initial=Context(native,Vec<Frame>(),0,-1,false,true,Vec<Mounted>(),render,Vec<fn():void>(),ignoreCommand,ignoreTick,Vec<ContextCallback<fn(i32,*void,*u8,i64):void>>())
+    let pointer=rd_buffer_new(sizeof(initial) as i64) as *Context
+    *pointer=initial
+    rd_track_context(native,pointer as *void,1);bindContext(pointer);commit(pointer);rd_show(native)
     return true
+} }
+fn flush(context:*Context){unsafe {if (*context).alive {commit(context)}}}
+fn cleanupContext(pointer:*Context){unsafe {
+    (*pointer).alive=false
+    for i in 0..((*pointer).frames.len() as i64) {if (*pointer).frames[i].alive {dropFrame(pointer,(*pointer).frames[i].id)}}
+    let cleanups=(*pointer).cleanups;(*pointer).cleanups=Vec<fn():void>()
+    for cleanup in cleanups {cleanup()}
+    (*pointer).frames=Vec<Frame>();(*pointer).tree=Vec<Mounted>();(*pointer).command=ignoreCommand;(*pointer).tick=ignoreTick
+}}
+fn bindContext(pointer:*Context){unsafe {
+    let handler=callback_context(fn(kind:i32,widget:*void,bytes:*u8,length:i64){unsafe {
+        if kind==9 {cleanupContext(pointer);return}
+        if !(*pointer).alive {return}
+        if kind==0 {commit(pointer);return}
+        if kind==5 {paint((*pointer).tree,widget,bytes as *void);return}
+        if kind==8 {(*pointer).tick();return}
+        let owned=Vec<u8>();for i in 0..length {owned.push(bytes[i])}
+        if kind==7 {(*pointer).command(Text(owned));return}
+        event((*pointer).tree,kind,widget,Text(owned))
+    }})
+    (*pointer).callbacks.push(handler);rd_callback((*pointer).native,handler.call,handler.data)
+}}
+fn runPrepared(native:*void,render:fn(*Context):Node):bool {unsafe {
+    let context=Context(native,Vec<Frame>(),0,-1,false,true,Vec<Mounted>(),render,Vec<fn():void>(),ignoreCommand,ignoreTick,Vec<ContextCallback<fn(i32,*void,*u8,i64):void>>())
+    let pointer=&context;rd_track_context(native,pointer as *void,0);bindContext(pointer);commit(pointer);rd_run(native)
+    # All windows have closed and no callbacks are executing; release retained callback owners last.
+    while true {
+        let child=rd_child_context() as *Context;if child==null {break}
+        cleanupContext(child);rd_free((*child).native);(*child).callbacks=Vec<ContextCallback<fn(i32,*void,*u8,i64):void>>()
+        (*child).render=fn(unused:*Context):Node{return Label("")};rd_buffer_free(child as *void)
+    }
+    cleanupContext(pointer);rd_free(native);return true
 } }

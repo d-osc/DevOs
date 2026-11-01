@@ -15,10 +15,10 @@ fn build():str {
 }
 fn page(directory:str, name:str, title:str) { fs.writeFileSync(directory + "/" + name,"<!doctype html><html><head><title>" + title + "</title></head><body><h1>" + title + "</h1></body></html>") }
 fn run(executable:str, start:str, expect:str, next:str, nextTitle:str):child_process.Output {
-    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS","1"); env.set("WEBKIT_DISABLE_COMPOSITING_MODE","1"); env.set("LIBGL_ALWAYS_SOFTWARE","1")
+    let env = Map<str,str>(); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS","1"); env.set("WEBKIT_DISABLE_COMPOSITING_MODE","1"); env.set("LIBGL_ALWAYS_SOFTWARE","1")
     env.set("DEVOS_BROWSER_SMOKE","1"); env.set("DEVOS_BROWSER_START",start); env.set("DEVOS_BROWSER_EXPECT_TITLE",expect)
     if !strings.equal(next,"") { env.set("DEVOS_BROWSER_NEXT",next); env.set("DEVOS_BROWSER_NEXT_TITLE",nextTitle) }
-    return tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","browser-native","xvfb-run","-a",executable),env,"",90000)
+    return tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","browser-native","env","-u","AT_SPI_BUS_ADDRESS","dbus-run-session","--","xvfb-run","-a",executable),env,"",90000)
 }
 
 test.case("the native Browser loads a local page in a WebKit view and reads its title",fn() {

@@ -1,5 +1,6 @@
 use "react_devlang/ui" as ui
 use "react_devlang/channel" as channel
+use "react_devlang/tabs" as tabs
 use "../org.devos.settings/native-kit.devx" as k
 use "../org.devos.settings/native-extensions-page.devx" as ext
 use "../org.devos.settings/native-system-pages.devx" as sp
@@ -43,15 +44,20 @@ struct Row { name:ui.Text, path:ui.Text, folder:bool, detail:ui.Text, tag:ui.Tex
 struct Custom { id:ui.Text, title:ui.Text, target:ui.Text }
 
 fn App(context:*ui.Context):ui.Node {
-    let l = sp.linkWith(context,"../org.devos.files/service.dev","{\"action\":\"start\"}",environment("DEV_OS_ROOT") + "/dist/native/libsupervisor.so")
+    let initialTab=tabs.seed(context,tabs.pack(Vec<ui.Text>(plain("0"),plain("~"),ui.emptyText(),plain("-1"),plain("0"),plain("0"),plain("0"),ui.emptyText(),ui.emptyText())))
+    let initialFields=tabs.unpack(initialTab);let isTransfer=tabs.transferred(context)
+    let first=isTransfer ? listRequest(initialFields[1],plain("/"),channel.integer(initialFields[4])!=0) : plain("{\"action\":\"start\"}")
+    let l = sp.linkTextWith(context,"../org.devos.files/service.dev",first,environment("DEV_OS_ROOT") + "/dist/native/libsupervisor.so")
     # history: visited folders joined with ASCII 30; at: index of the current one; nav: 0 a new visit, 1 back or forward, 2 refresh
-    let history = ui.useText(context,ui.emptyText()); let at = ui.useRef(context,0 - 1); let nav = ui.useRef(context,0)
-    let pathDraft = ui.useText(context,ui.emptyText()); let hidden = ui.useState(context,0); let initialised = ui.useRef(context,0)
+    let history = ui.useText(context,initialFields[2]); let at = ui.useRef(context,k.isText(initialFields[3],"-1") ? 0-1 : channel.integer(initialFields[3])); let nav = ui.useRef(context,isTransfer ? 1 : 0)
+    let pathDraft = ui.useText(context,isTransfer ? initialFields[1] : ui.emptyText()); let hidden = ui.useState(context,channel.integer(initialFields[4])); let initialised = ui.useRef(context,isTransfer ? 1 : 0)
     let mode = ui.useText(context,ui.emptyText()); let renaming = ui.useText(context,ui.emptyText()); let nameDraft = ui.useText(context,ui.emptyText())
     let menuAnchor = ui.useText(context,ui.emptyText())
-    let selected = ui.useText(context,ui.emptyText()); let gridChoice = ui.useState(context,0 - 1)
-    let searching = ui.useState(context,0); let query = ui.useText(context,ui.emptyText()); let wanted = ui.useRef(context,0); let asked = ui.useRef(context,0)
+    let selected = ui.useText(context,initialFields[8]); let gridChoice = ui.useState(context,isTransfer ? channel.integer(initialFields[5]) : 0-1)
+    let searching = ui.useState(context,channel.integer(initialFields[6])); let query = ui.useText(context,initialFields[7]); let wanted = ui.useRef(context,channel.integer(initialFields[6])); let asked = ui.useRef(context,0)
     let listing = ui.useText(context,ui.emptyText()); let results = ui.useText(context,ui.emptyText()); let notice = ui.useText(context,ui.emptyText())
+    let folderTabs = ui.useText(context,tabs.pack(Vec<ui.Text>(initialTab)))
+    let activeTab = ui.useState(context,channel.integer(initialFields[0])); let nextTab = ui.useRef(context,1); let requestedTab = ui.useText(context,ui.emptyText());let receivedTab=ui.useText(context,ui.emptyText())
     let step = ui.useRef(context,0); let ticks = ui.useRef(context,0)
     ui.useEffect(context,fn():fn():void {
         let root = environment("DEV_OS_ROOT"); let mode = environment("DEV_OS_THEME"); let family = environment("DEV_OS_THEME_FAMILY")
@@ -68,8 +74,9 @@ fn App(context:*ui.Context):ui.Node {
         unsafe { rd_control((*context).native,id,"files") }
         # `files <path>` from the shell opens that folder.
         ui.onCommand(context,"",fn(line:ui.Text) {
+            if k.isText(line,"tabs:receive"){receivedTab.set(tabs.received(context));return}
             let parts = channel.split(line,31)
-            if parts.len() > 1 && has(parts[1]) { nav.set(0); asked.set(0); searching.set(0); sp.send(l,listRequest(parts[1],pathDraft.get(),hidden.get() != 0)) }
+            if parts.len() > 1 && has(parts[1]) { requestedTab.set(parts[1]) }
         })
         # Typing in the search field asks for results a quarter of a second after the last key, never while another request is running.
         ui.onTick(context,250,fn() {
@@ -129,7 +136,6 @@ fn App(context:*ui.Context):ui.Node {
         if smoke() == "search" && step.get() == 2 && has(results.value) { step.set(3); ui.click(context,"files-result-open-0") }
         return ui.noop
     },Vec<i64>(nameDraft.revision,results.revision))
-    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
     let hiddenOn = hidden.value != 0; let f = listing.value; let busy = l.waiting.get() != 0; let current = field(f,1); let known = channel.split(history.get(),30)
     let canBack = at.get() > 0; let canForward = at.get() + 1 < (known.len() as i64) && at.get() >= 0
     # --- the settings and the rows of the listing ---
@@ -150,6 +156,41 @@ fn App(context:*ui.Context):ui.Node {
     for r in rows { if ui.equalText(r.path,selected.value) { chosen = r; hasChosen = true } }
     for r in found { if inSearch && ui.equalText(r.path,selected.value) { chosen = r; hasChosen = true } }
     let go = fn(path:ui.Text) { menuAnchor.set(ui.emptyText()); nav.set(0); asked.set(0); selected.set(ui.emptyText()); sp.send(l,listRequest(path,current,hiddenOn)) }
+    let snapshotTab = fn() {
+        let saved = Vec<ui.Text>()
+        for row in tabs.unpack(folderTabs.get()) { let fields = tabs.unpack(row)
+            if channel.integer(fields[0]) == activeTab.get() {
+                saved.push(tabs.pack(Vec<ui.Text>(fields[0],field(listing.get(),1),history.get(),plain("${at.get()}"),plain(hidden.get() != 0 ? "1" : "0"),plain(gridChoice.get() > 0 || (gridChoice.get() < 0 && grid) ? "1" : "0"),plain(searching.get() != 0 ? "1" : "0"),query.get(),selected.get())))
+            } else { saved.push(row) }
+        }
+        folderTabs.set(tabs.pack(saved))
+    }
+    let chooseTab = fn(id:i64) {
+        snapshotTab()
+        for row in tabs.unpack(folderTabs.get()) { let fields = tabs.unpack(row); if channel.integer(fields[0]) == id {
+            activeTab.set(id); menuAnchor.set(ui.emptyText()); mode.set(ui.emptyText()); results.set(ui.emptyText()); notice.set(ui.emptyText())
+            history.set(fields[2]); at.set(k.isText(fields[3],"-1") ? 0 - 1 : channel.integer(fields[3])); nav.set(1); asked.set(0)
+            hidden.set(channel.integer(fields[4])); gridChoice.set(channel.integer(fields[5])); searching.set(channel.integer(fields[6])); query.set(fields[7]); selected.set(fields[8]); wanted.set(channel.integer(fields[6])); pathDraft.set(fields[1])
+            sp.send(l,listRequest(fields[1],current,channel.integer(fields[4]) != 0))
+        } }
+    }
+    let newTab = fn(folder:ui.Text) {
+        snapshotTab(); let id = tabs.newId(); nextTab.set(id + 1); let saved = tabs.unpack(folderTabs.get())
+        saved.push(tabs.pack(Vec<ui.Text>(plain("${id}"),folder,folder,plain("0"),plain(hiddenOn ? "1" : "0"),plain(grid ? "1" : "0"),plain("0"),ui.emptyText(),ui.emptyText()))); folderTabs.set(tabs.pack(saved)); chooseTab(id)
+    }
+    let removeTab = fn(id:i64) {
+        snapshotTab(); let saved = Vec<ui.Text>(); let next:i64 = 0 - 1
+        for row in tabs.unpack(folderTabs.get()) { let fields = tabs.unpack(row); let other = channel.integer(fields[0]); if other != id { saved.push(row); if next < 0 { next = other } } }
+        if saved.len() == 0 { return }
+        folderTabs.set(tabs.pack(saved)); if activeTab.get() == id { chooseTab(next) }
+    }
+    let detached=fn(id:i64,targetWindow:i64){snapshotTab();for row in tabs.unpack(folderTabs.get()){if channel.integer(tabs.unpack(row)[0])==id {tabs.transfer(context,targetWindow,"Files",960,640,row,ui.emptyText(),fn(){if tabs.unpack(folderTabs.get()).len()==1 {ui.close(context)} else {removeTab(id)}},App)}}}
+    ui.useEffect(context,fn():fn():void {
+        if has(receivedTab.get()) && l.waiting.get()==0 {let row=receivedTab.get();receivedTab.set(ui.emptyText());snapshotTab();let rows=tabs.unpack(folderTabs.get());rows.push(row);folderTabs.set(tabs.pack(rows));chooseTab(channel.integer(tabs.unpack(row)[0]))}
+        if has(requestedTab.get()) && l.waiting.get() == 0 { let folder = requestedTab.get(); requestedTab.set(ui.emptyText()); newTab(folder) }
+        return ui.noop
+    },Vec<i64>(requestedTab.revision,receivedTab.revision,l.replies.value))
+    if l.frame.value.bytes.len() == 0 && !has(l.failure.value) { return sp.loading(l) }
     let act = fn(action:str, path:ui.Text) { menuAnchor.set(ui.emptyText()); asked.set(0); nav.set(2); sp.send(l,pathRequest(action,path,current,hiddenOn)) }
     # --- small builders for the layout ---
     let lab = fn(value:ui.Text, style:str, align:f64, chars:i32):ui.Node {
@@ -234,6 +275,12 @@ fn App(context:*ui.Context):ui.Node {
     let sideScroll = ui.props(); sideScroll.expand = true; let sideInner = ui.props(); sideInner.spacing = 6
     let sideColumn = Vec<ui.Node>(ui.Scroll(sideScroll,ui.Box(sideInner,side))); for item in bottom { sideColumn.push(item) }
     let sideOptions = ui.props(); sideOptions.spacing = 8; sideOptions.className = ui.text("fl-side"); sideOptions.width = 210
+    let tabButtons = Vec<ui.Node>(); let savedTabs = tabs.unpack(folderTabs.value)
+    for row in savedTabs { let fields = tabs.unpack(row); let id = channel.integer(fields[0]); let currentTab = activeTab.value == id
+        let folder = currentTab ? current : fields[1]; let title = ui.equalText(folder,home) ? plain("Home") : (k.isText(folder,"/") ? plain("File system") : tabs.basename(folder))
+        tabButtons.push(tabs.ChromeTab("files",id,title,"folder-symbolic",currentTab,!busy,savedTabs.len() > 1,fn() { if id != activeTab.get() { chooseTab(id) } },fn() { removeTab(id) },fn(targetWindow:i64){detached(id,targetWindow)},fn(source:i64) { snapshotTab(); folderTabs.set(tabs.pack(tabs.move(tabs.unpack(folderTabs.get()),source,id))) }))
+    }
+    let tabStrip = tabs.ChromeStrip("files",tabButtons,!busy,fn() { newTab(current) })
     let main = Vec<ui.Node>(ext.row(6,bar),ui.ScrollX(ui.props(),flat(3,"",crumbs)),heading)
     if inSearch {
         let box = ui.named("files-search"); box.expand = true; box.placeholder = plain("Search files in this folder and below")
@@ -262,6 +309,7 @@ fn App(context:*ui.Context):ui.Node {
         let place = hasChosen ? chosen.path : current
         let tool = fn(id:str, caption:str, run:fn():void):ui.Node { let options = ui.named(id); options.sensitive = !busy; options.className = ui.text("fl-tool"); return ui.Button(options,caption,fn() { menuAnchor.set(ui.emptyText()); run() }) }
         if hasChosen && bit(flags,0) { actions.push(tool("files-open","Open",fn() { if chosen.folder { go(chosen.path) } else { act("open",chosen.path) } })) }
+        if hasChosen && chosen.folder && bit(flags,0) { actions.push(tool("files-open-new-tab","Open in new tab",fn() { newTab(chosen.path) })) }
         if hasChosen && bit(flags,1) && !k.isText(chosen.package,"0") && has(chosen.package) { actions.push(tool("files-install","Install",fn() { act("install",chosen.path) })) }
         if hasChosen && bit(flags,2) && !inSearch { actions.push(tool("files-rename","Rename",fn() { mode.set(plain("rename")); renaming.set(chosen.name); nameDraft.set(chosen.name) })) }
         if bit(flags,3) { actions.push(tool("files-copy","Copy path",fn() { unsafe { let native = ui.nativeText(place); rd_clipboard(native); ui.rd_buffer_free(native as *void) }; notice.set(plain("Path copied")) })) }
@@ -346,7 +394,7 @@ fn App(context:*ui.Context):ui.Node {
     let content = ui.props(); content.vertical = false; content.spacing = 0; content.expand = true
     let window = ui.props(); window.spacing = 0; window.expand = true; window.className = ui.text("settings-native")
     let statusBar = ui.props(); statusBar.vertical = false; statusBar.spacing = 10; statusBar.className = ui.text("fl-status")
-    return ui.Box(window,Vec<ui.Node>(ext.expand(ui.Box(content,Vec<ui.Node>(ui.Box(sideOptions,sideColumn),ext.expand(ui.Box(mainOptions,main))))),ui.Box(statusBar,status)))
+    return ui.Box(window,Vec<ui.Node>(tabStrip,ext.expand(ui.Box(content,Vec<ui.Node>(ui.Box(sideOptions,sideColumn),ext.expand(ui.Box(mainOptions,main))))),ui.Box(statusBar,status)))
 }
 # The last path component of an absolute path.
 fn base_name(path:ui.Text):ui.Text {

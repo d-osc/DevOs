@@ -15,4 +15,6 @@ for fix in window-menu tab-drag-focus app-icons; do
 done
 grep -q 'devos_touchpad_button(seat, event)' "$source_dir/src/input/cursor.c" || exit 1
 grep -q 'DEVOS_MENU_SHAPE_V1' "$source_dir/src/menu/menu.c" || exit 1
-grep -q 'devos_tab_drag_key(server, event' "$source_dir/src/input/keyboard.c" || exit 1
+grep -q 'devos_tab_drag_key(server, keyboard->wlr_keyboard, event' "$source_dir/src/input/keyboard.c" || exit 1
+
+grep -Eq 'DEVOS_DND_DESKTOP_RELEASE|cursor_process_button_release' "$source_dir/src/input/cursor.c" || exit 1

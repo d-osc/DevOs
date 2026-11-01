@@ -1,5 +1,6 @@
 use "react_devlang/ui" as ui
 use "react_devlang/channel" as channel
+use "react_devlang/tabs" as tabs
 use "../org.devos.settings/native-kit.devx" as k
 use "../org.devos.settings/native-extensions-page.devx" as ext
 use "../org.devos.settings/native-system-pages.devx" as sp
@@ -63,6 +64,8 @@ fn request(action:str, path:ui.Text, content:ui.Text):ui.Text {
 
 
 fn App(context:*ui.Context):ui.Node {
+    let initialTab=tabs.seed(context,tabs.pack(Vec<ui.Text>(plain("0"),ui.emptyText(),ui.emptyText(),plain("plaintext"),plain("0"),plain("New file"),plain("Ln 1, Col 1"))))
+    let initialFields=tabs.unpack(initialTab)
     # The worker's first answer is the theme's colors for the code view (asked starts at 3); the window opens its file only after they are applied.
     let theme0 = environment("DEV_OS_THEME"); let family0 = environment("DEV_OS_THEME_FAMILY")
     if ui.text(theme0).bytes.len() == 0 { unsafe { theme0 = rd_default_theme() } }
@@ -70,14 +73,48 @@ fn App(context:*ui.Context):ui.Node {
     let l = sp.link(context,"../org.devos.editor/service.dev","{\"action\":\"palette\",\"family\":\"" + family0 + "\",\"mode\":\"" + theme0 + "\"}")
     # asked: the kind of the last file request (0 ping, 1 read, 2 write); step: the smoke test's progress
     let asked = ui.useRef(context,3); let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let code = ui.useRef(context,0)
-    let path = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let status = ui.useText(context,plain("Open a file to start"))
-    let dirty = ui.useState(context,0); let position = ui.useText(context,plain("Ln 1, Col 1")); let language = ui.useText(context,plain("plaintext")); let loaded = ui.useText(context,ui.emptyText())
+    let path = ui.useText(context,initialFields[1]); let draft = ui.useText(context,initialFields[2]); let status = ui.useText(context,initialFields[5])
+    let dirty = ui.useState(context,channel.integer(initialFields[4])); let position = ui.useText(context,initialFields[6]); let language = ui.useText(context,initialFields[3]); let loaded = ui.useText(context,ui.emptyText())
     let target = ui.useText(context,ui.emptyText()); let pending = ui.useText(context,ui.emptyText())
     let findOpen = ui.useState(context,0); let replaceOpen = ui.useState(context,0); let query = ui.useText(context,ui.emptyText()); let replacement = ui.useText(context,ui.emptyText())
     let exact = ui.useState(context,0); let whole = ui.useState(context,0); let summary = ui.useText(context,ui.emptyText())
     let paletteReady = ui.useRef(context,0); let changedAt = ui.useRef(context,0); let rehighlightDue = ui.useRef(context,0); let refindDue = ui.useRef(context,0); let focusFind = ui.useRef(context,0)
 
-    let open = fn(file:ui.Text) { if paletteReady.get() == 0 { pending.set(file); return }; asked.set(1); target.set(file); status.set(plain("Opening…")); sp.send(l,request("read",file,ui.emptyText())) }
+    let documents = ui.useText(context,tabs.pack(Vec<ui.Text>(initialTab)))
+    let activeTab = ui.useState(context,channel.integer(initialFields[0])); let nextTab = ui.useRef(context,1); let closePending = ui.useState(context,0 - 1)
+    let palette = ui.useText(context,ui.emptyText()); let readPath = ui.useText(context,ui.emptyText()); let savingText = ui.useText(context,ui.emptyText())
+    let snapshot = fn() {
+        let rows = Vec<ui.Text>()
+        for row in tabs.unpack(documents.get()) {
+            let fields = tabs.unpack(row)
+            if channel.integer(fields[0]) == activeTab.get() { rows.push(tabs.pack(Vec<ui.Text>(fields[0],path.get(),draft.get(),language.get(),plain(dirty.get() != 0 ? "1" : "0"),status.get(),position.get()))) } else { rows.push(row) }
+        }
+        documents.set(tabs.pack(rows))
+    }
+    let chooseTab = fn(id:i64) {
+        snapshot()
+        for row in tabs.unpack(documents.get()) { let fields = tabs.unpack(row); if channel.integer(fields[0]) == id {
+            activeTab.set(id); path.set(fields[1]); draft.set(fields[2]); language.set(fields[3]); dirty.set(channel.integer(fields[4])); status.set(fields[5]); position.set(fields[6]); rehighlightDue.set(0); refindDue.set(0)
+            unsafe { code.set(ui.find(context,id == 0 ? "editor-code" : "editor-code-${id}") as i64) }
+        } }
+    }
+    let newTab = fn():i64 {
+        snapshot(); let id = tabs.newId(); nextTab.set(id + 1)
+        let rows = tabs.unpack(documents.get()); rows.push(tabs.pack(Vec<ui.Text>(plain("${id}"),ui.emptyText(),ui.emptyText(),plain("plaintext"),plain("0"),plain("New file"),plain("Ln 1, Col 1")))); documents.set(tabs.pack(rows)); chooseTab(id); return id
+    }
+    let removeTab = fn(id:i64) {
+        snapshot(); let rows = Vec<ui.Text>(); let next:i64 = 0 - 1
+        for row in tabs.unpack(documents.get()) { let fields = tabs.unpack(row); let kept = channel.integer(fields[0]); if kept != id { rows.push(row); if next < 0 { next = kept } } }
+        if rows.len() == 0 { let fresh = tabs.newId(); nextTab.set(fresh + 1); next = fresh; rows.push(tabs.pack(Vec<ui.Text>(plain("${fresh}"),ui.emptyText(),ui.emptyText(),plain("plaintext"),plain("0"),plain("New file"),plain("Ln 1, Col 1")))) }
+        documents.set(tabs.pack(rows)); if activeTab.get() == id { chooseTab(next) }; closePending.set(0 - 1)
+    }
+    let detached=fn(id:i64,targetWindow:i64) {
+        snapshot()
+        for row in tabs.unpack(documents.get()) {if channel.integer(tabs.unpack(row)[0])==id {
+            tabs.transfer(context,targetWindow,"Editor",1100,720,row,plain(id==0 ? "editor-code" : "editor-code-${id}"),fn(){if tabs.unpack(documents.get()).len()==1 {ui.close(context)} else {removeTab(id)}},App)
+        }}
+    }
+    let open = fn(file:ui.Text) { if has(file) { pending.set(file) } }
     let rehighlight = fn() {
         if code.get() == 0 { return }
         let highlightStarted:i64 = 0; unsafe { highlightStarted = g_get_monotonic_time() }
@@ -136,7 +173,8 @@ fn App(context:*ui.Context):ui.Node {
     let save = fn() {
         if !has(path.get()) && !has(draft.get()) { status.set(plain("Enter a path to save.")); return }
         let file = has(draft.get()) ? draft.get() : path.get()
-        asked.set(2); status.set(plain("Saving…")); sp.send(l,request("write",file,channel.quote(codeText(code.get()))))
+        let content = codeText(code.get()); savingText.set(content)
+        asked.set(2); status.set(plain("Saving…")); sp.send(l,request("write",file,channel.quote(content)))
     }
     let event = fn(text:ui.Text) {
         if k.isText(text,"change") { dirty.set(1); changedAt.set(ticks.get()); rehighlightDue.set(1); if findOpen.value == 1 { refindDue.set(1) } }
@@ -146,7 +184,7 @@ fn App(context:*ui.Context):ui.Node {
         else if k.isText(text,"next") { if !has(query.get()) { showFind(false) } else { refind(1) } }
         else if k.isText(text,"previous") { refind(0 - 1) }
         else if k.isText(text,"escape") { if findOpen.value == 1 { closeFind() } }
-        else if k.isText(text,"new") { path.set(ui.emptyText()); draft.set(ui.emptyText()); dirty.set(0); language.set(plain("plaintext")); setCode(code.get(),ui.emptyText()); applyTags(code.get(),"syn.",ui.emptyText()); status.set(plain("New file")) }
+        else if k.isText(text,"new") { if l.waiting.get() == 0 { newTab() } }
         else if k.isText(text,"open") { unsafe { gtk_widget_grab_focus(ui.find(context,"editor-path")) } }
         else if text.bytes.len() > 7 && text.bytes[0] == 99 && text.bytes[1] == 117 && text.bytes[2] == 114 && text.bytes[3] == 115 && text.bytes[4] == 111 && text.bytes[5] == 114 && text.bytes[6] == 58 {
             let parts = channel.split(text,58); if parts.len() > 2 { position.set(join(Vec<ui.Text>(plain("Ln "),parts[1],plain(", Col "),parts[2]))) }
@@ -160,10 +198,11 @@ fn App(context:*ui.Context):ui.Node {
             rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${themeFamily}.${theme}.css")
             rd_app_header_for((*context).native,"Editor","${root}/data/icons","editor","dev-os-editor")
             rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"editor")
-            let widget = ui.find(context,"editor-code"); code.set(widget as i64)
+            let activeId=activeTab.get();let widget = ui.find(context,activeId==0 ? "editor-code" : "editor-code-${activeId}"); code.set(widget as i64)
         }
         # `editor <file>` from the shell opens that file in the running window.
         ui.onCommand(context,"editor.",fn(line:ui.Text) {
+            if k.isText(line,"tabs:receive") {let row=tabs.received(context);if has(row){snapshot();let rows=tabs.unpack(documents.get());rows.push(row);documents.set(tabs.pack(rows));chooseTab(channel.integer(tabs.unpack(row)[0]))};return}
             let parts = channel.split(line,31)
             if parts.len() > 1 && has(parts[1]) { draft.set(parts[1]); open(parts[1]) }
         })
@@ -174,7 +213,7 @@ fn App(context:*ui.Context):ui.Node {
             if focusFind.get() == 1 { focusFind.set(0); unsafe { gtk_widget_grab_focus(ui.find(context,"editor-find")) } }
             if smoke() && ticks.get() > 600 { print("FAIL native Editor timed out at step ${step.get()}"); ui.close(context) }
         })
-        let startup = environment("DEVOS_EDITOR_FILE"); if ui.text(startup).bytes.len() > 0 { draft.set(plain(startup)); pending.set(plain(startup)) }
+        let startup = environment("DEVOS_EDITOR_FILE"); if !tabs.transferred(context) && ui.text(startup).bytes.len() > 0 { draft.set(plain(startup)); pending.set(plain(startup)) }
         return ui.noop
     },Vec<i64>())
     ui.useEffect(context,fn():fn():void {
@@ -182,7 +221,7 @@ fn App(context:*ui.Context):ui.Node {
         let f = l.frame.value
         if f.bytes.len() == 0 { return ui.noop }
         if asked.get() == 3 {
-            paintCode(code.get(),ui.Text(lit.unescape(field(f,1).bytes))); asked.set(0); paletteReady.set(1)
+            palette.set(ui.Text(lit.unescape(field(f,1).bytes))); paintCode(code.get(),ui.Text(lit.unescape(field(f,1).bytes))); asked.set(0); paletteReady.set(1)
             if has(pending.get()) { let file = pending.get(); pending.set(ui.emptyText()); open(file) } else { unsafe { rd_code_focus(code.get() as *void) } }
         } else if asked.get() == 1 && has(field(f,2)) {
             let started:i64 = 0; unsafe { started = g_get_monotonic_time() }
@@ -214,20 +253,60 @@ fn App(context:*ui.Context):ui.Node {
                 step.set(2); save()
             }
         } else if asked.get() == 2 {
-            dirty.set(0); path.set(field(f,1)); status.set(join(Vec<ui.Text>(plain("Saved · "),field(f,1)))); asked.set(0)
+            dirty.set(ui.equalText(codeText(code.get()),savingText.get()) ? 0 : 1); path.set(field(f,1)); status.set(join(Vec<ui.Text>(plain("Saved · "),field(f,1)))); asked.set(0)
+            if closePending.get() == activeTab.get() && dirty.get() == 0 { removeTab(activeTab.get()) }
             if smoke() && step.get() == 2 { print("PASS native Editor opened, edited and saved a file"); ui.close(context) }
         }
         return ui.noop
     },Vec<i64>(l.replies.value))
 
-    let openButton = ui.named("editor-open"); let saveButton = ui.named("editor-save"); let findButton = ui.named("editor-find-toggle")
+    # Every tab owns a mounted code view, preserving text, undo history, cursor and scroll.
+    ui.useEffect(context,fn():fn():void {
+        let id = activeTab.get()
+        unsafe { code.set(ui.find(context,id == 0 ? "editor-code" : "editor-code-${id}") as i64) }
+        if code.get() != 0 && has(palette.get()) { paintCode(code.get(),palette.get()); unsafe { rd_code_focus(code.get() as *void) } }
+        return ui.noop
+    },Vec<i64>(activeTab.value,palette.revision))
+    ui.useEffect(context,fn():fn():void {
+        if paletteReady.get() != 0 && l.waiting.get() == 0 && has(pending.get()) && !has(readPath.get()) {
+            let file = pending.get(); pending.set(ui.emptyText()); snapshot(); let existing:i64 = 0 - 1
+            for row in tabs.unpack(documents.get()) { let fields = tabs.unpack(row); if ui.equalText(fields[1],file) { existing = channel.integer(fields[0]) } }
+            if existing >= 0 { chooseTab(existing) }
+            else { if has(path.get()) || dirty.get() != 0 { newTab() }; readPath.set(file) }
+        }
+        return ui.noop
+    },Vec<i64>(pending.revision,l.replies.value,readPath.revision))
+    ui.useEffect(context,fn():fn():void {
+        if has(readPath.get()) && code.get() != 0 && l.waiting.get() == 0 {
+            let file = readPath.get(); readPath.set(ui.emptyText()); asked.set(1); target.set(file); status.set(plain("Opening…")); sp.send(l,request("read",file,ui.emptyText()))
+        }
+        return ui.noop
+    },Vec<i64>(readPath.revision,activeTab.value))
+
+    let openButton = ui.named("editor-open"); openButton.sensitive = l.waiting.get() == 0; let saveButton = ui.named("editor-save"); saveButton.sensitive = l.waiting.get() == 0; let findButton = ui.named("editor-find-toggle")
     let url = ui.named("editor-path"); url.expand = true; url.placeholder = plain("File path")
     let bar = ext.row(8,Vec<ui.Node>(
         ui.Entry(url,draft.value,fn(value:ui.Text) { draft.set(value) }),
         ui.Button(openButton,"Open",fn() { if has(draft.get()) { open(draft.get()) } }),
         ui.Button(saveButton,"Save",fn() { save() }),
         ui.Button(findButton,"Find",fn() { if findOpen.value == 1 { closeFind() } else { showFind(false) } })))
-    let nodes = Vec<ui.Node>(bar)
+    let tabButtons = Vec<ui.Node>(); let views = Vec<ui.Node>(); let activeIndex:i64 = 0; let tabIndex:i64 = 0
+    for row in tabs.unpack(documents.value) {
+        let fields = tabs.unpack(row); let id = channel.integer(fields[0]); let current = id == activeTab.value
+        if current { activeIndex = tabIndex }; tabIndex = tabIndex + 1
+        let name = current ? path.value : fields[1]; let modified = current ? dirty.value != 0 : channel.integer(fields[4]) != 0
+        let label = join(Vec<ui.Text>(has(name) ? tabs.basename(name) : plain("Untitled"),plain(modified ? " •" : "")))
+        tabButtons.push(tabs.ChromeTab("editor",id,label,"text-x-script-symbolic",current,l.waiting.get() == 0,true,fn() { chooseTab(id) },fn() { if current ? dirty.get() != 0 : channel.integer(fields[4]) != 0 { chooseTab(id); closePending.set(id) } else { removeTab(id) } },fn(targetWindow:i64){detached(id,targetWindow)},fn(source:i64) { snapshot(); documents.set(tabs.pack(tabs.move(tabs.unpack(documents.get()),source,id))) }))
+        let view = ui.named(id == 0 ? "editor-code" : "editor-code-${id}"); view.key = id; view.expand = true
+        views.push(ui.onPointer(ui.CodeView(view),fn(text:ui.Text) { if id == activeTab.get() { event(text) } }))
+    }
+    let nodes = Vec<ui.Node>(tabs.ChromeStrip("editor",tabButtons,l.waiting.get() == 0,fn() { newTab() }),bar)
+    if closePending.value >= 0 {
+        let saveClose = ui.named("editor-tab-save-close"); saveClose.sensitive = l.waiting.get() == 0
+        let discard = ui.named("editor-tab-discard"); discard.sensitive = l.waiting.get() == 0
+        let cancelClose = ui.named("editor-tab-cancel"); cancelClose.sensitive = l.waiting.get() == 0
+        nodes.push(ext.row(8,Vec<ui.Node>(ui.Label("Save changes before closing this tab?"),ui.Button(saveClose,"Save and close",fn() { save() }),ui.Button(discard,"Discard",fn() { removeTab(closePending.get()) }),ui.Button(cancelClose,"Cancel",fn() { closePending.set(0 - 1) }))))
+    }
     if findOpen.value == 1 {
         let search = ui.named("editor-find"); search.expand = true; search.placeholder = plain("Find")
         let caseOption = ui.named("editor-find-case"); caseOption.className = ui.text(exact.value == 1 ? "selected" : "")
@@ -244,8 +323,8 @@ fn App(context:*ui.Context):ui.Node {
                 ui.Button(ui.named("editor-replace-one"),"Replace",fn() { replaceCurrent() }),ui.Button(ui.named("editor-replace-all"),"Replace all",fn() { replaceEverything() }))))
         }
     }
-    let view = ui.props(); view.expand = true; view.id = ui.text("editor-code")
-    nodes.push(ui.onPointer(ui.CodeView(view),fn(text:ui.Text) { event(text) }))
+    let stack = ui.named("editor-documents"); stack.key = 1000000000; stack.expand = true
+    nodes.push(ui.Stack(stack,activeIndex,views))
     let line = join(Vec<ui.Text>(status.value,plain(dirty.value != 0 ? " · modified" : ""),plain(" · "),position.value,plain(" · "),language.value))
     nodes.push(ext.named(k.caption(line,"settings-description"),"editor-status"))
     let frame = ui.props(); frame.spacing = 8; frame.expand = true

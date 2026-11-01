@@ -6,6 +6,8 @@ Editor เป็นหน้าต่าง native เขียนด้วย D
 
 เปิดจาก Applications → Editor หรือ `dev-os-shell editor file.ts`.
 
+แท็บอยู่ในแถบหัวหน้าต่างแบบ Chrome: ไอคอน ชื่อ และปุ่มปิดรวมอยู่ในแท็บเดียว ลากเพื่อสลับลำดับ หรือคลิกเมาส์กลางเพื่อปิดแท็บได้ เปิดหลายไฟล์เป็นแท็บได้ด้วยปุ่ม `+` (หรือ Ctrl+N) แต่ละแท็บเก็บข้อความที่ยังไม่บันทึก, Undo/Redo, cursor และตำแหน่งเลื่อนแยกกัน เปิดไฟล์เดิมจะเลือกแท็บที่มีอยู่ ปุ่ม `×` จะถาม Save and close / Discard / Cancel เมื่อมีการแก้ไขที่ยังไม่บันทึก.
+
 | ปุ่ม | ทำอะไร |
 |---|---|
 | Ctrl+S | บันทึก |
@@ -39,3 +41,6 @@ regex ในการค้นหา, ลากแท็บแยกหน้า
 
 ทดสอบ: `d tests/editor-highlight.test.dev`, `editor-find`, `editor-literal` (ตรรกะล้วน) และ
 `d tests/editor-native.test.dev` (หน้าต่างจริงใต้ Xvfb: เปิดไฟล์, ข้อความตรงเป๊ะ, ค้นหา, แทนที่ทั้งหมด, undo/redo, บันทึก).
+
+
+Drag a tab outside its window to move it into a separate window. Drag it onto another tab strip from the same app instance to merge it back. The live editor buffer (including unsaved changes and undo), browser view/history, terminal shell/PTY, or Files navigation state moves with the tab. Moving the final tab closes only the empty source window; other windows continue running.

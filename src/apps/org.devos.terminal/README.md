@@ -1,5 +1,10 @@
 # Terminal
 
-A native window (`native.devx`, DevLang with VTE linked by path): one terminal running the user's shell, opened by `terminal` and `terminal.native <folder>`.
-The JS Terminal was removed; Command suggestions, tabs, the themed ANSI palette, right-click paste and the settings that applied them are gone, so the
-manifest's settings are stored but not yet applied by the window.
+Native DevLang + VTE with Chrome-style tabs in the window title bar. Every tab owns a separate PTY, shell, environment, scrollback and working directory. `+` opens a fresh shell in the active shell's actual working directory, without copying its shell variables. Switching or dragging tabs keeps the running shells alive.
+
+Use the close button or middle mouse button to close a tab. A shell exiting closes only its own tab; the last shell exit closes the window. Copy/paste shortcuts and the themed ANSI palette remain available.
+
+Validation: `d tests/terminal-native.test.dev` and `d tests/native-tabs.test.dev` (real independent PTYs under isolated Xvfb).
+
+
+Drag a tab outside its window to move it into a separate window. Drag it onto another tab strip from the same app instance to merge it back. The live editor buffer (including unsaved changes and undo), browser view/history, terminal shell/PTY, or Files navigation state moves with the tab. Moving the final tab closes only the empty source window; other windows continue running.
