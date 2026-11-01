@@ -9,7 +9,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 D = os.environ.get('DEVLANG_BIN') or shutil.which('d')
 if not D:
-    raise RuntimeError('Install DevLang d (v0.5.5+) before running these tests.')
+    raise RuntimeError('Install DevLang d (v0.5.6+) before running these tests.')
 
 def run_source(source, *, env=None, ffi=False):
     with tempfile.TemporaryDirectory(prefix='devos-devlang-') as directory:

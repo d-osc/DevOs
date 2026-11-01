@@ -20,7 +20,11 @@ fn hex(bytes: Vec<u8>): str {
 
 # The version `dev --version` prints ("dev 0.7.0").
 fn cliVersion(project: str): str {
-    let ran = child_process.execFileSync("d", Vec<str>(project + "/main.dev", "--", "--version"), child_process.options())
+    let toolchain = sources.path("packages/react-devlang/tools/toolchain.sh", "DEVOS_DEVLANG_TOOLCHAIN")
+    let driver = child_process.execFileSync("sh", Vec<str>(toolchain, "--runtime"), child_process.options())
+    if !driver.success { return "" }
+    let program = strings.trim(encoding.decode(driver.stdout, "utf8"))
+    let ran = child_process.execFileSync(program, Vec<str>(project + "/main.dev", "--", "--version"), child_process.options())
     if !ran.success { return "" }
     let line = strings.trim(encoding.decode(ran.stdout, "utf8"))
     return strings.startsWith(line, "dev ") ? strings.substring(line, 4, strings.charLength(line)) : ""
@@ -35,13 +39,16 @@ fn snapshot(payload: str): json.Value {
     let version = cliVersion(project)
     if strings.equal(version, "") { print("Cannot read the version of the DevOsPM CLI."); return json.null_value() }
     let archive = payload + "/devospm-cli.tar.gz"
-    let packed = child_process.execFileSync("sh", Vec<str>("-c",
-        "cd '" + project + "' && tar -czf '" + archive + "' --owner=0 --group=0 --numeric-owner --sort=name main.dev archive.dev desktop.dev devosx.dev download.dev manifest.dev progress.dev shim.dev store.dev update.dev util.dev"),
-        child_process.options())
+    let stage = payload + "/pm-cli-stage"
+    let staged = child_process.execFileSync("sh", Vec<str>(project + "/stage.sh", stage), child_process.options())
+    if !staged.success { print("Cannot stage pm-cli with the shared App Store database."); return json.null_value() }
+    let packed = child_process.execFileSync("tar", Vec<str>("-czf",archive,"--owner=0","--group=0","--numeric-owner","--sort=name","-C",stage,"."), child_process.options())
     if !packed.success { print("Cannot pack the DevOsPM CLI sources."); return json.null_value() }
     fs.writeFileSync(payload + "/devospm-LICENSE", fs.readFileSync(project + "/LICENSE", "utf8"))
     let record = json.set(json.object(), "format", "devlang-sources")
     record = json.set(record, "version", version)
+    record = json.set(record, "project", project)
+    record = json.set(record, "catalogSource", sources.appstore())
     record = json.set(record, "archiveSha256", hex(crypto.hash("sha256", fs.read_bytes(archive))))
     fs.writeFileSync(payload + "/devospm-provenance.json", json.pretty(record) + "\n")
     return record

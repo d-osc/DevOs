@@ -62,6 +62,6 @@ Sources: [Linux sysfs](https://www.kernel.org/doc/html/latest/filesystems/sysfs.
 
 Tests: `python3 tests/drivers.test.py` (synthetic sysfs; no module loading).
 
-The audit runs in DevLang (`d` 0.5.5+); shared modules from `lib/` must be installed
+The audit runs in DevLang (`d` 0.5.6+); shared modules from `lib/` must be installed
 alongside the command. Its test harness remains Python and invokes the real
 DevLang runtime against synthetic sysfs trees and private command fixtures.

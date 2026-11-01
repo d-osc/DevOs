@@ -5,9 +5,9 @@ use "std/child_process"
 use "std/strings"
 use "../lib/posix.dev" as posix
 
-fn version(): str { return "0.5.5" }
+fn version(): str { return "0.5.6" }
 
-fn expected(): str { return "2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32" }
+fn expected(): str { return "7fac5642a09c6b7a5590e742fc4d708621c8e2e374deb2509a04729e620ec644" }
 
 fn sha256File(path: str): str {
     let output = child_process.execFileSync("sha256sum", Vec<str>(path), child_process.options())
@@ -65,6 +65,8 @@ fn snapshot(payload: str): json.Value {
     let root = "devlang-d-v" + version() + "-linux-arm64"
     let record = json.set(json.object(), "target", "linux-arm64")
     record = json.set(record, "version", version())
+    # Upstream v0.5.6 has not bumped the CLI Cargo version string.
+    record = json.set(record, "driverVersion", "0.5.5")
     record = json.set(record, "url", url)
     record = json.set(record, "archiveSha256", expected())
     for i in 0..(members().len() as i64) {

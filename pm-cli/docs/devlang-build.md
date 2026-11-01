@@ -12,8 +12,8 @@ sh install.sh                         # install to ~/.local (dev on PATH)
 ```
 
 Subcommands: `install` (`add`, `i`), `list` (`--json`), `info`, `verify`, `remove` (`uninstall`, `un`, `rm`; `--purge` for extensions), `rollback`, `run`,
-`pack`, `update`, `self-update`. Global options `--root`, `--devos-data` and `--applications`; environment `DEV_ROOT`, `XDG_DATA_HOME`, `DEV_BIN_DIR`,
-`DEV_UPDATE_API`, `DEV_LAUNCHER` (the path written into launcher entries' `Exec=`).
+`pack`, `update`, `self-update`, `catalog`, `search`. Global options `--root`, `--devos-data` and `--applications`; environment `DEV_ROOT`, `XDG_DATA_HOME`, `DEV_BIN_DIR`,
+`DEVOS_APPSTORE_DATABASE` (shared catalog), `DEV_UPDATE_API`, `DEV_LAUNCHER` (the path written into launcher entries' `Exec=`).
 
 ## Why it shells out
 
@@ -48,3 +48,8 @@ The DevLang runtime caps in-memory data at 8 MiB and has no flock/chmod/symlink 
 | `download.dev` | HTTP(S) downloads |
 | `update.dev` | GitHub releases update and self-update |
 | `progress.dev` | stage / notice output |
+
+The App Store calls the same CLI catalog and installed registry. `packages[name].catalog`
+is an optional package association committed under the PM lock, preserved through
+replace/rollback, and removed with the package. `pm-cli/stage.sh` bundles the canonical
+`app-db` reader and authoring data as `catalog-data/` for deployment.

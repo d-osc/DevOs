@@ -101,12 +101,14 @@ fn add_padded(out: *sys.Bytes, data: *u8, n: i64) {
     for i in 0..((512 - n % 512) % 512) { sys.bytes_push(out, 0) }
 }
 # Appends the entry for `path` stored under `name` to the archive buffer; true when it is a directory to descend into.
+struct WriteOptions { uid: i64, gid: i64, mtime: i64, numeric: bool, gnu: bool }
 struct Added { ok: bool, dir: bool }
-fn add_entry(out: *sys.Bytes, path: str, name: str, follow: bool): Added {
+fn add_entry(out: *sys.Bytes, path: str, name: str, follow: bool, options: WriteOptions): Added {
     let info = sys.file_info(path, follow)
     if !info.ok { sys.warn("tar", sys.join2(sys.join2(path, ": "), "Cannot stat: No such file or directory")); return Added(false, false) }
     let kind = (info.mode / 4096) % 16
-    let uname = fsx.user_name(info.uid); let gname = fsx.group_name(info.gid)
+    if options.uid >= 0 { info.uid = options.uid }; if options.gid >= 0 { info.gid = options.gid }; if options.mtime >= 0 { info.mtime = options.mtime }
+    let uname = options.numeric ? "" : fsx.user_name(info.uid); let gname = options.numeric ? "" : fsx.group_name(info.gid)
     let stored = name
     let link = ""
     let type_flag = 48
@@ -118,7 +120,7 @@ fn add_entry(out: *sys.Bytes, path: str, name: str, follow: bool): Added {
     else if kind == 6 { type_flag = 52 }
     else if kind == 8 { size = info.size }
     else { sys.warn("tar", sys.join2(path, ": socket ignored")); return Added(false, false) }
-    if sys.length(stored) > 100 && !split_ok(stored) {
+    if sys.length(stored) > 100 && (options.gnu || !split_ok(stored)) {
         let data = sys.bytes_new(); sys.bytes_str(data, stored); sys.bytes_push(data, 0)
         sys.bytes_append(out, sys.bdata(make_header("././@LongLink", 0, 0, 0, sys.blen(data), 0, 76, "", "root", "root", 0, 0)), 512)
         add_padded(out, sys.bdata(data), sys.blen(data))
@@ -131,6 +133,9 @@ fn add_entry(out: *sys.Bytes, path: str, name: str, follow: bool): Added {
         link = sys.join2(sys.slice(link, 0, 100), "")
     }
     let hdr = make_header(stored, info.mode, info.uid, info.gid, size, info.mtime, type_flag as u8, link, uname, gname, (info.rdev / 256) % 4096, info.rdev % 256)
+    if options.gnu {
+        put_text(hdr, 257, "ustar  ", 8); sys.bptr_set(hdr, 264, 0); for i in 148..156 { sys.bptr_set(hdr, i, 32) }; let sum = 0; for i in 0..512 { sum = sum + sys.bat(hdr, i) as i64 }; put_octal(hdr, 148, sum, 7); sys.bptr_set(hdr, 154, 0); sys.bptr_set(hdr, 155, 32)
+    }
     sys.bytes_append(out, sys.bdata(hdr), 512)
     if type_flag == 48 && size > 0 {
         let input = sys.read_path(path)
@@ -147,14 +152,14 @@ fn excluded(patterns: Vec<str>, name: str): bool {
     for k in 0..(patterns.len() as i64) { if glob.matches(patterns[k], name, false, false) || glob.matches(patterns[k], sys.base_name(name), false, false) { return true } }
     return false
 }
-fn archive_tree(out: *sys.Bytes, path: str, name: str, follow: bool, verbose: bool, vout: *sys.Out, patterns: Vec<str>) {
+fn archive_tree(out: *sys.Bytes, path: str, name: str, follow: bool, verbose: bool, vout: *sys.Out, patterns: Vec<str>, options: WriteOptions) {
     if excluded(patterns, name) { return }
-    let a = add_entry(out, path, name, follow)
+    let a = add_entry(out, path, name, follow, options)
     if !a.ok { return }
     if verbose { sys.out_str(vout, a.dir && !sys.ends(name, "/") ? sys.join2(name, "/") : name); sys.out_byte(vout, 10) }
     if a.dir {
         let l = fsx.list_dir(path)
-        for k in 0..(l.names.len() as i64) { archive_tree(out, fsx.join_path(path, l.names[k]), fsx.join_path(name, l.names[k]), follow, verbose, vout, patterns) }
+        for k in 0..(l.names.len() as i64) { archive_tree(out, fsx.join_path(path, l.names[k]), fsx.join_path(name, l.names[k]), follow, verbose, vout, patterns, options) }
     }
 }
 
@@ -220,6 +225,7 @@ fn run_tar(args: Vec<str>): i64 {
         for i in 1..n { words.push(args[i]) }
     } else { for i in 0..n { words.push(args[i]) } }
     let mode = 0; let archive = "-"; let verbose = false; let gzipped = false; let to_stdout = false; let dir = ""; let follow = false; let keep_old = false; let set_mtime = true
+    let options = WriteOptions(0 - 1, 0 - 1, 0 - 1, false, false); let null_list = false; let lists = Vec<str>()
     let strip = 0; let patterns = Vec<str>(); let operands = Vec<str>(); let i = 0; let ended = false
     while i < (words.len() as i64) {
         let a = words[i]
@@ -229,16 +235,24 @@ fn run_tar(args: Vec<str>): i64 {
         if sys.same(a, "--exclude") && i + 1 < (words.len() as i64) { i = i + 1; patterns.push(words[i]); i = i + 1; continue }
         if sys.starts(a, "--strip-components=") { strip = sys.parse_number(sys.join2(sys.slice(a, 19, sys.length(a)), "")).value; i = i + 1; continue }
         if sys.same(a, "--strip-components") && i + 1 < (words.len() as i64) { i = i + 1; strip = sys.parse_number(words[i]).value; i = i + 1; continue }
+        if sys.same(a, "--numeric-owner") { options.numeric = true; i = i + 1; continue }
+        if sys.same(a, "--no-same-owner") { i = i + 1; continue }
+        if sys.same(a, "--null") { null_list = true; i = i + 1; continue }
+        if sys.same(a, "--sort=name") { i = i + 1; continue } # directory listings are already sorted
+        if sys.starts(a, "--format=") { let format = sys.slice(a, 9, sys.length(a)); if !sys.same(format, "gnu") && !sys.same(format, "ustar") { sys.warn("tar", "unsupported output format"); return 1 }; options.gnu = sys.same(format, "gnu"); i = i + 1; continue }
+        if sys.starts(a, "--mtime=@") || sys.starts(a, "--owner=") || sys.starts(a, "--group=") {
+            let stamp = sys.starts(a, "--mtime=@"); let n = sys.parse_number(sys.slice(a, stamp ? 9 : 8, sys.length(a))); if !n.ok || n.value < 0 { sys.warn("tar", "invalid numeric metadata"); return 1 }; if stamp { options.mtime = n.value } else if sys.starts(a, "--owner=") { options.uid = n.value } else { options.gid = n.value }; i = i + 1; continue
+        }
         if sys.same(a, "--gzip") || sys.same(a, "--gunzip") { gzipped = true; i = i + 1; continue }
         let k = 1; let len = sys.length(a)
         while k < len {
             let c = sys.at(a, k)
             if c == 99 { mode = 1 } else if c == 120 { mode = 2 } else if c == 116 { mode = 3 } else if c == 118 { verbose = true } else if c == 122 { gzipped = true }
             else if c == 79 { to_stdout = true } else if c == 104 { follow = true } else if c == 107 { keep_old = true } else if c == 109 { set_mtime = false } else if c == 112 || c == 111 || c == 80 { }
-            else if c == 102 || c == 67 {
+            else if c == 102 || c == 67 || c == 84 {
                 let value = ""
                 if k + 1 < len { value = sys.join2(sys.slice(a, k + 1, len), ""); k = len } else if i + 1 < (words.len() as i64) { i = i + 1; value = words[i] } else { sys.warn("tar", "option requires an argument"); return 1 }
-                if c == 102 { archive = value } else { dir = value }
+                if c == 102 { archive = value } else if c == 67 { dir = value } else { lists.push(value) }
             } else { sys.warn("tar", sys.join2("unrecognized option: ", sys.join2(sys.slice(a, k, k + 1), ""))); return 1 }
             k = k + 1
         }
@@ -249,6 +263,10 @@ fn run_tar(args: Vec<str>): i64 {
     let verbose_out = archive_is_stdout(archive) ? sys.out_new(2) : out
     if sys.length(archive) > 0 && sys.at(archive, 0) != 47 && !sys.same(archive, "-") { archive = fsx.join_path(sys.current_dir(), archive) }
     if sys.length(dir) > 0 && !fsx.change_dir(dir) { sys.warn("tar", sys.join2("can't change directory to ", dir)); return 1 }
+    for list in lists {
+        let input = sys.read_path(list); if !input.ok { sys.warn_path("tar", list); return 1 }; let start = 0
+        for j in 0..(sys.blen(input.bytes) + 1) { if j == sys.blen(input.bytes) || sys.bat(input.bytes, j) == (null_list ? (0 as u8) : (10 as u8)) { if j > start { operands.push(copy_range(input.bytes, start, j)) }; start = j + 1 } }
+    }
     if mode == 1 {
         if operands.len() == 0 { sys.warn("tar", "empty archive refused"); return 1 }
         let blob = sys.bytes_new()
@@ -257,7 +275,7 @@ fn run_tar(args: Vec<str>): i64 {
             if sys.length(p) > 1 && sys.at(p, 0) == 47 { sys.warn("tar", "removing leading '/' from member names") }
             let name = sys.length(p) > 1 && sys.at(p, 0) == 47 ? clean_name(p, 0) : p
             while sys.length(name) > 1 && sys.ends(name, "/") { name = sys.join2(sys.slice(name, 0, sys.length(name) - 1), "") }
-            archive_tree(blob, p, name, follow, verbose, verbose_out, patterns)
+            archive_tree(blob, p, name, follow, verbose, verbose_out, patterns, options)
         }
         for k in 0..1024 { sys.bytes_push(blob, 0) }
         while sys.blen(blob) % 10240 != 0 { sys.bytes_push(blob, 0) }
@@ -296,7 +314,7 @@ fn run_tar(args: Vec<str>): i64 {
         if wanted {
             let shown = h.name
             if mode == 3 {
-                sys.out_str(out, verbose ? long_listing(h, shown) : shown); sys.out_byte(out, 10)
+                if options.numeric { h.uname = decimal(h.uid); h.gname = decimal(h.gid) }; sys.out_str(out, verbose ? long_listing(h, shown) : shown); sys.out_byte(out, 10)
             } else {
                 let name = clean_name(h.name, strip)
                 if sys.length(name) == 0 { off = body + padded; continue }

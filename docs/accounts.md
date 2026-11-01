@@ -114,13 +114,13 @@ credentials. It leaves the host's users, password database and PAM configuration
 unchanged. The test stages the current DevLang services itself inside that namespace.
 
 The desktop helpers `dev-os-accounts` and `dev-os-greeter-backend` now run with
-DevLang `d` (0.5.5 or newer). Their shared implementation is in `lib/accounts.dev`
+DevLang `d` (0.5.6 or newer). Their shared implementation is in `lib/accounts.dev`
 and `lib/greeter.dev`; greetd framing uses libc Unix sockets. The root-owned
 account administration and PAM verifier in `native/` also use DevLang, with
 absolute `/usr/bin/d` launchers and root-owned imports under `/usr/share/dev-os`.
 OAuth tokens and passwords do not enter command arguments or UI replies.
 
-The WSL service installer requires a root-owned DevLang 0.5.5+ runtime at
+The WSL service installer requires a root-owned DevLang 0.5.6+ runtime at
 `/usr/bin/d` (and its companion `devrun`). The image recipe installs these paths.
 `native/privileged.dev` reads configuration through descriptors with `O_NOFOLLOW`,
 checks ownership/mode using the portable Linux `statx` layout, and serializes

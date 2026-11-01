@@ -6,7 +6,7 @@ SRC_URI = "file://devospm-cli.tar.gz;unpack=0 file://devospm-LICENSE file://devo
 S = "${UNPACKDIR}"
 # The CLI is DevLang source run by `d`; it shells out to the standard tools for archives and downloads.
 inherit allarch
-RDEPENDS:${PN} = "devlang ca-certificates coreutils tar gzip xz zstd bzip2 cpio binutils curl findutils"
+RDEPENDS:${PN} = "devlang util-linux-flock ca-certificates coreutils tar gzip xz zstd bzip2 cpio binutils curl findutils"
 do_install() {
     install -d ${D}${bindir} ${D}${datadir}/devos-pm/cli
     tar -xzf ${UNPACKDIR}/devospm-cli.tar.gz -C ${D}${datadir}/devos-pm/cli --no-same-owner

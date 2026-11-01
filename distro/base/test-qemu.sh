@@ -17,4 +17,4 @@ grep -F 'DEVOS_BASE_SMOKE_PASS' "$work/output/qemu-boot.log"
 grep -F "$(cat "$work/output/kernelrelease.txt")" "$work/output/qemu-boot.log"
 if grep -F 'Kernel panic' "$work/output/qemu-boot.log"; then exit 1; fi
 grep -F 'reboot: Power down' "$work/output/qemu-boot.log" || grep -F 'reboot: Power off' "$work/output/qemu-boot.log"
-echo 'PASS: DevOsLinuxKernel image and independent userspace booted and powered off in QEMU.'
+echo 'PASS: linux-kernel image and independent userspace booted and powered off in QEMU.'

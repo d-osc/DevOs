@@ -113,15 +113,15 @@ jobs:
         run: |
           machine=$(uname -m)
           case "$machine" in
-            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
-            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
+            aarch64) arch=arm64; checksum=7fac5642a09c6b7a5590e742fc4d708621c8e2e374deb2509a04729e620ec644 ;;
+            x86_64) arch=x86_64; checksum=1439bc036c7b3a676ea41f43fa89255f17c3c73356e18dd9528fe62caeab8b76 ;;
             *) exit 1 ;;
           esac
-          archive="devlang-d-v0.5.5-linux-$arch.tar.gz"
-          curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/v0.5.5/$archive"
+          archive="devlang-d-v0.5.6-linux-$arch.tar.gz"
+          curl --fail --location --output "$RUNNER_TEMP/$archive" "https://github.com/d-osc/DevLang/releases/download/v0.5.6/$archive"
           printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/$archive" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/devlang-d-v0.5.5-linux-$arch" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/devlang-d-v0.5.6-linux-$arch" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run build
       - name: Package the update archive

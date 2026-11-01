@@ -11,6 +11,7 @@ use "./store.dev" as store_mod
 use "./manifest.dev" as manifest
 use "./download.dev" as download
 use "./update.dev" as update
+use "./catalog.dev" as catalog
 
 struct Options {
     root str
@@ -29,7 +30,9 @@ fn usage(): str {
     text = text + "Usage: dev [OPTIONS] <COMMAND>\n"
     text = text + "\n"
     text = text + "Commands:\n"
-    text = text + "  install <archive>  Install a local file or HTTP(S) URL (.dpk, .dpkx, .tar.gz, .deb, .rpm, or a Dev OS extension) [aliases: add, i]\n"
+    text = text + "  install <name|archive> Install a catalog app, local file or HTTP(S) URL (.dpk, .dpkx, .tar.gz, .deb, .rpm, or a Dev OS extension) [aliases: add, i]\n"
+    text = text + "  catalog [--json]  Read the shared app-db catalog and installed bindings\n"
+    text = text + "  search <query> [--json] Search the same app database as App Store\n"
     text = text + "  list               Show installed packages and Dev OS extensions\n"
     text = text + "  info <name>        Show package or extension metadata and installation path\n"
     text = text + "  verify [name]      Check installed file hashes, sizes and executable permissions\n"
@@ -41,6 +44,7 @@ fn usage(): str {
     text = text + "  self-update        Update the dev CLI itself from the d-osc/DevOsPM latest release\n"
     text = text + "\n"
     text = text + "Options:\n"
+    text = text + "      --catalog <PATH>             App Store catalog source directory or bundled JSON\n"
     text = text + "      --root <DEV_ROOT>            Package store (default: $DEV_ROOT or ~/.local/share/devos)\n"
     text = text + "      --devos-data <DEV_OS_DATA>   Dev OS data directory for extensions (default: $XDG_DATA_HOME/dev-os)\n"
     text = text + "      --applications <DIR>         Launcher applications directory (default: $XDG_DATA_HOME/applications)\n"
@@ -54,14 +58,16 @@ fn usage(): str {
 fn command_flags(command str): Map<str, bool> {
     # option name -> takes a value
     let options = Map<str, bool>()
+    options.set("catalog", true)
     if command == "install" || command == "add" || command == "i" {
         options.set("name", true)
         options.set("version", true)
         options.set("sha256", true)
         options.set("replace", false)
         options.set("no-desktop", false)
+        options.set("catalog-id", true)
     }
-    if command == "list" { options.set("json", false) }
+    if command == "list" || command == "catalog" || command == "search" { options.set("json", false) }
     if command == "remove" || command == "uninstall" || command == "un" || command == "rm" {
         options.set("purge", false)
     }
@@ -83,7 +89,7 @@ fn canonical_command(command str): str {
 
 fn known_command(command str): bool {
     let commands = Vec<str>("install", "add", "i", "list", "info", "verify", "remove", "uninstall",
-        "un", "rm", "rollback", "run", "pack", "update", "self-update")
+        "un", "rm", "rollback", "run", "pack", "update", "self-update", "catalog", "search", "catalog-bind")
     for i in 0..commands.len() as i64 {
         if commands[i as usize] == command { return true }
     }
@@ -105,7 +111,7 @@ fn parse_args(args Vec<str>): Options {
             options.command = "version"
             return options
         }
-        if token == "--root" || token == "--devos-data" || token == "--applications" {
+        if token == "--root" || token == "--devos-data" || token == "--applications" || token == "--catalog" {
             if index + 1 >= args.len() as i64 {
                 result.raise("a value is required for '${token}' but none was supplied")
             }
@@ -113,6 +119,7 @@ fn parse_args(args Vec<str>): Options {
             if token == "--root" { options.root = args[index as usize] }
             if token == "--devos-data" { options.devos_data = args[index as usize] }
             if token == "--applications" { options.applications = args[index as usize] }
+            if token == "--catalog" { options.values.set("catalog", args[index as usize]) }
             index = index + 1
             continue
         }
@@ -198,6 +205,25 @@ fn run_cli(args Vec<str>): i64 {
         print("dev ${util.version()}")
         return 0
     }
+    if options.command == "catalog" || options.command == "search" {
+        let data = catalog.load(value_of(options.values,"catalog"))
+        if options.command == "search" {
+            if options.positionals.len() != 1 { result.raise("Usage: dev search QUERY [--json]") }
+            let query = strings.toLowerCase(options.positionals[0]); let matches = json.array(); let rows = json.get(data,"apps")
+            for i in 0..(json.len(rows) as i64) { let row = json.at(rows,i); let m = json.get(row,"manifest"); if strings.contains(strings.toLowerCase(json.stringify(m)),query) { matches = json.push(matches,row) } }
+            if options.flags.contains("json") { print(json.stringify(matches)) } else { for i in 0..(json.len(matches) as i64) { let m = json.get(json.at(matches,i),"manifest"); print(catalog.text(m,"id") + "\t" + catalog.text(m,"name") + "\t" + catalog.text(m,"status")) } }; return 0
+        }
+        if options.positionals.len() != 0 { result.raise("Usage: dev catalog [--json]") }
+        let store = store_mod.open_store(options.root,options.devos_data,options.applications,false)
+        let out = json.set(data,"bindings",catalog.bindings(store.registry)); out = json.set(out,"store",store.root)
+        if options.flags.contains("json") { print(json.stringify(out)) } else { let rows = json.get(data,"apps"); for i in 0..(json.len(rows) as i64) { let m = json.get(json.at(rows,i),"manifest"); print(catalog.text(m,"id") + "\t" + catalog.text(m,"name")) } }; return 0
+    }
+    if options.command == "catalog-bind" {
+        if options.positionals.len() != 2 { result.raise("Usage: dev catalog-bind ID INSTALLED_PACKAGE") }
+        let data = catalog.load(value_of(options.values,"catalog")); let row = catalog.find(data,options.positionals[0])
+        let store = store_mod.open_store(options.root,options.devos_data,options.applications,true)
+        store = store_mod.bind_catalog(store,options.positionals[1],catalog.metadata(data,row)); store_mod.release_lock(store); print("Catalog binding recorded."); return 0
+    }
     if options.command == "pack" {
         if options.positionals.len() != 1 { result.raise("Usage: dev pack <directory>") }
         let output = value_of(options.values, "output")
@@ -208,37 +234,48 @@ fn run_cli(args Vec<str>): i64 {
         return 0
     }
     if options.command == "update" {
-        return update.update_run(options.root, options.devos_data, options.applications, options.positionals)
+        let names = options.positionals
+        if names.len() > 0 { let store = store_mod.open_store(options.root,options.devos_data,options.applications,false); for i in 0..(names.len() as i64) { names[i] = catalog.installed_name(store.registry,names[i]) } }
+        return update.update_run(options.root, options.devos_data, options.applications, names)
     }
     if options.command == "self-update" {
         return update.self_update()
     }
 
-    # Download before opening the store so slow networks do not block readers.
+    # Download before the write lock, then commit package and catalog identity together.
     let downloaded = download.Resolved(false, "", "", "")
+    let selected = store_mod.JsonBox(json.null_value())
     if options.command == "install" {
-        if options.positionals.len() != 1 { result.raise("Usage: dev install <archive>") }
-        progress.stage("Preparing installation...")
-        downloaded = download.resolve(options.positionals[0])
+        if options.positionals.len() != 1 { result.raise("Usage: dev install <name|archive>") }
+        let source = options.positionals[0]; let catalog_id = value_of(options.values,"catalog-id")
+        let named = !fs.existsSync(source) && util.identifier(source) && !strings.contains(source,".")
+        if named { if catalog_id != "" { result.raise("Use either a catalog name or --catalog-id with a package file") }; catalog_id = source }
+        if catalog_id != "" {
+            let data = catalog.load(value_of(options.values,"catalog")); let row = catalog.find(data,catalog_id); selected.value = catalog.metadata(data,row)
+            let digest = catalog.text(selected.value,"sha256")
+            if digest != "" { if value_of(options.values,"sha256") != "" && strings.toLowerCase(value_of(options.values,"sha256")) != strings.toLowerCase(digest) { result.raise("Checksum conflicts with the catalog release") }; options.values.set("sha256",digest) }
+            if named { let candidate = catalog.object(row,"candidate"); if json.has(candidate,"prepared") && !json.bool(json.get(candidate,"prepared")) { progress.notice("Upstream catalog download: DevOs compatibility is untested.") }; downloaded = catalog.fetch(row) } else { downloaded = download.resolve(source) }
+        } else { downloaded = download.resolve(source) }
     }
-
-    let write = options.command == "install" || options.command == "remove" || options.command == "rollback"
-    if options.command == "install" {
-        progress.stage("Opening package store (waiting for any active operation)...")
-    }
-    let store = store_mod.open_store(options.root, options.devos_data, options.applications, write)
-    let code = dispatch(store, options, downloaded)
-    store_mod.release_lock(store)
-    return code
+    let operation = result.attempt(fn():i64 {
+        let write = options.command == "install" || options.command == "remove" || options.command == "rollback"
+        let store = store_mod.open_store(options.root, options.devos_data, options.applications, write)
+        let ran = result.attempt(fn():i64 { return dispatch(store, options, downloaded, selected.value) })
+        store_mod.release_lock(store)
+        if result.isErr(ran) { result.raise(result.message(ran)) }; return result.unwrap(ran)
+    })
+    if downloaded.is_url && downloaded.directory != "" { util.must(Vec<str>("rm","-rf","--",downloaded.directory),"","cleaning the download") }
+    if result.isErr(operation) { result.raise(result.message(operation)) }; return result.unwrap(operation)
 }
 
-fn dispatch(store store_mod.Store, options Options, downloaded download.Resolved): i64 {
+fn dispatch(store store_mod.Store, options Options, downloaded download.Resolved, catalog_metadata json.Value): i64 {
+    if options.command == "info" || options.command == "verify" || options.command == "remove" || options.command == "rollback" { for i in 0..(options.positionals.len() as i64) { options.positionals[i] = catalog.installed_name(store.registry,options.positionals[i]) } }
     if options.command == "install" {
         let archive_path = options.positionals[0]
         if downloaded.is_url { archive_path = downloaded.path }
         let source_repository = ""
-        if downloaded.is_url { source_repository = update.repository_slug(options.positionals[0]) }
-        let pair = store_mod.install(
+        if downloaded.is_url && strings.contains(options.positionals[0], "://") { source_repository = update.repository_slug(options.positionals[0]) }
+        let pair = store_mod.install_with_catalog(
             store,
             archive_path,
             value_of(options.values, "name"),
@@ -246,7 +283,7 @@ fn dispatch(store store_mod.Store, options Options, downloaded download.Resolved
             value_of(options.values, "sha256"),
             options.flags.contains("replace"),
             options.flags.contains("no-desktop"),
-            source_repository)
+            source_repository, catalog_metadata)
         progress.finish()
         if !pair.outcome.is_extension {
             print("Installed ${pair.outcome.name} ${pair.outcome.version}")
@@ -267,15 +304,13 @@ fn dispatch(store store_mod.Store, options Options, downloaded download.Resolved
             print("Path: ${pair.outcome.path}")
             print("Restart the Dev OS session to load the extension.")
         }
-        if downloaded.is_url && downloaded.directory != "" {
-            util.must(Vec<str>("rm", "-rf", "--", downloaded.directory), "", "cleaning the download")
-        }
         return 0
     }
     if options.command == "list" {
         if options.flags.contains("json") {
             let payload = json.set(json.object(), "packages", json.get(store.registry, "packages"))
             payload = json.set(payload, "extensions", json.get(store.registry, "extensions"))
+            payload = json.set(payload,"bindings",catalog.bindings(store.registry))
             print(json.stringify(payload))
             return 0
         }
@@ -342,10 +377,8 @@ fn dispatch(store store_mod.Store, options Options, downloaded download.Resolved
         let name = options.positionals[0]
         if options.flags.contains("purge") && store_mod.has_extension(store, name) {
             let purged = store_mod.remove_extension_flow(store, name, true)
-            store_mod.release_lock(purged)
         } else {
             let updated = store_mod.remove_package(store, name)
-            store_mod.release_lock(updated)
         }
         print("Removed ${name}")
         return 0
@@ -354,7 +387,6 @@ fn dispatch(store store_mod.Store, options Options, downloaded download.Resolved
         if options.positionals.len() != 1 { result.raise("Usage: dev rollback <name>") }
         let name = options.positionals[0]
         let rolled = store_mod.rollback_package(store, name)
-        store_mod.release_lock(rolled.store)
         print("Rolled back ${name} to ${rolled.version}")
         return 0
     }

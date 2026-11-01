@@ -48,9 +48,9 @@ if [ "${1:-}" = "--test" ]; then
         sleep 2
         echo "dev list"
         sleep 2
-        echo "dev install /root/packages/hello-1.0.0.dpk"
+        echo "dev install /root/packages/greeting-extension-1.0.0.dpk"
         sleep 5
-        echo "dev run hello"
+        echo "dev run extension-hello"
         sleep 3
         echo "dev list"
         sleep 2
@@ -75,7 +75,7 @@ if [ "${1:-}" = "--test" ]; then
        && grep -q "$KERNEL_VERSION-devos" "$OUT/boot-test.log" \
        && grep -q "PRETTY_NAME=\"DevOs" "$OUT/boot-test.log" \
        && grep -Eq 'dev [0-9]+\.[0-9]+' "$OUT/boot-test.log" \
-       && grep -q "Hello, Dev OS!" "$OUT/boot-test.log" \
+       && grep -q "Hello from greeting-extension, Dev OS!" "$OUT/boot-test.log" \
        && grep -q "git version" "$OUT/boot-test.log" \
        && grep -q "gh version" "$OUT/boot-test.log" \
        && grep -Eq '^[0-9a-f]{40}[[:space:]]+HEAD' "$OUT/boot-test.log"; then

@@ -1,0 +1,17 @@
+use "std/args"
+use "std/json"
+use "std/result"
+use "std/strings"
+use "std/path"
+use "std/module"
+use "./database.dev" as database
+fn main():i32 {
+    let source = path.dirname(module.entry()); let arch = "arm64"
+    let i = 0
+    while i < (args.len() as i64) { if args.get(i) == "--source" && i + 1 < (args.len() as i64) { source = args.get(i + 1); i = i + 2 } else if args.get(i) == "--arch" && i + 1 < (args.len() as i64) { arch = args.get(i + 1); i = i + 2 } else { return 2 } }
+    if arch == "aarch64" { arch = "arm64" }; if arch == "amd64" { arch = "x86_64" }
+    let loaded = result.attempt(fn():json.Value { return database.load(source,arch) })
+    if result.isErr(loaded) { print(json.stringify(json.set(json.object(),"error",result.message(loaded)))); return 1 }
+    print(json.stringify(result.unwrap(loaded))); return 0
+}
+return main()

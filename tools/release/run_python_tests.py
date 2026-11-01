@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the Python tests that need no hardware, root, QEMU, WSL or OpenEmbedded build (used by CI and releases).
 
-Most tests run the real DevLang `d` (v0.5.5+, from PATH or $DEVLANG_BIN); without it they fail on import.
+Most tests run the real DevLang `d` (v0.5.6+, from PATH or $DEVLANG_BIN); without it they fail on import.
 Each test runs in its own process, as `python3 tests/<name>.test.py`.
 """
 import os

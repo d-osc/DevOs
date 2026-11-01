@@ -1,4 +1,4 @@
-# Snapshot the sibling DevOsLinuxKernel inputs without changing its checkout.
+# Snapshot the selected linux-kernel inputs without changing its checkout.
 use "std/fs"
 use "std/json"
 use "std/child_process"
@@ -40,14 +40,13 @@ fn captureOutput(command: str): str {
 fn snapshot(destination: str, projectArg: str): json.Value {
     let project = projectArg
     if strings.equal(project, "") {
-        project = process.getenv("DEVOS_KERNEL_PROJECT")
-        if strings.equal(project, "") { project = defaultProject() }
+        project = defaultProject()
     }
     let common = fs.readFileSync(project + "/scripts/common.sh", "utf8")
     let anchor = "export KERNEL_VERSION=\""
     let at = strings.indexOf(common, anchor)
     if at < 0 {
-        print("Cannot read the DevOsLinuxKernel kernel version.")
+        print("Cannot read the linux-kernel kernel version.")
         return json.null_value()
     }
     let start = at + (strings.len(anchor) as i64)
@@ -68,7 +67,7 @@ fn snapshot(destination: str, projectArg: str): json.Value {
         if i == 2 { path = image }
         if i == 3 { path = fragment }
         if !fs.existsSync(path) || fs.size(path) == 0 {
-            print("Missing " + path + ". Build DevOsLinuxKernel for aarch64 first, or set DEVOS_KERNEL_WORK/DEVOS_KERNEL_ARCHIVE.")
+            print("Missing " + path + ". Build linux-kernel for aarch64 first, or set DEVOS_KERNEL_WORK/DEVOS_KERNEL_ARCHIVE.")
             return json.null_value()
         }
     }

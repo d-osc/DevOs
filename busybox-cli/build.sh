@@ -8,7 +8,16 @@ output=${1:-"$root/build/busybox-cli/busybox"}
 compiler=$(sh "$root/packages/react-devlang/tools/toolchain.sh")
 mkdir -p "$(dirname -- "$output")"
 log=$(mktemp)
-if ! "$compiler" build "$here/main.dev" --release --cc "${CC:-cc}" --cache-dir "$(dirname -- "$output")/.cache" -o "$output" > "$log" 2>&1; then
+driver=$(mktemp)
+trap 'rm -f "$log" "$driver"' EXIT HUP INT TERM
+if [ "${BUSYBOX_STATIC:-0}" = 1 ]; then
+    printf '#!/bin/sh\nexec "${CC:-cc}" -static "$@"\n' > "$driver"
+    chmod 755 "$driver"
+    backend=$driver
+else
+    backend=${CC:-cc}
+fi
+if ! "$compiler" build "$here/main.dev" --release --cc "$backend" --cache-dir "$(dirname -- "$output")/.cache" -o "$output" > "$log" 2>&1; then
     grep -v 'warning\|^ *[0-9]* |\|\^~\|note:\|In file\|In function\|At top\|^$' "$log" | tail -30 >&2
     rm -f "$log"; echo "build failed" >&2; exit 1
 fi

@@ -11,7 +11,7 @@ node_modules/
 
 *.whl
 
-# projects kept in packages/
-/packages/devos-appstore/dist/
-/packages/devos-linux-kernel/output/
-/packages/devos-linux-kernel/work/
+# generated artifacts from repository projects
+/app-db/dist/
+/linux-kernel/output/
+/linux-kernel/work/

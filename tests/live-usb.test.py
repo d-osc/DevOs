@@ -100,6 +100,8 @@ exec /bin/sh "$@"
             old_init=root/'old-init';old_init.write_bytes(b'old-init')
             (tree/'init').hardlink_to(old_init)
             replacement=fake_tool(root,'new-busybox','printf "%s\\n" '+' '.join(sorted(usb.REQUIRED_APPLETS))+'\n')
+            shell=bytearray(64);shell[:6]=b'\x7fELF\x02\x01';struct.pack_into('<H',shell,18,183)
+            (root/'dash').write_bytes(shell)
             usb.install_boot_tools(tree,replacement)
             self.assertEqual(original.read_bytes(),b'old-busybox')
             self.assertEqual(old_init.read_bytes(),b'old-init')

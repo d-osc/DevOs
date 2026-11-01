@@ -45,7 +45,7 @@ polkit agent และ desktop portals ในตัว
 
 แนะนำ Ubuntu 24.04 หรือ Linux ที่มี labwc >= 0.7, GJS >= 1.74,
 GLib >= 2.80, GTK >= 3.24 และ gtk-layer-shell >= 0.6
-runtime ของ shell และ session ใช้ GJS, shell scripts และ DevLang `d` 0.5.5 ขึ้นไป
+runtime ของ shell และ session ใช้ GJS, shell scripts และ DevLang `d` 0.5.6 ขึ้นไป
 desktop helpers ใน `bin/` และบริการจัดการบัญชี/PAM/App Store ใน `native/` ใช้ DevLang
 ส่วนเครื่องมือ install / smoke test / ย้าย config ใน `tools/` ใช้ DevLang ทั้งหมด
 Node.js กับ npm ใช้ตอน build

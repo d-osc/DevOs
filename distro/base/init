@@ -11,7 +11,7 @@ hostname devos
 printf '\nDevOs independent Linux base\n'
 cat /etc/os-release
 printf 'Kernel: '; uname -r
-printf 'Userspace: BusyBox + musl, built from upstream source\n'
+printf 'Userspace: repository busybox-cli + pm-cli (DevLang), with dash\n'
 case " $(cat /proc/cmdline) " in
     *' devos.smoke=1 '*)
         test -c /dev/console
@@ -20,6 +20,7 @@ case " $(cat /proc/cmdline) " in
         test -x /bin/busybox
         test "$(sed -n 's/^ID=//p' /etc/os-release)" = devos
         printf 'DEVOS_BASE_SMOKE_PASS\n'
+        dev --version
         sync
         poweroff -f
         ;;

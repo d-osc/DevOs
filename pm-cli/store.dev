@@ -91,38 +91,25 @@ fn unique_suffix(): str {
 # marker whose process is gone is reclaimed.
 fn acquire_lock(root str, writable bool): str {
     if !writable { return "" }
-    let path = util.path_join(root, ".dev-lock")
-    if fs.existsSync(path) {
-        let pid = 0
-        let parsed = result.attempt(fn(): i64 {
-            return util.parse_int(strings.trim(fs.readFileSync(path, "utf8")))
-        })
-        let alive = false
-        match parsed {
-            Ok(value) => { pid = value }
-            Err(_) => { pid = 0 }
-        }
-        if pid > 0 {
-            alive = fs.existsSync("/proc/${pid}")
-        }
-        if alive && pid != process.pid() {
-            result.raise("Package store is busy or cannot be locked: retry after the other dev command finishes.")
-        }
-    }
-    fs.writeFileSync(path, "${process.pid()}")
+    let path = util.path_join(root,".dev-lock"); let guard = path + ".guard"
+    if util.is_symlink(guard) { result.raise("Invalid package-store lock guard") }
+    # The persistent guard inode serializes claim/reclaim/release. The PID file
+    # retains compatibility and is held logically across the whole transaction.
+    let script = ("set -eu; lock=$1; owner=$2; [ ! -L \"$lock\" ] || exit 76; " +
+        "if [ -f \"$lock\" ]; then old=$(cat \"$lock\"); case $old in ''|*[!0-9]*) old=0;; esac; " +
+        "if [ \"$old\" != \"$owner\" ] && [ -d \"/proc/$old\" ]; then exit 75; fi; fi; " +
+        "umask 077; printf '%s\\n' \"$owner\" > \"$lock\"")
+    let claimed = util.run(Vec<str>("flock","-x",guard,"sh","-c",script,"claim",path,"${process.pid()}"),"",30000)
+    if claimed.code == 127 { result.raise("flock is required to lock the package store") }
+    if !claimed.success { result.raise("Package store is busy or cannot be locked: retry after the other dev command finishes.") }
     return path
 }
 
 fn release_lock(store Store) {
-    if store.lock_path != "" {
-        let outcome = result.attempt(fn(): bool {
-            return fs.unlinkSync(store.lock_path)
-        })
-        match outcome {
-            Ok(_) => { }
-            Err(_) => { }
-        }
-    }
+    if store.lock_path == "" { return }
+    let script = ("set -eu; lock=$1; owner=$2; [ ! -L \"$lock\" ] || exit 1; " +
+        "if [ -f \"$lock\" ] && [ \"$(cat \"$lock\")\" = \"$owner\" ]; then rm -f -- \"$lock\"; fi")
+    util.run(Vec<str>("flock","-x",store.lock_path + ".guard","sh","-c",script,"release",store.lock_path,"${process.pid()}"),"",30000)
 }
 
 fn empty_registry(): json.Value {
@@ -223,12 +210,17 @@ fn open_store(root_opt str, devos_opt str, applications_opt str, writable bool):
 
 fn validate_registry(registry json.Value) {
     let generations = Map<str, bool>()
-    let commands = Map<str, bool>()
+    let commands = Map<str, bool>(); let catalog_ids = Map<str,bool>()
     let packages = json.get(registry, "packages")
     let names = json.keys(packages)
     for i in 0..names.len() as i64 {
         let name = names[i as usize]
         let package = json.get(packages, name)
+        if json.has(package,"catalog") {
+            let catalog = json.get(package,"catalog")
+            if json.kind(catalog) != "object" || !json.has(catalog,"id") || json.kind(json.get(catalog,"id")) != "string" || !util.identifier(json.string(json.get(catalog,"id"))) { result.raise("Invalid catalog binding in package registry") }
+            let id = json.string(json.get(catalog,"id")); if catalog_ids.contains(id) { result.raise("Duplicate catalog binding in package registry") }; catalog_ids.set(id,true)
+        }
         let active = json.get(package, "active")
         validate_snapshot(active, name)
         if generations.contains(json.string(json.get(active, "directory"))) {
@@ -290,6 +282,15 @@ fn save_registry(store Store, registry json.Value): Store {
     }
     store.registry = registry
     return store
+}
+
+fn bind_catalog(store Store, name str, catalog json.Value): Store {
+    if !store.writable || !has_package_named(store,name) { result.raise("Catalog binding requires an installed package and the store lock") }
+    let packages = json.get(store.registry,"packages"); let item = json.get(packages,name)
+    if json.has(item,"catalog") { return store }
+    let id = json.string(json.get(catalog,"id"))
+    for other in package_names(store) { let record = json.get(packages,other); if json.has(record,"catalog") && json.string(json.get(json.get(record,"catalog"),"id")) == id { return store } }
+    item = json.set(item,"catalog",catalog); return save_registry(store,json.set(store.registry,"packages",json.set(packages,name,item)))
 }
 
 fn snapshot_path(store Store, snapshot json.Value): str {
@@ -468,6 +469,9 @@ fn detect_icon(m manifest.Manifest, files json.Value): manifest.Manifest {
 
 # Manager::install. Returns the outcome record for the CLI layer.
 fn install(store Store, archive_path str, opt_name str, opt_version str, opt_sha256 str, opt_replace bool, opt_no_desktop bool, source_repository str): StoreAndOutcome {
+    return install_with_catalog(store, archive_path, opt_name, opt_version, opt_sha256, opt_replace, opt_no_desktop, source_repository, json.null_value())
+}
+fn install_with_catalog(store Store, archive_path str, opt_name str, opt_version str, opt_sha256 str, opt_replace bool, opt_no_desktop bool, source_repository str, catalog json.Value): StoreAndOutcome {
     if !store.writable { result.raise("Install requires an exclusive store lock") }
     if archive.package_stem(archive_path) == "" {
         result.raise("Package filename must end in .dpk, .dpkx, .tar.gz, .deb or .rpm")
@@ -491,6 +495,7 @@ fn install(store Store, archive_path str, opt_name str, opt_version str, opt_sha
         progress.notice("skipped ${extracted.skipped} symlink(s)/special file(s) in the package")
     }
 
+    if !json.is_null(catalog) && json.has(files, "extension/extension.json") { result.raise("An application download must not install an extension") }
     if json.has(files, "extension/extension.json") {
         if json.has(files, "package.json") || json.has(files, "dev-package.json") {
             result.raise("Archive mixes a Dev OS extension with package.json manifests")
@@ -582,6 +587,13 @@ fn install(store Store, archive_path str, opt_name str, opt_version str, opt_sha
         }
         existing = json.get(json.get(store.registry, "packages"), m.name)
     }
+    if !json.is_null(catalog) {
+        let expected = json.get(catalog,"expectedPackage")
+        if json.has(expected,"name") && json.string(json.get(expected,"name")) != m.name { result.raise("Catalog package name does not match the archive") }
+        if json.has(expected,"version") && json.string(json.get(expected,"version")) != m.version { result.raise("Catalog version does not match the archive") }
+        let id = json.string(json.get(catalog,"id"))
+        for name in package_names(store) { let item = json.get(json.get(store.registry,"packages"),name); if name != m.name && json.has(item,"catalog") && json.string(json.get(json.get(item,"catalog"),"id")) == id { result.raise("Catalog app is already bound to another installed package") } }
+    }
     let names = package_names(store)
     for i in 0..names.len() as i64 {
         if names[i as usize] != m.name {
@@ -612,6 +624,7 @@ fn install(store Store, archive_path str, opt_name str, opt_version str, opt_sha
     let updated = json.set(json.object(), "active", snapshot)
     # `previous` is always present (null when there is none), as in the Rust build's registry and `list --json`.
     updated = json.set(updated, "previous", json.null_value())
+    if !json.is_null(catalog) { updated = json.set(updated,"catalog",catalog) } else if !json.is_null(existing) && json.has(existing,"catalog") { updated = json.set(updated,"catalog",json.get(existing,"catalog")) }
     if !json.is_null(existing) {
         updated = json.set(updated, "previous", json.get(existing, "active"))
     }
@@ -820,6 +833,7 @@ fn rollback_package(store Store, name str): StoreAndVersion {
     }
     let version = previous_manifest.version
     let updated = json.set(json.object(), "active", previous)
+    if json.has(package,"catalog") { updated = json.set(updated,"catalog",json.get(package,"catalog")) }
     updated = json.set(updated, "previous", json.get(package, "active"))
     let packages = json.set(json.get(store.registry, "packages"), name, updated)
     let registry = json.set(store.registry, "packages", packages)

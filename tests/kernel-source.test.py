@@ -16,6 +16,10 @@ class Kernel:
     @staticmethod
     def snapshot(destination, project):
         fixture = BridgeFixture('distro/kernel.dev')
+        # sources.dev also imports the host I/O module outside lib/.
+        hostio = fixture.root / 'distro/usb/hostio.dev'
+        hostio.parent.mkdir(parents=True, exist_ok=True)
+        hostio.write_bytes((Path(__file__).resolve().parents[1] / 'distro/usb/hostio.dev').read_bytes())
         try:
             value = fixture.value(f'bridge.snapshot({json.dumps(str(destination))}, {json.dumps(str(project))})')
             if value is None: raise ValueError(fixture.output)
@@ -25,7 +29,7 @@ kernel = Kernel()
 
 class KernelSourceTest(unittest.TestCase):
     def fixture(self,root,archive_version='1.2.3'):
-        project=root/'DevOsLinuxKernel'
+        project=root/'linux-kernel'
         for directory in ('scripts','config','output'):(project/directory).mkdir(parents=True)
         (project/'scripts/common.sh').write_text('export KERNEL_VERSION="1.2.3"\n')
         (project/'config/kernel-fragment.config').write_text('CONFIG_LOCALVERSION="-devos"\n')
@@ -47,6 +51,19 @@ class KernelSourceTest(unittest.TestCase):
                 self.assertEqual(record['image_sha256'],kernel.digest(root/'payload/devos-kernel-Image'))
                 self.assertEqual(json.loads((root/'payload/devos-kernel.json').read_text())['project'],str(project))
                 self.assertEqual(kernel.snapshot(root/'payload',project),record)
+    def test_default_snapshot_uses_kernel_inside_repo(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);project,archive=self.fixture(root)
+            with patch.dict(os.environ,{'DEVOS_REPO_ROOT':str(root),'DEVOS_KERNEL_PROJECT':'','DEVOS_KERNEL_ARCHIVE':str(archive)}):
+                record=kernel.snapshot(root/'payload','')
+                self.assertEqual(record['project'],str(root/'linux-kernel'))
+                self.assertEqual(record['image_sha256'],kernel.digest(project/'output/devos-Image-1.2.3-aarch64'))
+    def test_explicit_environment_override_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);project,archive=self.fixture(root)
+            with patch.dict(os.environ,{'DEVOS_REPO_ROOT':str(root/'other-repo'),'DEVOS_KERNEL_PROJECT':str(project),'DEVOS_KERNEL_ARCHIVE':str(archive)}):
+                record=kernel.snapshot(root/'payload','')
+                self.assertEqual(record['project'],str(project))
     def test_wrong_source_version_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);project,archive=self.fixture(root,'1.2.4')

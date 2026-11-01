@@ -4,7 +4,7 @@ inherit core-image
 IMAGE_FEATURES = "package-management"
 PACKAGE_EXCLUDE += "foot byobu vim vim-common vim-tiny vim-tools vim-syntax vim-help vim-tutor gvim"
 # No VS Code, Chrome, Rust, Node.js/nvm, Python or QEMU in the image: the Settings helpers (bin/dev-os-*) are DevLang scripts.
-IMAGE_INSTALL = "packagegroup-core-boot kernel-modules os-release devos-shell devos-session \
+IMAGE_INSTALL = "devos-busybox packagegroup-core-boot kernel-modules os-release devos-shell devos-session \
     gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc swaylock grim \
     dbus util-linux-setsid util-linux-lscpu libnm networkmanager networkmanager-nmcli \
     network-manager-applet gnome-control-center \

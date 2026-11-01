@@ -77,7 +77,7 @@ PM ไม่ติดตั้ง dependencies, ไม่รัน maintainer sc
 
 `releases[].version` คือ version ที่ PM ติดตั้งแล้วรายงานจริง ต้องตรง artifact.package.version ไม่บังคับ SemVer เพราะ PM ยอมรับตัวอักษร ตัวเลข . _ + - และมี normalization สำหรับ deb/rpm อย่าตัดสินว่า string ที่ต่างคือเวอร์ชันใหม่กว่าโดยไม่มี comparator/policy
 
-`artifact.package` เป็น expected metadata สำหรับตรวจผล ไม่ใช่การสั่งให้ PM override manifest จาก registry PM ไม่อ่าน field นี้ในปัจจุบัน ถ้าเป็น dpk ให้ฝัง package.json ที่ตรงกันใน payload จริง ถ้าเป็น deb/rpm ต้อง inspect ว่า installed metadata ตรง รวมถึงชื่อที่ normalize แล้ว ห้ามคัดลอก app.json ทั้งก้อนไปเป็น package.json เพราะ PM deny_unknown_fields
+`artifact.package` เป็น expected metadata สำหรับตรวจผล ไม่ใช่การสั่งให้ PM override manifest จาก registry PM อ่านชื่อ/รุ่นที่คาดไว้และ SHA-256 เพื่อตรวจ prepared release ถ้าเป็น dpk ให้ฝัง package.json ที่ตรงกันใน payload จริง ถ้าเป็น deb/rpm ต้อง inspect ว่า installed metadata ตรง รวมถึงชื่อที่ normalize แล้ว ห้ามคัดลอก app.json ทั้งก้อนไปเป็น package.json เพราะ PM deny_unknown_fields
 
 แบบ canonical ของ package ใช้ kind, name, shortname, fullname, version, description, homepage, storepage, icon, repository, bin, contextmenu ตาม implementation app.schema.json ใช้กับ app โดยเฉพาะ ส่วน extension ใช้ extension.schema.json และ extension-manifest.schema.json แยก lifecycle ตาม extension.json
 
@@ -100,19 +100,33 @@ DevOs ใช้ Gio.AppInfoMonitor ตรวจพบการเปลี่ย
 
 ไม่มี field สำหรับ launcher args, working directory, terminal true หรือ desktop placement ใน PM manifest ปัจจุบัน ห้าม advertise ว่ารองรับ หากแอปต้องการ behavior เพิ่มต้องทำ wrapper ที่ตรวจแล้วหรือเปลี่ยน consumer ก่อน การสร้าง launcher/shim ล้มเหลวใน PM เป็น warning หลัง commit install ไม่ rollback package อัตโนมัติ
 
-## 8. Flow ที่ต้องพัฒนาเพิ่มสำหรับ dev install NAME
+## 8. ฐานข้อมูลร่วมสำหรับ CLI และ App Store
 
-1. resolver อ่าน index และ manifest จาก immutable snapshot เดียวกัน ตรวจ schema_version
-2. exact match id/aliases แบบ lowercase; ไม่เลือกจาก fuzzy/display-name matches อัตโนมัติ
-3. ตรวจ status, target, backend, scope และ compatibility ห้าม fallback ไป opkg/root หรือแอป x64
-4. เลือก stable release ที่แสดงให้ผู้ใช้แล้ว ตรวจ url/format/hash
-5. เรียก PM โดยส่ง argv แยก เช่น PM install URL --sha256 HASH; ใช้ replace เฉพาะเมื่อผู้ใช้กำลังอัปเดตแพ็กเกจที่ตรงกัน
-6. อ่าน PM list --json ตรวจ package.name/version/bin จากผลจริง ไม่สร้าง installed receipt ซ้ำกับฐานข้อมูล PM
-7. adapter เก็บเฉพาะ mapping registry ID ↔ backend/scope/package name และ snapshot ที่ใช้ เพื่อ join Store กับ local state; อย่าแก้ registry.json ของ PM ตรงๆ
+Reader กลางอยู่ที่ `database.dev`/`database-cli.dev` อ่าน app.json จากแพ็กเกจนี้
+PM ใช้ `dev catalog --json` และ `dev search` เพื่อเปิดเผยข้อมูลชุดเดียวกับ GUI
+resolver ของ `dev install NAME` exact-match id/aliases; ไม่เลือกชื่อจาก fuzzy match
+แพ็กเกจ local ที่มีอยู่ยังคงเป็น local input ไม่ถูกแทนด้วย catalog lookup
 
-CLI ที่มีอยู่ตอนนี้ยังตีความ NAME เป็น local path DevOs RegistryManager ปัจจุบันเพิ่มขั้น download → inspect → ยืนยัน → ส่ง local path ให้ Packages backend แล้ว จึงรองรับ upstream catalog แบบให้ผู้ใช้ review แม้ยัง untested แต่ไม่เท่ากับ verified prepared release ของ registry ชื่อ executable ตรวจว่าเป็น DevOsPM ไม่ใช่ alias DevLang โดยมี DEV_OS_PM เป็น override
+Prepared stable release ต้องตรง Linux/architecture/backend devospm/user scope
+และมี SHA-256 ชื่อ/รุ่น package ที่คาดไว้ PM ตรวจ digest และ identity ของไฟล์จริง
+ก่อน commit ส่วน catalog-only entry อนุญาตการติดตั้ง upstream ผ่านคำสั่ง install
+ที่ผู้ใช้ระบุอย่างชัดเจนพร้อมข้อความว่า compatibility ยังไม่ผ่านการรับรอง
+ไม่มีการเปลี่ยน status ให้เป็น verified และไม่มีการติดตั้งเมื่ออ่านรายการ
 
-สำหรับ VS Code upstream redirect URL ที่ไม่มี suffix ให้ preparer ดาวน์โหลดเป็น .deb ก่อนตรวจไฟล์ อย่าส่ง redirect endpoint นั้นตรงเข้า PM ปัจจุบัน Adapter ใน DevOs ทำขั้นนี้แล้ว แต่ CLI ตรงยังมี suffix gate
+Catalog download ใช้ HTTPS และ redirect ที่เป็น HTTPS เท่านั้น จำกัด 2 GiB
+บันทึก endpoint ลงไฟล์ suffix ตาม format ก่อนเรียก installer จึงรองรับ URL
+ของ VS Code ที่ไม่มี suffix ได้ ส่วน `dev install URL` ตรงยังคง suffix gate เดิม
+
+PM บันทึก snapshot metadata ใน `packages[actual-package-name].catalog` พร้อม
+การติดตั้งภายใต้ lock และ atomic registry commit เดียวกัน GUI ไม่เขียน registry
+หรือ binding file แยกอีกต่อไป replace/rollback คง association และ remove ลบพร้อมกัน
+PM list/canonical catalog query เป็นแหล่ง installed state เดียวสำหรับทั้งสอง client
+
+Legacy bindings ของ GUI ย้ายผ่านคำสั่ง PM ที่ตรวจ package/id จริง ไม่ทับ binding
+ปัจจุบัน และเก็บ JSON เดิมเป็น `.migrated` เพื่อไม่ resurrect หลัง uninstall
+`--root`/`DEV_ROOT` ยังคงแยก installed store ส่วน catalog override คือ `--catalog`
+หรือ `DEVOS_APPSTORE_DATABASE` Source release/image ต้อง bundle catalog-data ด้วย
+`pm-cli/stage.sh`; self-update ไม่รับ CLI payload ที่ขาดฐานข้อมูลร่วมนี้
 
 ## 9. Native AppStore เป็นอีก delivery adapter
 

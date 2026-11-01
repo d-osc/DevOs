@@ -2,7 +2,7 @@
 
 ## Base developer tools
 
-The base image ships Git, the DevOs package manager (`dev`), DevLang 0.5.5
+The base image ships Git, the DevOs package manager (`dev`), DevLang 0.5.6
 (`d`, `devrun`, `devc`) and GitHub CLI 2.102.1 (`gh`) in `/usr/bin` alongside
 the desktop. DevLang recipes are pinned to upstream release archives with
 SHA-256 verification and provenance recorded in `/usr/share/devlang` and
@@ -52,3 +52,7 @@ Validation:
 - `bash distro/oe/build.sh --parse` checks recipes and the image dependency graph.
 - `python3 tests/oe-image-toolchains.test.py` checks that the removed components stay out of `IMAGE_INSTALL`.
 - A full image build and target boot are separate from development-host testing.
+
+DevLang release v0.5.6 currently prints `d 0.5.5` because the upstream CLI
+version string was not bumped. Image checks use the release provenance and
+binary SHA-256 values rather than this string alone.

@@ -24,7 +24,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract the desktop runtime in Linux.' }
     # Keep the source runtime available when launching under another Linux user.
     $taskDevlang = (& wsl -d Ubuntu --exec sh "$taskNativeRoot/packages/react-devlang/tools/toolchain.sh" --runtime).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $taskDevlang) { throw 'Install DevLang d 0.5.5 or newer in WSL before starting DevOs.' }
+    if ($LASTEXITCODE -ne 0 -or -not $taskDevlang) { throw 'Install DevLang d 0.5.6 or newer in WSL before starting DevOs.' }
     $taskDevlang = (& wsl -d Ubuntu --exec readlink -f $taskDevlang).Trim()
     $taskDevlangDirectory = $taskDevlang.Substring(0, $taskDevlang.LastIndexOf('/'))
     & wsl -d Ubuntu --exec cp -- $taskDevlang "$taskDevlangDirectory/devrun" "$taskStage/build/wsl/bin/"

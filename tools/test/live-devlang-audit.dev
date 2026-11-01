@@ -40,8 +40,8 @@ fn main(): i32 {
         for name in Vec<str>("d", "devrun", "devc") {
             let extracted = temporary + "/" + name
             tool.exec(Vec<str>("debugfs", "-R", "dump /usr/bin/" + name + " " + extracted, image))
-            let pinned = tool.root() + "/build/devlang-v0.5.5/devlang-d-v0.5.5-linux-arm64/" + name
-            tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(pinned)), "Pinned DevLang 0.5.5 binary mismatch: " + name)
+            let pinned = tool.root() + "/build/devlang-v0.5.6/devlang-d-v0.5.6-linux-arm64/" + name
+            tool.require(fs.is_file(extracted) && strings.equal(feed.sha(extracted), feed.sha(pinned)), "Pinned DevLang 0.5.6 binary mismatch: " + name)
             result = json.set(result, "/usr/bin/" + name, feed.sha(extracted))
         }
         for obsolete in Vec<str>("devos_accounts_system.py", "devos_app_store.py") {
@@ -50,7 +50,7 @@ fn main(): i32 {
         }
         tool.jsonWrite(staging + "/devlang-audit.json", json.set(result, "result", "PASS"))
     })
-    print("PASS: all installed desktop helpers, native services and shared libraries match current sources; DevLang 0.5.5 binaries verified")
+    print("PASS: all installed desktop helpers, native services and shared libraries match current sources; DevLang 0.5.6 binaries verified")
     return 0
 }
 return tool.main(main)

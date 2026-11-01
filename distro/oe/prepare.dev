@@ -11,6 +11,7 @@ use "std/module"
 use "../../lib/posix.dev" as posix
 use "../kernel.dev" as kernel
 use "../pm.dev" as pm
+use "../busybox.dev" as busybox
 use "../devlang.dev" as devlang
 use "../gh.dev" as gh
 
@@ -131,7 +132,10 @@ fn main(): i32 {
     fs.mkdirSync(payload, true)
     let kernelRecord = kernel.snapshot(payload, kernelProject)
     if json.is_null(kernelRecord) { return 1 }
-    if json.is_null(pm.snapshot(payload)) { return 1 }
+    let pmRecord = pm.snapshot(payload)
+    if json.is_null(pmRecord) { return 1 }
+    let busyboxRecord = busybox.snapshot(payload)
+    if json.is_null(busyboxRecord) { return 1 }
     let devlangRecord = devlang.snapshot(payload)
     if json.is_null(devlangRecord) { return 1 }
     let ghRecord = gh.snapshot(payload)
@@ -145,6 +149,8 @@ fn main(): i32 {
     devlangBin = strings.trim(devlangBin)
     let provenance = json.set(json.object(), "sources", sources)
     provenance = json.set(provenance, "kernel", kernelRecord)
+    provenance = json.set(provenance, "pm", pmRecord)
+    provenance = json.set(provenance, "busybox", busyboxRecord)
     provenance = json.set(provenance, "devlang", devlangRecord)
     provenance = json.set(provenance, "gh", ghRecord)
     provenance = json.set(provenance, "payload_sha256", sha256File(archive))

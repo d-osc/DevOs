@@ -235,9 +235,10 @@ fn canonical(path: str, missing_ok: bool): str {
     return result
 }
 fn run_realpath(args: Vec<str>): i64 {
-    if args.len() == 0 { say("realpath", "invalid usage: realpath pathname..."); return 1 }
+    let start = args.len() > 0 && sys.same(args[0], "--") ? 1 : 0
+    if (args.len() as i64) == start { say("realpath", "invalid usage: realpath pathname..."); return 1 }
     let out = sys.out_new(1); let status = 0
-    for i in 0..(args.len() as i64) {
+    for i in start..(args.len() as i64) {
         let resolved = canonical(args[i], false)
         if sys.length(resolved) == 0 { cant("realpath", "resolve", args[i], "No such file or directory"); status = 1; continue }
         sys.out_str(out, resolved); sys.out_byte(out, 10)
@@ -286,7 +287,9 @@ fn copy_entry(prog: str, source: str, target: str, opt: CopyOptions): bool { uns
     return true
 } }
 fn run_cp(args: Vec<str>): i64 {
-    let o = sys.parse_opts(args, "adPHLpfiRrls")
+    let words = Vec<str>(); let parents = false; let ended = false
+    for arg in args { if !ended && sys.same(arg, "--parents") { parents = true } else { words.push(arg) }; if sys.same(arg, "--") { ended = true } }
+    let o = sys.parse_opts(words, "adPHLpfiRrls")
     if o.bad != 0 || o.rest.len() < 2 { say("cp", "invalid usage: cp [OPTIONS] SOURCE DEST"); return 1 }
     let a = sys.has(o, 97)
     let opt = CopyOptions(sys.has(o, 82) || sys.has(o, 114) || a, sys.has(o, 112) || a, sys.has(o, 100) || sys.has(o, 80) || a, sys.has(o, 102), sys.has(o, 105), sys.has(o, 108), sys.has(o, 115))
@@ -296,6 +299,13 @@ fn run_cp(args: Vec<str>): i64 {
     for i in 0..(n - 1) {
         let source = o.rest[i]
         let target = sys.is_dir(dest) ? fsx.join_path(dest, sys.base_name(source)) : dest
+        if parents {
+            if !sys.is_dir(dest) { say("cp", "--parents requires a destination directory"); return 1 }
+            let relative = source; while sys.starts(relative, "/") { relative = sys.slice(relative, 1, sys.length(relative)) }; while sys.starts(relative, "./") { relative = sys.slice(relative, 2, sys.length(relative)) }
+            if sys.same(relative, "..") || sys.starts(relative, "../") || sys.find_char(relative, 0) >= 0 { say("cp", "unsafe parent path"); return 1 }
+            let component = 0; for k in 0..(sys.length(relative) + 1) { if k == sys.length(relative) || sys.at(relative, k) == 47 { if sys.same(sys.slice(relative, component, k), "..") { say("cp", "unsafe parent path"); return 1 }; component = k + 1 } }
+            target = fsx.join_path(dest, relative); if run_mkdir(Vec<str>("-p", parent_of(target))) != 0 { return 1 }
+        }
         if !copy_entry("cp", source, target, opt) { status = 1 }
     }
     return status

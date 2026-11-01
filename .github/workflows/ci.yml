@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # DevLang `d` runs the system helpers' tests. The checksums below pin v0.5.5 (same as the tag-triggered Publish workflow).
-  DEVLANG_VERSION: v0.5.5
+  # DevLang `d` runs the system helpers' tests. The checksums below pin v0.5.6 (same as the tag-triggered Publish workflow).
+  DEVLANG_VERSION: v0.5.6
 
 jobs:
   test:
@@ -41,15 +41,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwayland-dev libwayland-bin gjs \
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
-            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl python3-gi gir1.2-nm-1.0 python3-yaml xvfb xauth
+            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl python3-gi gir1.2-nm-1.0 python3-yaml xvfb xauth cpio zstd
           sudo sh tools/setup/bootstrap-lock.sh
           sudo chown -R "$(id -u):$(id -g)" build
       - name: Install pinned DevLang ${{ env.DEVLANG_VERSION }}
         run: |
           machine=$(uname -m)
           case "$machine" in
-            aarch64) arch=arm64; checksum=2a3bf7c5505f4125f778cf5ab8ef346a2a9535f4b1714bb80aa3177ced1d7e32 ;;
-            x86_64) arch=x86_64; checksum=060d3c3b6d5030637930fee2f018611c7d3747fab1c13bd65446d7c733219659 ;;
+            aarch64) arch=arm64; checksum=7fac5642a09c6b7a5590e742fc4d708621c8e2e374deb2509a04729e620ec644 ;;
+            x86_64) arch=x86_64; checksum=1439bc036c7b3a676ea41f43fa89255f17c3c73356e18dd9528fe62caeab8b76 ;;
             *) exit 1 ;;
           esac
           archive="devlang-d-$DEVLANG_VERSION-linux-$arch.tar.gz"
@@ -84,6 +84,12 @@ jobs:
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+      - name: Shared App Store and package-manager database
+        run: |
+          sh tools/setup/bootstrap-pm.sh
+          d tests/pm-cli.test.dev
+          d tests/appstore-native.test.dev
+          python3 tests/lib/check-shared-appstore.py
       - name: Native session lifecycle and JS supervisor binding
         run: |
           d tests/supervisor-native.test.dev

@@ -1,0 +1,20 @@
+# Snapshot the repository's native busybox-cli and its separate static dash.
+use "std/fs"
+use "std/json"
+use "std/child_process"
+use "std/encoding"
+use "../lib/sources.dev" as sources
+fn snapshot(payload: str): json.Value {
+    let helper = sources.path("tools/build/userland.sh", "DEVOS_USERLAND_BUILD")
+    if !fs.existsSync(helper) || !fs.existsSync(sources.busybox() + "/main.dev") { print("Repository busybox-cli and tools/build/userland.sh are required."); return json.null_value() }
+    fs.mkdirSync(payload, true)
+    let stage = payload + "/repo-busybox"
+    let built = child_process.execFileSync("bash", Vec<str>(helper, "busybox", stage, "aarch64"), child_process.options())
+    if !built.success { print(encoding.decode(built.stderr, "utf8")); return json.null_value() }
+    let packed = child_process.execFileSync("tar", Vec<str>("-czf", payload + "/devos-busybox.tar.gz", "--owner=0", "--group=0", "--numeric-owner", "--sort=name", "-C", stage, "bin/busybox", "usr/libexec/devos/dash", "usr/share/devos-busybox", "usr/share/licenses/dash"), child_process.options())
+    if !packed.success { print("Cannot pack repository busybox-cli."); return json.null_value() }
+    fs.writeFileSync(payload + "/busybox-applets.txt", fs.readFileSync(stage + "/usr/share/devos-busybox/applets.txt", "utf8"))
+    let record = json.parse(fs.readFileSync(stage + "/usr/share/devos-busybox/provenance.json", "utf8"))
+    fs.writeFileSync(payload + "/busybox-provenance.json", json.pretty(record) + "\n")
+    return record
+}

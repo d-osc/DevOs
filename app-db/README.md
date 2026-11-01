@@ -6,10 +6,23 @@
 
 - **DevOsPM / Packages tab**: ติดตั้งระดับผู้ใช้จาก dpk/dpkx/tar.gz/deb/rpm, มี snapshot/rollback, bin และ XDG launcher
 - **Native AppStore**: ระบบ opkg/IPK ระดับ system, signed HTTPS feed และ polkit; ไม่ใช้ vendor deb เป็น native package โดยตรง
-- **Repo นี้**: authoring registry กลาง DevOs มี bundled importer และ flow ดาวน์โหลด/ตรวจไฟล์/ยืนยันก่อนติดตั้ง app ผ่าน PM แล้ว ส่วน CLI dev install NAME ยังต้องเพิ่ม resolver
+- **Repo นี้**: catalog กลางที่ `pm-cli` และ App Store อ่านผ่าน `database-cli.dev`; รองรับ `dev catalog`, `dev search` และ `dev install ID/ALIAS` แล้ว สถานะติดตั้งและ binding ใช้ registry ของ PM ชุดเดียว
 - **Extensions ใน AppStore**: ย้ายหน้าจอเดิมมาอยู่แท็บ Extensions แต่คง GitHub release verification, preferences, enable/disable และ rollback เดิม
 
 ผลอ่าน source อยู่ใน [source audit](docs/source-audit.md) และ [data contract v2](docs/registry-contract.md) แบบ v2 ยกเลิกสมมติฐาน ZIP-only/standalone launcher ของแบบร่างเดิม
+
+## ฐานข้อมูลที่ใช้งานจริง
+
+`database.dev`/`database-cli.dev` เป็น reader และตัวเลือก artifact ร่วมของ CLI กับ
+App Store โดยอ่าน `apps/*/app.json` โดยตรงใน checkout หรืออ่าน snapshot
+`catalog-data/` ที่แพ็กไปกับ CLI ผ่าน `pm-cli/stage.sh` การเปิดหน้าร้านไม่ดาวน์โหลดแอป
+และไม่เขียน authoring metadata
+
+สถานะติดตั้ง, active/previous และ mapping id → ชื่อแพ็กเกจจริงอยู่ใน registry
+ของ PM ภายใต้ lock เดียว App Store เรียก `dev catalog --json`/`list --json` และคำสั่ง
+ติดตั้ง/ถอน/rollback แทนการเขียนไฟล์สถานะเอง มีการย้าย legacy bindings ของ UI
+แบบครั้งเดียวโดยเก็บไฟล์ต้นฉบับเป็น `.migrated` ดูรายละเอียดและคำสั่งใน
+[pm-cli README](../pm-cli/README.md#ฐานข้อมูลร่วมกับ-app-store)
 
 ## ข้อมูลแอป
 
@@ -26,7 +39,7 @@ extensions/<namespaced-id>/package/      runtime manifest และ source ข�
 schema/extension*.schema.json            แยก listing ออกจาก runtime manifest
 ```
 
-เพิ่ม vscode, chrome, chatgpt, claude-desktop (alias claude), zcode ของ Z.ai และ firefox แล้ว ทั้งหมดเป็น catalog/untested พร้อม upstream Linux ARM64 deb ใน downloads[].file_url จึงยังไม่เปิดติดตั้งผ่าน PM การตรวจ HEAD ผ่านไม่ใช่การรับรอง dependency/ABI/launcher โดย Firefox ยังเป็น source-only เพราะ HEAD ตอบ 400
+เพิ่ม vscode, chrome, chatgpt, claude-desktop (alias claude), zcode ของ Z.ai และ firefox แล้ว ทั้งหมดเป็น catalog/untested พร้อม upstream Linux ARM64 deb ใน downloads[].file_url จึงยังไม่ใช่ prepared release ที่รับรอง compatibility การสั่งติดตั้งด้วยชื่อหรือเลือกติดตั้งใน App Store เป็นการติดตั้ง upstream ตามคำสั่งผู้ใช้ การตรวจ HEAD ผ่านไม่ใช่การรับรอง dependency/ABI/launcher โดย Firefox ยังเป็น source-only เพราะ HEAD ตอบ 400
 
 ชื่อแสดงผลของ Store, registry ID, PM package.name, bin command และ native opkg package เป็นคนละ identity ให้ยึด metadata ที่ตรวจจากแพ็กเกจจริง ห้ามเดา package name เพื่อถอนการติดตั้ง
 
@@ -34,7 +47,7 @@ schema/extension*.schema.json            แยก listing ออกจาก ru
 
 ## สร้างและตรวจ
 
-ใช้ DevLang runtime d v0.5.3 และ Git ใน PATH ไม่ต้องติดตั้ง dependency เพิ่ม:
+ใช้ DevLang release v0.5.6 และ Git ใน PATH ไม่ต้องติดตั้ง dependency เพิ่ม:
 
 ```sh
 d scripts/build_registry.dev

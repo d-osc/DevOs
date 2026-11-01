@@ -1,6 +1,6 @@
 # DevLang development tools
 
-All tool sources formerly written in Python now use DevLang `d` 0.5.5 or newer.
+All tool sources formerly written in Python now use DevLang `d` 0.5.6 or newer.
 Run arguments after `--`, for example:
 
 ```sh

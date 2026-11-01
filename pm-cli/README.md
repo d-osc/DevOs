@@ -8,7 +8,7 @@ Package Manager สำหรับ **Linux** เขียนด้วย **DevLa
 
 ## เริ่มใช้งาน
 
-ต้องมี runtime DevLang `d` (≥ 0.5.5) บน PATH และเครื่องมือมาตรฐานของ Linux: `sh`, `tar`, `sha256sum`, `curl`, `find`, `cp`, `rm`, `chmod`, `realpath`
+ต้องมี runtime DevLang `d` (≥ 0.5.6) บน PATH และเครื่องมือมาตรฐานของ Linux: `sh`, `tar`, `sha256sum`, `curl`, `find`, `cp`, `rm`, `chmod`, `realpath`, `flock`
 สำหรับ `.deb` ต้องมี `ar` (binutils) และสำหรับ `.rpm` ต้องมี `cpio` กับตัวแตก payload (`gzip`/`xz`/`zstd`/`bzip2` ตามที่แพ็กเกจใช้)
 
 ```sh
@@ -269,6 +269,51 @@ Checksum ช่วยตรวจว่าไฟล์ตรงกับ digest 
 - `dev verify` ตรวจไฟล์หาย ไฟล์เพิ่ม ขนาด SHA-256 และ executable permissions; `dev run` ตรวจ SHA-256 ของไฟล์คำสั่งก่อนรัน
 - ไม่มี `fsync` (runtime ไม่มี API) แต่สถานะยัง commit ด้วย rename แบบ atomic
 
+## ฐานข้อมูลร่วมกับ App Store
+
+`pm-cli` และหน้าต่าง App Store อ่าน catalog เดียวกันจาก
+`app-db/apps/<id>/app.json` ผ่าน `database-cli.dev` ของแพ็กเกจนี้
+App Store เรียก PM เพื่ออ่าน catalog และจัดการแพ็กเกจ จึงไม่มีฐานข้อมูลติดตั้งหรือ
+ไฟล์ bindings ชุดที่สอง การแก้ metadata ใน checkout มีผลเมื่อ refresh ทั้งสองฝั่ง
+โดยไม่ต้อง import `registry-data.json` ใหม่
+
+```sh
+dev catalog --json
+dev search claude
+dev install claude          # exact id/alias จาก catalog; เลือกแพ็กเกจของสถาปัตยกรรมปัจจุบัน
+dev info claude
+dev verify claude
+dev remove claude
+```
+
+การติดตั้งด้วยชื่อเป็นคำสั่งดาวน์โหลดและติดตั้งอย่างชัดเจน ไม่ดาวน์โหลดเมื่อเปิด catalog
+รายการ `catalog` ยังคงเป็น upstream ที่ยังไม่รับรอง compatibility; CLI จะแจ้งสถานะนี้
+ส่วน prepared stable release จะตรวจ SHA-256 และชื่อ/รุ่นแพ็กเกจจริงก่อน commit
+ใช้ HTTPS เท่านั้นสำหรับ catalog และเก็บ redirect endpoint ลงไฟล์ที่มี suffix ถูกต้อง
+ก่อนส่งให้ installer เดิม
+
+สถานะและ mapping อยู่ที่ `registry.json` ของ store เดิม ใน
+`packages[ชื่อแพ็กเกจจริง].catalog` บันทึกพร้อม active/previous ใน transaction เดียวกัน
+การอัปเดตหรือ rollback คง mapping ไว้ และ remove ลบพร้อมแพ็กเกจ คำสั่ง info/verify/
+remove/rollback/update รองรับ catalog id/alias ของแพ็กเกจที่ติดตั้งแล้วด้วย
+การติดตั้งไฟล์เองไม่เดา catalog id; ระบุ `--catalog-id ID` เมื่อต้องการผูกอย่างชัดเจน
+
+App Store ย้ายไฟล์ `bindings-*.json` เดิมเฉพาะรายการที่มีแพ็กเกจติดตั้งจริงและ id
+อยู่ใน catalog โดยไม่ทับ mapping ใหม่ แล้วเก็บไฟล์เดิมเป็น `.json.migrated`
+ไม่มีการย้าย installed state ไปเขียนใน Git repository หรือรวม system opkg database
+เข้ากับ user store
+
+ใช้ `--catalog /path/to/app-db` หรือ `DEVOS_APPSTORE_DATABASE` เพื่อเลือก
+catalog อื่น โดยทั้ง CLI และ App Store ที่ใช้ environment เดียวกันจะเห็นแหล่งเดียวกัน
+`--root`/`DEV_ROOT` ยังคงเลือก installed state แยกต่อ store ได้ สำหรับ deployment
+`stage.sh` แพ็ก catalog จาก `app-db` ไว้ที่ `catalog-data/` ข้าง CLI
+ทั้ง GUI และ CLI ใช้ snapshot เดียวกันนั้นหลังติดตั้ง แก้ authoring source แล้วต้องแพ็ก
+image/CLI ใหม่เพื่ออัปเดต snapshot ในเครื่องปลายทาง
+
+สร้าง source release แบบครบ dependencies ด้วย `sh stage.sh /tmp/dev-cli-stage`
+แล้วแพ็กเนื้อหาในโฟลเดอร์นั้นเป็น `dev-cli.tar.gz`; self-update ปฏิเสธ release
+ที่ไม่มี shared catalog ก่อนสลับเวอร์ชัน
+
 ## ตำแหน่งเก็บข้อมูล
 
 ลำดับการเลือก store: `--root` → `DEV_ROOT` → `$XDG_DATA_HOME/devos` → `~/.local/share/devos`
@@ -279,7 +324,7 @@ DEV_ROOT="$HOME/my-dev-store" dev list
 dev list --json
 ```
 
-แพ็กเกจอยู่แยกใน `packages/`, ไฟล์ชั่วคราวอยู่ใน `staging/`, สถานะอยู่ใน `registry.json` และล็อกอยู่ใน `.lock` ใช้ filesystem ภายในเครื่องที่รองรับ atomic rename และ file locks เก็บ store เป็นโฟลเดอร์ส่วนตัวของผู้ใช้ อย่าแก้ไขไฟล์ภายในขณะใช้งาน หาก registry เสีย โปรแกรมจะรายงานข้อผิดพลาดโดยไม่เขียนทับ
+แพ็กเกจอยู่แยกใน `packages/`, ไฟล์ชั่วคราวอยู่ใน `staging/`, สถานะอยู่ใน `registry.json` และล็อก PID อยู่ใน `.dev-lock` และมี `.dev-lock.guard` สำหรับ `flock` (ไม่ลบ guard inode ระหว่างใช้งาน) ใช้ filesystem ภายในเครื่องที่รองรับ atomic rename และ file locks เก็บ store เป็นโฟลเดอร์ส่วนตัวของผู้ใช้ อย่าแก้ไขไฟล์ภายในขณะใช้งาน หาก registry เสีย โปรแกรมจะรายงานข้อผิดพลาดโดยไม่เขียนทับ
 
 การติดตั้งอ่านไฟล์ในเครื่อง รุ่นนี้ยังไม่มี dependency resolver, install hooks หรือการติดตั้งลง `/usr` คำสั่งแอปเข้าถึงผ่าน `dev run <command>` และ `dev update` ดึงแพ็กเกจจาก GitHub Releases ตามที่ manifest ประกาศ plain archive ที่ไม่มี manifest ใช้ `dev info` ดูโฟลเดอร์ไฟล์ที่ติดตั้งได้
 

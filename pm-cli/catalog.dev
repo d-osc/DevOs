@@ -1,0 +1,70 @@
+# Transport to the single catalog implementation owned by app-db.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/process"
+use "std/path"
+use "std/module"
+use "std/result"
+use "./util.dev" as util
+use "./download.dev" as download
+fn text(value:json.Value, key:str):str { return json.has(value,key) && json.kind(json.get(value,key)) == "string" ? json.string(json.get(value,key)) : "" }
+fn object(value:json.Value, key:str):json.Value { return json.has(value,key) && json.kind(json.get(value,key)) == "object" ? json.get(value,key) : json.object() }
+fn test_setting(name:str, fallback:str):str { return process.getenv("DEVOS_APPSTORE_TEST") == "1" && process.getenv(name) != "" ? process.getenv(name) : fallback }
+fn worker():str {
+    let dir = path.dirname(path.resolve(process.cwd(),module.entry()))
+    for i in 0..9 {
+        for candidate in Vec<str>(dir + "/catalog-data/database-cli.dev", dir + "/app-db/database-cli.dev") { if fs.is_file(candidate) { return candidate } }
+        let parent = path.dirname(dir); if parent == dir { break }; dir = parent
+    }
+    if fs.is_file("/usr/share/app-db/database-cli.dev") { return "/usr/share/app-db/database-cli.dev" }
+    result.raise("The shared app-db database is unavailable; reinstall pm-cli with its catalog-data."); return ""
+}
+fn load(override:str):json.Value {
+    let program = worker(); let source = override
+    if source == "" { source = process.getenv("DEVOS_APPSTORE_DATABASE") }
+    if source == "" { source = test_setting("DEVOS_APPSTORE_REGISTRY",path.dirname(program)) }
+    let arch = test_setting("DEVOS_APPSTORE_ARCH",strings.trim(util.capture(Vec<str>("uname","-m"),"","reading architecture")))
+    let ran = util.run(Vec<str>("d",program,"--","--source",source,"--arch",arch),"",30000)
+    let output = strings.trim(util.decode(ran.stdout))
+    if !ran.success { result.raise("The app registry is unavailable. " + output) }
+    let data = json.parse(output)
+    if json.kind(data) != "object" || !json.has(data,"schema_version") || json.int(json.get(data,"schema_version")) != 2 { result.raise("Unsupported App Store database") }
+    return data
+}
+fn find(data:json.Value, name:str):json.Value {
+    let apps = json.get(data,"apps")
+    for i in 0..(json.len(apps) as i64) {
+        let row = json.at(apps,i); let manifest = object(row,"manifest")
+        if text(manifest,"id") == name { return row }
+        if json.has(manifest,"aliases") { let aliases = json.get(manifest,"aliases"); for j in 0..(json.len(aliases) as i64) { if json.string(json.at(aliases,j)) == name { return row } } }
+    }; result.raise("That app is not in the catalog: " + name); return json.null_value()
+}
+fn metadata(data:json.Value, row:json.Value):json.Value {
+    let manifest = object(row,"manifest"); let candidate = object(row,"candidate")
+    let out = json.set(json.object(),"id",text(manifest,"id")); out = json.set(out,"source",text(data,"source")); out = json.set(out,"manifest",manifest)
+    out = json.set(out,"sha256",text(candidate,"sha256")); return json.set(out,"expectedPackage",object(candidate,"package"))
+}
+fn fetch(row:json.Value):download.Resolved {
+    let selected = object(row,"candidate"); let address = text(selected,"file_url"); let format = text(selected,"format")
+    if address == "" || format == "" { result.raise("This app has no supported HTTPS download for this architecture.") }
+    let base = test_setting("DEVOS_APPSTORE_TMP",process.getenv("TMPDIR") == "" ? "/tmp" : process.getenv("TMPDIR"))
+    let directory = strings.trim(util.capture(Vec<str>("mktemp","-d",base + "/devos-app-store-XXXXXX"),"","creating download folder")); let file = directory + "/download." + format
+    let ran = util.run(Vec<str>(test_setting("DEVOS_APPSTORE_CURL","curl"),"--disable","--fail","--location","--silent","--show-error","--proto","=https","--proto-redir","=https","--max-redirs","10","--connect-timeout","30","--max-time","280","--max-filesize","2147483648","--output",file,address),"",290000)
+    if !ran.success || !fs.is_file(file) || fs.size(file) == 0 || fs.size(file) > download.max_download() {
+        util.must(Vec<str>("rm","-rf","--",directory),"","cleaning failed download")
+        if !ran.success { result.raise("Download failed (exit ${ran.code}). Retry or check the publisher website.") }; result.raise("The download must be nonempty and at most 2 GiB.")
+    }; return download.Resolved(true,file,directory,"download." + format)
+}
+fn bindings(registry:json.Value):json.Value {
+    let out = json.object(); let packages = object(registry,"packages")
+    for name in json.keys(packages) { let record = object(json.get(packages,name),"catalog"); let id = text(record,"id"); if id != "" { out = json.set(out,id,name) } }; return out
+}
+
+fn installed_name(registry:json.Value, value:str):str {
+    let packages = object(registry,"packages"); if json.has(packages,value) { return value }
+    for name in json.keys(packages) {
+        let record = object(json.get(packages,name),"catalog"); if text(record,"id") == value { return name }
+        let manifest = object(record,"manifest"); if json.has(manifest,"aliases") { let aliases = json.get(manifest,"aliases"); for i in 0..(json.len(aliases) as i64) { if json.string(json.at(aliases,i)) == value { return name } } }
+    }; return value
+}

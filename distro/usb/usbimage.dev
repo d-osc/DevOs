@@ -233,10 +233,17 @@ fn installBootTools(tree: str, busybox: str) {
     let missing = Vec<str>()
     for i in 0..(required.len() as i64) { if !hw.contains(applets, required[i]) { missing.push(required[i]) } }
     require(missing.len() == 0, "Missing live boot tools: " + strings.join(missing, ", "))
+    # The repo sh/ash applets exec a separately built, static POSIX shell.
+    let shell = hw.parentDir(busybox) + "/dash"
+    require(io.exists(shell) && st.isStaticElf(shell) && st.isArm64Elf(shell), "Build the companion static dash with distro/usb/busybox.sh")
     let destination = tree + "/bin/busybox"
     removeIfPresent(destination)   # copied trees may use hardlinks
     io.mkdirs(tree + "/bin")
     io.copyFile(busybox, destination)
+    io.mkdirs(tree + "/usr/libexec/devos")
+    removeIfPresent(tree + "/usr/libexec/devos/dash")
+    io.copyFile(shell, tree + "/usr/libexec/devos/dash")
+    run(Vec<str>("chmod", "755", tree + "/usr/libexec/devos/dash"))
     run(Vec<str>("chmod", "755", destination))
     let all = Vec<str>()
     for i in 0..(required.len() as i64) { all.push(required[i]) }

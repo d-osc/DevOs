@@ -12,7 +12,7 @@ set -euo pipefail
 
 # ---- versions ------------------------------------------------------------
 export KERNEL_VERSION="7.2.11"
-export BUSYBOX_VERSION="1.38.0"
+export BUSYBOX_VERSION="repo"
 export DEVOS_VERSION="1.1.0"
 
 # ---- helpers -------------------------------------------------------------
@@ -103,14 +103,11 @@ export DL="$WORK/downloads"
 export OUT="$REPO/output"
 
 export KERNEL_SRC="$WORK/linux-$KERNEL_VERSION"
-export BUSYBOX_SRC="$WORK/busybox-$BUSYBOX_VERSION"
 export ROOTFS="$WORK/rootfs-$DEVOS_ARCH"
 
 export KERNEL_TARBALL="$DL/linux-$KERNEL_VERSION.tar.xz"
-export BUSYBOX_TARBALL="$DL/busybox-$BUSYBOX_VERSION.tar.bz2"
 
 export KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-$KERNEL_VERSION.tar.xz"
-export BUSYBOX_URL="https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2"
 
 export KERNEL_IMAGE="$KERNEL_SRC/$KERNEL_IMAGE_RELPATH"
 # artifacts carry the target-arch suffix so multi-arch builds coexist

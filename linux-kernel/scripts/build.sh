@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — full DevOs build (run inside WSL/Linux):
-#   wsl -d Ubuntu -- bash /mnt/c/Users/ondev/Projects/DevOsLinuxKernel/scripts/build.sh
+#   wsl -d Ubuntu -- bash /mnt/c/Users/ondev/Projects/DevOs/linux-kernel/scripts/build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 source ./common.sh

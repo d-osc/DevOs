@@ -13,20 +13,53 @@ There are two distinct artifacts:
 
 | Artifact | Contents | Validation / scope |
 | --- | --- | --- |
-| `base/output/Image` + `initramfs.cpio.gz` | Linux 7.2.11, static BusyBox 1.37.0 with musl 1.2.5, DevOs PID 1 and os-release | ARM64 QEMU boot, init checks and clean poweroff; console only |
-| `oe` / `devos-image` | Custom `DISTRO=devos`, DevOsLinuxKernel rebuilt by OE with matching modules, systemd, GJS, GTK3, Wayland/labwc, VTE, WebKitGTK 4.1, native network/audio/Bluetooth tools and DevOs shell | Build metadata and dependency checks; full desktop compilation and graphical boot are separate checks |
+| `base/output/Image` + `initramfs.cpio.gz` | Linux 7.2.11, static repo `busybox-cli`, dash, `pm-cli` with a static DevLang runtime, and DevOs os-release | ARM64 QEMU boot, init checks and clean poweroff; console only |
+| `oe` / `devos-image` | Custom `DISTRO=devos`, linux-kernel rebuilt by OE with matching modules, systemd, GJS, GTK3, Wayland/labwc, VTE, WebKitGTK 4.1, native network/audio/Bluetooth tools and DevOs shell | Build metadata and dependency checks; full desktop compilation and graphical boot are separate checks |
 
 The console base is a recovery/bootstrap proof, **not** a finished desktop,
 installer or physical-machine image. Its small QEMU kernel config deliberately
-does not represent the ASUS UX3407NA's hardware requirements. The desktop recipe rebuilds the selected DevOsLinuxKernel source/config with
+does not represent the ASUS UX3407NA's hardware requirements. The desktop recipe rebuilds the selected linux-kernel source/config with
 desktop requirements and matching modules; it does not inject an unmatched
 prebuilt kernel into the desktop rootfs. A board-specific machine layer, correct device tree, firmware
 and native tests are still required for UX3407NA deployment.
 
+## Repository userland
+
+Both image paths use `busybox-cli` and `pm-cli` from this repository. The
+`linux-kernel` initramfs and Live USB scripts use `tools/build/userland.sh`;
+OpenEmbedded snapshots the same native binary and selects `devos-busybox`
+as the base-utils provider. The existing `devos-pm` recipe installs the
+current `pm-cli` sources and records their repository path in provenance.
+There is no BusyBox source tarball or Rust DevOsPM checkout in these paths.
+
+`busybox-cli` is built as a static native executable. Its `sh`/`ash` entry points
+exec a separately built static dash at `/usr/libexec/devos/dash`. Tiny images
+include static target-built `d` and `devrun` to run `pm-cli`; desktop images
+use the `devlang` package. The first PID-1 shell initializes procfs, required
+by the native compiler's command-line access. Dash, musl and runtime sources
+are pinned by SHA-256 in `tools/build/userland.sh`.
+
+For a staged userland check without compiling a kernel or desktop:
+
+```sh
+bash tools/build/userland.sh all /var/tmp/devos-userland-root aarch64
+python3 tests/lib/check-userland.py /var/tmp/devos-userland-root
+sudo unshare -mn python3 tests/lib/check-userland.py /var/tmp/devos-userland-root --root
+python3 tests/lib/check-userland-qemu.py /var/tmp/devos-userland-root /path/to/ARM64/Image
+```
+
+A complete host DevLang installation, a static-capable target C compiler, Python 3,
+and Rust/rustup are required for the tiny-image runtime build. An existing static
+target bundle can be selected with `DEVOS_DEVLANG_BUNDLE` (include its LICENSE).
+`DEVOS_USERLAND_WORK` sets the cache; `DEVOS_USERLAND_CC` and `DEVOS_MUSL_CC`
+select C compilers. `DEVOS_BUSYBOX_SOURCE` and `DEV_OS_PM_SOURCE` retain explicit
+source overrides. Only the staged userland was boot-tested for this migration;
+this does not establish a newly built desktop image or hardware certification.
+
 ## DevOs Linux Kernel source
 
-Both distro paths now select the sibling `../DevOsLinuxKernel` project by default
-(`C:/Users/ondev/Projects/DevOsLinuxKernel` in this workspace). Its current
+Both distro paths now select the repository's `linux-kernel` project by default
+(`C:/Users/ondev/Projects/DevOs/linux-kernel` in this workspace). Its current
 selected kernel is `7.2.11-devos`, ARM64. No files in that project are changed.
 
 The console base uses its exact built ARM64 Image and matching saved config.
@@ -47,10 +80,10 @@ and Git revision are recorded in `devos-kernel.json` and build provenance.
 To select another checkout from Windows:
 
 ```powershell
-.\distro.ps1 desktop-check -KernelProject 'C:\Users\ondev\Projects\DevOsLinuxKernel'
+.\distro.ps1 desktop-check -KernelProject 'C:\Users\ondev\Projects\DevOs\linux-kernel'
 ```
 
-On Linux, export `DEVOS_KERNEL_PROJECT=/path/to/DevOsLinuxKernel` before the
+On Linux, export `DEVOS_KERNEL_PROJECT=/path/to/linux-kernel` before the
 commands below. The desktop target remains `qemuarm64`; cross-architecture
 and physical-device support are separate integration work.
 
@@ -91,8 +124,8 @@ Tools: gcc, binutils, make, flex, bison, bc, curl, tar with xz/bzip2 support,
 sha256sum, gzip, Python 3, rsync, kernel host headers/libelf development tools,
 and `qemu-system-aarch64` for the test. `DEVOS_BASE_WORK` defaults to
 `/var/tmp/devos-base`; `DEVOS_BASE_JOBS` defaults to 4. Build paths must not have
-whitespace. Musl and BusyBox source URLs/checksums are pinned in
-`base/sources.lock`; kernel provenance is recorded in `output/kernel-source.json`. The build retains source archives and complete sources in
+whitespace. Runtime, musl and dash source URLs/checksums are pinned in
+`tools/build/userland.sh`; kernel provenance is recorded in `output/kernel-source.json`. The build retains source archives and complete sources in
 the work directory; retain and redistribute corresponding source and licenses
 as required when distributing binaries. The base embeds no downloaded firmware.
 

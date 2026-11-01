@@ -56,7 +56,7 @@ Validation:
 
 The integration follows [labwc's keyboard environment configuration](https://labwc.github.io/labwc-config.5.html).
 
-`dev-os-language` runs with DevLang `d` 0.5.5+. Session startup and Settings invoke
+`dev-os-language` runs with DevLang `d` 0.5.6+. Session startup and Settings invoke
 `d bin/dev-os-language -- ...`; preferences and generated configuration files
 are replaced atomically. The `lib/` modules are included in installed and staged
 runtimes. The Python integration harness executes this DevLang helper directly.

@@ -2,7 +2,7 @@ param(
     [ValidateSet('base', 'base-test', 'desktop-prepare', 'desktop-check', 'desktop-kernel-check', 'desktop-build')]
     [string]$Mode = 'base',
     [string]$BuildDistribution = 'Ubuntu',
-    [string]$KernelProject = (Join-Path $PSScriptRoot 'packages/devos-linux-kernel')
+    [string]$KernelProject = (Join-Path $PSScriptRoot 'linux-kernel')
 )
 $ErrorActionPreference = 'Stop'
 # This WSL distribution supplies build tools only. Its rootfs is never used as
@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $taskRoot = (& wsl -d $BuildDistribution --exec wslpath -a $PSScriptRoot).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot access the project from the Linux build host.' }
 $taskKernelRoot = (& wsl -d $BuildDistribution --exec wslpath -a $KernelProject).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the DevOsLinuxKernel project path.' }
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the linux-kernel project path.' }
 $taskDevlang = (& wsl -d $BuildDistribution --exec sh -lc 'command -v d || echo $HOME/.local/bin/d').Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the DevLang runtime (d) on the Linux build host.' }
 $taskScript = "$taskRoot/distro/base/build.sh"

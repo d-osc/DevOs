@@ -18,6 +18,9 @@ extern fn stat(path: str, buffer: *void): i32
 extern fn lstat(path: str, buffer: *void): i32
 extern fn uname(buffer: *void): i32
 extern fn isatty(fd: i32): i32
+extern fn getpid(): i32
+extern fn mkdir(path: str, mode: i64): i32
+extern fn mount(source: str, target: str, kind: str, flags: u64, data: str): i32
 
 # ---- bytes ------------------------------------------------------------------------------------------------------------------------------
 # A growable buffer, always handled through a pointer so that functions can change it; its fields are reached through the accessors below.
@@ -188,6 +191,12 @@ fn read_path(path: str): Input { unsafe {
 fn argv(): Vec<str> { unsafe {
     let out = Vec<str>()
     let fd = open("/proc/self/cmdline", 0, 0)
+    # The native compiler's entry ABI has no argc/argv. The initial boot shell
+    # needs procfs before its first command, so PID 1 bootstraps it once.
+    if fd < 0 && getpid() == 1 {
+        mkdir("/proc", 493)
+        if mount("proc", "/proc", "proc", 14 as u64, "") == 0 { fd = open("/proc/self/cmdline", 0, 0) }
+    }
     let b = bytes_new()
     if fd >= 0 {
         let chunk = calloc(65536, 1) as *u8

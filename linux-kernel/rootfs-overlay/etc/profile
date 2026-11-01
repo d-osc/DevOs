@@ -1,6 +1,6 @@
 # /etc/profile — DevOs shell environment
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-export PS1='\u@\h:\w# '
+export PS1='devos# '
 export TERM="${TERM:-linux}"
 export EDITOR=vi
 # DevOsPM (`dev`) system-wide package store

@@ -24,6 +24,7 @@ TARGET="$CLI_ROOT/versions/port-$(date +%Y%m%d%H%M%S)"
 rm -rf "$TARGET"
 cp -r "$DEVLANG_DIR" "$TARGET"
 rm -rf "$TARGET/.staging-"* 2>/dev/null || true
+sh "$DEVLANG_DIR/stage.sh" "$TARGET"
 
 # Point `current` at the new tree through a temporary symlink.
 TEMP_LINK="$CLI_ROOT/.current-$$"

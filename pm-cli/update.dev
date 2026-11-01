@@ -329,6 +329,8 @@ fn self_update(): i64 {
     util.must(Vec<str>("tar", "-xzf", archive_path, "-C", staging), staging, "unpacking dev ${release.version}")
     let staged_main = find_staged_main(staging)
     if staged_main == "" { result.raise("The downloaded dev CLI has no main.dev") }
+    let database = util.parent_dir(staged_main) + "/catalog-data"
+    if !fs.is_file(database + "/database-cli.dev") || !fs.is_file(database + "/database.dev") || !fs.is_dir(database + "/apps") { result.raise("The downloaded CLI is missing its shared app-db database; the current version was kept") }
     # The staged tree must run and report the release version first.
     let check = util.run(Vec<str>("d", staged_main, "--", "--version"), staging, 120000)
     let reported = strings.trim(util.decode(check.stdout))

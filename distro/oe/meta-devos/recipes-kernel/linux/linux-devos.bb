@@ -1,4 +1,4 @@
-SUMMARY = "DevOs Linux Kernel from the DevOsLinuxKernel project"
+SUMMARY = "DevOs Linux Kernel from the linux-kernel project"
 LICENSE = "GPL-2.0-only"
 DEVOS_KERNEL_VERSION ?= "0"
 PV = "${DEVOS_KERNEL_VERSION}"

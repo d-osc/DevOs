@@ -8,7 +8,7 @@ source "$(dirname "$0")/common.sh"
 log "=== DevOs: assembling DevOs initramfs ==="
 require_tools cpio gzip find
 
-if [ ! -x "$WORK/busybox-root-$DEVOS_ARCH/bin/busybox" ]; then
+if [ ! -x "$WORK/repo-busybox-root-$DEVOS_ARCH/bin/busybox" ]; then
     die "busybox not built — run scripts/20-build-busybox.sh first"
 fi
 if [ ! -f "$KERNEL_IMAGE" ]; then
@@ -18,7 +18,7 @@ fi
 log "creating rootfs tree at $ROOTFS"
 rm -rf "$ROOTFS"
 mkdir -p "$ROOTFS"
-cp -a "$WORK/busybox-root-$DEVOS_ARCH/." "$ROOTFS/"
+cp -a "$WORK/repo-busybox-root-$DEVOS_ARCH/." "$ROOTFS/"
 
 # directory skeleton
 mkdir -p "$ROOTFS"/{proc,sys,dev,etc/init.d,tmp,root,home,opt,run,srv,boot,mnt,media}
@@ -38,17 +38,12 @@ else
 fi
 
 log "installing DevOsPM package manager (/bin/dev)"
-DEVOSPM_BIN="$WORK/devospm-bin-$DEVOS_ARCH/dev"
-if [ ! -x "$DEVOSPM_BIN" ]; then
-    die "DevOsPM binary missing — run scripts/25-build-devospm.sh first"
+PM_ROOT="$WORK/pm-cli-root-$DEVOS_ARCH"
+if [ ! -x "$PM_ROOT/usr/bin/d" ] || [ ! -f "$PM_ROOT/usr/share/devos-pm/cli/main.dev" ]; then
+    die "pm-cli stage missing � run scripts/25-build-devospm.sh first"
 fi
-install -m 755 "$DEVOSPM_BIN" "$ROOTFS/bin/dev"
-mkdir -p "$ROOTFS/var/lib/devos" "$ROOTFS/root/packages"
-for dpk in "$WORK"/hello-*.dpk; do
-    if [ -f "$dpk" ]; then
-        cp "$dpk" "$ROOTFS/root/packages/"
-    fi
-done
+cp -a "$PM_ROOT/." "$ROOTFS/"
+mkdir -p "$ROOTFS/root/packages"
 
 log "installing git + gh"
 TOOLS_STAGE="$WORK/tools-stage-$DEVOS_ARCH"

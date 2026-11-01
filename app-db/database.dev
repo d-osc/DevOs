@@ -1,0 +1,67 @@
+# Shared catalog contract for pm-cli and the native App Store. Installed state
+# belongs to PM's locked registry, never to these authoring files.
+use "std/fs"
+use "std/json"
+use "std/strings"
+use "std/result"
+use "std/path"
+use "std/url"
+use "std/encoding"
+fn items(value:json.Value):Vec<json.Value> { let out = Vec<json.Value>(); for i in 0..(json.len(value) as i64) { out.push(json.at(value,i)) }; return out }
+fn text(value:json.Value, key:str):str { return json.has(value,key) && json.kind(json.get(value,key)) == "string" ? json.string(json.get(value,key)) : "" }
+fn list(value:json.Value, key:str):json.Value { return json.has(value,key) && json.kind(json.get(value,key)) == "array" ? json.get(value,key) : json.array() }
+fn object(value:json.Value, key:str):json.Value { return json.has(value,key) && json.kind(json.get(value,key)) == "object" ? json.get(value,key) : json.object() }
+fn id(value:str):bool {
+    if value == "" || strings.charLength(value) > 64 { return false }
+    for i in 0..strings.charLength(value) { let c = strings.charAt(value,i); if !strings.contains("abcdefghijklmnopqrstuvwxyz0123456789-_",c) || (i == 0 && (c == "-" || c == "_")) { return false } }; return true
+}
+fn https(value:str):bool {
+    if !strings.startsWith(value,"https://") || strings.contains(value,"\\") { return false }
+    for c in encoding.encode(value,"utf8") { if c <= 32 || c == 127 { return false } }
+    let parsed = result.attempt(fn():bool { let u = url.parse(value); return u.protocol == "https:" && u.hostname != "" && u.username == "" && u.password == "" })
+    return !result.isErr(parsed) && result.unwrap(parsed)
+}
+
+fn format(value:str):bool { return value == "dpk" || value == "dpkx" || value == "deb" || value == "rpm" || value == "tar.gz" }
+fn digest(value:str):bool { if strings.charLength(value) != 64 { return false }; for i in 0..64 { if !strings.contains("0123456789abcdef",strings.charAt(strings.toLowerCase(value),i)) { return false } }; return true }
+fn candidate(manifest:json.Value, arch:str):json.Value {
+    let stable = text(object(manifest,"channels"),"stable")
+    if text(manifest,"status") == "installable" {
+        for release in items(list(manifest,"releases")) {
+            if text(release,"version") != stable { continue }
+            for artifact in items(list(release,"artifacts")) {
+                if text(artifact,"platform") == "linux" && text(artifact,"arch") == arch && https(text(artifact,"url")) && format(text(artifact,"format")) && digest(text(artifact,"sha256")) && text(artifact,"backend") == "devospm" && text(artifact,"scope") == "user" && id(text(object(artifact,"package"),"name")) && text(object(artifact,"package"),"version") == text(release,"version") {
+                    let out = json.set(artifact,"file_url",text(artifact,"url")); return json.set(out,"prepared",true)
+                }
+            }
+        }; return json.object()
+    }
+    if text(manifest,"status") != "" && text(manifest,"status") != "catalog" { return json.object() }
+    for item in items(list(manifest,"downloads")) {
+        if text(item,"platform") == "linux" && text(item,"arch") == arch && https(text(item,"file_url")) && format(text(item,"format")) { return json.set(item,"prepared",false) }
+    }; return json.object()
+}
+fn read_json(file:str):json.Value { if !fs.is_file(file) || fs.size(file) > 2097152 { result.raise("Invalid or oversized catalog file: " + file) }; return json.parse(fs.readFileSync(file,"utf8")) }
+fn load(source:str, arch:str):json.Value {
+    let rows = json.array()
+    if fs.is_file(source) {
+        let data = read_json(source)
+        if json.kind(data) != "object" || !json.has(data,"schema_version") || json.kind(json.get(data,"schema_version")) != "number" || json.int(json.get(data,"schema_version")) != 2 { result.raise("Unsupported App Store catalog schema") }
+        rows = list(data,"apps")
+    } else {
+        let folder = source + "/apps"
+        if !fs.is_dir(folder) { result.raise("App Store database is unavailable: " + source) }
+        let names = fs.readdirSync(folder); names.sort()
+        for name in names { let file = folder + "/" + name + "/app.json"; if !fs.is_file(file) { continue }; let manifest = read_json(file); if text(manifest,"id") != name { result.raise("Catalog identity does not match folder: " + name) }; rows = json.push(rows,json.set(json.object(),"manifest",manifest)) }
+    }
+    let apps = json.array(); let seen = Map<str,str>()
+    for row in items(rows) {
+        let manifest = object(row,"manifest"); let key = text(manifest,"id")
+        if !id(key) || text(manifest,"name") == "" || !json.has(manifest,"schema_version") || json.kind(json.get(manifest,"schema_version")) != "number" || json.int(json.get(manifest,"schema_version")) != 2 { continue }
+        let names = Vec<str>(key)
+        for alias in items(list(manifest,"aliases")) { if json.kind(alias) != "string" || !id(json.string(alias)) { result.raise("Invalid catalog alias: " + key) }; names.push(json.string(alias)) }
+        for name in names { if seen.contains(name) { result.raise("Duplicate catalog identity or alias: " + name) }; seen.set(name,key) }
+        let item = json.set(json.object(),"manifest",manifest); item = json.set(item,"candidate",candidate(manifest,arch)); apps = json.push(apps,item)
+    }
+    let data = json.set(json.object(),"schema_version",2); data = json.set(data,"source",source); return json.set(data,"apps",apps)
+}

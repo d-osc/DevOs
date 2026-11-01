@@ -8,6 +8,18 @@ The reference inventory contains 297 applets. **297 are implemented (100%); 0 ar
 
 Run `node busybox-cli/coverage.mjs --require-complete` to verify imports, entry points, duplicates and missing applets. `--write` refreshes this inventory. The reference includes legacy applets; extra aliases are not counted toward 297.
 
+## Image integration
+
+`tools/build/userland.sh` builds this project for the image with `BUSYBOX_STATIC=1`.
+It installs the applet links and repository provenance. Extra boot helpers include
+`cttyhack`, `halt`, `reboot` and `poweroff`. `sh`/`ash` execute a separately packaged
+static dash shell; they do not embed an upstream BusyBox shell. PID 1 initializes
+procfs if needed before reading its arguments. Integration tests exercise shutdown
+inside QEMU.
+
+`flock` provides kernel advisory locks for the shared package-store guard, including
+exclusive/shared, nonblocking, file-command and inherited file-descriptor forms.
+
 ## Added implementations
 
 - Terminal and console: `script`, `scriptreplay`, `resize`, `openvt`, keyboard maps/keycodes, PSF/raw fonts, `showkey`, `microcom`, `chat`, `slattach`, and `getty`. Recording/replay preserve binary data; PTY operations restore terminal attributes on handled exits. Replay accepts classic two-column timing files, a typescript path and an optional positive fractional divisor; it neither skips a header nor adds a newline.

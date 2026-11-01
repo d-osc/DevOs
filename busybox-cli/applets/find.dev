@@ -266,6 +266,7 @@ fn descend(env: Env, top: i64, path: str, depth: i64) {
 fn run_find(args: Vec<str>): i64 {
     let paths = Vec<str>(); let tokens = Vec<str>(); let i = 0; let n = args.len() as i64; let follow = false
     while i < n && (sys.same(args[i], "-H") || sys.same(args[i], "-L") || sys.same(args[i], "-P")) { if sys.same(args[i], "-L") { follow = true }; i = i + 1 }
+    if i < n && sys.same(args[i], "--") { i = i + 1 }
     while i < n && !(sys.at(args[i], 0) == 45 && sys.length(args[i]) > 1) && !sys.same(args[i], "!") && !sys.same(args[i], "(") { paths.push(args[i]); i = i + 1 }
     while i < n { tokens.push(args[i]); i = i + 1 }
     if paths.len() == 0 { paths.push(".") }

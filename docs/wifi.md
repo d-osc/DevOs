@@ -54,7 +54,7 @@ not switch the host's live Wi-Fi connection.
 References: [WlanGetAvailableNetworkList](https://learn.microsoft.com/windows/win32/api/wlanapi/nf-wlanapi-wlangetavailablenetworklist)
 and [Windows Wi-Fi location permissions](https://learn.microsoft.com/windows/win32/nativewifi/wi-fi-access-location-changes).
 
-The Linux bridge is implemented in DevLang (`d` 0.5.5+). A DevLang worker loads
+The Linux bridge is implemented in DevLang (`d` 0.5.6+). A DevLang worker loads
 the system GIO shared library explicitly and calls NetworkManager over D-Bus;
 new credentials remain in memory. Python GI/libnm is not used by this bridge.
 `nmcli` is still required for saved-profile activation, radio and disconnect.

@@ -9,6 +9,7 @@ use "std/encoding"
 use "../lib/tool.dev" as tool
 use "../lib/smoke.dev" as smoke
 use "../lib/pam.dev" as pam
+use "../lib/feed.dev" as feed
 use "../../lib/desktop.dev" as util
 extern fn crypt(text: str, salt: str): str
 fn report(text: str) {
@@ -52,7 +53,9 @@ fn checks(): i32 {
     unsafe { tool.require(strings.equal(crypt("root", actual), actual) && !strings.equal(crypt("incorrect", actual), actual), "Live password hash failed validation.") }
     tool.require(pam.authenticate("swaylock", "root", "root") && !pam.authenticate("swaylock", "root", "incorrect") && !pam.authenticate("swaylock", "root", ""), "Live root swaylock PAM acceptance/denial failed.")
     tool.require(pam.authenticate("greetd", "root", "root") && !pam.authenticate("greetd", "root", "incorrect"), "Live root PAM acceptance/denial failed.")
-    tool.require(strings.equal(strings.trim(tool.exec(Vec<str>("/usr/bin/d", "--version"))), "d 0.5.5"), "Installed DevLang runtime version mismatch.")
+    let runtimeRecord = json.parse(tool.read("/usr/share/devlang/provenance.json"))
+    tool.require(strings.equal(util.text(util.get(runtimeRecord, "version")), "0.5.6"), "Installed DevLang release mismatch.")
+    for name in Vec<str>("d", "devrun", "devc") { tool.require(strings.equal(feed.sha("/usr/bin/" + name), util.text(util.get(runtimeRecord, "files.devlang-arm64-" + name))), "Installed DevLang binary checksum mismatch: " + name) }
     # Match the desktop caller, including HOME and the user's Wayland/session bus.
     let system = tool.run(Vec<str>("/usr/bin/d", session + "/bin/dev-os-system"), environment, "{\"action\":\"get\"}", 30000)
     let systemText = util.output(system)
@@ -62,7 +65,7 @@ fn checks(): i32 {
         let text = util.output(response)
         tool.require(!response.success && json.valid(text) && strings.contains(util.text(util.get(json.parse(text), "error")), "Invalid JSON"), "Installed native DevLang service boundary failed: " + helper)
     }
-    report("DEVOS_LIVE_DEVLANG_PASS: d 0.5.5 and installed native account/Store service protocols")
+    report("DEVOS_LIVE_DEVLANG_PASS: release 0.5.6 (provenance and SHA-256) and installed native account/Store service protocols")
     let lockerHelp = tool.run(Vec<str>("swaylock", "--help"), environment, "", 10000)
     tool.require(strings.contains(encoding.decode(lockerHelp.stdout, "utf8") + encoding.decode(lockerHelp.stderr, "utf8"), "DEV_OS_LOCK_COVER"), "Installed locker lacks the secure clock cover.")
     tool.require(fs.existsSync(session + "/dist/runtime-lid.js"), "Installed lid controller is missing.")

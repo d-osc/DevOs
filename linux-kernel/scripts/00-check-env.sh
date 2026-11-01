@@ -48,10 +48,11 @@ if curl -fsI --max-time 15 "$KERNEL_URL" >/dev/null 2>&1; then
 else
     err "cannot reach $KERNEL_URL"
 fi
-if curl -fsI --max-time 15 "$BUSYBOX_URL" >/dev/null 2>&1; then
-    ok "busybox.net reachable (busybox-$BUSYBOX_VERSION.tar.bz2)"
-else
-    err "cannot reach $BUSYBOX_URL"
-fi
+for project in busybox-cli pm-cli; do
+    test -f "$REPO/../$project/main.dev" || die "Missing repository project: $project"
+    ok "repository source: $project"
+done
+sh "$REPO/../packages/react-devlang/tools/toolchain.sh" >/dev/null
+
 echo
 ok "environment check complete"

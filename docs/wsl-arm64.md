@@ -23,10 +23,10 @@ Compositor gesture integration ใช้ DevLang: ติดตั้ง `d` (lin
 `~/.local/bin/d` ก่อนรัน bootstrap เช่น
 
 ```sh
-curl -sL -O https://github.com/d-osc/DevLang/releases/latest/download/devlang-d-v0.5.5-linux-arm64.tar.gz
-tar -xzf devlang-d-v0.5.5-linux-arm64.tar.gz
+curl -sL -O https://github.com/d-osc/DevLang/releases/download/v0.5.6/devlang-d-v0.5.6-linux-arm64.tar.gz
+tar -xzf devlang-d-v0.5.6-linux-arm64.tar.gz
 mkdir -p ~/.local/bin
-cp devlang-d-v0.5.5-linux-arm64/d ~/.local/bin/
+cp devlang-d-v0.5.6-linux-arm64/{d,devrun,devc} ~/.local/bin/
 ```
 
 กลับ PowerShell ใช้ Node.js 24+ และ npm:
@@ -85,3 +85,7 @@ d tools/test/runtime-env-test.dev --
 ```
 
 การทดสอบแบบ headless ตรวจ session/keyboard/apps และการปิด session ส่วนการแสดงผลบน Windows ต้องตรวจ nested WSLg เพิ่มเติม
+
+DevLang release v0.5.6 currently prints `d 0.5.5` because the upstream CLI
+version string was not bumped. Image checks use the release provenance and
+binary SHA-256 values rather than this string alone.
