@@ -1,0 +1,33 @@
+# Ethernet packet sockets shared by ARP and boot-time network clients.
+use "./sys.dev" as sys
+use "./net.dev" as net
+use "./rtnl.dev" as nl
+use "../applets/console_extra.dev" as cx
+use "../applets/hardware.dev" as hw
+struct Device { ok: bool, fd: i64, index: i64, mac: *sys.Bytes, ip: i64 }
+fn be(b: *sys.Bytes, off: i64, width: i64): i64 { let value = 0; for i in 0..width { value = value * 256 + sys.bat(b, off + i) as i64 }; return value }
+fn store(b: *sys.Bytes, off: i64, width: i64, value: i64) { let power = 1; for i in 1..width { power = power * 256 }; for i in 0..width { sys.bptr_set(b, off + i, (value / power % 256) as u8); power = power / 256 } }
+fn open(interface: str, protocol: i64): Device {
+    let mac = cx.buffer(6); let bad = Device(false, 0 - 1, 0, mac, 0); let index = nl.index(interface)
+    if index == 0 || sys.length(interface) > 15 { return bad }; let probe = net.open_socket(2, 0); if probe < 0 { return bad }; let request = cx.buffer(40)
+    for i in 0..sys.length(interface) { sys.bptr_set(request, i, sys.at(interface, i)) }
+    if hw.control_buffer(probe, 0x8927, request) != 0 || cx.le(request, 16, 2) != 1 { sys.close_fd(probe); return bad }; for i in 0..6 { sys.bptr_set(mac, i, sys.bat(request, 18 + i)) }
+    let address = hw.control_buffer(probe, 0x8915, request) == 0 ? be(request, 20, 4) : 0; sys.close_fd(probe)
+    let network_protocol = (protocol % 256) * 256 + protocol / 256; let fd = 0 - 1; unsafe { fd = net.socket(17, 524290, network_protocol as i32) as i64 }; if fd < 0 { return bad }
+    let local = cx.buffer(20); cx.store(local, 0, 2, 17); store(local, 2, 2, protocol); cx.store(local, 4, 4, index); let rc = 0 - 1
+    unsafe { rc = net.bind(fd as i32, sys.bdata(local) as *void, 20) as i64 }; if rc != 0 { sys.close_fd(fd); return bad }; return Device(true, fd, index, mac, address)
+}
+fn broadcast(): *sys.Bytes { let mac = cx.buffer(6); for i in 0..6 { sys.bptr_set(mac, i, 255) }; return mac }
+fn send(d: Device, protocol: i64, target: *sys.Bytes, payload: *sys.Bytes): bool {
+    let address = cx.buffer(20); cx.store(address, 0, 2, 17); store(address, 2, 2, protocol); cx.store(address, 4, 4, d.index); cx.store(address, 11, 1, 6); for i in 0..6 { sys.bptr_set(address, 12 + i, sys.bat(target, i)) }
+    unsafe { return net.sendto(d.fd as i32, sys.bdata(payload) as *void, sys.blen(payload) as usize, 0, sys.bdata(address) as *void, 20) == sys.blen(payload) as isize }
+}
+fn arp(d: Device, sender: i64, target: i64, reply: bool, destination: *sys.Bytes): bool {
+    let b = cx.buffer(28); store(b, 0, 2, 1); store(b, 2, 2, 0x800); store(b, 4, 1, 6); store(b, 5, 1, 4); store(b, 6, 2, reply ? 2 : 1)
+    for i in 0..6 { sys.bptr_set(b, 8 + i, sys.bat(d.mac, i)); if reply { sys.bptr_set(b, 18 + i, sys.bat(destination, i)) } }; store(b, 14, 4, sender); store(b, 24, 4, target); return send(d, 0x806, destination, b)
+}
+fn conflict(d: Device, b: *sys.Bytes, count: i64, target: i64, dad: bool): bool {
+    if count < 28 || be(b, 0, 2) != 1 || be(b, 2, 2) != 0x800 || sys.bat(b, 4) != 6 || sys.bat(b, 5) != 4 || (be(b, 6, 2) != 1 && be(b, 6, 2) != 2) { return false }
+    let own = true; for i in 0..6 { if sys.bat(b, 8 + i) != sys.bat(d.mac, i) { own = false } }; if own { return false }
+    return be(b, 14, 4) == target || (dad && be(b, 14, 4) == 0 && be(b, 24, 4) == target)
+}

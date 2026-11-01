@@ -1,0 +1,113 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/lines.dev" as lines
+use "../lib/regex.dev" as regex
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+use "./mime.dev" as text
+use "./ip.dev" as ip
+use "./netadmin.dev" as admin
+extern fn fork(): i32
+extern fn setsid(): i32
+extern fn dup2(source: i32, destination: i32): i32
+
+struct Rule { expression: *i64, action: str }
+struct Source { fd: i64, evdev: bool, pending: *sys.Bytes }
+fn daemon(): i64 { unsafe { let pid = fork() as i64; if pid == 0 { setsid() }; return pid } }
+fn substitute(command: str): str {
+    let out = sys.bytes_new(); let i = 0
+    while i < sys.length(command) { if sys.at(command, i) == 37 && i + 1 < sys.length(command) && sys.at(command, i + 1) == 101 { sys.bytes_str(out, "\"$ACPI_EVENT\""); i = i + 2 } else { sys.bytes_push(out, sys.at(command, i)); i = i + 1 } }; return sys.bytes_cstr(out)
+}
+fn dispatch(event: str, rules: Vec<Rule>, guard: signals.Signals, logging: bool): bool {
+    if logging { sys.put_fd(2, sys.join2("acpid: ", sys.join2(event, "\n"))) }; let b = sys.bytes_new(); sys.bytes_str(b, event); let ok = true
+    for rule in rules { let caps = regex.new_caps(rule.expression); if regex.search(rule.expression, sys.bdata(b), sys.blen(b), 0, caps) { let env = proc.set_variable(proc.environment(), "ACPI_EVENT", event); if signals.run(Vec<str>("/bin/sh", "-c", substitute(rule.action)), env, guard) != 0 { sys.warn("acpid", "event action failed"); ok = false } } }; return ok
+}
+fn run_acpid(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "dc:l:e:g:m:s:S:v")
+    if o.bad != 0 || o.missing != 0 { sys.warn("acpid", "usage: acpid [-d] [-c CONFDIR] [-l LOGFILE] [-e EVENTFILE] [EVDEV...]"); return 1 }
+    let directory = sys.has(o, 99) ? sys.val(o, 99) : "/etc/acpi"; let files = fsx.list_dir(directory); if !files.ok { sys.warn_path("acpid", directory); return 1 }; let rules = Vec<Rule>()
+    # Both standard /etc/acpi/events files and a directly supplied rule directory.
+    let paths = Vec<str>(); for name in files.names { let path = fsx.join_path(directory, name); if sys.is_dir(path) && sys.same(name, "events") { for entry in fsx.list_dir(path).names { paths.push(fsx.join_path(path, entry)) } } else if sys.is_reg_mode(sys.file_info(path, true).mode) { paths.push(path) } }
+    for path in paths {
+        let input = sys.read_path(path); if !input.ok { continue }; let ls = lines.split_lines(input.bytes, 10); let expression = ""; let action = ""
+        for i in 0..(ls.starts.len() as i64) { let line = text.trim(lines.text_of(input.bytes, ls.starts[i], ls.ends[i])); if sys.starts(line, "event=") { expression = text.trim(sys.slice(line, 6, sys.length(line))) } else if sys.starts(line, "action=") { action = text.trim(sys.slice(line, 7, sys.length(line))) } }
+        if sys.length(expression) > 0 && sys.length(action) > 0 { let compiled = regex.compile(expression, true, false); if regex.failed(compiled) { sys.warn("acpid", "invalid event regular expression"); return 1 }; rules.push(Rule(compiled, action)) }
+    }
+    let sources = Vec<Source>(); let event_paths = o.rest
+    if event_paths.len() == 0 || sys.has(o, 101) { let path = sys.has(o, 101) ? sys.val(o, 101) : "/proc/acpi/event"; let fd = sys.open_fd(path, 0, 0); if fd < 0 { sys.warn_path("acpid", path); return 1 }; sources.push(Source(fd, false, sys.bytes_new())) }
+    for path in event_paths { let fd = sys.open_fd(path, 0, 0); if fd < 0 { for source in sources { sys.close_fd(source.fd) }; sys.warn_path("acpid", path); return 1 }; sources.push(Source(fd, true, sys.bytes_new())) }
+    if !sys.has(o, 100) {
+        let log = sys.has(o, 108) ? sys.val(o, 108) : "/var/log/acpid"; let fd = sys.open_fd(log, 1089, 420); if fd < 0 { for source in sources { sys.close_fd(source.fd) }; sys.warn_write("acpid", log); return 1 }
+        let child = daemon(); if child != 0 { sys.close_fd(fd); for source in sources { sys.close_fd(source.fd) }; return child > 0 ? 0 : 1 }; unsafe { dup2(fd as i32, 2) }; sys.close_fd(fd)
+    }
+    let guard = signals.open(); if guard.fd < 0 { for source in sources { sys.close_fd(source.fd) }; return 1 }; let chunk = cx.buffer(4096); let status = 0
+    while sources.len() > 0 {
+        if tx.readable(guard.fd, 50) { signals.received(guard); break }; let live = Vec<Source>()
+        for source in sources {
+            if !tx.readable(source.fd, 0) { live.push(source); continue }; let n = sys.read_into(source.fd, sys.bdata(chunk), 4096)
+            if n <= 0 { sys.close_fd(source.fd); continue }; sys.bytes_append(source.pending, sys.bdata(chunk), n)
+            let pos = 0
+            while pos < sys.blen(source.pending) {
+                if source.evdev {
+                    if pos + 24 > sys.blen(source.pending) { break }; let kind = cx.le(source.pending, pos + 16, 2); let key = cx.le(source.pending, pos + 18, 2); let value = cx.le(source.pending, pos + 20, 4); pos = pos + 24
+                    if kind == 1 && value == 1 && (key == 116 || key == 142 || key == 205) { if !dispatch(key == 116 ? "button/power PBTN 00000080 00000000" : "button/sleep SBTN 00000080 00000000", rules, guard, true) { status = 1 } }
+                } else {
+                    let end = pos; while end < sys.blen(source.pending) && sys.bat(source.pending, end) != 10 { end = end + 1 }; if end == sys.blen(source.pending) { break }
+                    let event = text.trim(sys.bytes_cstr(text.bytes_slice(source.pending, pos, end))); pos = end + 1; if !dispatch(event, rules, guard, true) { status = 1 }
+                }
+            }
+            let remaining = sys.bytes_new(); sys.bytes_append(remaining, sys.bptr(source.pending, pos), sys.blen(source.pending) - pos); if sys.blen(remaining) > 65536 { status = 1; sys.close_fd(source.fd); continue }; live.push(Source(source.fd, source.evdev, remaining))
+        }; sources = live
+    }
+    for source in sources { sys.close_fd(source.fd) }; signals.close(guard); return status
+}
+fn link_state(interface: str): i64 {
+    if sys.length(interface) > 15 { return 0 - 1 }; let fd = net.open_socket(2, 0); if fd < 0 { return 0 - 1 }; let request = cx.buffer(40); let data = cx.buffer(8); cx.store(data, 0, 4, 10)
+    for i in 0..sys.length(interface) { sys.bptr_set(request, i, sys.at(interface, i)) }; unsafe { cx.store(request, 16, 8, sys.bdata(data) as i64) }
+    let result = hw.control_buffer(fd, 0x8946, request)
+    if result == 0 { sys.close_fd(fd); return cx.le(data, 4, 4) }
+    # Virtual links and administratively down interfaces may lack ETHTOOL_GLINK.
+    let fallback = hw.control_buffer(fd, 0x8913, request); sys.close_fd(fd)
+    return fallback == 0 ? ((cx.le(request, 16, 2) / 64) % 2) : 0 - 1
+}
+fn run_ifplugd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "nsi:fFaMr:x:Ipqlt:u:d:m:k")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 { sys.warn("ifplugd", "invalid arguments"); return 1 }
+    let interface = sys.has(o, 105) ? sys.val(o, 105) : "eth0"; if sys.length(interface) == 0 || sys.length(interface) > 15 || sys.find_char(interface, 47) >= 0 { return 1 }
+    let env = proc.environment(); let run = proc.lookup(env, "BUSYBOX_RUN"); let pidfile = fsx.join_path(run.found ? run.value : "/run", sys.join2("ifplugd.", sys.join2(interface, ".pid")))
+    if sys.has(o, 107) {
+        let pid = sys.parse_number(text.trim(admin.read_text(pidfile))); if !pid.ok || pid.value <= 1 { sys.warn("ifplugd", "no valid PID file"); return 1 }
+        let cmd = sys.read_path(sys.join2("/proc/", sys.join2(hw.decimal(pid.value), "/cmdline"))); let found = false; let start = 0
+        if cmd.ok { for i in 0..sys.blen(cmd.bytes) { if sys.bat(cmd.bytes, i) == 0 { let arg = sys.bytes_cstr(text.bytes_slice(cmd.bytes, start, i)); if sys.same(sys.base_name(arg), "ifplugd") { found = true }; start = i + 1 } } }
+        if !found { sys.warn("ifplugd", "PID no longer belongs to ifplugd"); return 1 }; return proc.send_signal(pid.value, 15) ? 0 : 1
+    }
+    if sys.has(o, 109) && !sys.same(sys.val(o, 109), "auto") && !sys.same(sys.val(o, 109), "ethtool") { sys.warn("ifplugd", "only auto/ethtool link detection is supported"); return 1 }
+    let interval = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)) : sys.Number(true, 1); let up = sys.has(o, 117) ? sys.parse_number(sys.val(o, 117)) : sys.Number(true, 0); let down = sys.has(o, 100) ? sys.parse_number(sys.val(o, 100)) : sys.Number(true, 5)
+    if !interval.ok || interval.value < 1 || interval.value > 3600 || !up.ok || up.value < 0 || up.value > 3600 || !down.ok || down.value < 0 || down.value > 3600 { return 1 }
+    if !sys.has(o, 77) && !sys.exists(sys.join2("/sys/class/net/", interface)) { sys.warn("ifplugd", "interface does not exist"); return 1 }
+    if !sys.has(o, 97) && ip.link(Vec<str>("set", interface, "up")) != 0 { return 1 }
+    let script = sys.has(o, 114) ? sys.val(o, 114) : "/etc/ifplugd/ifplugd.action"
+    if sys.length(proc.find_program(script, env)) == 0 { sys.warn("ifplugd", "action program not found"); return 1 }
+    if !sys.has(o, 110) { let pid = daemon(); if pid != 0 { return pid > 0 ? 0 : 1 } }
+    let fd = sys.open_fd(pidfile, 193, 420); if fd < 0 { sys.warn_write("ifplugd", pidfile); return 1 }; let value = sys.bytes_new(); sys.bytes_str(value, hw.decimal(proc.my_pid())); let wrote = tx.write_all(fd, sys.bdata(value), sys.blen(value)); sys.close_fd(fd); if !wrote { fsx.do_unlink(pidfile); return 1 }
+    let guard = signals.open(); if guard.fd < 0 { fsx.do_unlink(pidfile); return 1 }; let previous = 0 - 1; let candidate = 0 - 1; let since = net.now_ms(); let status = 0; let started = false
+    while true {
+        let state = link_state(interface)
+        if state < 0 { if sys.has(o, 70) { state = 1 } else if sys.has(o, 102) || sys.has(o, 77) { state = 0 } else { sys.warn("ifplugd", "link detection failed"); status = 1; break } }
+        if !started {
+            if !sys.has(o, 112) && (state != 0 || sys.has(o, 108)) { let cmd = Vec<str>(script, interface, state != 0 ? "up" : "down"); if sys.has(o, 120) { cmd.push(sys.val(o, 120)) }; if signals.run(cmd, env, guard) != 0 && !sys.has(o, 73) { status = 1; break } }
+            previous = state; candidate = state; since = net.now_ms(); started = true
+        }
+        if state != candidate { candidate = state; since = net.now_ms() }
+        if candidate != previous && net.now_ms() - since >= (candidate != 0 ? up.value : down.value) * 1000 {
+            let cmd = Vec<str>(script, interface, candidate != 0 ? "up" : "down"); if sys.has(o, 120) { cmd.push(sys.val(o, 120)) }; if signals.run(cmd, env, guard) != 0 && !sys.has(o, 73) { status = 1; break }; previous = candidate
+        }
+        if tx.readable(guard.fd, interval.value * 1000) { signals.received(guard); break }
+    }
+    if started && previous != 0 && !sys.has(o, 113) { let cmd = Vec<str>(script, interface, "down"); if sys.has(o, 120) { cmd.push(sys.val(o, 120)) }; if signals.run(cmd, env, guard) != 0 && !sys.has(o, 73) { status = 1 } }
+    fsx.do_unlink(pidfile); signals.close(guard); return status
+}

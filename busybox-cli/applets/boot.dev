@@ -1,0 +1,114 @@
+# PID-1-only boot operations. switch_root additionally requires an initramfs
+# root and a different filesystem mounted at NEW_ROOT before deleting anything.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/lines.dev" as lines
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./files.dev" as files
+use "./sysops.dev" as kernel
+extern fn statfs(path: str, buffer: *void): i32
+extern fn chroot(path: str): i32
+extern fn fork(): i32
+extern fn setsid(): i32
+extern fn dup2(from: i32, to: i32): i32
+extern fn execve(program: str, args: *void, env: *void): i32
+extern fn exit(code: i32)
+extern fn waitpid(pid: i32, status: *void, flags: i32): i32
+extern fn sigprocmask(how: i32, mask: *void, previous: *void): i32
+extern fn reboot(command: i32): i32
+
+fn clear_children(path: str, device: i64): bool {
+    let entries = fsx.list_dir(path); if !entries.ok { return false }
+    for name in entries.names {
+        let target = fsx.join_path(path, name); let info = sys.file_info(target, false)
+        if !info.ok { return false }; if info.dev != device { continue }
+        if sys.is_dir_mode(info.mode) { if !clear_children(target, device) || fsx.do_rmdir(target) != 0 { return false } }
+        else if fsx.do_unlink(target) != 0 { return false }
+    }; return true
+}
+fn run_switch_root(args: Vec<str>): i64 {
+    if proc.my_pid() != 1 || fsx.euid() != 0 { sys.warn("switch_root", "must run as root PID 1"); return 1 }
+    # Stop option parsing at NEW_ROOT, preserving all NEW_INIT arguments.
+    let console = ""; let start = 0
+    if args.len() >= 2 && sys.same(args[0], "-c") { console = args[1]; start = 2 }
+    if args.len() as i64 - start < 2 { sys.warn("switch_root", "usage: switch_root [-c CONSOLE] NEW_ROOT NEW_INIT [ARGS]"); return 1 }
+    let root = files.canonical(args[start], false); let old = sys.file_info("/", false); let target = sys.file_info(root, false); let parent = sys.file_info(files.parent_of(root), true)
+    let filesystem = cx.buffer(256); let rc = 0 - 1; unsafe { rc = statfs("/", sys.bdata(filesystem) as *void) as i64 }
+    if sys.length(root) == 0 || sys.same(root, "/") || !old.ok || !target.ok || !parent.ok || !sys.is_dir_mode(target.mode) || target.dev == old.dev || target.dev == parent.dev || rc != 0 || (cx.le(filesystem, 0, 8) != 0x01021994 && cx.le(filesystem, 0, 8) != 0x858458f6) { sys.warn("switch_root", "requires an initramfs root and a distinct NEW_ROOT mountpoint"); return 1 }
+    let init = args[start + 1]; let command = Vec<str>(); for i in (start + 1)..(args.len() as i64) { command.push(args[i]) }; let env = proc.environment(); let argv = proc.pointer_array(command); let envp = proc.pointer_array(env)
+    # Resolve init inside the destination chroot, including absolute symlinks.
+    let child = 0 - 1
+    unsafe { child = fork() as i64; if child == 0 { if chroot(root) != 0 || !fsx.change_dir("/") { exit(1) }; let info = sys.file_info(init, true); if !info.ok || !sys.is_reg_mode(info.mode) || sys.access(init, 1) != 0 { exit(1) }; if sys.length(console) > 0 { let fd = sys.open_fd(console, 2, 0); if fd < 0 { exit(1) }; sys.close_fd(fd) }; exit(0) } }
+    if child < 0 || proc.wait_for(child) != 0 { sys.warn("switch_root", "NEW_INIT or console is unavailable in NEW_ROOT"); return 1 }
+    if !fsx.change_dir(root) { sys.warn("switch_root", "cannot enter NEW_ROOT"); return 1 }
+    if !clear_children("/", old.dev) { sys.warn("switch_root", "cannot remove old initramfs contents"); return 1 }
+    unsafe {
+        if kernel.mount(".", "/", 0 as str, 8192, 0 as str) != 0 || chroot(".") != 0 || !fsx.change_dir("/") { sys.warn("switch_root", "root mount move/chroot failed"); return 1 }
+        if sys.length(console) > 0 { let fd = sys.open_fd(console, 2, 0); if fd < 0 { sys.warn_path("switch_root", console); return 1 }; dup2(fd as i32, 0); dup2(fd as i32, 1); dup2(fd as i32, 2); if fd > 2 { sys.close_fd(fd) } }
+        execve(init, argv, envp)
+    }; sys.warn("switch_root", "cannot execute NEW_INIT"); return 126
+}
+
+struct Job { id: str, action: str, command: str, pid: i64, last: i64 }
+fn inittab(): Vec<Job> {
+    let jobs = Vec<Job>(); let input = sys.read_path("/etc/inittab")
+    if !input.ok {
+        jobs.push(Job("", "sysinit", "/etc/init.d/rcS", 0, 0)); jobs.push(Job("", "askfirst", "/bin/sh", 0, 0)); jobs.push(Job("", "ctrlaltdel", "/sbin/reboot", 0, 0)); jobs.push(Job("", "shutdown", "/bin/umount -a -r", 0, 0)); jobs.push(Job("", "restart", "/sbin/init", 0, 0)); return jobs
+    }
+    let ls = lines.split_lines(input.bytes, 10)
+    for i in 0..(ls.starts.len() as i64) {
+        let text = lines.text_of(input.bytes, ls.starts[i], ls.ends[i]); if sys.length(text) == 0 || sys.starts(text, "#") { continue }
+        let first = sys.find_char(text, 58); if first < 0 { continue }; let rest = sys.slice(text, first + 1, sys.length(text)); let second = sys.find_char(rest, 58); if second < 0 { continue }; rest = sys.slice(rest, second + 1, sys.length(rest)); let third = sys.find_char(rest, 58); if third < 0 { continue }
+        let action = sys.slice(rest, 0, third); let command = sys.slice(rest, third + 1, sys.length(rest)); if sys.length(command) == 0 { continue }
+        if !sys.same(action, "sysinit") && !sys.same(action, "wait") && !sys.same(action, "once") && !sys.same(action, "respawn") && !sys.same(action, "askfirst") && !sys.same(action, "ctrlaltdel") && !sys.same(action, "shutdown") && !sys.same(action, "restart") { sys.warn("init", "unknown inittab action"); continue }
+        jobs.push(Job(sys.slice(text, 0, first), action, command, 0, 0))
+    }; return jobs
+}
+fn launch(job: Job, guard: signals.Signals): i64 {
+    let command = Vec<str>("/bin/sh", "-c", job.command); let argv = proc.pointer_array(command); let envp = proc.pointer_array(proc.environment()); let pid = 0 - 1
+    unsafe {
+        pid = fork() as i64
+        if pid == 0 {
+            sigprocmask(2, sys.bdata(guard.previous) as *void, 0 as *void); setsid()
+            if sys.length(job.id) > 0 {
+                let fd = sys.open_fd(sys.starts(job.id, "/") ? job.id : sys.join2("/dev/", job.id), 2, 0); if fd < 0 { exit(126) }; dup2(fd as i32, 0); dup2(fd as i32, 1); dup2(fd as i32, 2); if fd > 2 { sys.close_fd(fd) }
+            }
+            if sys.same(job.action, "askfirst") { sys.put_fd(1, "\nPlease press Enter to activate this console. "); let b = cx.buffer(1); let confirmed = false; while sys.read_into(0, sys.bdata(b), 1) == 1 { if sys.bat(b, 0) == 10 || sys.bat(b, 0) == 13 { confirmed = true; break } }; if !confirmed { exit(1) } }
+            execve("/bin/sh", argv, envp); exit(126)
+        }
+    }; return pid
+}
+fn actions(jobs: Vec<Job>, action: str, guard: signals.Signals) { for job in jobs { if sys.same(job.action, action) { let pid = launch(job, guard); if pid > 0 { proc.wait_for(pid) } } } }
+fn run_init(args: Vec<str>): i64 {
+    if proc.my_pid() != 1 { sys.warn("init", "must run as PID 1"); return 1 }; if args.len() != 0 { sys.warn("init", "usage: init"); return 1 }
+    let guard = signals.open_mask(1 + 2 + 4 + 512 + 2048 + 16384 + 65536); if guard.fd < 0 { sys.warn("init", "cannot install signal handling"); return 1 }
+    let jobs = inittab(); actions(jobs, "sysinit", guard); actions(jobs, "wait", guard); let status = cx.buffer(4)
+    while true {
+        # Reap every descendant, not only the processes named in inittab.
+        while true {
+            let pid = 0 - 1; unsafe { pid = waitpid(0 - 1, sys.bdata(status) as *void, 1) as i64 }; if pid <= 0 { break }
+            for i in 0..(jobs.len() as i64) { if jobs[i].pid == pid { let job = jobs[i]; job.pid = sys.same(job.action, "once") ? 0 - 1 : 0; jobs[i] = job } }
+        }
+        let now = net.now_ms()
+        for i in 0..(jobs.len() as i64) {
+            let job = jobs[i]; if job.pid != 0 || (!sys.same(job.action, "respawn") && !sys.same(job.action, "askfirst") && !sys.same(job.action, "once")) { continue }
+            if now - job.last < 1000 { continue }; job.pid = launch(job, guard); job.last = now; if job.pid < 0 { job.pid = 0; sys.warn("init", "fork failed") }; jobs[i] = job
+        }
+        if !tx.readable(guard.fd, 200) { continue }; let signal = signals.received(guard)
+        if signal == 1 {
+            let replacement = inittab()
+            for i in 0..(replacement.len() as i64) { for old in jobs { if sys.same(old.id, replacement[i].id) && sys.same(old.action, replacement[i].action) && sys.same(old.command, replacement[i].command) { let copy = replacement[i]; copy.pid = old.pid; copy.last = old.last; replacement[i] = copy; break } } }
+            for old in jobs { let retained = false; for job in replacement { if old.pid > 0 && job.pid == old.pid { retained = true } }; if old.pid > 0 && !retained { proc.send_signal(old.pid, 15) } }; jobs = replacement
+        } else if signal == 2 { actions(jobs, "ctrlaltdel", guard) }
+        else if signal == 3 {
+            for job in jobs { if sys.same(job.action, "restart") { let command = Vec<str>("/bin/sh", "-c", job.command); let argv = proc.pointer_array(command); let envp = proc.pointer_array(proc.environment()); unsafe { sigprocmask(2, sys.bdata(guard.previous) as *void, 0 as *void); execve("/bin/sh", argv, envp); let mask = cx.buffer(128); cx.store(mask, 0, 8, 1 + 2 + 4 + 512 + 2048 + 16384 + 65536); sigprocmask(0, sys.bdata(mask) as *void, 0 as *void) }; sys.warn("init", "restart exec failed") } }
+        } else if signal == 10 || signal == 12 || signal == 15 {
+            actions(jobs, "shutdown", guard); proc.send_signal(0 - 1, 15); proc.pause_us(200000); proc.send_signal(0 - 1, 9); fsx.do_sync()
+            let command = signal == 10 ? 0xcdef0123 : (signal == 12 ? 0x4321fedc : 0x01234567); unsafe { reboot(command as i32) }; sys.warn("init", "reboot failed; PID 1 will remain running"); while true { proc.pause_us(1000000) }
+        }
+    }; return 0
+}

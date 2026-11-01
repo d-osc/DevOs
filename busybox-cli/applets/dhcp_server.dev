@@ -1,0 +1,99 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/packet.dev" as packet
+use "../lib/dhcp.dev" as wire
+use "../lib/clock.dev" as clock
+use "../lib/lines.dev" as lines
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+use "./mime.dev" as text
+use "./events.dev" as events
+extern fn fsync(fd: i32): i32
+struct Lease { mac: *sys.Bytes, ip: i64, expires: i64, hostname: str }
+struct Setting { code: i64, value: *sys.Bytes }
+fn mac_text(b: *sys.Bytes): str { let out = sys.bytes_new(); let digits = "0123456789abcdef"; for i in 0..6 { if i > 0 { sys.bytes_push(out, 58) }; let c = sys.bat(b, i) as i64; sys.bytes_push(out, sys.at(digits, c / 16)); sys.bytes_push(out, sys.at(digits, c % 16)) }; return sys.bytes_cstr(out) }
+fn mac_parse(value: str): *sys.Bytes { let out = sys.bytes_new(); if sys.length(value) != 17 { return out }; for i in 0..6 { if i > 0 && sys.at(value, i * 3 - 1) != 58 { sys.bclear(out); return out }; let v = 0; for j in 0..2 { let c = sys.at(value, i * 3 + j); let digit = c >= 48 && c <= 57 ? (c - 48) as i64 : (c >= 97 && c <= 102 ? (c - 87) as i64 : (c >= 65 && c <= 70 ? (c - 55) as i64 : 0 - 1)); if digit < 0 { sys.bclear(out); return out }; v = v * 16 + digit }; sys.bytes_push(out, v as u8) }; return out }
+fn load(path: str): Vec<Lease> {
+    let out = Vec<Lease>(); let input = sys.read_path(path); if !input.ok || sys.blen(input.bytes) < 8 || (sys.blen(input.bytes) - 8) % 36 != 0 { return out }; let saved = packet.be(input.bytes, 0, 8); let elapsed = clock.now() > saved ? clock.now() - saved : 0
+    let at = 8; while at + 36 <= sys.blen(input.bytes) && out.len() < 1024 { let remaining = packet.be(input.bytes, at, 4); if remaining > elapsed { out.push(Lease(wire.slice(input.bytes, at + 8, at + 14), packet.be(input.bytes, at + 4, 4), clock.now() + remaining - elapsed, wire.text(wire.slice(input.bytes, at + 14, at + 34)))) }; at = at + 36 }; return out
+}
+fn store(path: str, leases: Vec<Lease>): bool {
+    let b = cx.buffer(8); let now = clock.now(); packet.store(b, 0, 8, now)
+    for lease in leases { if lease.expires <= now { continue }; let entry = cx.buffer(36); packet.store(entry, 0, 4, lease.expires - now); packet.store(entry, 4, 4, lease.ip); for i in 0..6 { sys.bptr_set(entry, 8 + i, sys.bat(lease.mac, i)) }; for i in 0..sys.length(lease.hostname) { if i >= 19 { break }; sys.bptr_set(entry, 14 + i, sys.at(lease.hostname, i)) }; sys.bytes_append(b, sys.bdata(entry), 36) }
+    let temporary = sys.join2(path, sys.join2(".tmp.", hw.decimal(proc.my_pid()))); let fd = sys.open_fd(temporary, 193, 384); if fd < 0 { return false }; let ok = tx.write_all(fd, sys.bdata(b), sys.blen(b)); unsafe { if fsync(fd as i32) != 0 { ok = false } }; sys.close_fd(fd); if ok { unsafe { ok = fsx.rename(temporary, path) == 0 } }; if !ok { fsx.do_unlink(temporary) }; return ok
+}
+fn run_dumpleases(args: Vec<str>): i64 {
+    let translated = Vec<str>(); for arg in args { if sys.same(arg, "--remaining") { translated.push("-r") } else if sys.same(arg, "--absolute") { translated.push("-a") } else if sys.same(arg, "--file") { translated.push("-f") } else { translated.push(arg) } }
+    let o = sys.parse_opts(translated, "raf:"); if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 { return 1 }; let path = sys.has(o, 102) ? sys.val(o, 102) : "/var/lib/misc/udhcpd.leases"; let input = sys.read_path(path); if !input.ok || sys.blen(input.bytes) < 8 || (sys.blen(input.bytes) - 8) % 36 != 0 { sys.warn("dumpleases", "invalid or unreadable lease file"); return 1 }
+    let out = sys.out_new(1); sys.out_str(out, sys.has(o, 97) ? "Mac Address       IP Address      Host Name           Expires at\n" : "Mac Address       IP Address      Host Name           Expires in\n"); let saved = packet.be(input.bytes, 0, 8); let at = 8
+    while at + 36 <= sys.blen(input.bytes) { let mac = mac_text(wire.slice(input.bytes, at + 8, at + 14)); let ip = net.ip_text(packet.be(input.bytes, at + 4, 4)); let host = wire.text(wire.slice(input.bytes, at + 14, at + 34)); sys.out_str(out, mac); sys.out_str(out, " "); sys.out_str(out, ip); for i in sys.length(ip)..15 { sys.out_byte(out, 32) }; sys.out_str(out, " "); sys.out_str(out, host); for i in sys.length(host)..19 { sys.out_byte(out, 32) }; sys.out_str(out, " ")
+        let expiry = saved + packet.be(input.bytes, at, 4); let remain = expiry > clock.now() ? expiry - clock.now() : 0
+        if sys.has(o, 97) { sys.out_str(out, clock.format("%a %b %e %H:%M:%S %Y", clock.fields(expiry, false), expiry, false)) }
+        else if remain == 0 { sys.out_str(out, "expired") } else { let b = sys.bytes_new(); if remain >= 86400 { sys.bytes_num(b, remain / 86400); sys.bytes_str(b, " days, ") }; clock.pad(b, (remain / 3600) % 24, 2, 48); sys.bytes_push(b, 58); clock.pad(b, (remain / 60) % 60, 2, 48); sys.bytes_push(b, 58); clock.pad(b, remain % 60, 2, 48); sys.out_str(out, sys.bytes_cstr(b)) }; sys.out_byte(out, 10); at = at + 36
+    }; sys.out_flush(out); return 0
+}
+fn option_code(name: str): i64 {
+    if sys.same(name, "subnet") { return 1 }; if sys.same(name, "router") { return 3 }; if sys.same(name, "dns") { return 6 }; if sys.same(name, "hostname") { return 12 }; if sys.same(name, "domain") { return 15 }; if sys.same(name, "broadcast") { return 28 }; if sys.same(name, "ntpsrv") { return 42 }; if sys.same(name, "wins") { return 44 }; if sys.same(name, "lease") { return 51 }; if sys.same(name, "serverid") { return 54 }; if sys.same(name, "tftp") { return 66 }; if sys.same(name, "bootfile") { return 67 }; let n = sys.parse_number(name); return n.ok && n.value > 0 && n.value < 255 ? n.value : 0
+}
+fn setting(words: Vec<str>): Setting {
+    if words.len() < 3 { return Setting(0, sys.bytes_new()) }; let code = option_code(words[1]); let value = sys.bytes_new()
+    if code == 1 || code == 3 || code == 6 || code == 28 || code == 42 || code == 44 || code == 54 { for i in 2..(words.len() as i64) { let ip = net.parse_ip(words[i]); if ip < 0 { return Setting(0, value) }; let b = cx.buffer(4); packet.store(b, 0, 4, ip); sys.bytes_append(value, sys.bdata(b), 4) } }
+    else if code == 51 { let n = sys.parse_number(words[2]); if !n.ok || n.value < 1 || n.value > 0xffffffff { return Setting(0, value) }; let b = cx.buffer(4); packet.store(b, 0, 4, n.value); value = b }
+    else if code == 12 || code == 15 || code == 66 || code == 67 { for i in 2..(words.len() as i64) { if i > 2 { sys.bytes_push(value, 32) }; sys.bytes_str(value, words[i]) }; let s = sys.bytes_cstr(value); if sys.length(s) >= 2 && sys.at(s, 0) == 34 && sys.at(s, sys.length(s) - 1) == 34 { value = sys.bytes_new(); sys.bytes_str(value, sys.slice(s, 1, sys.length(s) - 1)) } }
+    else { return Setting(0, value) }; return Setting(sys.blen(value) <= 255 ? code : 0, value)
+}
+fn pid_file(path: str): bool { if sys.length(path) == 0 { return true }; let fd = sys.open_fd(path, 193, 420); if fd < 0 { return false }; let b = sys.bytes_new(); sys.bytes_num(b, proc.my_pid()); sys.bytes_push(b, 10); let ok = tx.write_all(fd, sys.bdata(b), sys.blen(b)); sys.close_fd(fd); if !ok { fsx.do_unlink(path) }; return ok }
+fn background(): i64 {
+    let child = events.daemon(); if child != 0 { return child }; let fd = sys.open_fd("/dev/null", 2, 0); if fd < 0 { return 0 - 1 }; let ok = true
+    unsafe { for i in 0..3 { if events.dup2(fd as i32, i as i32) < 0 { ok = false } } }; if fd > 2 { sys.close_fd(fd) }; return ok ? 0 : 0 - 1
+}
+fn address_used(interface: str, address: i64, guard: signals.Signals): bool {
+    let d = packet.open(interface, 0x806); if !d.ok { return true }; let b = cx.buffer(2048); let conflict = !packet.arp(d, 0, address, false, packet.broadcast()); let end = net.now_ms() + 1000
+    while !conflict && net.now_ms() < end { if tx.readable(guard.fd, 0) { conflict = true; break }; if !tx.readable(d.fd, 50) { continue }; let n = net.recv_some(d.fd, sys.bdata(b), sys.blen(b)); if packet.conflict(d, b, n, address, true) { conflict = true } }; sys.close_fd(d.fd); return conflict
+}
+fn run_udhcpd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fS"); if o.bad != 0 || o.missing != 0 || o.rest.len() > 1 { return 1 }; let path = o.rest.len() > 0 ? o.rest[0] : "/etc/udhcpd.conf"; let input = sys.read_path(path); if !input.ok { sys.warn_path("udhcpd", path); return 1 }
+    let interface = "eth0"; let first = net.parse_ip("192.168.0.20"); let last = net.parse_ip("192.168.0.254"); let leasefile = "/var/lib/misc/udhcpd.leases"; let pidfile = "/var/run/udhcpd.pid"; let lifetime = 864000; let minimum = 60; let conflict_time = 3600; let maximum = 235; let offer_time = 60; let decline_time = 3600; let auto_time = 7200; let notify = ""; let settings = Vec<Setting>(); let statics = Vec<Lease>(); let siaddr = 0; let sname = ""; let bootfile = ""; let bad = false
+    let ls = lines.split_lines(input.bytes, 10)
+    for row in 0..(ls.starts.len() as i64) {
+        let line = text.trim(lines.text_of(input.bytes, ls.starts[row], ls.ends[row])); let hash = sys.find_char(line, 35); if hash >= 0 { line = sys.slice(line, 0, hash) }; let words = net.fields_of(line); if words.len() == 0 { continue }; if words.len() < 2 { bad = true; break }; let key = words[0]; let value = words[1]
+        if sys.same(key, "start") { first = net.parse_ip(value) } else if sys.same(key, "end") { last = net.parse_ip(value) } else if sys.same(key, "interface") { interface = value } else if sys.same(key, "lease_file") { leasefile = value } else if sys.same(key, "pidfile") { pidfile = value } else if sys.same(key, "notify_file") { notify = value }
+        else if sys.same(key, "option") || sys.same(key, "opt") { let item = setting(words); if item.code == 0 { bad = true; break }; if item.code == 51 { lifetime = packet.be(item.value, 0, 4) } else if item.code == 54 { bad = true; break } else { settings.push(item) } }
+        else if sys.same(key, "static_lease") { if words.len() < 3 { bad = true; break }; let mac = mac_parse(value); let ip = net.parse_ip(words[2]); if sys.blen(mac) != 6 || ip <= 0 { bad = true; break }; statics.push(Lease(mac, ip, 0, words.len() > 3 ? words[3] : "")) }
+        else if sys.same(key, "siaddr") { siaddr = net.parse_ip(value) } else if sys.same(key, "sname") { sname = value } else if sys.same(key, "boot_file") { bootfile = value }
+        else if sys.same(key, "max_leases") || sys.same(key, "offer_time") || sys.same(key, "decline_time") || sys.same(key, "conflict_time") || sys.same(key, "auto_time") || sys.same(key, "min_lease") { let n = sys.parse_number(value); if !n.ok || n.value < 0 || n.value > 0x7fffffff { bad = true; break }; if sys.same(key, "max_leases") { maximum = n.value } else if sys.same(key, "offer_time") { offer_time = n.value } else if sys.same(key, "decline_time") { decline_time = n.value } else if sys.same(key, "auto_time") { auto_time = n.value } else if sys.same(key, "min_lease") { minimum = n.value } else if sys.same(key, "conflict_time") { conflict_time = n.value } }
+        else if sys.same(key, "remaining") { if !sys.same(value, "yes") { bad = true; break } } else { bad = true; break }
+    }
+    if bad || first <= 0 || last < first || last - first > 65535 || maximum < 1 || maximum > 1024 || siaddr < 0 || sys.length(sname) > 63 || sys.length(bootfile) > 127 { sys.warn("udhcpd", "invalid or unsupported configuration"); return 1 }
+    let device = packet.open(interface, 0x800); if !device.ok || device.ip == 0 { sys.warn("udhcpd", "interface requires an Ethernet IPv4 address"); return 1 }; let fd = wire.udp(interface, 67); if fd < 0 { sys.close_fd(device.fd); sys.warn("udhcpd", "cannot bind DHCP server socket"); return 1 }
+    if !sys.has(o, 102) { let child = background(); if child != 0 { sys.close_fd(fd); sys.close_fd(device.fd); return child > 0 ? 0 : 1 } }
+    if !pid_file(pidfile) { sys.close_fd(fd); sys.close_fd(device.fd); sys.warn("udhcpd", "PID file already exists or cannot be created"); return 1 }; let guard = signals.open_mask(1 + 2 + 4 + 512 + 16384); if guard.fd < 0 { sys.close_fd(fd); sys.close_fd(device.fd); fsx.do_unlink(pidfile); return 1 }
+    let leases = load(leasefile); let next_save = clock.now() + auto_time; let status = 0; let buffer = cx.buffer(4096)
+    while true {
+        let flush = auto_time > 0 && clock.now() >= next_save; let stopping = false
+        if tx.readable(guard.fd, 0) { let sig = signals.received(guard); if sig == 10 { flush = true } else { stopping = true; flush = true } }
+        if flush { if !store(leasefile, leases) { sys.warn_write("udhcpd", leasefile); status = 1 }; next_save = clock.now() + auto_time; if sys.length(notify) > 0 && signals.run(Vec<str>(notify, leasefile), proc.environment(), guard) != 0 { sys.warn("udhcpd", "lease notification failed") } }; if stopping { break }
+        if !tx.readable(fd, 100) { continue }; let n = net.recv_some(fd, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { status = 1; break }; let request = wire.slice(buffer, 0, n); if !wire.valid(request) || sys.bat(request, 0) != 1 || sys.bat(request, 3) > 16 { continue }; let kind = wire.number(request, 53, 1); let mac = wire.slice(request, 28, 34); let server = wire.number(request, 54, 4); if server >= 0 && server != device.ip { continue }
+        let now = clock.now(); let active = Vec<Lease>(); for lease in leases { if lease.expires > now { active.push(lease) } }; leases = active; let old = 0 - 1; for i in 0..(leases.len() as i64) { if wire.same(leases[i].mac, mac) { old = i; break } }
+        let fixed = 0; for entry in statics { if wire.same(entry.mac, mac) { fixed = entry.ip; break } }; let requested = wire.number(request, 50, 4); let ciaddr = packet.be(request, 12, 4); if requested < 0 { requested = ciaddr }; let address = fixed > 0 ? fixed : (old >= 0 ? leases[old].ip : 0)
+        if kind == 7 || kind == 4 { if old >= 0 && (kind == 4 ? requested == leases[old].ip : ciaddr == leases[old].ip) { let previous = leases[old]; leases[old] = Lease(kind == 4 ? cx.buffer(6) : previous.mac, previous.ip, kind == 4 ? now + decline_time : 0, previous.hostname); if !store(leasefile, leases) { status = 1 } }; continue }
+        if kind != 1 && kind != 3 && kind != 8 { continue }
+        if kind == 1 && address == 0 {
+            let candidates = Vec<i64>(); if requested >= first && requested <= last { candidates.push(requested) }; for ip in first..(last + 1) { candidates.push(ip) }
+            for ip in candidates { if ip == device.ip || ip % 256 == 0 || ip % 256 == 255 { continue }; let occupied = false; for lease in leases { if lease.ip == ip { occupied = true; break } }; for entry in statics { if entry.ip == ip { occupied = true; break } }; if !occupied { if address_used(interface, ip, guard) { if (leases.len() as i64) < maximum { leases.push(Lease(cx.buffer(6), ip, now + conflict_time, "")) }; continue }; address = ip; break } }
+        }
+        let reply_kind = kind == 1 ? 2 : 5; if kind == 3 {
+            let permitted = requested > 0 && (fixed > 0 ? requested == fixed : requested >= first && requested <= last) && requested != device.ip && requested % 256 != 0 && requested % 256 != 255
+            for lease in leases { if lease.ip == requested && !wire.same(lease.mac, mac) { permitted = false } }; for entry in statics { if entry.ip == requested && !wire.same(entry.mac, mac) { permitted = false } }; if !permitted { reply_kind = 6; address = 0 } else { address = requested }
+        }
+        if kind != 8 && reply_kind != 6 && (address == 0 || (old < 0 && (leases.len() as i64) >= maximum)) { continue }
+        let duration = wire.number(request, 51, 4); if duration < minimum || duration > lifetime { duration = lifetime }; let reply = wire.message(mac, packet.be(request, 4, 4), reply_kind, true); packet.store(reply, 10, 2, packet.be(request, 10, 2)); packet.store(reply, 12, 4, ciaddr); packet.store(reply, 16, 4, kind == 8 ? 0 : address); packet.store(reply, 20, 4, siaddr); packet.store(reply, 24, 4, packet.be(request, 24, 4)); for i in 0..sys.length(sname) { sys.bptr_set(reply, 44 + i, sys.at(sname, i)) }; for i in 0..sys.length(bootfile) { sys.bptr_set(reply, 108 + i, sys.at(bootfile, i)) }; wire.numeric(reply, 54, device.ip, 4)
+        if reply_kind != 6 { if kind != 8 { wire.numeric(reply, 51, duration, 4); wire.numeric(reply, 58, duration / 2, 4); wire.numeric(reply, 59, duration * 7 / 8, 4) }; for item in settings { wire.add(reply, item.code, item.value) } }; wire.finish(reply)
+        if kind != 8 && reply_kind != 6 { let host = wire.text(wire.option(request, 12)); let lease = Lease(mac, address, now + (kind == 1 ? offer_time : duration), host); if old >= 0 { leases[old] = lease } else { leases.push(lease) }; if kind == 3 && !store(leasefile, leases) { sys.warn_write("udhcpd", leasefile); status = 1; continue } }
+        let relay = packet.be(request, 24, 4); let sent = relay != 0 ? wire.send_udp(fd, relay, 67, reply) : wire.send_raw(device, device.ip, reply_kind == 6 || (packet.be(request, 10, 2) & 32768) != 0 ? 0xffffffff : (ciaddr != 0 ? ciaddr : address), 67, 68, reply_kind == 6 || (packet.be(request, 10, 2) & 32768) != 0 ? packet.broadcast() : mac, reply); if !sent { sys.warn("udhcpd", "cannot send reply") }
+    }; signals.close(guard); sys.close_fd(fd); sys.close_fd(device.fd); fsx.do_unlink(pidfile); return status
+}

@@ -1,0 +1,77 @@
+# Serial/virtual-terminal login prompt; authentication is delegated to LOGIN.
+use "../lib/sys.dev" as sys
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/clock.dev" as clock
+use "../lib/signal_fd.dev" as signals
+use "./serial.dev" as serial
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+use "./util6.dev" as tty
+use "./netadmin.dev" as admin
+extern fn setsid(): i32
+extern fn dup2(source: i32, destination: i32): i32
+extern fn execve(program: str, args: *void, env: *void): i32
+extern fn fcntl(fd: i32, command: i32, value: i64): i32
+
+fn issue(data: *sys.Bytes, device: str): *sys.Bytes {
+    let out = sys.bytes_new(); let i = 0
+    while i < sys.blen(data) {
+        let c = sys.bat(data, i); i = i + 1
+        if c != 92 || i >= sys.blen(data) { sys.bytes_push(out, c); continue }; let code = sys.bat(data, i); i = i + 1
+        if code == 110 { sys.bytes_str(out, admin.read_text("/proc/sys/kernel/hostname")) }
+        else if code == 108 { sys.bytes_str(out, sys.base_name(device)) }
+        else if code == 114 { sys.bytes_str(out, admin.read_text("/proc/sys/kernel/osrelease")) }
+        else if code == 115 { sys.bytes_str(out, "Linux") }
+        else if code == 111 { sys.bytes_str(out, admin.read_text("/proc/sys/kernel/domainname")) }
+        else if code == 100 || code == 116 { let now = clock.now(); sys.bytes_str(out, clock.format(code == 100 ? "%a %b %e %Y" : "%H:%M:%S", clock.fields(now, false), now, false)) }
+        else { sys.bytes_push(out, code) }
+    }; return out
+}
+fn run_getty(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "hiLmwnf:l:t:I:H:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 2 || o.rest.len() > 3 { sys.warn("getty", "usage: getty [OPTIONS] BAUD_RATE TTY [TERMTYPE]"); return 1 }
+    let rates = o.rest[0]; let comma = sys.find_char(rates, 44); let rate = sys.parse_number(comma < 0 ? rates : sys.slice(rates, 0, comma)); let timeout = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)) : sys.Number(true, 0)
+    if !rate.ok || serial.baud(rate.value) < 0 || !timeout.ok || timeout.value < 0 || timeout.value > 86400 { sys.warn("getty", "invalid speed or timeout"); return 1 }
+    let path = sys.same(o.rest[1], "-") ? "-" : (sys.starts(o.rest[1], "/") ? o.rest[1] : sys.join2("/dev/", o.rest[1])); let fd = 0
+    if !sys.same(path, "-") {
+        unsafe { setsid() }; fd = sys.open_fd(path, 2050, 0); if fd < 0 { sys.warn_path("getty", path); return 1 }; hw.control(fd, 21518, 0)
+    }
+    let attrs = tty.get_attrs(fd); if sys.blen(attrs) == 0 { if fd > 2 { sys.close_fd(fd) }; sys.warn("getty", "not a terminal"); return 1 }
+    if !serial.configure(fd, attrs, rate.value, sys.has(o, 76), sys.has(o, 104)) { if fd > 2 { sys.close_fd(fd) }; sys.warn("getty", "cannot configure terminal"); return 1 }
+    unsafe { if fcntl(fd as i32, 4, 0) != 0 { tty.set_attrs(fd, attrs); if fd > 2 { sys.close_fd(fd) }; return 1 } }
+    let guard = signals.open(); if guard.fd < 0 { tty.set_attrs(fd, attrs); if fd > 2 { sys.close_fd(fd) }; return 1 }
+    let deadline = timeout.value > 0 ? net.now_ms() + timeout.value * 1000 : 0; let byte = cx.buffer(1); let ok = true; let status = 1; let username = sys.bytes_new()
+    if sys.has(o, 73) { let init = serial.escaped(sys.val(o, 73)); ok = tx.write_all(fd, sys.bdata(init), sys.blen(init)) }
+    if sys.has(o, 119) || sys.has(o, 109) {
+        let banner = sys.bytes_new()
+        while ok {
+            if tx.readable(guard.fd, 0) { status = 128 + signals.received(guard); ok = false; break }
+            if deadline > 0 && net.now_ms() >= deadline { ok = false; break }; if !tx.readable(fd, 50) { continue }; if sys.read_into(fd, sys.bdata(byte), 1) != 1 { ok = false; break }
+            let c = sys.bat(byte, 0); if c == 10 || c == 13 { if sys.has(o, 109) { let text = sys.bytes_cstr(banner); if !sys.starts(text, "CONNECT ") { sys.bclear(banner); continue }; let reported = sys.parse_number(sys.slice(text, 8, sys.length(text))); if !reported.ok || serial.baud(reported.value) < 0 || !serial.configure(fd, attrs, reported.value, sys.has(o, 76), sys.has(o, 104)) { ok = false } }; break }
+            sys.bytes_push(banner, c); if sys.blen(banner) > 256 { ok = false }
+        }
+    }
+    if ok && !sys.has(o, 105) { let source = sys.read_path(sys.has(o, 102) ? sys.val(o, 102) : "/etc/issue"); if source.ok { let rendered = issue(source.bytes, path); ok = tx.write_all(fd, sys.bdata(rendered), sys.blen(rendered)) } }
+    if ok && !sys.has(o, 110) {
+        let prompt = sys.bytes_new(); sys.bytes_str(prompt, sys.join2(admin.read_text("/proc/sys/kernel/hostname"), " login: ")); ok = tx.write_all(fd, sys.bdata(prompt), sys.blen(prompt))
+        while ok {
+            if tx.readable(guard.fd, 0) { status = 128 + signals.received(guard); ok = false; break }
+            if deadline > 0 && net.now_ms() >= deadline { ok = false; break }; if !tx.readable(fd, 50) { continue }; if sys.read_into(fd, sys.bdata(byte), 1) != 1 { ok = false; break }; let c = sys.bat(byte, 0)
+            if c == 10 || c == 13 { if sys.blen(username) == 0 { continue }; let newline = sys.bytes_new(); sys.bytes_str(newline, "\r\n"); tx.write_all(fd, sys.bdata(newline), sys.blen(newline)); break }
+            if c == 8 || c == 127 { if sys.blen(username) > 0 { let shorter = sys.bytes_new(); sys.bytes_append(shorter, sys.bdata(username), sys.blen(username) - 1); username = shorter; let erase = sys.bytes_new(); for v in Vec<i64>(8, 32, 8) { sys.bytes_push(erase, v as u8) }; tx.write_all(fd, sys.bdata(erase), 3) }; continue }
+            if c < 32 || sys.blen(username) >= 255 { ok = false; break }; sys.bytes_push(username, c); tx.write_all(fd, sys.bdata(byte), 1)
+        }
+    }
+    if sys.blen(username) > 0 && sys.bat(username, 0) == 45 { ok = false }
+    if !ok { tty.set_attrs(fd, attrs); if fd > 2 { sys.close_fd(fd) }; signals.close(guard); return status }
+    let cooked = tty.get_attrs(fd); cx.store(cooked, 0, 4, 1280); cx.store(cooked, 4, 4, 5); cx.store(cooked, 12, 4, 35387)
+    for index in Vec<i64>(17, 18, 19, 20, 21, 23, 25, 26, 27) { cx.store(cooked, index, 1, index == 17 ? 3 : (index == 18 ? 28 : (index == 19 ? 127 : (index == 20 ? 21 : (index == 21 ? 4 : (index == 23 ? 1 : (index == 25 ? 17 : (index == 26 ? 19 : 26)))))))) }
+    if !tty.set_attrs(fd, cooked) { tty.set_attrs(fd, attrs); if fd > 2 { sys.close_fd(fd) }; signals.close(guard); return 1 }
+    let env = proc.set_variable(proc.environment(), "TERM", o.rest.len() == 3 ? o.rest[2] : "linux"); let login = sys.has(o, 108) ? sys.val(o, 108) : "/bin/login"; let command = Vec<str>(login)
+    if sys.has(o, 72) { command.push("-h"); command.push(sys.val(o, 72)) }; if !sys.has(o, 110) { command.push("--"); command.push(sys.bytes_cstr(username)) }
+    let program = proc.find_program(login, env); if sys.length(program) == 0 { tty.set_attrs(fd, attrs); if fd > 2 { sys.close_fd(fd) }; signals.close(guard); sys.warn("getty", "login program not found"); return 1 }
+    unsafe { dup2(fd as i32, 0); dup2(fd as i32, 1); dup2(fd as i32, 2) }; if fd > 2 { sys.close_fd(fd) }; signals.close(guard)
+    let argv = proc.pointer_array(command); let envp = proc.pointer_array(env); unsafe { execve(program, argv, envp) }; sys.warn("getty", "cannot execute login"); return 126
+}

@@ -778,4 +778,37 @@ test.case("cat passes binary data through untouched and yes stops when its reade
     test.expect(strings.contains(outcome(d, busybox() + " yes ab | head -2"), "ab\nab\n"), "yes did not repeat its line")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("scriptreplay classic timing and binary typescripts",fn() {
+    let timing_check = tool.run(Vec<str>("python3", t.root() + "/tests/lib/check-scriptreplay.py", busybox()), Map<str,str>(), "", 30000)
+    test.expect(timing_check.success, t.out(timing_check) + t.err(timing_check))
+    let d = sandbox(); let bb = busybox()
+    let fixture = "printf '0.000001 3\\n0.000001 4\\n' > timing; printf 'ab\\000cdefTRAILER' > typescript; "
+    test.expect(strings.equal(outcome(d, fixture + bb + " scriptreplay timing | od -An -tx1"), " 61 62 00 63 64 65 66\nrc=0\n"), "scriptreplay must replay exact bytes without adding a newline")
+    test.expect(strings.equal(outcome(d, fixture + bb + " scriptreplay timing typescript 2.5 | od -An -tx1"), " 61 62 00 63 64 65 66\nrc=0\n"), "scriptreplay divisor")
+    for c in Vec<str>("scriptreplay", "scriptreplay missing", "scriptreplay timing missing", "scriptreplay timing typescript 0", "scriptreplay timing typescript -1", "scriptreplay timing typescript NaN", "scriptreplay timing typescript 1e300", "scriptreplay timing typescript 1 extra") {
+        test.expect(strings.contains(outcome(d, fixture + bb + " " + c + " >/dev/null; echo status=$?"), "status=1"), c)
+    }
+    for line in Vec<str>("garbage", "0.0 -1", "0.0 999999999999999999999999", "NaN 1", "0.0 2 extra", "0.0 999") {
+        test.expect(strings.contains(outcome(d, fixture + "printf '" + line + "\\n' > timing; " + bb + " scriptreplay timing >/dev/null; echo status=$?"), "status=1"), "invalid timing: " + line)
+    }
+    test.expect(strings.equal(outcome(d, "printf '' > timing; printf '' > typescript; " + bb + " scriptreplay timing"), "rc=0\n"), "empty recording")
+    test.expect(strings.equal(outcome(d, "printf '0 3' > timing; printf 'abc' > typescript; " + bb + " scriptreplay timing"), "abcrc=0\n"), "final timing line without newline")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+
+test.case("rdate RFC 868 TCP print-only, short replies and era rollover",fn() {
+    let result = tool.run(Vec<str>("python3", t.root() + "/tests/lib/check-rdate.py", busybox()), Map<str,str>(), "", 60000)
+    test.expect(result.success, "rdate protocol checks: " + t.out(result) + t.err(result))
+    let d = sandbox()
+    test.expect(strings.contains(outcome(d, busybox() + " rdate; echo status=$?"), "status=1"), "rdate needs a host")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+
+for scenario in Vec<str>("console-extra", "terminal-extra", "network-admin", "mime", "lzop", "man-fsck", "inet-extra", "serial", "minix", "mail", "rx", "events", "getty", "ip-probes", "profile-monitor", "auth-extra", "boot", "syslog-ring", "mdev", "fbsplash", "printing", "arp", "vi", "dhcp") {
+    test.case("extended applets: " + scenario,fn() {
+        let result = tool.run(Vec<str>("python3", t.root() + "/tests/lib/check-" + scenario + ".py", busybox()), Map<str,str>(), "", 180000)
+        test.expect(result.success, t.out(result) + t.err(result))
+    })
+}
+
 return t.finish()

@@ -1,0 +1,47 @@
+use "../lib/sys.dev" as sys
+use "../lib/lines.dev" as lines
+use "./date.dev" as words
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+struct Hex { ok: bool, value: u64 }
+struct Symbol { address: u64, raw: str, name: str, kind: u8 }
+fn hexadecimal(text: str): Hex {
+    let value = 0 as u64; if sys.length(text) == 0 || sys.length(text) > 16 { return Hex(false, value) }
+    for i in 0..sys.length(text) { let c = sys.at(text, i); let digit = c >= 48 && c <= 57 ? (c - 48) as i64 : (c >= 97 && c <= 102 ? (c - 87) as i64 : (c >= 65 && c <= 70 ? (c - 55) as i64 : 0 - 1)); if digit < 0 { return Hex(false, value) }; value = value * (16 as u64) + digit as u64 }; return Hex(true, value)
+}
+fn word(b: *sys.Bytes, off: i64, swapped: bool): i64 { if !swapped { return cx.le(b, off, 4) }; let value = 0; for i in 0..4 { value = value * 256 + sys.bat(b, off + i) as i64 }; return value }
+fn density(count: i64, size: i64): str { let scaled = size > 0 ? count * 10000 / size : 0; let out = sys.bytes_new(); sys.bytes_num(out, scaled / 10000); sys.bytes_push(out, 46); let fraction = scaled % 10000; for divisor in Vec<i64>(1000, 100, 10, 1) { sys.bytes_push(out, (48 + fraction / divisor % 10) as u8) }; return sys.bytes_cstr(out) }
+fn run_readprofile(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "m:p:M:ivabsrn")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 { sys.warn("readprofile", "invalid arguments"); return 1 }
+    let profile = sys.has(o, 112) ? sys.val(o, 112) : "/proc/profile"
+    if sys.has(o, 114) || sys.has(o, 77) {
+        let value = sys.has(o, 77) ? cx.unsigned(sys.val(o, 77)) : sys.Number(true, 0); if !value.ok || (sys.has(o, 77) && value.value == 0) { sys.warn("readprofile", "invalid multiplier"); return 1 }
+        let fd = sys.open_fd(profile, 1, 0); if fd < 0 { sys.warn_write("readprofile", profile); return 1 }; let b = cx.buffer(sys.has(o, 77) ? 4 : 1); cx.store(b, 0, sys.blen(b), value.value); let ok = tx.write_all(fd, sys.bdata(b), sys.blen(b)); sys.close_fd(fd); return ok ? 0 : 1
+    }
+    let data = sys.read_path(profile); if !data.ok { sys.warn_path("readprofile", profile); return 1 }; let size = sys.blen(data.bytes)
+    if size < 4 || size % 4 != 0 { sys.warn("readprofile", "invalid profile size"); return 1 }
+    let step = word(data.bytes, 0, false); let swapped = false
+    if (step < 1 || step > 1048576) && !sys.has(o, 110) { swapped = true; step = word(data.bytes, 0, true) }
+    if step < 1 || step > 1048576 || (step & (step - 1)) != 0 { sys.warn("readprofile", "invalid sampling step"); return 1 }
+    if sys.has(o, 105) { sys.put_fd(1, sys.join2("Sampling_step: ", sys.join2(hw.decimal(step), "\n"))); return 0 }
+    let map_path = sys.has(o, 109) ? sys.val(o, 109) : "/boot/System.map"; let map = sys.read_path(map_path); if !map.ok { sys.warn_path("readprofile", map_path); return 1 }; let ls = lines.split_lines(map.bytes, 10); let symbols = Vec<Symbol>(); let base = 0 as u64; let have_base = false
+    for i in 0..(ls.starts.len() as i64) {
+        let fields = words.words_of(lines.text_of(map.bytes, ls.starts[i], ls.ends[i])); if fields.len() < 3 { continue }; let address = hexadecimal(fields[0]); if !address.ok || sys.length(fields[1]) != 1 { sys.warn("readprofile", "invalid System.map entry"); return 1 }
+        let kind = sys.at(fields[1], 0); if !have_base && (kind == 84 || kind == 116) { base = address.value; have_base = true }; if sys.same(fields[2], "_stext") { base = address.value; have_base = true }
+        if symbols.len() > 0 && address.value < symbols[symbols.len() as i64 - 1].address { sys.warn("readprofile", "System.map is not sorted"); return 1 }; symbols.push(Symbol(address.value, fields[0], fields[2], kind))
+    }
+    if !have_base { sys.warn("readprofile", "no text symbols found"); return 1 }
+    let bins = size / 4 - 1; let total = 0
+    for index in 0..(symbols.len() as i64) {
+        let symbol = symbols[index]; if symbol.address < base || (symbol.kind != 84 && symbol.kind != 116 && symbol.kind != 87 && symbol.kind != 119) { continue }
+        let first_bin = (symbol.address - base) / step as u64; if first_bin >= bins as u64 { continue }; let start = first_bin as i64; let end_address = index + 1 < symbols.len() as i64 ? symbols[index + 1].address : base + (bins as u64) * step as u64
+        let delta = end_address >= base ? end_address - base : 0 as u64; let last_bin = delta / step as u64 + (delta % step as u64 == 0 as u64 ? 0 as u64 : 1 as u64)
+        let end = last_bin > bins as u64 ? bins : last_bin as i64; let sum = 0
+        for bin in start..end { let count = word(data.bytes, (bin + 1) * 4, swapped); sum = sum + count; if (sys.has(o, 98) || sys.has(o, 115)) && (count > 0 || sys.has(o, 97)) { sys.put_fd(1, sys.join2(symbol.name, sys.join2("+", sys.join2(hw.decimal((bin - start) * step), sys.join2(" ", sys.join2(hw.decimal(count), "\n")))))) } }
+        total = total + sum; if sum == 0 && !sys.has(o, 97) { continue }
+        if sys.has(o, 118) { sys.put_fd(1, sys.join2(symbol.raw, " ")) }; sys.put_fd(1, sys.join2(hw.decimal(sum), sys.join2(" ", sys.join2(symbol.name, sys.join2(" ", sys.join2(density(sum, (end_address - symbol.address) as i64), "\n"))))))
+    }
+    sys.put_fd(1, sys.join2(hw.decimal(total), " total\n")); return 0
+}

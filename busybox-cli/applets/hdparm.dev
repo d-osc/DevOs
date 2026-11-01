@@ -1,0 +1,89 @@
+# Linux block/IDE ioctls. No device is changed unless a setter is requested.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/net.dev" as net
+use "./console_extra.dev" as cx
+use "./hardware.dev" as hw
+
+struct Command { option: u8, setting: bool, value: i64, ports: Vec<i64> }
+fn ata(fd: i64, command: i64, feature: i64, count: i64): bool { let b = cx.buffer(4); cx.store(b, 0, 1, command); cx.store(b, 1, 1, count); cx.store(b, 2, 1, feature); return hw.control_buffer(fd, 0x31f, b) == 0 }
+fn transfer(value: str): sys.Number {
+    let prefixes = Vec<str>("pio", "sdma", "mdma", "udma"); let bases = Vec<i64>(8, 16, 32, 64)
+    for i in 0..4 { if sys.starts(value, prefixes[i]) { let n = sys.parse_number(sys.slice(value, sys.length(prefixes[i]), sys.length(value))); return sys.Number(n.ok && n.value >= 0 && n.value <= 7, bases[i] + n.value) } }; return cx.unsigned(value)
+}
+fn identify_string(b: *sys.Bytes, start: i64, count: i64): str { let out = sys.bytes_new(); for i in 0..count { sys.bytes_push(out, sys.bat(b, start + (i / 2) * 2 + (i % 2 == 0 ? 1 : 0))) }; let n = sys.blen(out); while n > 0 && sys.bat(out, n - 1) == 32 { n = n - 1 }; let text = sys.bytes_new(); sys.bytes_append(text, sys.bdata(out), n); return sys.bytes_cstr(text) }
+fn identify(fd: i64, detailed: bool): bool {
+    let b = cx.buffer(detailed ? 516 : 512)
+    if detailed { cx.store(b, 0, 1, 0xec); cx.store(b, 3, 1, 1) }
+    if hw.control_buffer(fd, detailed ? 0x31f : 0x30d, b) != 0 { return false }; let start = detailed ? 4 : 0
+    sys.put_fd(1, sys.join2(" Model=", sys.join2(identify_string(b, start + 54, 40), sys.join2(", FwRev=", sys.join2(identify_string(b, start + 46, 8), sys.join2(", SerialNo=", sys.join2(identify_string(b, start + 20, 20), "\n")))))))
+    if detailed { let sectors = cx.le(b, start + 120, 4); if (cx.le(b, start + 166, 2) / 1024) % 2 == 1 { sectors = cx.le(b, start + 200, 6) }; sys.put_fd(1, sys.join2(" LBA sectors: ", sys.join2(hw.decimal(sectors), sys.join2("\n ATA major version bits: ", sys.join2(hw.decimal(cx.le(b, start + 160, 2)), "\n"))))) }; return true
+}
+fn timing(fd: i64, cached: bool): bool {
+    let buffer = cx.buffer(1048576); let start = net.now_ms(); let read = 0
+    sys.seek_fd(fd, 0, 0)
+    while net.now_ms() - start < 3000 { if cached { sys.seek_fd(fd, 0, 0) }; let n = sys.read_into(fd, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { return false }; if n == 0 { if sys.seek_fd(fd, 0, 0) != 0 || read == 0 { break }; continue }; read = read + n }
+    let elapsed = net.now_ms() - start; if elapsed < 1 { elapsed = 1 }; sys.put_fd(1, sys.join2(cached ? " Timing cached reads: " : " Timing buffered disk reads: ", sys.join2(hw.decimal(read), sys.join2(" bytes in ", sys.join2(hw.decimal(elapsed), sys.join2(" ms = ", sys.join2(hw.decimal(read / elapsed * 1000), " bytes/sec\n"))))))); return true
+}
+fn run_hdparm(args: Vec<str>): i64 {
+    let commands = Vec<Command>(); let devices = Vec<str>(); let index = 0; let options = true
+    while index < args.len() as i64 {
+        let arg = args[index]; index = index + 1
+        if options && sys.same(arg, "--") { options = false; continue }
+        if !options || sys.length(arg) < 2 || !sys.starts(arg, "-") { devices.push(arg); continue }
+        let position = 1
+        while position < sys.length(arg) {
+            let option = sys.at(arg, position); position = position + 1
+            if option == 104 { sys.put_fd(1, "hdparm [-aAbBcCdDfg iIkKLmn pPQrRS tTuUvVwWxXyYzZ] DEVICE...\n"); return 0 }
+            if option == 86 { sys.put_fd(1, "hdparm (Dev OS)\n"); if devices.len() == 0 && index >= args.len() as i64 { return 0 }; continue }
+            if option == 118 { for code in Vec<i64>(109, 99, 117, 100, 107, 114, 97, 103) { commands.push(Command(code as u8, false, 0, Vec<i64>())) }; continue }
+            let optional = sys.find_char("abcdkmnrQu", option) >= 0; let required = sys.find_char("ABDKLPSWXpUxR", option) >= 0
+            if !optional && !required && sys.find_char("fgiICtTwyYzZ", option) < 0 { sys.warn("hdparm", "unknown option"); return 1 }
+            let setting = false; let value = 0; let ports = Vec<i64>()
+            if optional || required {
+                let text = ""
+                if position < sys.length(arg) && (required || sys.is_digit(sys.at(arg, position))) { text = sys.slice(arg, position, sys.length(arg)); position = sys.length(arg) }
+                else if position >= sys.length(arg) && index < args.len() as i64 && (required || cx.unsigned(args[index]).ok) { text = args[index]; index = index + 1 }
+                if sys.length(text) > 0 { let parsed = option == 88 ? transfer(text) : cx.unsigned(text); if !parsed.ok { sys.warn("hdparm", "invalid numeric option value"); return 1 }; setting = true; value = parsed.value }
+                if required && !setting { sys.warn("hdparm", "missing option value"); return 1 }
+                if option == 82 { ports.push(value); for i in 0..2 { if index >= args.len() as i64 { return 1 }; let n = cx.unsigned(args[index]); if !n.ok { return 1 }; ports.push(n.value); index = index + 1 } }
+            }
+            commands.push(Command(option, setting, value, ports))
+        }
+    }
+    if devices.len() == 0 { sys.warn("hdparm", "DEVICE is required"); return 1 }; if commands.len() == 0 { for code in Vec<i64>(109, 99, 117, 100, 107, 114, 97, 103) { commands.push(Command(code as u8, false, 0, Vec<i64>())) } }
+    let status = 0
+    for device in devices {
+        let fd = sys.open_fd(device, 2048, 0); if fd < 0 { sys.warn_path("hdparm", device); status = 1; continue }; sys.put_fd(1, sys.join2("\n", sys.join2(device, ":\n"))); let flush = false
+        for command in commands {
+            let c = command.option; let v = command.value; let ok = true
+            let codes = "abcdkmnrQu"; let getters = Vec<i64>(0x1263, 0x31a, 0x309, 0x30b, 0x308, 0x304, 0x30a, 0x125e, 0x305, 0x302); let setters = Vec<i64>(0x1262, 0x32d, 0x324, 0x326, 0x323, 0x321, 0x325, 0x125d, 0x32e, 0x322); let at = sys.find_char(codes, c)
+            if at >= 0 {
+                let b = cx.buffer(8)
+                if command.setting { if c == 114 { cx.store(b, 0, 4, v); ok = hw.control_buffer(fd, setters[at], b) == 0 } else { ok = hw.control(fd, setters[at], v) == 0 } }
+                if ok { ok = hw.control_buffer(fd, getters[at], b) == 0; if ok { sys.put_fd(1, sys.join2(sys.slice(codes, at, at + 1), sys.join2(" = ", sys.join2(hw.decimal(cx.le(b, 0, c == 114 ? 4 : 8)), "\n")))) } }
+            } else if c == 103 { let b = cx.buffer(16); ok = hw.control_buffer(fd, 0x301, b) == 0; if ok { sys.put_fd(1, sys.join2(" geometry = ", sys.join2(hw.decimal(cx.le(b, 2, 2)), sys.join2("/", sys.join2(hw.decimal(sys.bat(b, 0) as i64), sys.join2("/", sys.join2(hw.decimal(sys.bat(b, 1) as i64), "\n"))))))) } }
+            else if c == 105 || c == 73 { ok = identify(fd, c == 73) }
+            else if c == 102 { flush = true }
+            else if c == 116 || c == 84 { ok = timing(fd, c == 84) }
+            else if c == 112 { ok = hw.control(fd, 0x327, v) == 0 }
+            else if c == 85 { ok = hw.control(fd, 0x32a, v) == 0 }
+            else if c == 120 { ok = hw.control(fd, 0x31b, v) == 0 }
+            else if c == 82 { let b = cx.buffer(24); for i in 0..3 { cx.store(b, i * 8, 8, command.ports[i]) }; ok = hw.control_buffer(fd, 0x328, b) >= 0 }
+            else if c == 119 { ok = hw.control(fd, 0x31c, 0) == 0 }
+            else if c == 122 { ok = hw.control(fd, 0x125f, 0) == 0 }
+            else if c == 121 || c == 89 || c == 90 { ok = ata(fd, c == 121 ? 0xe0 : (c == 89 ? 0xe6 : 0xfb), 0, 0) }
+            else if c == 83 { ok = v <= 255 && ata(fd, 0xe3, 0, v) }
+            else if c == 76 { ok = v <= 1 && ata(fd, v == 1 ? 0xde : 0xdf, 0, 0) }
+            else if c == 67 { let b = cx.buffer(4); cx.store(b, 0, 1, 0xe5); ok = hw.control_buffer(fd, 0x31f, b) == 0; if ok { let state = sys.bat(b, 2) as i64; sys.put_fd(1, sys.join2(" drive state is: ", state == 0 ? "standby\n" : (state == 128 ? "idle\n" : "active/idle\n"))) } }
+            else {
+                let feature = 3
+                if c == 65 { feature = v == 1 ? 0xaa : 0x55 } else if c == 66 { feature = v == 255 ? 0x85 : 5 } else if c == 68 { feature = v == 1 ? 0x84 : 4 } else if c == 75 { feature = v == 1 ? 0x66 : 0xcc } else if c == 87 { feature = v == 1 ? 2 : 0x82 } else if c == 80 { feature = 0xab }
+                let count = c == 66 ? (v == 255 ? 0 : v) : (c == 80 || c == 88 ? v : 0)
+                ok = v <= (c == 66 || c == 80 || c == 88 ? 255 : 1) && (c != 66 || v > 0) && ata(fd, 0xef, feature, count)
+            }
+            if !ok { let option = sys.bytes_new(); sys.bytes_push(option, c); sys.warn("hdparm", sys.join2(sys.join2("operation -", sys.bytes_cstr(option)), " failed")); status = 1 }
+        }
+        if flush { fsx.do_sync(); if hw.control(fd, 0x1261, 0) != 0 { sys.warn("hdparm", "cache flush failed"); status = 1 } }; sys.close_fd(fd)
+    }; return status
+}

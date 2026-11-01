@@ -1,0 +1,39 @@
+# BOOTP/DHCP wire encoding, bounded option parsing and Ethernet UDP transport.
+use "./sys.dev" as sys
+use "./net.dev" as net
+use "./packet.dev" as packet
+use "../applets/console_extra.dev" as cx
+use "../applets/terminal_extra.dev" as tx
+fn slice(b: *sys.Bytes, start: i64, end: i64): *sys.Bytes { let out = sys.bytes_new(); if start >= 0 && end >= start && end <= sys.blen(b) { sys.bytes_append(out, sys.bptr(b, start), end - start) }; return out }
+fn same(a: *sys.Bytes, b: *sys.Bytes): bool { if sys.blen(a) != sys.blen(b) { return false }; for i in 0..sys.blen(a) { if sys.bat(a, i) != sys.bat(b, i) { return false } }; return true }
+fn text(b: *sys.Bytes): str { let out = sys.bytes_new(); for i in 0..sys.blen(b) { let c = sys.bat(b, i); if c == 0 { break }; sys.bytes_push(out, c >= 32 && c < 127 ? c : (95 as u8)) }; return sys.bytes_cstr(out) }
+fn valid(b: *sys.Bytes): bool {
+    let n = sys.blen(b); if n < 241 || n > 4096 || sys.bat(b, 1) != 1 || sys.bat(b, 2) != 6 || packet.be(b, 236, 4) != 0x63825363 { return false }
+    let at = 240; while at < n { let code = sys.bat(b, at); at = at + 1; if code == 255 { return true }; if code == 0 { continue }; if at >= n { return false }; let width = sys.bat(b, at) as i64; at = at + 1; if at + width > n { return false }; at = at + width }; return false
+}
+fn option(b: *sys.Bytes, wanted: i64): *sys.Bytes {
+    let out = sys.bytes_new(); if !valid(b) { return out }; let at = 240
+    while at < sys.blen(b) { let code = sys.bat(b, at) as i64; at = at + 1; if code == 255 { break }; if code == 0 { continue }; let width = sys.bat(b, at) as i64; at = at + 1; if code == wanted { sys.bytes_append(out, sys.bptr(b, at), width) }; at = at + width }; return out
+}
+fn number(b: *sys.Bytes, code: i64, width: i64): i64 { let value = option(b, code); return sys.blen(value) == width ? packet.be(value, 0, width) : 0 - 1 }
+fn add(b: *sys.Bytes, code: i64, value: *sys.Bytes): bool { let width = sys.blen(value); if width > 255 || sys.blen(b) + width + 3 > 1400 { return false }; sys.bytes_push(b, code as u8); sys.bytes_push(b, width as u8); sys.bytes_append(b, sys.bdata(value), width); return true }
+fn numeric(b: *sys.Bytes, code: i64, value: i64, width: i64) { let v = cx.buffer(width); packet.store(v, 0, width, value); add(b, code, v) }
+fn string(b: *sys.Bytes, code: i64, value: str) { let v = sys.bytes_new(); sys.bytes_str(v, value); add(b, code, v) }
+fn finish(b: *sys.Bytes) { sys.bytes_push(b, 255); while sys.blen(b) < 300 { sys.bytes_push(b, 0) } }
+fn message(mac: *sys.Bytes, xid: i64, kind: i64, reply: bool): *sys.Bytes {
+    let b = cx.buffer(240); sys.bptr_set(b, 0, reply ? (2 as u8) : (1 as u8)); sys.bptr_set(b, 1, 1); sys.bptr_set(b, 2, 6); packet.store(b, 4, 4, xid); packet.store(b, 10, 2, 0x8000); packet.store(b, 236, 4, 0x63825363); for i in 0..6 { sys.bptr_set(b, 28 + i, sys.bat(mac, i)) }; numeric(b, 53, kind, 1); return b
+}
+fn checksum(b: *sys.Bytes, length: i64): i64 { let sum = 0; let i = 0; while i < length { sum = sum + (sys.bat(b, i) as i64) * 256; if i + 1 < length { sum = sum + sys.bat(b, i + 1) as i64 }; i = i + 2 }; while sum > 65535 { sum = (sum & 65535) + sum / 65536 }; return 65535 - sum }
+fn send_raw(d: packet.Device, source: i64, target: i64, sport: i64, dport: i64, mac: *sys.Bytes, payload: *sys.Bytes): bool {
+    let length = 28 + sys.blen(payload); let b = cx.buffer(28); sys.bptr_set(b, 0, 69); packet.store(b, 2, 2, length); sys.bptr_set(b, 8, 64); sys.bptr_set(b, 9, 17); packet.store(b, 12, 4, source); packet.store(b, 16, 4, target); packet.store(b, 10, 2, checksum(b, 20)); packet.store(b, 20, 2, sport); packet.store(b, 22, 2, dport); packet.store(b, 24, 2, length - 20); sys.bytes_append(b, sys.bdata(payload), sys.blen(payload)); return packet.send(d, 0x800, mac, b)
+}
+fn receive_raw(d: packet.Device): *sys.Bytes {
+    let b = cx.buffer(8192); let n = net.recv_some(d.fd, sys.bdata(b), sys.blen(b)); if n < 28 || (sys.bat(b, 0) as i64) / 16 != 4 || sys.bat(b, 9) != 17 || (packet.be(b, 6, 2) & 0x3fff) != 0 { return sys.bytes_new() }
+    let header = ((sys.bat(b, 0) as i64) & 15) * 4; let length = packet.be(b, 2, 2); if header < 20 || length > n || length < header + 8 || checksum(b, header) != 0 { return sys.bytes_new() }; let udp = packet.be(b, header + 4, 2); if packet.be(b, header, 2) != 67 || packet.be(b, header + 2, 2) != 68 || udp < 8 || udp + header > length { return sys.bytes_new() }; return slice(b, header + 8, header + udp)
+}
+fn udp(interface: str, port: i64): i64 {
+    let fd = net.open_socket(524290, 0); if fd < 0 { return fd }; let one = cx.buffer(4); cx.store(one, 0, 4, 1); let ok = true; let name = sys.bytes_new(); sys.bytes_str(name, interface); sys.bytes_push(name, 0)
+    unsafe { if net.setsockopt(fd as i32, 1, 6, sys.bdata(one) as *void, 4) != 0 { ok = false }; if sys.length(interface) > 0 && net.setsockopt(fd as i32, 1, 25, sys.bdata(name) as *void, sys.blen(name) as u32) != 0 { ok = false }; let address = net.make_address(0, port); if net.bind(fd as i32, address as *void, 16) != 0 { ok = false }; sys.free(address as *void) }; if !ok { sys.close_fd(fd); return 0 - 1 }; return fd
+}
+fn send_udp(fd: i64, target: i64, port: i64, b: *sys.Bytes): bool { unsafe { let address = net.make_address(target, port); let n = net.sendto(fd as i32, sys.bdata(b) as *void, sys.blen(b) as usize, 0, address as *void, 16); sys.free(address as *void); return n == sys.blen(b) as isize } }
+fn random(): i64 { let b = cx.buffer(4); let fd = sys.open_fd("/dev/urandom", 0, 0); if fd >= 0 { sys.read_into(fd, sys.bdata(b), 4); sys.close_fd(fd) }; return packet.be(b, 0, 4) }

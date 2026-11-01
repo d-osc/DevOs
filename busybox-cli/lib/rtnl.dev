@@ -1,0 +1,85 @@
+# Minimal Linux routing netlink transport. Every mutation waits for kernel ACK.
+use "./sys.dev" as sys
+use "./net.dev" as net
+use "./fsx.dev" as fsx
+use "../applets/console_extra.dev" as cx
+extern fn if_nametoindex(name: str): u32
+extern fn inet_pton(family: i32, source: str, destination: *void): i32
+
+struct Reply { ok: bool, error: i64, rows: Vec<*sys.Bytes> }
+fn index(name: str): i64 { unsafe { return if_nametoindex(name) as i64 } }
+fn name(idx: i64): str { let dirs = fsx.list_dir("/sys/class/net"); for n in dirs.names { if index(n) == idx { return n } }; return "?" }
+fn align(n: i64): i64 { return (n + 3) / 4 * 4 }
+fn attr(b: *sys.Bytes, kind: i64, data: *sys.Bytes) {
+    let head = cx.buffer(4); cx.store(head, 0, 2, 4 + sys.blen(data)); cx.store(head, 2, 2, kind)
+    sys.bytes_append(b, sys.bdata(head), 4); sys.bytes_append(b, sys.bdata(data), sys.blen(data))
+    while sys.blen(b) % 4 != 0 { sys.bytes_push(b, 0) }
+}
+fn number(b: *sys.Bytes, kind: i64, value: i64) { let data = cx.buffer(4); cx.store(data, 0, 4, value); attr(b, kind, data) }
+fn text(b: *sys.Bytes, kind: i64, value: str) { let data = sys.bytes_new(); sys.bytes_str(data, value); sys.bytes_push(data, 0); attr(b, kind, data) }
+fn attribute(b: *sys.Bytes, start: i64, kind: i64): *sys.Bytes {
+    let p = start; let out = sys.bytes_new()
+    while p + 4 <= sys.blen(b) {
+        let size = cx.le(b, p, 2); if size < 4 || p + size > sys.blen(b) { return out }
+        if cx.le(b, p + 2, 2) % 16384 == kind { sys.bytes_append(out, sys.bptr(b, p + 4), size - 4); return out }; p = p + align(size)
+    }
+    return out
+}
+fn exchange(kind: i64, flags: i64, body: *sys.Bytes): Reply {
+    let rows = Vec<*sys.Bytes>(); let fd = 0 - 1
+    unsafe { fd = net.socket(16, 3, 0) as i64 }
+    if fd < 0 { return Reply(false, 1, rows) }
+    let local = cx.buffer(12); cx.store(local, 0, 2, 16)
+    let bound = 0 - 1; unsafe { bound = net.bind(fd as i32, sys.bdata(local) as *void, 12) as i64 }
+    if bound != 0 { sys.close_fd(fd); return Reply(false, 1, rows) }
+    net.set_timeout(fd, 3)
+    let message = cx.buffer(16); cx.store(message, 0, 4, 16 + sys.blen(body)); cx.store(message, 4, 2, kind); cx.store(message, 6, 2, flags + 1); cx.store(message, 8, 4, 1)
+    sys.bytes_append(message, sys.bdata(body), sys.blen(body))
+    let sent = 0 - 1; unsafe { sent = net.sendto(fd as i32, sys.bdata(message) as *void, sys.blen(message) as usize, 0, sys.bdata(local) as *void, 12) as i64 }
+    if sent != sys.blen(message) { sys.close_fd(fd); return Reply(false, 1, rows) }
+    let packet = cx.buffer(65536)
+    while true {
+        let n = net.recv_some(fd, sys.bdata(packet), 65536)
+        if n < 16 { sys.close_fd(fd); return Reply(false, 1, rows) }
+        let p = 0
+        while p + 16 <= n {
+            let length = cx.le(packet, p, 4); let typ = cx.le(packet, p + 4, 2)
+            if length < 16 || p + length > n { sys.close_fd(fd); return Reply(false, 1, rows) }
+            if cx.le(packet, p + 8, 4) != 1 { p = p + align(length); continue }
+            if typ == 2 {
+                if length < 20 { sys.close_fd(fd); return Reply(false, 1, rows) }
+                let error = cx.le(packet, p + 16, 4); sys.close_fd(fd); return Reply(error == 0, error == 0 ? 0 : 4294967296 - error, rows)
+            }
+            if typ == 3 {
+                let interrupted = (cx.le(packet, p + 6, 2) / 16) % 2 == 1; sys.close_fd(fd); return Reply(!interrupted, interrupted ? 4 : 0, rows)
+            }
+            let row = sys.bytes_new(); sys.bytes_append(row, sys.bptr(packet, p + 16), length - 16); rows.push(row)
+            if (cx.le(packet, p + 6, 2) / 2) % 2 == 0 { sys.close_fd(fd); return Reply(true, 0, rows) }
+            p = p + align(length)
+        }
+    }
+    return Reply(false, 1, rows)
+}
+struct Address { ok: bool, family: i64, prefix: i64, data: *sys.Bytes }
+fn address(text: str, family: i64): Address {
+    let slash = sys.find_char(text, 47); let host = slash >= 0 ? sys.slice(text, 0, slash) : text
+    let fam = family != 0 ? family : (sys.find_char(host, 58) >= 0 ? 10 : 2)
+    let prefix = slash >= 0 ? sys.parse_number(sys.slice(text, slash + 1, sys.length(text))) : sys.Number(true, fam == 10 ? 128 : 32)
+    let b = cx.buffer(fam == 10 ? 16 : 4); let rc = 0
+    unsafe { rc = inet_pton(fam as i32, host, sys.bdata(b) as *void) as i64 }
+    return Address(rc == 1 && prefix.ok && prefix.value >= 0 && prefix.value <= (fam == 10 ? 128 : 32), fam, prefix.value, b)
+}
+fn ip(data: *sys.Bytes): str {
+    if sys.blen(data) == 4 { return net.ip_text((sys.bat(data, 0) as i64) * 16777216 + (sys.bat(data, 1) as i64) * 65536 + (sys.bat(data, 2) as i64) * 256 + sys.bat(data, 3) as i64) }
+    if sys.blen(data) != 16 { return "?" }
+    let out = sys.bytes_new(); let best = 0 - 1; let best_len = 0; let p = 0
+    while p < 8 { if sys.bat(data, p * 2) == 0 && sys.bat(data, p * 2 + 1) == 0 { let start = p; while p < 8 && sys.bat(data, p * 2) == 0 && sys.bat(data, p * 2 + 1) == 0 { p = p + 1 }; if p - start > best_len { best = start; best_len = p - start } } else { p = p + 1 } }
+    p = 0
+    while p < 8 {
+        if best_len >= 2 && p == best { sys.bytes_str(out, "::"); p = p + best_len; continue }
+        if sys.blen(out) > 0 && sys.bat(out, sys.blen(out) - 1) != 58 { sys.bytes_push(out, 58) }
+        let v = (sys.bat(data, p * 2) as i64) * 256 + sys.bat(data, p * 2 + 1) as i64; let digits = "0123456789abcdef"; let started = false
+        for divisor in Vec<i64>(4096, 256, 16, 1) { let d = v / divisor % 16; if d != 0 || started || divisor == 1 { sys.bytes_push(out, sys.at(digits, d)); started = true } }; p = p + 1
+    }
+    return sys.bytes_cstr(out)
+}

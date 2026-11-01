@@ -1,0 +1,94 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/clock.dev" as clock
+use "../lib/net.dev" as net
+use "../lib/proc.dev" as proc
+use "../lib/signal_fd.dev" as signals
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./util6.dev" as tty
+use "./minix.dev" as io
+use "./netadmin.dev" as admin
+
+fn run_fdformat(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "n")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("fdformat", "usage: fdformat [-n] DEVICE"); return 1 }
+    let fd = sys.open_fd(o.rest[0], 2, 0); if fd < 0 { sys.warn_path("fdformat", o.rest[0]); return 1 }; let geometry = cx.buffer(32)
+    if hw.control_buffer(fd, 0x80200204, geometry) != 0 { return cx.fail("fdformat", fd, "FDGETPRM failed") }
+    let sectors = cx.le(geometry, 4, 4); let heads = cx.le(geometry, 8, 4); let tracks = cx.le(geometry, 12, 4)
+    if sectors < 1 || sectors > 64 || heads < 1 || heads > 2 || tracks < 1 || tracks > 255 { return cx.fail("fdformat", fd, "invalid floppy geometry") }
+    if hw.control(fd, 0x247, 0) != 0 { return cx.fail("fdformat", fd, "FDFMTBEG failed") }
+    let ok = true
+    for track in 0..tracks { for head in 0..heads { if !ok { break }; let request = cx.buffer(12); cx.store(request, 4, 4, head); cx.store(request, 8, 4, track); if hw.control_buffer(fd, 0x400c0248, request) != 0 { ok = false } } }
+    if hw.control(fd, 0x249, 0) != 0 { ok = false }
+    if !ok { return cx.fail("fdformat", fd, "format operation failed") }
+    if !sys.has(o, 110) {
+        for track in 0..tracks { for head in 0..heads { let data = io.read_at(fd, (track * heads + head) * sectors * 512, sectors * 512); if sys.blen(data) != sectors * 512 { return cx.fail("fdformat", fd, "verification read failed") }; for i in 0..sys.blen(data) { if sys.bat(data, i) != 246 { return cx.fail("fdformat", fd, "verification mismatch") } } } }
+    }
+    sys.close_fd(fd); sys.put_fd(1, "Formatting done\n"); return 0
+}
+fn run_rtcwake(args: Vec<str>): i64 {
+    # Long forms are normalized before the shared short-option parser.
+    let normalized = Vec<str>()
+    for a in args { if sys.same(a, "--auto") { normalized.push("-a") } else if sys.same(a, "--local") { normalized.push("-l") } else if sys.same(a, "--utc") { normalized.push("-u") }
+        else if sys.same(a, "--device") { normalized.push("-d") } else if sys.same(a, "--mode") { normalized.push("-m") } else if sys.same(a, "--seconds") { normalized.push("-s") } else if sys.same(a, "--time") { normalized.push("-t") }
+        else if sys.starts(a, "--device=") { normalized.push("-d"); normalized.push(sys.slice(a, 9, sys.length(a))) } else if sys.starts(a, "--mode=") { normalized.push("-m"); normalized.push(sys.slice(a, 7, sys.length(a))) } else if sys.starts(a, "--seconds=") { normalized.push("-s"); normalized.push(sys.slice(a, 10, sys.length(a))) } else if sys.starts(a, "--time=") { normalized.push("-t"); normalized.push(sys.slice(a, 7, sys.length(a))) } else { normalized.push(a) } }
+    let o = sys.parse_opts(normalized, "alud:m:s:t:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 || (sys.has(o, 115) == sys.has(o, 116)) || ((sys.has(o, 97) ? 1 : 0) + (sys.has(o, 108) ? 1 : 0) + (sys.has(o, 117) ? 1 : 0) > 1) { sys.warn("rtcwake", "usage: rtcwake [-a|-l|-u] [-d DEV] [-m MODE] [-s SEC|-t TIME]"); return 1 }
+    let mode = sys.has(o, 109) ? sys.val(o, 109) : "standby"
+    if !sys.same(mode, "standby") && !sys.same(mode, "mem") && !sys.same(mode, "disk") && !sys.same(mode, "no") && !sys.same(mode, "on") { sys.warn("rtcwake", "unsupported sleep mode"); return 1 }
+    let value = sys.parse_number(sys.has(o, 115) ? sys.val(o, 115) : sys.val(o, 116)); let now = clock.now()
+    if !value.ok || value.value <= 0 || value.value > 0x7fffffff { sys.warn("rtcwake", "invalid wake time"); return 1 }
+    let target = sys.has(o, 115) ? now + value.value : value.value; if target <= now { sys.warn("rtcwake", "wake time is in the past"); return 1 }
+    let local = sys.has(o, 108)
+    if !sys.has(o, 108) && !sys.has(o, 117) { let text = admin.read_text("/etc/adjtime"); local = sys.ends(text, "LOCAL") }
+    let fields = clock.fields(target, !local); let alarm = cx.buffer(40); cx.store(alarm, 0, 1, 1)
+    for i in 0..9 { let value = clock.get(fields, i); if i == 5 { value = value - 1900 }; cx.store(alarm, 4 + i * 4, 4, value) }
+    let device = sys.has(o, 100) ? sys.val(o, 100) : "/dev/rtc0"; let fd = sys.open_fd(device, 0, 0); if fd < 0 { sys.warn_path("rtcwake", device); return 1 }
+    if hw.control_buffer(fd, 0x4028700f, alarm) != 0 { return cx.fail("rtcwake", fd, "RTC_WKALM_SET failed") }
+    let ok = true
+    if sys.same(mode, "on") { while clock.now() < target { proc.pause_us(100000) } }
+    else if !sys.same(mode, "no") { fsx.do_sync(); ok = admin.write_text("/sys/power/state", mode) }
+    if !sys.same(mode, "no") { cx.store(alarm, 0, 1, 0); if hw.control_buffer(fd, 0x4028700f, alarm) != 0 { ok = false } }
+    sys.close_fd(fd); if !ok { sys.warn("rtcwake", "sleep or alarm cleanup failed"); return 1 }; return 0
+}
+fn crc16(b: *sys.Bytes, start: i64, count: i64): i64 {
+    let value = 0
+    for i in start..(start + count) { value = value ^ ((sys.bat(b, i) as i64) * 256); for bit in 0..8 { value = value >= 32768 ? ((value * 2) ^ 0x1021) % 65536 : value * 2 } }; return value
+}
+fn send_byte(value: i64): bool { let b = cx.buffer(1); cx.store(b, 0, 1, value); return tx.write_all(1, sys.bdata(b), 1) }
+fn receive(count: i64, guard: signals.Signals, timeout: i64): *sys.Bytes {
+    let b = cx.buffer(count); let pos = 0; let deadline = net.now_ms() + timeout
+    while pos < count {
+        if tx.readable(guard.fd, 0) { signals.received(guard); sys.bclear(b); sys.bytes_push(b, 24); return b }
+        if net.now_ms() >= deadline { sys.bclear(b); return b }; if !tx.readable(0, 50) { continue }
+        let n = sys.read_into(0, sys.bptr(b, pos), count - pos); if n <= 0 { sys.bclear(b); sys.bytes_push(b, 24); return b }; pos = pos + n
+    }; return b
+}
+fn run_rx(args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn("rx", "usage: rx FILE"); return 1 }; let fd = sys.open_fd(args[0], 193, 384); if fd < 0 { sys.warn_write("rx", args[0]); return 1 }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("rx", fd, "cannot install signal handling") }
+    let attrs = tty.get_attrs(0); if sys.blen(attrs) > 0 { tty.set_attrs(0, tx.raw(attrs)) }
+    let expected = 1; let errors = 0; let complete = false; let crc = true; let received_any = false; send_byte(67)
+    while errors < 10 {
+        let head = receive(1, guard, 10000)
+        if sys.blen(head) == 0 { errors = errors + 1; if expected == 1 && errors >= 3 { crc = false }; send_byte(crc && expected == 1 ? 67 : 21); continue }
+        let kind = sys.bat(head, 0) as i64
+        if kind == 4 { unsafe { complete = tx.fsync(fd as i32) == 0 }; if complete { send_byte(6) }; break }
+        if kind == 24 { break }
+        if kind != 1 && kind != 2 { errors = errors + 1; send_byte(21); continue }
+        let count = kind == 1 ? 128 : 1024; let block = receive(count + (crc ? 4 : 3), guard, 10000)
+        if sys.blen(block) == 1 && sys.bat(block, 0) == 24 { break }
+        let valid = sys.blen(block) == count + (crc ? 4 : 3)
+        let sequence = valid ? sys.bat(block, 0) as i64 : 0
+        if valid { valid = (sys.bat(block, 0) as i64) + (sys.bat(block, 1) as i64) == 255 }
+        if valid && crc { valid = crc16(block, 2, count) == (sys.bat(block, count + 2) as i64) * 256 + sys.bat(block, count + 3) as i64 }
+        else if valid { let sum = 0; for i in 2..(count + 2) { sum = (sum + sys.bat(block, i) as i64) % 256 }; valid = sum == sys.bat(block, count + 2) as i64 }
+        if !valid || (sequence != expected && (!received_any || sequence != (expected + 255) % 256)) { errors = errors + 1; send_byte(21); continue }
+        if sequence == expected { if !tx.write_all(fd, sys.bptr(block, 2), count) { break }; expected = (expected + 1) % 256; received_any = true }
+        errors = 0; if !send_byte(6) { break }
+    }
+    if !complete { send_byte(24); send_byte(24) }; sys.close_fd(fd); if sys.blen(attrs) > 0 { tty.set_attrs(0, attrs) }; signals.close(guard)
+    if !complete { fsx.do_unlink(args[0]); sys.warn("rx", "XMODEM transfer failed"); return 1 }; return 0
+}

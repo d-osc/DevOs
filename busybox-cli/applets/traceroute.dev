@@ -1,0 +1,75 @@
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/proc.dev" as proc
+use "../lib/signal_fd.dev" as signals
+use "./netio.dev" as icmp
+use "./inet_extra.dev" as names
+use "./console_extra.dev" as cx
+use "./hardware.dev" as hw
+use "./terminal_extra.dev" as tx
+
+fn integer(fd: i64, level: i64, option: i64, value: i64): bool { let b = cx.buffer(4); cx.store(b, 0, 4, value); unsafe { return net.setsockopt(fd as i32, level as i32, option as i32, sys.bdata(b) as *void, 4) == 0 } }
+fn run_traceroute(args: Vec<str>): i64 {
+    let rest = Vec<str>(); let gateways = Vec<str>(); let i = 0
+    while i < args.len() as i64 { if sys.same(args[i], "-g") { i = i + 1; if i >= args.len() as i64 { return 1 }; gateways.push(args[i]) } else { rest.push(args[i]) }; i = i + 1 }
+    let o = sys.parse_opts(rest, "FIldnrvf:m:p:q:s:t:w:i:z:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 1 || o.rest.len() > 2 || gateways.len() > 8 { sys.warn("traceroute", "invalid arguments"); return 1 }
+    let first = sys.has(o, 102) ? sys.parse_number(sys.val(o, 102)) : sys.Number(true, 1); let maximum = sys.has(o, 109) ? sys.parse_number(sys.val(o, 109)) : sys.Number(true, 30); let probes = sys.has(o, 113) ? sys.parse_number(sys.val(o, 113)) : sys.Number(true, 3); let port = sys.has(o, 112) ? sys.parse_number(sys.val(o, 112)) : sys.Number(true, 33434); let wait = sys.has(o, 119) ? sys.parse_number(sys.val(o, 119)) : sys.Number(true, 3); let size = o.rest.len() == 2 ? sys.parse_number(o.rest[1]) : sys.Number(true, 32); let pause = sys.has(o, 122) ? sys.parse_number(sys.val(o, 122)) : sys.Number(true, 0); let tos = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)) : sys.Number(true, 0)
+    if !first.ok || !maximum.ok || first.value < 1 || maximum.value < first.value || maximum.value > 255 || !probes.ok || probes.value < 1 || probes.value > 100 || !port.ok || port.value < 1 || port.value > 65535 || !wait.ok || wait.value < 1 || wait.value > 3600 || !size.ok || size.value < 0 || size.value > 65000 || !pause.ok || pause.value < 0 || pause.value > 3600000 || !tos.ok || tos.value < 0 || tos.value > 255 { sys.warn("traceroute", "invalid numeric value"); return 1 }
+    let target = net.resolve(o.rest[0]); if target < 0 { sys.warn("traceroute", "bad address"); return 1 }; let echo = sys.has(o, 73); let receiver = net.open_socket(524291, 1)
+    if receiver < 0 { sys.warn("traceroute", "cannot create raw ICMP socket"); return 1 }; let sender = echo ? receiver : net.open_socket(524290, 17)
+    if sender < 0 { sys.close_fd(receiver); return 1 }; let good = integer(sender, 0, 1, tos.value)
+    if sys.has(o, 70) { good = good && integer(sender, 0, 10, 2) }; if sys.has(o, 114) { good = good && integer(sender, 1, 5, 1) }; if sys.has(o, 100) { good = good && integer(sender, 1, 1, 1) }
+    if sys.has(o, 105) { let interface = sys.bytes_new(); sys.bytes_str(interface, sys.val(o, 105)); sys.bytes_push(interface, 0); unsafe { good = good && net.setsockopt(sender as i32, 1, 25, sys.bdata(interface) as *void, sys.blen(interface) as u32) == 0 } }
+    if sys.has(o, 115) { let source = net.resolve(sys.val(o, 115)); if source < 0 { good = false } else { let address = net.make_address(source, 0); unsafe { good = good && net.bind(sender as i32, address as *void, 16) == 0; sys.free(address as *void) } } }
+    if gateways.len() > 0 {
+        let options = sys.bytes_new(); sys.bytes_push(options, 131); sys.bytes_push(options, (3 + gateways.len() as i64 * 4) as u8); sys.bytes_push(options, 4)
+        for gateway in gateways { let address = net.resolve(gateway); if address < 0 { good = false; break }; for divisor in Vec<i64>(16777216, 65536, 256, 1) { sys.bytes_push(options, (address / divisor % 256) as u8) } }; while sys.blen(options) % 4 != 0 { sys.bytes_push(options, 0) }
+        unsafe { good = good && net.setsockopt(sender as i32, 0, 4, sys.bdata(options) as *void, sys.blen(options) as u32) == 0 }
+    }
+    if !good { if sender != receiver { sys.close_fd(sender) }; return cx.fail("traceroute", receiver, "socket configuration failed") }
+    let guard = signals.open(); if guard.fd < 0 { if sender != receiver { sys.close_fd(sender) }; return cx.fail("traceroute", receiver, "cannot install signal handling") }
+    sys.put_fd(1, sys.join2("traceroute to ", sys.join2(o.rest[0], sys.join2(" (", sys.join2(net.ip_text(target), sys.join2("), ", sys.join2(hw.decimal(maximum.value), " hops max\n")))))))
+    let identifier = proc.my_pid() % 65536; let sequence = 0; let reached = false; let stop = false; let buffer = cx.buffer(65536)
+    for ttl in first.value..(maximum.value + 1) {
+        if stop || reached { break }; if !integer(sender, 0, 2, ttl) { sys.warn("traceroute", "cannot set TTL"); break }; sys.put_fd(1, sys.join2(hw.decimal(ttl), " "))
+        for attempt in 0..probes.value {
+            let destination_port = (port.value - 1 + sequence) % 65535 + 1; let packet = cx.buffer(size.value + (echo ? 8 : 0)); let current = sequence % 65536; sequence = sequence + 1
+            if echo { cx.store(packet, 0, 1, 8); cx.store(packet, 4, 1, identifier / 256); cx.store(packet, 5, 1, identifier % 256); cx.store(packet, 6, 1, current / 256); cx.store(packet, 7, 1, current % 256); let sum = icmp.checksum(packet); cx.store(packet, 2, 1, sum / 256); cx.store(packet, 3, 1, sum % 256) }
+            let address = net.make_address(target, echo ? 0 : destination_port); let stamp = net.now_ms(); let sent = 0 - 1
+            unsafe { sent = net.sendto(sender as i32, sys.bdata(packet) as *void, sys.blen(packet) as usize, 0, address as *void, 16) as i64; sys.free(address as *void) }
+            if sent != sys.blen(packet) { sys.put_fd(1, " !send"); continue }
+            let matched = false; let deadline = stamp + wait.value * 1000
+            while net.now_ms() < deadline {
+                if tx.readable(guard.fd, 0) { signals.received(guard); stop = true; break }; if !tx.readable(receiver, 50) { continue }
+                let peer = net.make_address(0, 0); let received = net.receive_from(receiver, sys.bdata(buffer), 65536, peer); let sender_ip = net.peer_ip(peer)
+                if received < 28 { unsafe { sys.free(peer as *void) }; continue }; let header = (sys.bat(buffer, 0) as i64) % 16 * 4
+                if header < 20 || header + 8 > received { unsafe { sys.free(peer as *void) }; continue }; let kind = sys.bat(buffer, header) as i64; let code = sys.bat(buffer, header + 1) as i64; let valid = false
+                if echo && kind == 0 { valid = sender_ip == target && (sys.bat(buffer, header + 4) as i64) * 256 + sys.bat(buffer, header + 5) as i64 == identifier && (sys.bat(buffer, header + 6) as i64) * 256 + sys.bat(buffer, header + 7) as i64 == current; if valid { reached = true } }
+                else if kind == 3 || kind == 11 {
+                    let quoted = header + 8
+                    if quoted + 20 <= received {
+                        let qheader = (sys.bat(buffer, quoted) as i64) % 16 * 4; let transport = quoted + qheader
+                        let destination = 0; for i in 16..20 { destination = destination * 256 + sys.bat(buffer, quoted + i) as i64 }
+                        if qheader >= 20 && transport + 8 <= received && destination == target {
+                            if echo { valid = sys.bat(buffer, quoted + 9) == 1 && (sys.bat(buffer, transport + 4) as i64) * 256 + sys.bat(buffer, transport + 5) as i64 == identifier && (sys.bat(buffer, transport + 6) as i64) * 256 + sys.bat(buffer, transport + 7) as i64 == current }
+                            else { valid = sys.bat(buffer, quoted + 9) == 17 && (sys.bat(buffer, transport + 2) as i64) * 256 + sys.bat(buffer, transport + 3) as i64 == destination_port }
+                        }
+                    }
+                    if valid && kind == 3 && code == 3 { reached = true }
+                }
+                if valid {
+                    let label = sys.has(o, 110) ? net.ip_text(sender_ip) : names.hostname(peer); if sys.length(label) == 0 { label = net.ip_text(sender_ip) }
+                    sys.put_fd(1, sys.join2(" ", sys.join2(label, sys.join2(" ", sys.join2(hw.decimal(net.now_ms() - stamp), " ms")))))
+                    if sys.has(o, 108) { sys.put_fd(1, sys.join2(" (ttl=", sys.join2(hw.decimal(sys.bat(buffer, 8) as i64), ")"))) }
+                    if kind == 3 && code != 3 { sys.put_fd(1, sys.join2(" !", hw.decimal(code))) }; matched = true
+                }
+                unsafe { sys.free(peer as *void) }; if matched { break }
+            }
+            if !matched && !stop { sys.put_fd(1, " *") }; if stop { break }
+            if pause.value > 0 && tx.readable(guard.fd, pause.value) { signals.received(guard); stop = true; break }
+        }
+        sys.put_fd(1, "\n")
+    }
+    if sender != receiver { sys.close_fd(sender) }; sys.close_fd(receiver); signals.close(guard); return reached ? 0 : 1
+}

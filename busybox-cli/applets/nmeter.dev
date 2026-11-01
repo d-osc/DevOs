@@ -1,0 +1,107 @@
+# /proc-based monitor. Input/output buffers are reused between samples.
+use "../lib/sys.dev" as sys
+use "../lib/clock.dev" as clock
+use "../lib/net.dev" as net
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+
+struct Token { kind: str, argument: str, width: i64 }
+struct Format { ok: bool, tokens: Vec<Token>, interval: i64, carriage: bool }
+struct Sample { stat: *sys.Bytes, memory: *sys.Bytes, network: *sys.Bytes, vm: *sys.Bytes, files: *sys.Bytes, load: *sys.Bytes, realtime: *sys.Bytes, stamp: i64 }
+fn sample(): Sample { return Sample(sys.bytes_new(), sys.bytes_new(), sys.bytes_new(), sys.bytes_new(), sys.bytes_new(), sys.bytes_new(), cx.buffer(16), 0) }
+fn read_file(b: *sys.Bytes, path: str, chunk: *sys.Bytes): bool {
+    sys.bclear(b); let fd = sys.open_fd(path, 0, 0); if fd < 0 { return false }; let ok = true
+    while true { let n = sys.read_into(fd, sys.bdata(chunk), sys.blen(chunk)); if n < 0 { ok = false; break }; if n == 0 { break }; sys.bytes_append(b, sys.bdata(chunk), n); if sys.blen(b) > 16777216 { ok = false; break } }; sys.close_fd(fd); return ok
+}
+fn refresh(s: Sample, chunk: *sys.Bytes) {
+    read_file(s.stat, "/proc/stat", chunk); read_file(s.memory, "/proc/meminfo", chunk); read_file(s.network, "/proc/net/dev", chunk); read_file(s.vm, "/proc/vmstat", chunk); read_file(s.files, "/proc/sys/fs/file-nr", chunk); read_file(s.load, "/proc/loadavg", chunk)
+    unsafe { net.clock_gettime(0, sys.bdata(s.realtime) as *void) }
+}
+fn number(b: *sys.Bytes, start: i64, column: i64): i64 {
+    let pos = start; let index = 0
+    while pos < sys.blen(b) && sys.bat(b, pos) != 10 {
+        while pos < sys.blen(b) && (sys.bat(b, pos) == 32 || sys.bat(b, pos) == 9) { pos = pos + 1 }; if pos >= sys.blen(b) || sys.bat(b, pos) == 10 { return 0 }
+        let value = 0; let valid = false
+        while pos < sys.blen(b) && sys.bat(b, pos) != 32 && sys.bat(b, pos) != 9 && sys.bat(b, pos) != 10 { let c = sys.bat(b, pos); if c >= 48 && c <= 57 { valid = true; value = value * 10 + (c - 48) as i64 } else { valid = false }; pos = pos + 1 }
+        if index == column { return valid ? value : 0 }; index = index + 1
+    }; return 0
+}
+fn field(b: *sys.Bytes, key: str, column: i64): i64 {
+    let n = sys.length(key); let start = 0
+    while start < sys.blen(b) {
+        let same = start + n < sys.blen(b)
+        if same { for i in 0..n { if sys.bat(b, start + i) != sys.at(key, i) { same = false; break } } }
+        if same && (sys.bat(b, start + n) == 32 || sys.bat(b, start + n) == 9) { return number(b, start + n, column) }
+        while start < sys.blen(b) && sys.bat(b, start) != 10 { start = start + 1 }; start = start + 1
+    }; return 0
+}
+fn network(b: *sys.Bytes, interface: str, column: i64): i64 {
+    let start = 0; let n = sys.length(interface)
+    while start < sys.blen(b) {
+        while start < sys.blen(b) && sys.bat(b, start) == 32 { start = start + 1 }; let same = start + n < sys.blen(b)
+        if same { for i in 0..n { if sys.bat(b, start + i) != sys.at(interface, i) { same = false; break } } }
+        if same && sys.bat(b, start + n) == 58 { return number(b, start + n + 1, column) }
+        while start < sys.blen(b) && sys.bat(b, start) != 10 { start = start + 1 }; start = start + 1
+    }; return 0
+}
+fn compile(text: str): Format {
+    let tokens = Vec<Token>(); let interval = 1000; let carriage = false; let start = 0; let pos = 0
+    while pos < sys.length(text) {
+        if sys.at(text, pos) != 37 { pos = pos + 1; continue }; if pos > start { tokens.push(Token("literal", sys.slice(text, start, pos), 0)) }; pos = pos + 1; if pos >= sys.length(text) { return Format(false, tokens, interval, carriage) }
+        if sys.at(text, pos) == 37 { tokens.push(Token("literal", "%", 0)); pos = pos + 1; start = pos; continue }
+        let width = 0 - 1; let kind = ""; let argument = ""
+        if sys.at(text, pos) == 91 {
+            let end = pos + 1; while end < sys.length(text) && sys.at(text, end) != 93 { end = end + 1 }; if end >= sys.length(text) { return Format(false, tokens, interval, carriage) }; let value = sys.slice(text, pos + 1, end); pos = end + 1
+            if sys.starts(value, "n") { kind = "n"; argument = sys.slice(value, 1, sys.length(value)); if sys.length(argument) == 0 { return Format(false, tokens, interval, carriage) } }
+            else if sys.starts(value, "c") { kind = "c"; if sys.length(value) > 1 { let n = sys.parse_number(sys.slice(value, 1, sys.length(value))); if !n.ok { return Format(false, tokens, interval, carriage) }; width = n.value } }
+            else { kind = value }
+        } else {
+            let first = pos; while pos < sys.length(text) && sys.is_digit(sys.at(text, pos)) { pos = pos + 1 }; if pos >= sys.length(text) { return Format(false, tokens, interval, carriage) }; if pos > first { let n = sys.parse_number(sys.slice(text, first, pos)); if !n.ok { return Format(false, tokens, interval, carriage) }; width = n.value }; kind = sys.slice(text, pos, pos + 1); pos = pos + 1
+        }
+        if sys.same(kind, "d") { interval = width < 0 ? 1000 : width; if interval < 1 || interval > 3600000 { return Format(false, tokens, interval, carriage) } }
+        else if sys.same(kind, "r") { carriage = true }
+        else {
+            if !sys.same(kind, "c") && !sys.same(kind, "n") && !sys.same(kind, "m") && !sys.same(kind, "mf") && !sys.same(kind, "mt") && !sys.same(kind, "s") && !sys.same(kind, "f") && !sys.same(kind, "i") && !sys.same(kind, "x") && !sys.same(kind, "p") && !sys.same(kind, "pn") && !sys.same(kind, "b") && !sys.same(kind, "t") { return Format(false, tokens, interval, carriage) }
+            if (sys.same(kind, "c") && (width == 0 || width > 1024)) || (sys.same(kind, "t") && width > 9) { return Format(false, tokens, interval, carriage) }; tokens.push(Token(kind, argument, width))
+        }; start = pos
+    }
+    if pos > start { tokens.push(Token("literal", sys.slice(text, start, pos), 0)) }; return Format(true, tokens, interval, carriage)
+}
+fn rate(current: i64, previous: i64, elapsed: i64): i64 { return elapsed > 0 && current >= previous ? (current - previous) * 1000 / elapsed : 0 }
+fn human(out: *sys.Out, value: i64) { let n = value; let unit = 0; while n >= 1024 && unit < 4 { n = n / 1024; unit = unit + 1 }; sys.out_num(out, n); if unit > 0 { sys.out_byte(out, sys.at(" KMGT", unit)) } }
+fn pad(out: *sys.Out, value: i64) { if value < 10 { sys.out_byte(out, 48) }; sys.out_num(out, value) }
+fn render(out: *sys.Out, token: Token, current: Sample, previous: Sample, elapsed: i64, cpu: *sys.Bytes) {
+    let kind = token.kind
+    if sys.same(kind, "literal") { sys.out_str(out, token.argument); return }
+    if sys.same(kind, "c") {
+        let total = 0; for i in 0..8 { let a = field(current.stat, "cpu", i); let b = field(previous.stat, "cpu", i); let value = a >= b ? a - b : 0; cx.store(cpu, i * 8, 8, value); total = total + value }
+        let size = token.width < 0 ? 10 : token.width; sys.out_byte(out, 91)
+        for slot in 0..size { let threshold = total * (slot + 1) / size; let sum = 0; let letter = 32 as u8; for i in 0..8 { sum = sum + cx.le(cpu, i * 8, 8); if total > 0 && sum >= threshold && cx.le(cpu, i * 8, 8) > 0 { letter = sys.at("UNS DIi?", i); break } }; sys.out_byte(out, letter) }; sys.out_byte(out, 93); return
+    }
+    if sys.same(kind, "m") || sys.same(kind, "mf") || sys.same(kind, "mt") {
+        let total = field(current.memory, "MemTotal:", 0); let free = field(current.memory, "MemFree:", 0); human(out, (sys.same(kind, "mt") ? total : (sys.same(kind, "mf") ? free : total - free)) * 1024); return
+    }
+    if sys.same(kind, "s") { human(out, (field(current.memory, "SwapTotal:", 0) - field(current.memory, "SwapFree:", 0)) * 1024); return }
+    if sys.same(kind, "f") { sys.out_num(out, number(current.files, 0, 0) - number(current.files, 0, 1)); return }
+    if sys.same(kind, "pn") { let pos = 0; let spaces = 0; while pos < sys.blen(current.load) { if sys.bat(current.load, pos) == 32 { spaces = spaces + 1 }; if spaces == 3 && sys.bat(current.load, pos) == 47 { sys.out_num(out, number(current.load, pos + 1, 0)); return }; pos = pos + 1 }; sys.out_num(out, 0); return }
+    if sys.same(kind, "n") { human(out, rate(network(current.network, token.argument, 0), network(previous.network, token.argument, 0), elapsed)); sys.out_byte(out, 32); human(out, rate(network(current.network, token.argument, 8), network(previous.network, token.argument, 8), elapsed)); return }
+    if sys.same(kind, "b") { human(out, rate(field(current.vm, "pgpgin", 0), field(previous.vm, "pgpgin", 0), elapsed) * 1024); sys.out_byte(out, 32); human(out, rate(field(current.vm, "pgpgout", 0), field(previous.vm, "pgpgout", 0), elapsed) * 1024); return }
+    if sys.same(kind, "t") {
+        let fields = clock.fields(cx.le(current.realtime, 0, 8), false); pad(out, clock.get(fields, 2)); sys.out_byte(out, 58); pad(out, clock.get(fields, 1)); sys.out_byte(out, 58); pad(out, clock.get(fields, 0)); unsafe { sys.free(fields as *void) }
+        let precision = token.width < 0 ? 0 : token.width; if precision > 0 { sys.out_byte(out, 46); let value = cx.le(current.realtime, 8, 8); let divisor = 100000000; for i in 0..precision { sys.out_byte(out, (48 + value / divisor % 10) as u8); divisor = divisor / 10 } }; return
+    }
+    let key = sys.same(kind, "i") ? "intr" : (sys.same(kind, "x") ? "ctxt" : "processes"); let column = sys.same(kind, "i") && token.width >= 0 ? token.width + 1 : 0
+    sys.out_num(out, rate(field(current.stat, key, column), field(previous.stat, key, column), elapsed))
+}
+fn run_nmeter(args: Vec<str>): i64 {
+    if args.len() != 1 { sys.warn("nmeter", "usage: nmeter FORMAT"); return 1 }; let format = compile(args[0]); if !format.ok { sys.warn("nmeter", "invalid format"); return 1 }
+    let previous = sample(); let current = sample(); let chunk = cx.buffer(65536); let cpu = cx.buffer(64); let out = sys.out_new(1); let guard = signals.open(); if guard.fd < 0 { return 1 }; refresh(previous, chunk); let last = net.now_ms(); let pollfds = cx.buffer(8); cx.store(pollfds, 0, 4, guard.fd); cx.store(pollfds, 4, 2, 1)
+    while true {
+        refresh(current, chunk); let now = net.now_ms(); if sys.blen(current.stat) == 0 || sys.blen(current.memory) == 0 { sys.warn("nmeter", "cannot read /proc statistics"); signals.close(guard); return 1 }
+        for token in format.tokens { render(out, token, current, previous, now - last, cpu) }; sys.out_byte(out, format.carriage ? (13 as u8) : (10 as u8)); sys.out_flush(out); let swap = previous; previous = current; current = swap; last = now
+        let remaining = format.interval - (net.now_ms() - now); let result = 0
+        unsafe { result = net.poll(sys.bdata(pollfds) as *void, 1, (remaining > 0 ? remaining : 0) as i32) as i64 }
+        if result > 0 { signals.received(guard); break }
+    }; signals.close(guard); return 0
+}

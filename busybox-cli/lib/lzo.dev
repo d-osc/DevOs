@@ -1,0 +1,66 @@
+# LZO1X bytecode codec; format reference:
+# https://www.kernel.org/doc/html/latest/staging/lzo.html
+# No LZO/BusyBox implementation source or external compression library is used.
+use "./sys.dev" as sys
+use "../applets/console_extra.dev" as cx
+struct Result { ok: bool, bytes: *sys.Bytes }
+fn literal(out: *sys.Bytes, source: *sys.Bytes, pos: i64, count: i64, match_tail: i64) {
+    if count == 0 { return }
+    if sys.blen(out) == 0 && count <= 238 { sys.bytes_push(out, (17 + count) as u8) }
+    else if count <= 3 && match_tail >= 0 { sys.bptr_set(out, match_tail, sys.bat(out, match_tail) + count as u8) }
+    else if count <= 18 { sys.bytes_push(out, (count - 3) as u8) }
+    else { sys.bytes_push(out, 0); let n = count - 18; while n > 255 { sys.bytes_push(out, 0); n = n - 255 }; sys.bytes_push(out, n as u8) }
+    sys.bytes_append(out, sys.bptr(source, pos), count)
+}
+fn compress(source: *sys.Bytes): *sys.Bytes {
+    let out = sys.bytes_new(); let dictionary = cx.buffer(65536 * 4); let pos = 0; let start = 0; let last_tail = 0 - 1; let size = sys.blen(source)
+    while pos + 4 <= size {
+        let hash = ((sys.bat(source, pos) as i64) * 251 + (sys.bat(source, pos + 1) as i64) * 31 + (sys.bat(source, pos + 2) as i64) * 7 + sys.bat(source, pos + 3) as i64) % 65536
+        let previous = cx.le(dictionary, hash * 4, 4) - 1; cx.store(dictionary, hash * 4, 4, pos + 1)
+        let length = 0
+        if previous >= 0 && pos - previous <= 16384 {
+            while pos + length < size && sys.bat(source, previous + length) == sys.bat(source, pos + length) { length = length + 1 }
+        }
+        if length < 4 { pos = pos + 1; continue }
+        literal(out, source, start, pos - start, last_tail)
+        if length <= 33 { sys.bytes_push(out, (32 + length - 2) as u8) }
+        else { sys.bytes_push(out, 32); let n = length - 33; while n > 255 { sys.bytes_push(out, 0); n = n - 255 }; sys.bytes_push(out, n as u8) }
+        last_tail = sys.blen(out); let offset = (pos - previous - 1) * 4; sys.bytes_push(out, (offset % 256) as u8); sys.bytes_push(out, (offset / 256) as u8)
+        pos = pos + length; start = pos
+    }
+    literal(out, source, start, size - start, last_tail)
+    sys.bytes_push(out, 17); sys.bytes_push(out, 0); sys.bytes_push(out, 0); return out
+}
+fn decompress(source: *sys.Bytes, expected: i64): Result {
+    let out = sys.bytes_new(); let n = sys.blen(source); let pos = 0; let state = 0
+    if n < 3 || expected < 0 || expected > 67108864 { return Result(false, out) }
+    if sys.bat(source, 0) > 17 {
+        let count = sys.bat(source, 0) as i64 - 17; pos = 1
+        if pos + count > n || count > expected { return Result(false, out) }; sys.bytes_append(out, sys.bptr(source, pos), count); pos = pos + count; state = count < 4 ? count : 4
+    }
+    while pos < n {
+        let opcode = sys.bat(source, pos) as i64; pos = pos + 1; let length = 0; let distance = 0; let extra = 0
+        if opcode < 16 && state == 0 {
+            length = opcode
+            if length == 0 { length = 15; while pos < n && sys.bat(source, pos) == 0 { length = length + 255; pos = pos + 1; if length > expected { return Result(false, out) } }; if pos >= n { return Result(false, out) }; length = length + sys.bat(source, pos) as i64; pos = pos + 1 }
+            length = length + 3
+            if pos + length > n || sys.blen(out) + length > expected { return Result(false, out) }; sys.bytes_append(out, sys.bptr(source, pos), length); pos = pos + length; state = 4; continue
+        }
+        if opcode < 16 {
+            if pos >= n { return Result(false, out) }; distance = (sys.bat(source, pos) as i64) * 4 + opcode / 4 + (state == 4 ? 2049 : 1); pos = pos + 1; length = state == 4 ? 3 : 2; extra = opcode % 4
+        } else if opcode < 64 {
+            let mask = opcode < 32 ? 7 : 31; length = opcode % (mask + 1)
+            if length == 0 { length = mask; while pos < n && sys.bat(source, pos) == 0 { length = length + 255; pos = pos + 1; if length > expected { return Result(false, out) } }; if pos >= n { return Result(false, out) }; length = length + sys.bat(source, pos) as i64; pos = pos + 1 }
+            length = length + 2
+            if pos + 2 > n { return Result(false, out) }; let operand = cx.le(source, pos, 2); pos = pos + 2; extra = operand % 4
+            distance = opcode < 32 ? 16384 + ((opcode / 8) % 2) * 16384 + operand / 4 : operand / 4 + 1
+            if opcode < 32 && distance == 16384 { return Result(length == 3 && extra == 0 && pos == n && sys.blen(out) == expected, out) }
+        } else {
+            if pos >= n { return Result(false, out) }; distance = (sys.bat(source, pos) as i64) * 8 + (opcode / 4) % 8 + 1; pos = pos + 1; length = opcode / 32 + 1; extra = opcode % 4
+        }
+        if distance < 1 || distance > sys.blen(out) || sys.blen(out) + length + extra > expected || pos + extra > n { return Result(false, out) }
+        for i in 0..length { sys.bytes_push(out, sys.bat(out, sys.blen(out) - distance)) }
+        sys.bytes_append(out, sys.bptr(source, pos), extra); pos = pos + extra; state = extra
+    }
+    return Result(false, out)
+}

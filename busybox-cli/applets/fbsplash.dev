@@ -1,0 +1,70 @@
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./hardware.dev" as hw
+use "./terminal_extra.dev" as tx
+use "./mime.dev" as text
+use "../lib/lines.dev" as lines
+extern fn mmap(address: *void, length: usize, protection: i32, flags: i32, fd: i32, offset: i64): *void
+extern fn munmap(address: *void, length: usize): i32
+
+struct Word { text: str, next: i64 }
+fn blank(c: u8): bool { return c == 32 || c == 9 || c == 10 || c == 13 }
+fn word(b: *sys.Bytes, start: i64): Word {
+    let pos = start
+    while pos < sys.blen(b) { if blank(sys.bat(b, pos)) { pos = pos + 1 } else if sys.bat(b, pos) == 35 { while pos < sys.blen(b) && sys.bat(b, pos) != 10 { pos = pos + 1 } } else { break } }
+    let out = sys.bytes_new(); while pos < sys.blen(b) && !blank(sys.bat(b, pos)) && sys.bat(b, pos) != 35 { sys.bytes_push(out, sys.bat(b, pos)); pos = pos + 1; if sys.blen(out) > 32 { return Word("", pos) } }; return Word(sys.bytes_cstr(out), pos)
+}
+fn channel(value: i64, offset: i64, count: i64, reverse: bool): i64 {
+    if count == 0 { return 0 }; let scaled = value * (power(count) - 1) / 255; let bits = scaled
+    if reverse { bits = 0; for i in 0..count { bits = bits * 2 + scaled % 2; scaled = scaled / 2 } }; return bits * power(offset)
+}
+fn power(count: i64): i64 { let value = 1; for i in 0..count { value = value * 2 }; return value }
+fn pixel(info: *sys.Bytes, r: i64, g: i64, b: i64): i64 {
+    return channel(r, cx.le(info, 32, 4), cx.le(info, 36, 4), cx.le(info, 40, 4) != 0) | channel(g, cx.le(info, 44, 4), cx.le(info, 48, 4), cx.le(info, 52, 4) != 0) | channel(b, cx.le(info, 56, 4), cx.le(info, 60, 4), cx.le(info, 64, 4) != 0) | channel(255, cx.le(info, 68, 4), cx.le(info, 72, 4), false)
+}
+fn store(memory: *u8, offset: i64, count: i64, value: i64) { unsafe { let v = value; for i in 0..count { memory[offset + i] = (v % 256) as u8; v = v / 256 } } }
+fn component(data: *sys.Bytes, pos: i64, sample: i64): i64 { let value = sys.bat(data, pos) as i64; return sample == 2 ? value * 256 + sys.bat(data, pos + 1) as i64 : value }
+fn run_fbsplash(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "s:cd:i:f:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 || !sys.has(o, 115) { sys.warn("fbsplash", "usage: fbsplash -s IMAGE [-c] [-d DEV] [-i CONFIG] [-f PIPE]"); return 1 }
+    let image = sys.read_path(sys.val(o, 115)); if !image.ok { sys.warn_path("fbsplash", sys.val(o, 115)); return 1 }; let magic = word(image.bytes, 0); let w = word(image.bytes, magic.next); let h = word(image.bytes, w.next); let maximum = word(image.bytes, h.next); let width = sys.parse_number(w.text); let height = sys.parse_number(h.text); let maxval = sys.parse_number(maximum.text)
+    if !sys.same(magic.text, "P6") || !width.ok || !height.ok || width.value < 1 || height.value < 1 || width.value > 16384 || height.value > 16384 || width.value * height.value > 16777216 || !maxval.ok || maxval.value < 1 || maxval.value > 65535 || maximum.next >= sys.blen(image.bytes) || !blank(sys.bat(image.bytes, maximum.next)) { sys.warn("fbsplash", "invalid/unsupported P6 PPM image"); return 1 }
+    let start = maximum.next + 1; if sys.bat(image.bytes, maximum.next) == 13 && start < sys.blen(image.bytes) && sys.bat(image.bytes, start) == 10 { start = start + 1 }; let sample = maxval.value > 255 ? 2 : 1
+    if start + width.value * height.value * 3 * sample > sys.blen(image.bytes) { sys.warn("fbsplash", "truncated image"); return 1 }
+    for i in 0..(width.value * height.value * 3) { if component(image.bytes, start + i * sample, sample) > maxval.value { sys.warn("fbsplash", "pixel exceeds PPM maximum"); return 1 } }
+    let device = sys.has(o, 100) ? sys.val(o, 100) : "/dev/fb0"; let fd = sys.open_fd(device, 2, 0); if fd < 0 { sys.warn_path("fbsplash", device); return 1 }; let info = cx.buffer(160); let fixed = cx.buffer(80)
+    if hw.control_buffer(fd, 0x4600, info) != 0 || hw.control_buffer(fd, 0x4602, fixed) != 0 { return cx.fail("fbsplash", fd, "cannot read framebuffer geometry") }
+    let xres = cx.le(info, 0, 4); let yres = cx.le(info, 4, 4); let xoff = cx.le(info, 16, 4); let yoff = cx.le(info, 20, 4); let bits = cx.le(info, 24, 4); let stride = cx.le(fixed, 48, 4); let length = cx.le(fixed, 24, 4)
+    if xres < 1 || yres < 1 || (bits != 16 && bits != 24 && bits != 32) || cx.le(fixed, 36, 4) != 2 || stride < (xoff + xres) * (bits / 8) || length < (yoff + yres) * stride || length > 1073741824 { return cx.fail("fbsplash", fd, "unsupported framebuffer layout") }
+    let mask = 0
+    for off in Vec<i64>(32, 44, 56, 68) { let count = cx.le(info, off + 4, 4); let offset = cx.le(info, off, 4); if count > 16 || offset + count > bits { return cx.fail("fbsplash", fd, "unsupported color layout") }; let field = (power(count) - 1) * power(offset); if (mask & field) != 0 { return cx.fail("fbsplash", fd, "overlapping color fields") }; mask = mask | field }
+    let bar = cx.buffer(56); cx.store(bar, 0, 8, 0); cx.store(bar, 8, 8, yres > 16 ? yres - 16 : 0); cx.store(bar, 16, 8, xres); cx.store(bar, 24, 8, yres > 16 ? 16 : yres); for i in 4..7 { cx.store(bar, i * 8, 8, 255) }
+    if sys.has(o, 105) {
+        let configuration = sys.read_path(sys.val(o, 105)); if !configuration.ok { return cx.fail("fbsplash", fd, "cannot read progress configuration") }; let ls = lines.split_lines(configuration.bytes, 10); let keys = Vec<str>("BAR_LEFT", "BAR_TOP", "BAR_WIDTH", "BAR_HEIGHT", "BAR_R", "BAR_G", "BAR_B")
+        for i in 0..(ls.starts.len() as i64) { let line = text.trim(lines.text_of(configuration.bytes, ls.starts[i], ls.ends[i])); let equal = sys.find_char(line, 61); if equal < 0 || sys.starts(line, "#") { continue }; let key = text.trim(sys.slice(line, 0, equal)); let value = sys.parse_number(text.trim(sys.slice(line, equal + 1, sys.length(line)))); if !value.ok || value.value < 0 { return cx.fail("fbsplash", fd, "invalid progress configuration") }; for k in 0..7 { if sys.same(key, keys[k]) { cx.store(bar, k * 8, 8, value.value) } } }
+    }
+    let left = cx.le(bar, 0, 8); let top = cx.le(bar, 8, 8); let bar_width = cx.le(bar, 16, 8); let bar_height = cx.le(bar, 24, 8)
+    if left + bar_width > xres || top + bar_height > yres || bar_width * bar_height > 16777216 || cx.le(bar, 32, 8) > 255 || cx.le(bar, 40, 8) > 255 || cx.le(bar, 48, 8) > 255 { return cx.fail("fbsplash", fd, "progress bar is outside framebuffer") }
+    let memory = sys.bdata(cx.buffer(1)); unsafe { memory = mmap(0 as *void, length as usize, 3, 1, fd as i32, 0) as *u8; if memory as i64 == 0 - 1 { return cx.fail("fbsplash", fd, "framebuffer mmap failed") } }
+    let bytes = bits / 8; let xstart = xres > width.value ? (xres - width.value) / 2 : 0; let ystart = yres > height.value ? (yres - height.value) / 2 : 0
+    for y in 0..height.value { if y + ystart >= yres { break }; for x in 0..width.value { if x + xstart >= xres { break }; let pos = start + (y * width.value + x) * 3 * sample; store(memory, (yoff + y + ystart) * stride + (xoff + x + xstart) * bytes, bytes, pixel(info, component(image.bytes, pos, sample) * 255 / maxval.value, component(image.bytes, pos + sample, sample) * 255 / maxval.value, component(image.bytes, pos + 2 * sample, sample) * 255 / maxval.value)) } }
+    if sys.has(o, 99) { let hide = sys.bytes_new(); sys.bytes_push(hide, 27); sys.bytes_str(hide, "[?25l"); tx.write_all(1, sys.bdata(hide), sys.blen(hide)) }
+    let status = 0
+    if sys.has(o, 102) {
+        let path = sys.val(o, 102); let input = sys.open_fd(path, sys.file_info(path, true).mode / 4096 == 1 ? 2 : 0, 0); let guard = signals.open()
+        if input < 0 || guard.fd < 0 { status = 1 }
+        else {
+            let background = cx.buffer(bar_width * bar_height * bytes); unsafe { for y in 0..bar_height { for x in 0..(bar_width * bytes) { sys.bptr_set(background, y * bar_width * bytes + x, memory[(yoff + top + y) * stride + (xoff + left) * bytes + x]) } } }
+            let color = pixel(info, cx.le(bar, 32, 8), cx.le(bar, 40, 8), cx.le(bar, 48, 8)); let line = sys.bytes_new(); let byte = cx.buffer(1)
+            while true {
+                if tx.readable(guard.fd, 0) { signals.received(guard); break }; if !tx.readable(input, 50) { continue }; if sys.read_into(input, sys.bdata(byte), 1) != 1 { break }; if sys.bat(byte, 0) != 10 { sys.bytes_push(line, sys.bat(byte, 0)); if sys.blen(line) > 128 { status = 1; break }; continue }
+                let command = text.trim(sys.bytes_cstr(line)); if sys.same(command, "exit") { break }; let progress = sys.parse_number(command); sys.bclear(line); if !progress.ok || progress.value < 0 || progress.value > 100 { status = 1; break }; let fill = bar_width * progress.value / 100
+                for y in 0..bar_height { for x in 0..bar_width { let offset = (yoff + top + y) * stride + (xoff + left + x) * bytes; if x < fill { store(memory, offset, bytes, color) } else { unsafe { for c in 0..bytes { memory[offset + c] = sys.bat(background, (y * bar_width + x) * bytes + c) } } } } }
+            }
+        }
+        if input >= 0 { sys.close_fd(input) }; if guard.fd >= 0 { signals.close(guard) }
+    }
+    unsafe { munmap(memory as *void, length as usize) }; sys.close_fd(fd); if status != 0 { sys.warn("fbsplash", "control stream failed") }; return status
+}

@@ -1,0 +1,78 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/packet.dev" as packet
+use "../lib/dhcp.dev" as wire
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+use "./events.dev" as events
+use "./dhcp_server.dev" as server
+fn environment(interface: str, address: i64, reply: *sys.Bytes): Vec<str> {
+    let env = proc.environment(); env = proc.set_variable(env, "interface", interface); if address != 0 { env = proc.set_variable(env, "ip", net.ip_text(address)) }
+    if wire.valid(reply) {
+        for code in Vec<i64>(1, 3, 6, 28, 42, 44, 54) { let b = wire.option(reply, code); if sys.blen(b) == 0 || sys.blen(b) % 4 != 0 { continue }; let out = sys.bytes_new(); let at = 0; while at < sys.blen(b) { if at > 0 { sys.bytes_push(out, 32) }; sys.bytes_str(out, net.ip_text(packet.be(b, at, 4))); at = at + 4 }; let name = code == 1 ? "subnet" : (code == 3 ? "router" : (code == 6 ? "dns" : (code == 28 ? "broadcast" : (code == 42 ? "ntpsrv" : (code == 44 ? "wins" : "serverid"))))); env = proc.set_variable(env, name, sys.bytes_cstr(out)) }
+        for code in Vec<i64>(12, 15, 66, 67) { let b = wire.option(reply, code); if sys.blen(b) > 0 { env = proc.set_variable(env, code == 12 ? "hostname" : (code == 15 ? "domain" : (code == 66 ? "tftp" : "bootfile")), wire.text(b)) } }
+        let lease = wire.number(reply, 51, 4); if lease >= 0 { env = proc.set_variable(env, "lease", hw.decimal(lease)) }; let siaddr = packet.be(reply, 20, 4); if siaddr > 0 { env = proc.set_variable(env, "siaddr", net.ip_text(siaddr)) }
+        let boot = wire.text(wire.slice(reply, 108, 236)); if sys.length(boot) > 0 { env = proc.set_variable(env, "boot_file", boot) }; let name = wire.text(wire.slice(reply, 44, 108)); if sys.length(name) > 0 { env = proc.set_variable(env, "sname", name) }
+    }; return env
+}
+fn action(helper: str, interface: str, address: i64, reply: *sys.Bytes, name: str, guard: signals.Signals): bool { return signals.run(Vec<str>(helper, name), environment(interface, address, reply), guard) == 0 }
+fn request(device: packet.Device, xid: i64, kind: i64, requested: i64, serverid: i64, bound: i64, o: sys.Opts, parameters: *sys.Bytes): *sys.Bytes {
+    let b = wire.message(device.mac, xid, kind, false); if bound > 0 { packet.store(b, 12, 4, bound); packet.store(b, 10, 2, 0) }
+    if !sys.has(o, 67) { let id = sys.bytes_new(); if sys.has(o, 99) { sys.bytes_str(id, sys.val(o, 99)) } else { sys.bytes_push(id, 1); sys.bytes_append(id, sys.bdata(device.mac), 6) }; wire.add(b, 61, id) }
+    if requested > 0 { wire.numeric(b, 50, requested, 4) }; if serverid > 0 { wire.numeric(b, 54, serverid, 4) }; if kind != 7 && kind != 4 { if sys.blen(parameters) > 0 { wire.add(b, 55, parameters) }; wire.string(b, 60, sys.has(o, 86) ? sys.val(o, 86) : "DevOS udhcpc"); if sys.has(o, 72) || sys.has(o, 104) { wire.string(b, 12, sys.has(o, 72) ? sys.val(o, 72) : sys.val(o, 104)) }; wire.numeric(b, 57, 1500, 2) }; wire.finish(b); return b
+}
+fn duplicate(interface: str, address: i64, guard: signals.Signals): bool {
+    let d = packet.open(interface, 0x806); if !d.ok { return true }; let b = cx.buffer(2048); let conflict = !packet.arp(d, 0, address, false, packet.broadcast()); let end = net.now_ms() + 1000
+    while !conflict && net.now_ms() < end { if tx.readable(guard.fd, 0) { conflict = true; break }; if !tx.readable(d.fd, 50) { continue }; let n = net.recv_some(d.fd, sys.bdata(b), sys.blen(b)); conflict = packet.conflict(d, b, n, address, true) }; sys.close_fd(d.fd); return conflict
+}
+fn run_udhcpc(args: Vec<str>): i64 {
+    let cleaned = Vec<str>(); let wanted = sys.bytes_new(); let at = 0
+    while at < (args.len() as i64) { let arg = args[at]; if sys.same(arg, "-O") || (sys.starts(arg, "-O") && sys.length(arg) > 2) { let value = sys.length(arg) > 2 ? sys.slice(arg, 2, sys.length(arg)) : ""; if sys.length(value) == 0 { at = at + 1; if at >= (args.len() as i64) { return 1 }; value = args[at] }; let code = server.option_code(value); if code == 0 { return 1 }; sys.bytes_push(wanted, code as u8) } else { cleaned.push(arg) }; at = at + 1 }
+    let o = sys.parse_opts(cleaned, "CfbnqvoSRac:V:H:h:i:p:r:s:t:T:A:"); if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 { sys.warn("udhcpc", "invalid arguments"); return 1 }
+    let tries = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)) : sys.Number(true, 3); let timeout = sys.has(o, 84) ? sys.parse_number(sys.val(o, 84)) : sys.Number(true, 3); let again = sys.has(o, 65) ? sys.parse_number(sys.val(o, 65)) : sys.Number(true, 20); let preferred = sys.has(o, 114) ? net.parse_ip(sys.val(o, 114)) : 0
+    if !tries.ok || tries.value < 0 || tries.value > 100000 || !timeout.ok || timeout.value < 1 || timeout.value > 86400 || !again.ok || again.value < 1 || again.value > 86400 || preferred < 0 || (sys.has(o, 99) && sys.length(sys.val(o, 99)) > 255) || (sys.has(o, 86) && sys.length(sys.val(o, 86)) > 255) || (sys.has(o, 72) && sys.length(sys.val(o, 72)) > 255) || (sys.has(o, 104) && sys.length(sys.val(o, 104)) > 255) { return 1 }
+    let parameters = sys.bytes_new(); if !sys.has(o, 111) { for code in Vec<i64>(1, 3, 6, 12, 15, 28, 42) { sys.bytes_push(parameters, code as u8) } }; for i in 0..sys.blen(wanted) { sys.bytes_push(parameters, sys.bat(wanted, i)) }
+    if sys.blen(parameters) > 255 { sys.warn("udhcpc", "too many requested options"); return 1 }
+    let interface = sys.has(o, 105) ? sys.val(o, 105) : "eth0"; let helper = sys.has(o, 115) ? sys.val(o, 115) : "/usr/share/udhcpc/default.script"; let pidfile = sys.has(o, 112) ? sys.val(o, 112) : ""
+    if sys.length(proc.find_program(helper, proc.environment())) == 0 { sys.warn("udhcpc", "configuration script not found"); return 1 }; let device = packet.open(interface, 0x800); if !device.ok { sys.warn("udhcpc", "cannot open Ethernet DHCP socket"); return 1 }; if !server.pid_file(pidfile) { sys.close_fd(device.fd); return 1 }; let guard = signals.open_mask(1 + 2 + 4 + 512 + 2048 + 16384); if guard.fd < 0 { sys.close_fd(device.fd); if sys.length(pidfile) > 0 { fsx.do_unlink(pidfile) }; return 1 }
+    let empty = sys.bytes_new(); let reply = empty; let status = 0; let phase = 0; let xid = wire.random(); let serverid = 0; let address = 0; let selected = preferred; let sent = 0; let next = 0; let expiry = 0; let rebind = 0; let daemonized = false; let keep = false
+    if !action(helper, interface, 0, empty, "deconfig", guard) { sys.warn("udhcpc", "deconfig script failed"); status = 1 }
+    while status == 0 {
+        let now = net.now_ms()
+        if tx.readable(guard.fd, 0) {
+            let sig = signals.received(guard)
+            if sig == 10 { if address > 0 { phase = 3; sent = 0; next = 0 } else { phase = 0; sent = 0; next = 0; xid = wire.random() } }
+            else if sig == 12 { if address > 0 { let release = request(device, xid, 7, 0, serverid, address, o, empty); wire.send_raw(device, address, serverid, 68, 67, packet.broadcast(), release); action(helper, interface, address, reply, "deconfig", guard); address = 0 }; phase = 4; next = now + 86400000 }
+            else { if address > 0 && sys.has(o, 82) { let release = request(device, xid, 7, 0, serverid, address, o, empty); wire.send_raw(device, address, serverid, 68, 67, packet.broadcast(), release); action(helper, interface, address, reply, "deconfig", guard); address = 0 }; keep = true; break }
+        }
+        if address > 0 && now >= expiry { action(helper, interface, address, reply, "deconfig", guard); address = 0; phase = 0; selected = preferred; sent = 0; next = 0; xid = wire.random() }
+        if phase == 2 && now >= next { phase = 3; sent = 0; xid = wire.random() }
+        if phase != 2 && phase != 4 && now >= next {
+            if phase != 3 && tries.value > 0 && sent >= tries.value {
+                if phase == 1 && !sys.has(o, 110) { phase = 0; selected = preferred; serverid = 0; sent = 0; xid = wire.random(); next = now; continue }
+                action(helper, interface, 0, empty, "leasefail", guard); if sys.has(o, 110) { status = 1; break }
+                if sys.has(o, 98) && !daemonized { if sys.length(pidfile) > 0 { fsx.do_unlink(pidfile) }; let child = server.background(); if child > 0 { sys.close_fd(device.fd); signals.close(guard); return 0 }; if child < 0 || !server.pid_file(pidfile) { status = 1; break }; daemonized = true }
+                sent = 0; next = now + again.value * 1000; xid = wire.random(); continue
+            }
+            let kind = phase == 0 ? 1 : 3; let outgoing = request(device, xid, kind, phase == 3 ? 0 : selected, phase == 1 ? serverid : 0, phase == 3 ? address : 0, o, parameters)
+            if !wire.send_raw(device, phase == 3 ? address : 0, phase == 3 && now < rebind ? serverid : 0xffffffff, 68, 67, packet.broadcast(), outgoing) { sys.warn("udhcpc", "cannot send DHCP request"); status = 1; break }; sent = sent + 1; next = now + timeout.value * 1000
+        }
+        if !tx.readable(device.fd, 50) { continue }; let incoming = wire.receive_raw(device); if !wire.valid(incoming) || sys.bat(incoming, 0) != 2 || packet.be(incoming, 4, 4) != xid || !wire.same(device.mac, wire.slice(incoming, 28, 34)) { continue }; let kind = wire.number(incoming, 53, 1); let peer = wire.number(incoming, 54, 4); if peer <= 0 { continue }
+        if phase == 0 && kind == 2 { let offered = packet.be(incoming, 16, 4); if offered == 0 || offered == 0xffffffff { continue }; selected = offered; serverid = peer; phase = 1; sent = 0; next = 0; continue }
+        if (phase == 1 || phase == 3) && kind == 6 && (phase == 3 || peer == serverid) { if address > 0 { action(helper, interface, address, reply, "nak", guard); action(helper, interface, address, reply, "deconfig", guard) }; address = 0; phase = 0; sent = 0; selected = preferred; serverid = 0; next = net.now_ms() + 1000; xid = wire.random(); continue }
+        if (phase == 1 || phase == 3) && kind == 5 && (phase == 3 || peer == serverid) {
+            let offered = packet.be(incoming, 16, 4); if offered == 0 && phase == 3 { offered = address }; if offered <= 0 || offered == 0xffffffff || (phase == 1 && offered != selected) { continue }; let lease = wire.number(incoming, 51, 4); if lease <= 0 { continue }
+            if sys.has(o, 97) && offered != address && duplicate(interface, offered, guard) { let decline = request(device, xid, 4, offered, peer, 0, o, empty); wire.send_raw(device, 0, 0xffffffff, 68, 67, packet.broadcast(), decline); phase = 0; sent = 0; selected = preferred; next = net.now_ms() + 10000; xid = wire.random(); continue }
+            let renewing = address != 0; if !action(helper, interface, offered, incoming, renewing ? "renew" : "bound", guard) { sys.warn("udhcpc", "configuration script failed"); status = 1; break }; address = offered; serverid = peer; reply = incoming; let t1 = wire.number(incoming, 58, 4); let t2 = wire.number(incoming, 59, 4); if t1 < 1 || t1 >= lease { t1 = lease / 2 }; if t2 <= t1 || t2 >= lease { t2 = lease * 7 / 8 }; let start = net.now_ms(); expiry = start + lease * 1000; rebind = start + t2 * 1000; next = start + t1 * 1000; phase = 2; sent = 0
+            sys.put_fd(2, sys.join2("udhcpc: lease of ", sys.join2(net.ip_text(address), sys.join2(" obtained for ", sys.join2(hw.decimal(lease), " seconds\n")))))
+            if sys.has(o, 113) { keep = true; break }
+            if !sys.has(o, 102) && !daemonized { if sys.length(pidfile) > 0 { fsx.do_unlink(pidfile) }; let child = server.background(); if child > 0 { sys.close_fd(device.fd); signals.close(guard); return 0 }; if child < 0 || !server.pid_file(pidfile) { status = 1; break }; daemonized = true }
+        }
+    }
+    if keep && address > 0 && sys.has(o, 82) { let release = request(device, xid, 7, 0, serverid, address, o, empty); wire.send_raw(device, address, serverid, 68, 67, packet.broadcast(), release); action(helper, interface, address, reply, "deconfig", guard); address = 0 }
+    if !keep && address > 0 { action(helper, interface, address, reply, "deconfig", guard) }; sys.close_fd(device.fd); signals.close(guard); if sys.length(pidfile) > 0 { fsx.do_unlink(pidfile) }; return status
+}

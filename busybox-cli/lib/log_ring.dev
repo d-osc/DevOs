@@ -1,0 +1,51 @@
+# BusyBox-compatible SysV circular log layout: int size, int tail, char data[].
+# Semaphore 0 counts readers; semaphore 1 excludes writers.
+use "./sys.dev" as sys
+use "./proc.dev" as proc
+use "../applets/console_extra.dev" as cx
+extern fn shmget(key: i32, size: usize, flags: i32): i32
+extern fn shmat(id: i32, address: *void, flags: i32): *void
+extern fn shmdt(address: *void): i32
+extern fn shmctl(id: i32, command: i32, buffer: *void): i32
+extern fn semget(key: i32, count: i32, flags: i32): i32
+extern fn semctl(id: i32, number: i32, command: i32, value: i64): i32
+extern fn semop(id: i32, operations: *void, count: usize): i32
+struct Ring { ok: bool, id: i64, semaphore: i64, memory: *u8, size: i64, owner: bool, acquire: *sys.Bytes, release: *sys.Bytes }
+fn disabled(): Ring { return Ring(false, 0 - 1, 0 - 1, sys.bdata(sys.bytes_new()), 0, false, sys.bytes_new(), sys.bytes_new()) }
+fn key(): i64 { let value = proc.lookup(proc.environment(), "BUSYBOX_LOG_KEY"); if !value.found { return 0x414e4547 }; let n = sys.parse_number(value.value); return n.ok && n.value > 0 && n.value <= 2147483647 ? n.value : 0 - 1 }
+fn put(p: *u8, off: i64, width: i64, value: i64) { unsafe { let n = value; for i in 0..width { p[off + i] = (n % 256) as u8; n = n / 256 } } }
+fn operation(b: *sys.Bytes, index: i64, number: i64, value: i64, flags: i64) { cx.store(b, index * 6, 2, number); cx.store(b, index * 6 + 2, 2, value < 0 ? 65536 + value : value); cx.store(b, index * 6 + 4, 2, flags) }
+fn open(writer: bool, bytes: i64): Ring {
+    let bad = disabled(); let id = 0 - 1; let sem = 0 - 1; let k = key(); if k < 0 { return bad }
+    unsafe {
+        sem = semget(k as i32, 2, writer ? 1920 : 0) as i64; if sem < 0 { return bad }
+        id = shmget(k as i32, writer ? bytes as usize : 1 as usize, writer ? 1920 : 0) as i64
+        if id < 0 { if writer { semctl(sem as i32, 0, 0, 0) }; return bad }
+        let pointer = shmat(id as i32, 0 as *void, writer ? 0 : 4096) as *u8
+        if pointer as i64 == 0 - 1 { if writer { shmctl(id as i32, 0, 0 as *void); semctl(sem as i32, 0, 0, 0) }; return bad }
+        let status = cx.buffer(256)
+        if shmctl(id as i32, 2, sys.bdata(status) as *void) != 0 { shmdt(pointer as *void); if writer { shmctl(id as i32, 0, 0 as *void); semctl(sem as i32, 0, 0, 0) }; return bad }
+        let capacity = cx.le(status, 48, 8); if capacity < 10 || capacity > 1048576 { shmdt(pointer as *void); if writer { shmctl(id as i32, 0, 0 as *void); semctl(sem as i32, 0, 0, 0) }; return bad }
+        if writer { put(pointer, 0, 4, bytes - 9); put(pointer, 4, 4, 0) }
+        let size = sys.le(pointer, 0, 4); if size < 1 || size + 8 > capacity { shmdt(pointer as *void); if writer { shmctl(id as i32, 0, 0 as *void); semctl(sem as i32, 0, 0, 0) }; return bad }
+        let acquire = cx.buffer(writer ? 18 : 12); let release = cx.buffer(6)
+        if writer { operation(acquire, 0, 0, 0, 2048); operation(acquire, 1, 1, 0, 2048); operation(acquire, 2, 1, 1, 6144); operation(release, 0, 1, 0 - 1, 6144) }
+        else { operation(acquire, 0, 1, 0, 2048); operation(acquire, 1, 0, 1, 6144); operation(release, 0, 0, 0 - 1, 6144) }
+        return Ring(true, id, sem, pointer, size, writer, acquire, release)
+    }
+}
+fn lock(r: Ring): bool { for i in 0..1000 { unsafe { if semop(r.semaphore as i32, sys.bdata(r.acquire) as *void, (sys.blen(r.acquire) / 6) as usize) == 0 { return true } }; proc.pause_us(1000) }; return false }
+fn unlock(r: Ring): bool { unsafe { return semop(r.semaphore as i32, sys.bdata(r.release) as *void, 1) == 0 } }
+fn write(r: Ring, data: *sys.Bytes): bool {
+    if !r.ok || !r.owner || !lock(r) { return false }; let tail = 0
+    unsafe { tail = sys.le(r.memory, 4, 4) }; if tail < 0 || tail >= r.size { unlock(r); return false }
+    let count = sys.blen(data); let start = 0; if count >= r.size { start = count - r.size + 2; count = r.size - 2 }
+    unsafe { for i in 0..count { r.memory[8 + tail] = sys.bat(data, start + i); tail = (tail + 1) % r.size }; r.memory[8 + tail] = 0; tail = (tail + 1) % r.size; put(r.memory, 4, 4, tail) }
+    return unlock(r)
+}
+fn snapshot(r: Ring, data: *sys.Bytes): i64 {
+    if !r.ok || !lock(r) { return 0 - 1 }; let tail = 0
+    unsafe { tail = sys.le(r.memory, 4, 4) }; if tail < 0 || tail >= r.size { unlock(r); return 0 - 1 }
+    sys.bclear(data); sys.bytes_append(data, sys.bptr_at(r.memory, 8), r.size); if !unlock(r) { return 0 - 1 }; return tail
+}
+fn close(r: Ring) { if !r.ok { return }; unsafe { shmdt(r.memory as *void); if r.owner { shmctl(r.id as i32, 0, 0 as *void); semctl(r.semaphore as i32, 0, 0, 0) } } }

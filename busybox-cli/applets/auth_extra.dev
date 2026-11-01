@@ -1,0 +1,82 @@
+# Console password checks for the password schemes implemented by Dev OS.
+# Unsupported/locked/unreadable credentials fail before taking a VT lock.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/crypt.dev" as crypt
+use "../lib/signal_fd.dev" as signals
+use "./accounts.dev" as accounts
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+use "./util6.dev" as tty
+extern fn execve(program: str, args: *void, env: *void): i32
+extern fn dup2(from: i32, to: i32): i32
+
+struct Account { ok: bool, hash: str, home: str, shell: str }
+fn account(name: str): Account {
+    let directory = "/etc"
+    # Test/custom account stores must never influence a setuid invocation.
+    if fsx.uid() == fsx.euid() { let option = proc.lookup(proc.environment(), "BUSYBOX_ETC"); if option.found { directory = option.value } }
+    let users = accounts.read_all_lines(fsx.join_path(directory, "passwd")); let index = accounts.find_line(users, name, 0)
+    if index < 0 { return Account(false, "", "", "") }; let row = users[index]; let hash = accounts.field(row, 1)
+    if sys.same(hash, "x") { let shadow = accounts.read_all_lines(fsx.join_path(directory, "shadow")); let index = accounts.find_line(shadow, name, 0); if index < 0 { return Account(false, "", "", "") }; hash = accounts.field(shadow[index], 1) }
+    let supported = sys.length(hash) == 0 || sys.starts(hash, "$1$") || sys.starts(hash, "$5$") || sys.starts(hash, "$6$")
+    return Account(supported && !sys.starts(hash, "!") && !sys.starts(hash, "*"), hash, accounts.field(row, 5), sys.length(accounts.field(row, 6)) > 0 ? accounts.field(row, 6) : "/bin/sh")
+}
+fn matches(hash: str, password: *sys.Bytes): bool {
+    let candidate = sys.length(hash) == 0 ? "" : crypt.crypt(sys.bytes_cstr(password), hash); let difference = sys.length(candidate) ^ sys.length(hash)
+    for i in 0..sys.length(hash) { let c = i < sys.length(candidate) ? sys.at(candidate, i) : (0 as u8); difference = difference | ((c as i64) ^ sys.at(hash, i) as i64) }
+    for i in 0..sys.blen(password) { sys.bptr_set(password, i, 0) }; return difference == 0
+}
+struct Secret { ok: bool, eof: bool, bytes: *sys.Bytes }
+fn secret(fd: i64, guard: signals.Signals, deadline: i64, ignore_signals: bool): Secret {
+    let out = sys.bytes_new(); let byte = cx.buffer(1)
+    while true {
+        if tx.readable(guard.fd, 0) { signals.received(guard); if !ignore_signals { return Secret(false, false, out) } }
+        if deadline > 0 && net.now_ms() >= deadline { return Secret(false, false, out) }; if !tx.readable(fd, 50) { continue }
+        let n = sys.read_into(fd, sys.bdata(byte), 1); if n <= 0 { return Secret(false, true, out) }; let c = sys.bat(byte, 0); sys.bptr_set(byte, 0, 0)
+        if c == 10 || c == 13 { return Secret(true, false, out) }; if c == 0 || sys.blen(out) >= 4096 { return Secret(false, false, out) }; sys.bytes_push(out, c)
+    }; return Secret(false, false, out)
+}
+fn noecho(fd: i64, attrs: *sys.Bytes): bool { let masked = cx.buffer(sys.blen(attrs)); for i in 0..sys.blen(attrs) { sys.bptr_set(masked, i, sys.bat(attrs, i)) }; let flags = cx.le(masked, 12, 4); cx.store(masked, 12, 4, flags - (flags & 8) - (flags & 64)); return tty.set_attrs(fd, masked) }
+fn run_vlock(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "a"); if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 { sys.warn("vlock", "usage: vlock [-a]"); return 1 }
+    let name = fsx.user_name(fsx.uid()); let user = account(name); let root = account("root")
+    if !user.ok || sys.length(user.hash) == 0 { sys.warn("vlock", "a supported nonempty account password is required"); return 1 }
+    let fd = sys.open_fd("/dev/tty", 2, 0); if fd < 0 { sys.warn("vlock", "cannot open terminal"); return 1 }; let attrs = tty.get_attrs(fd); if sys.blen(attrs) == 0 { return cx.fail("vlock", fd, "not a terminal") }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("vlock", fd, "cannot install signal handling") }
+    if sys.has(o, 97) && hw.control(fd, 22027, 0) != 0 { signals.close(guard); return cx.fail("vlock", fd, "cannot lock VT switching") }
+    if !noecho(fd, attrs) { if sys.has(o, 97) { hw.control(fd, 22028, 0) }; signals.close(guard); return cx.fail("vlock", fd, "cannot disable terminal echo") }
+    sys.put_fd(fd as i32, sys.join2("Terminal locked by ", sys.join2(name, ".\n")))
+    while true {
+        sys.put_fd(fd as i32, "Password: "); let password = secret(fd, guard, 0, true); sys.put_fd(fd as i32, "\n")
+        let valid = false
+        if password.ok {
+            let copy = sys.bytes_new(); sys.bytes_append(copy, sys.bdata(password.bytes), sys.blen(password.bytes)); valid = matches(user.hash, password.bytes); if !valid && root.ok && sys.length(root.hash) > 0 { valid = matches(root.hash, copy) } else { for i in 0..sys.blen(copy) { sys.bptr_set(copy, i, 0) } }
+        }
+        if valid { break }; for i in 0..sys.blen(password.bytes) { sys.bptr_set(password.bytes, i, 0) }; sys.put_fd(fd as i32, "Password required; terminal remains locked.\n"); proc.pause_us(200000)
+    }
+    tty.set_attrs(fd, attrs); if sys.has(o, 97) { hw.control(fd, 22028, 0) }; sys.close_fd(fd); signals.close(guard); return 0
+}
+fn run_sulogin(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "t:"); if o.bad != 0 || o.missing != 0 || o.rest.len() > 1 { sys.warn("sulogin", "usage: sulogin [-t SECONDS] [TTY]"); return 1 }
+    if fsx.euid() != 0 { sys.warn("sulogin", "root privileges required"); return 1 }; let root = account("root"); if !root.ok { sys.warn("sulogin", "cannot verify root password scheme"); return 1 }
+    let timeout = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)) : sys.Number(true, 0); if !timeout.ok || timeout.value < 0 || timeout.value > 86400 { return 1 }
+    let fd = sys.open_fd(o.rest.len() == 1 ? o.rest[0] : "/dev/tty", 2, 0); if fd < 0 { sys.warn("sulogin", "cannot open terminal"); return 1 }; let attrs = tty.get_attrs(fd); if sys.blen(attrs) == 0 { return cx.fail("sulogin", fd, "not a terminal") }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("sulogin", fd, "cannot install signal handling") }; if !noecho(fd, attrs) { signals.close(guard); return cx.fail("sulogin", fd, "cannot disable terminal echo") }
+    let deadline = timeout.value > 0 ? net.now_ms() + timeout.value * 1000 : 0; let valid = sys.length(root.hash) == 0
+    while !valid {
+        sys.put_fd(fd as i32, "Give root password for maintenance (or Ctrl-D to continue): "); let password = secret(fd, guard, deadline, false); sys.put_fd(fd as i32, "\n")
+        if !password.ok { for i in 0..sys.blen(password.bytes) { sys.bptr_set(password.bytes, i, 0) }; break }; valid = matches(root.hash, password.bytes); if !valid { sys.put_fd(fd as i32, "Incorrect password\n"); proc.pause_us(200000) }
+    }
+    tty.set_attrs(fd, attrs); signals.close(guard)
+    if !valid { sys.close_fd(fd); return 0 }
+    if !accounts.become(accounts.Account(true, 0, 0)) { return cx.fail("sulogin", fd, "cannot become root") }
+    let env = proc.set_variable(proc.set_variable(proc.set_variable(proc.environment(), "USER", "root"), "LOGNAME", "root"), "HOME", root.home); env = proc.set_variable(env, "SHELL", root.shell)
+    let program = proc.find_program(root.shell, env); if sys.length(program) == 0 { return cx.fail("sulogin", fd, "root shell not found") }
+    let command = Vec<str>(sys.join2("-", sys.base_name(root.shell))); let argv = proc.pointer_array(command); let envp = proc.pointer_array(env)
+    unsafe { dup2(fd as i32, 0); dup2(fd as i32, 1); dup2(fd as i32, 2) }; if fd > 2 { sys.close_fd(fd) }; if sys.length(root.home) > 0 { fsx.change_dir(root.home) }
+    unsafe { execve(program, argv, envp) }; sys.warn("sulogin", "cannot execute root shell"); return 126
+}

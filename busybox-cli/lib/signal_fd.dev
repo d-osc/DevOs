@@ -1,0 +1,30 @@
+# Block termination signals and receive them through a descriptor so callers can
+# restore terminal/device state in normal control flow before exiting.
+use "./sys.dev" as sys
+use "./proc.dev" as proc
+use "../applets/console_extra.dev" as cx
+extern fn sigprocmask(how: i32, mask: *void, previous: *void): i32
+extern fn signalfd(fd: i32, mask: *void, flags: i32): i32
+extern fn fork(): i32
+extern fn execve(path: str, argv: *void, env: *void): i32
+extern fn exit(status: i32)
+struct Signals { fd: i64, previous: *sys.Bytes }
+fn open_mask(bits: i64): Signals {
+    let mask = cx.buffer(128); let previous = cx.buffer(128)
+    # HUP INT QUIT TERM
+    cx.store(mask, 0, 8, bits)
+    unsafe {
+        if sigprocmask(0, sys.bdata(mask) as *void, sys.bdata(previous) as *void) != 0 { return Signals(0 - 1, previous) }
+        let fd = signalfd(0 - 1, sys.bdata(mask) as *void, 526336) as i64
+        if fd < 0 { sigprocmask(2, sys.bdata(previous) as *void, 0 as *void) }
+        return Signals(fd, previous)
+    }
+}
+fn open(): Signals { return open_mask(1 + 2 + 4 + 16384) }
+fn close(s: Signals) { if s.fd < 0 { return }; sys.close_fd(s.fd); unsafe { sigprocmask(2, sys.bdata(s.previous) as *void, 0 as *void) } }
+fn received(s: Signals): i64 { let b = cx.buffer(128); let n = sys.read_into(s.fd, sys.bdata(b), 128); return n >= 4 ? cx.le(b, 0, 4) : 0 }
+fn run(command: Vec<str>, env: Vec<str>, s: Signals): i64 {
+    if command.len() == 0 { return 127 }; let program = proc.find_program(command[0], env); if sys.length(program) == 0 { return 127 }; let argv = proc.pointer_array(command); let envp = proc.pointer_array(env); let pid = 0 - 1
+    unsafe { pid = fork() as i64; if pid == 0 { sigprocmask(2, sys.bdata(s.previous) as *void, 0 as *void); execve(program, argv, envp); exit(126) } }
+    return pid < 0 ? 126 : proc.wait_for(pid)
+}

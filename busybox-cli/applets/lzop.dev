@@ -1,0 +1,74 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/lzo.dev" as lzo
+use "../lib/deflate.dev" as df
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./mime.dev" as mime
+use "./hardware.dev" as hw
+
+fn be(b: *sys.Bytes, off: i64, width: i64): i64 { let n = 0; for i in 0..width { n = n * 256 + sys.bat(b, off + i) as i64 }; return n }
+fn push(b: *sys.Bytes, value: i64, width: i64) { let p = 1; for i in 1..width { p = p * 256 }; let v = value; for i in 0..width { sys.bytes_push(b, (v / p % 256) as u8); p = p / 256 } }
+fn adler(b: *sys.Bytes): i64 { let a = 1; let z = 0; for i in 0..sys.blen(b) { a = (a + sys.bat(b, i) as i64) % 65521; z = (z + a) % 65521 }; return z * 65536 + a }
+fn checksum(b: *sys.Bytes, crc: bool): i64 { return crc ? df.crc32(df.crc_table(), 0, sys.bdata(b), 0, sys.blen(b)) : adler(b) }
+fn magic(out: *sys.Bytes) { for c in Vec<i64>(137, 76, 90, 79, 0, 13, 10, 26, 10) { sys.bytes_push(out, c as u8) } }
+fn compress(data: *sys.Bytes, checks: bool, compressed_checks: bool, level: i64): *sys.Bytes {
+    let out = sys.bytes_new(); magic(out); let header = sys.bytes_new()
+    push(header, 0x1030, 2); push(header, 0x20a0, 2); push(header, 0x0940, 2); push(header, 1, 1); push(header, level, 1)
+    let flags = 0x03000000 + (checks ? 1 : 0) + (compressed_checks ? 2 : 0); push(header, flags, 4); push(header, 0, 4); push(header, 0, 4); push(header, 0, 4); push(header, 0, 1)
+    sys.bytes_append(out, sys.bdata(header), sys.blen(header)); push(out, adler(header), 4)
+    let pos = 0
+    while pos < sys.blen(data) {
+        let end = pos + 262144; if end > sys.blen(data) { end = sys.blen(data) }; let raw = mime.bytes_slice(data, pos, end); let encoded = lzo.compress(raw); let packed = sys.blen(encoded) < sys.blen(raw) ? encoded : raw
+        push(out, sys.blen(raw), 4); push(out, sys.blen(packed), 4); if checks { push(out, adler(raw), 4) }; if compressed_checks && sys.blen(packed) < sys.blen(raw) { push(out, adler(packed), 4) }; sys.bytes_append(out, sys.bdata(packed), sys.blen(packed)); pos = end
+    }
+    push(out, 0, 4); return out
+}
+fn flag(flags: i64, bit: i64): bool { return (flags / bit) % 2 == 1 }
+fn decompress(data: *sys.Bytes, verify: bool): lzo.Result {
+    let out = sys.bytes_new(); let pos = 0; let n = sys.blen(data); let marker = sys.bytes_new(); magic(marker)
+    while pos < n {
+        if pos + 9 > n { return lzo.Result(false, out) }; for i in 0..9 { if sys.bat(data, pos + i) != sys.bat(marker, i) { return lzo.Result(false, out) } }; pos = pos + 9
+        let start = pos; if pos + 8 > n { return lzo.Result(false, out) }; let version = be(data, pos, 2); pos = pos + 2; pos = pos + 2; let needed = be(data, pos, 2); pos = pos + 2; let method = be(data, pos, 1); pos = pos + 1
+        if version < 0x900 || needed > 0x1030 || method < 1 || method > 3 { return lzo.Result(false, out) }; if version >= 0x940 { pos = pos + 1 }
+        if pos + 12 > n { return lzo.Result(false, out) }; let flags = be(data, pos, 4); pos = pos + 12; if version >= 0x940 { pos = pos + 4 }
+        if flag(flags, 0x800) || flag(flags, 0x40) || pos >= n { return lzo.Result(false, out) }; let name = sys.bat(data, pos) as i64; pos = pos + 1 + name
+        if pos + 4 > n { return lzo.Result(false, out) }; let header = mime.bytes_slice(data, start, pos); if checksum(header, flag(flags, 0x1000)) != be(data, pos, 4) { return lzo.Result(false, out) }; pos = pos + 4
+        while true {
+            if pos + 4 > n { return lzo.Result(false, out) }; let raw_size = be(data, pos, 4); pos = pos + 4; if raw_size == 0 { break }
+            if raw_size > 67108864 || pos + 4 > n { return lzo.Result(false, out) }; let packed_size = be(data, pos, 4); pos = pos + 4; if packed_size < 1 || packed_size > raw_size { return lzo.Result(false, out) }
+            let sum_d = 0; let crc_d = 0; let sum_c = 0; let crc_c = 0
+            if flag(flags, 1) { if pos + 4 > n { return lzo.Result(false, out) }; sum_d = be(data, pos, 4); pos = pos + 4 }
+            if flag(flags, 0x100) { if pos + 4 > n { return lzo.Result(false, out) }; crc_d = be(data, pos, 4); pos = pos + 4 }
+            if packed_size < raw_size && flag(flags, 2) { if pos + 4 > n { return lzo.Result(false, out) }; sum_c = be(data, pos, 4); pos = pos + 4 }
+            if packed_size < raw_size && flag(flags, 0x200) { if pos + 4 > n { return lzo.Result(false, out) }; crc_c = be(data, pos, 4); pos = pos + 4 }
+            if pos + packed_size > n { return lzo.Result(false, out) }; let packed = mime.bytes_slice(data, pos, pos + packed_size); pos = pos + packed_size
+            if verify && packed_size < raw_size && ((flag(flags, 2) && adler(packed) != sum_c) || (flag(flags, 0x200) && checksum(packed, true) != crc_c)) { return lzo.Result(false, out) }
+            let decoded = packed_size == raw_size ? lzo.Result(true, packed) : lzo.decompress(packed, raw_size)
+            if !decoded.ok { return lzo.Result(false, out) }
+            if verify && ((flag(flags, 1) && adler(decoded.bytes) != sum_d) || (flag(flags, 0x100) && checksum(decoded.bytes, true) != crc_d)) { return lzo.Result(false, out) }
+            sys.bytes_append(out, sys.bdata(decoded.bytes), sys.blen(decoded.bytes))
+        }
+    }; return lzo.Result(n > 0, out)
+}
+fn run(args: Vec<str>, decode: bool, cat: bool): i64 {
+    let o = sys.parse_opts(args, "cfvd123456789CF")
+    if o.bad != 0 || o.missing != 0 { sys.warn("lzop", "usage: lzop [-cfvd123456789CF] [FILE]..."); return 1 }
+    let paths = o.rest; if paths.len() == 0 { paths.push("-") }; let level = 3; for i in 49..58 { if sys.has(o, i as u8) { level = i - 48 } }; let status = 0
+    for path in paths {
+        let input = sys.read_path(path); if !input.ok { sys.warn_path("lzop", path); status = 1; continue }
+        let expand = decode || sys.has(o, 100); let packed = expand ? decompress(input.bytes, !sys.has(o, 70)) : lzo.Result(true, compress(input.bytes, !sys.has(o, 70), sys.has(o, 67), level))
+        if !packed.ok { sys.warn("lzop", "invalid or unsupported lzop stream"); status = 1; continue }
+        let stdout = cat || sys.has(o, 99) || sys.same(path, "-")
+        let target = expand ? (sys.ends(path, ".lzo") ? sys.slice(path, 0, sys.length(path) - 4) : "") : sys.join2(path, ".lzo")
+        if !stdout && sys.length(target) == 0 { sys.warn("lzop", "unknown suffix"); status = 1; continue }
+        let fd = stdout ? 1 : sys.open_fd(target, sys.has(o, 102) ? 577 : 193, 420)
+        if fd < 0 { sys.warn_write("lzop", target); status = 1; continue }
+        let ok = tx.write_all(fd, sys.bdata(packed.bytes), sys.blen(packed.bytes)); if !stdout { sys.close_fd(fd) }
+        if !ok { sys.warn("lzop", "write failed"); status = 1; continue }
+        if sys.has(o, 118) { sys.put_fd(2, sys.join2(path, sys.join2(": ", sys.join2(hw.decimal(sys.blen(input.bytes)), sys.join2(" -> ", sys.join2(hw.decimal(sys.blen(packed.bytes)), " bytes\n")))))) }
+    }; return status
+}
+fn run_lzop(args: Vec<str>): i64 { return run(args, false, false) }
+fn run_unlzop(args: Vec<str>): i64 { return run(args, true, false) }
+fn run_lzopcat(args: Vec<str>): i64 { return run(args, true, true) }

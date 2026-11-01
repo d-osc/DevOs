@@ -1,0 +1,28 @@
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/packet.dev" as packet
+use "../lib/dhcp.dev" as wire
+use "../lib/signal_fd.dev" as signals
+use "./terminal_extra.dev" as tx
+use "./console_extra.dev" as cx
+struct Interface { device: packet.Device, socket: i64 }
+struct Transaction { xid: i64, mac: *sys.Bytes, interface: i64, expiry: i64 }
+fn run_dhcprelay(args: Vec<str>): i64 {
+    if args.len() < 2 || args.len() > 3 || sys.starts(args[0], "-") { sys.warn("dhcprelay", "usage: dhcprelay CLIENT_IFACE[,CLIENT_IFACE] SERVER_IFACE [SERVER_IP]"); return 1 }
+    let target = args.len() > 2 ? net.resolve(args[2]) : 0xffffffff; if target <= 0 { return 1 }; let upstream = wire.udp(args[1], 67); if upstream < 0 { sys.warn("dhcprelay", "cannot bind server interface"); return 1 }
+    let interfaces = Vec<Interface>(); let start = 0; let bad = false; let names = args[0]
+    for i in 0..(sys.length(names) + 1) { if i == sys.length(names) || sys.at(names, i) == 44 { let name = sys.slice(names, start, i); start = i + 1; if sys.length(name) == 0 || sys.same(name, args[1]) || interfaces.len() >= 32 { bad = true; break }; let device = packet.open(name, 0x800); if !device.ok || device.ip == 0 { if device.fd >= 0 { sys.close_fd(device.fd) }; bad = true; break }; let fd = wire.udp(name, 67); if fd < 0 { sys.close_fd(device.fd); bad = true; break }; interfaces.push(Interface(device, fd)) } }
+    if bad { for interface in interfaces { sys.close_fd(interface.socket); sys.close_fd(interface.device.fd) }; sys.close_fd(upstream); sys.warn("dhcprelay", "invalid or unavailable client interface"); return 1 }
+    let guard = signals.open(); if guard.fd < 0 { for interface in interfaces { sys.close_fd(interface.socket); sys.close_fd(interface.device.fd) }; sys.close_fd(upstream); return 1 }; let transactions = Vec<Transaction>(); let buffer = cx.buffer(4096); let status = 0
+    while true {
+        if tx.readable(guard.fd, 10) { signals.received(guard); break }; let live = Vec<Transaction>(); let now = net.now_ms(); for item in transactions { if item.expiry > now { live.push(item) } }; transactions = live
+        for index in 0..(interfaces.len() as i64) {
+            let interface = interfaces[index]; if !tx.readable(interface.socket, 0) { continue }; let n = net.recv_some(interface.socket, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { continue }; let request = wire.slice(buffer, 0, n); if !wire.valid(request) || sys.bat(request, 0) != 1 || sys.bat(request, 3) >= 16 { continue }
+            if packet.be(request, 24, 4) != 0 { continue }; packet.store(request, 24, 4, interface.device.ip); sys.bptr_set(request, 3, sys.bat(request, 3) + 1); let xid = packet.be(request, 4, 4); let mac = wire.slice(request, 28, 34); let updated = false
+            for i in 0..(transactions.len() as i64) { if transactions[i].xid == xid && wire.same(transactions[i].mac, mac) { transactions[i] = Transaction(xid, mac, index, now + 120000); updated = true; break } }; if !updated { if transactions.len() >= 1024 { continue }; transactions.push(Transaction(xid, mac, index, now + 120000)) }; if !wire.send_udp(upstream, target, 67, request) { sys.warn("dhcprelay", "cannot forward client request"); status = 1 }
+        }
+        if !tx.readable(upstream, 0) { continue }; let n = net.recv_some(upstream, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { continue }; let reply = wire.slice(buffer, 0, n); if !wire.valid(reply) || sys.bat(reply, 0) != 2 { continue }; let xid = packet.be(reply, 4, 4); let mac = wire.slice(reply, 28, 34); let selected = 0 - 1
+        for item in transactions { if item.xid == xid && wire.same(item.mac, mac) { selected = item.interface; break } }; if selected < 0 { continue }; let device = interfaces[selected].device; if packet.be(reply, 24, 4) != device.ip { continue }; let ciaddr = packet.be(reply, 12, 4); let yiaddr = packet.be(reply, 16, 4); let broadcast = wire.number(reply, 53, 1) == 6 || (packet.be(reply, 10, 2) & 32768) != 0 || (ciaddr == 0 && yiaddr == 0)
+        if !wire.send_raw(device, device.ip, broadcast ? 0xffffffff : (ciaddr > 0 ? ciaddr : yiaddr), 67, 68, broadcast ? packet.broadcast() : mac, reply) { sys.warn("dhcprelay", "cannot forward server reply"); status = 1 }
+    }; for interface in interfaces { sys.close_fd(interface.socket); sys.close_fd(interface.device.fd) }; sys.close_fd(upstream); signals.close(guard); return status
+}

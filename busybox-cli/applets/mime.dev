@@ -1,0 +1,111 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/clock.dev" as clock
+use "../lib/base64.dev" as b64
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+
+fn lower(s: str): str { let b = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); sys.bytes_push(b, c >= 65 && c <= 90 ? c + 32 : c) }; return sys.bytes_cstr(b) }
+fn trim(s: str): str { let a = 0; let z = sys.length(s); while a < z && (sys.at(s, a) == 32 || sys.at(s, a) == 9 || sys.at(s, a) == 13) { a = a + 1 }; while z > a && (sys.at(s, z - 1) == 32 || sys.at(s, z - 1) == 9 || sys.at(s, z - 1) == 13) { z = z - 1 }; return sys.slice(s, a, z) }
+fn quote(s: str): str { let b = sys.bytes_new(); for i in 0..sys.length(s) { let c = sys.at(s, i); if c == 34 || c == 92 { sys.bytes_push(b, 92) }; sys.bytes_push(b, c == 10 || c == 13 ? (95 as u8) : c) }; return sys.bytes_cstr(b) }
+fn run_makemime(args: Vec<str>): i64 {
+    let paths = Vec<str>(); let headers = Vec<str>(); let target = "-"; let content_type = "text/plain"; let charset = "us-ascii"; let i = 0
+    while i < args.len() as i64 {
+        let a = args[i]
+        if sys.same(a, "-o") || sys.same(a, "-a") || sys.same(a, "-c") || sys.same(a, "-C") {
+            if i + 1 >= args.len() as i64 { sys.warn("makemime", "missing option value"); return 1 }; let v = args[i + 1]
+            if sys.same(a, "-o") { target = v } else if sys.same(a, "-a") { headers.push(v) } else if sys.same(a, "-c") { content_type = v } else { charset = v }; i = i + 2; continue
+        }
+        if sys.same(a, "--") { for k in (i + 1)..(args.len() as i64) { paths.push(args[k]) }; break }
+        if !sys.starts(a, "-") || sys.same(a, "-") { paths.push(a) }; i = i + 1
+    }
+    if paths.len() == 0 { paths.push("-") }
+    let inputs = Vec<*sys.Bytes>(); for path in paths { let input = sys.read_path(path); if !input.ok { sys.warn_path("makemime", path); return 1 }; inputs.push(input.bytes) }
+    let fd = sys.same(target, "-") ? 1 : sys.open_fd(target, 577, 420); if fd < 0 { sys.warn_write("makemime", target); return 1 }
+    let out = sys.bytes_new(); let boundary = sys.join2("devos-", sys.join2(hw.decimal(proc.my_pid()), sys.join2("-", hw.decimal(clock.now()))))
+    for header in headers { sys.bytes_str(out, header); sys.bytes_push(out, 10) }
+    sys.bytes_str(out, "MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\""); sys.bytes_str(out, boundary); sys.bytes_str(out, "\"\n\n")
+    for k in 0..(paths.len() as i64) {
+        let name = quote(sys.same(paths[k], "-") ? "stdin" : sys.base_name(paths[k])); sys.bytes_str(out, "--"); sys.bytes_str(out, boundary); sys.bytes_str(out, "\nContent-Type: "); sys.bytes_str(out, content_type); sys.bytes_str(out, "; charset=\""); sys.bytes_str(out, quote(charset)); sys.bytes_str(out, "\"\nContent-Disposition: attachment; filename=\""); sys.bytes_str(out, name); sys.bytes_str(out, "\"\nContent-Transfer-Encoding: base64\n\n")
+        let data = b64.encode(inputs[k], true); sys.bytes_append(out, sys.bdata(data), sys.blen(data)); sys.bytes_push(out, 10)
+    }
+    sys.bytes_str(out, "--"); sys.bytes_str(out, boundary); sys.bytes_str(out, "--\n")
+    let ok = tx.write_all(fd, sys.bdata(out), sys.blen(out)); if fd != 1 { sys.close_fd(fd) }; if !ok { sys.warn("makemime", "write failed"); return 1 }; return 0
+}
+fn parameter(header: str, key: str): str {
+    let i = sys.find_char(header, 59); if i < 0 { return "" }; i = i + 1
+    while i < sys.length(header) {
+        while i < sys.length(header) && (sys.at(header, i) == 32 || sys.at(header, i) == 9 || sys.at(header, i) == 59) { i = i + 1 }; let start = i
+        while i < sys.length(header) && sys.at(header, i) != 61 && sys.at(header, i) != 59 { i = i + 1 }
+        if i >= sys.length(header) { return "" }; if sys.at(header, i) == 59 { continue }
+        let name = trim(sys.slice(header, start, i)); i = i + 1; while i < sys.length(header) && sys.at(header, i) == 32 { i = i + 1 }
+        let b = sys.bytes_new()
+        if i < sys.length(header) && sys.at(header, i) == 34 { i = i + 1; while i < sys.length(header) && sys.at(header, i) != 34 { if sys.at(header, i) == 92 && i + 1 < sys.length(header) { i = i + 1 }; sys.bytes_push(b, sys.at(header, i)); i = i + 1 }; i = i + 1 }
+        else { while i < sys.length(header) && sys.at(header, i) != 59 { sys.bytes_push(b, sys.at(header, i)); i = i + 1 } }
+        if sys.same(lower(name), key) { return trim(sys.bytes_cstr(b)) }
+    }; return ""
+}
+fn bytes_slice(b: *sys.Bytes, start: i64, end: i64): *sys.Bytes { let out = sys.bytes_new(); sys.bytes_append(out, sys.bptr(b, start), end - start); return out }
+fn hex(c: u8): i64 { if c >= 48 && c <= 57 { return (c - 48) as i64 }; if c >= 65 && c <= 70 { return (c - 55) as i64 }; if c >= 97 && c <= 102 { return (c - 87) as i64 }; return 0 - 1 }
+fn qp(b: *sys.Bytes): b64.Decoded {
+    let out = sys.bytes_new(); let i = 0
+    while i < sys.blen(b) {
+        let c = sys.bat(b, i); if c != 61 { sys.bytes_push(out, c); i = i + 1; continue }
+        if i + 1 < sys.blen(b) && sys.bat(b, i + 1) == 10 { i = i + 2; continue }
+        if i + 2 < sys.blen(b) && sys.bat(b, i + 1) == 13 && sys.bat(b, i + 2) == 10 { i = i + 3; continue }
+        if i + 2 >= sys.blen(b) { return b64.Decoded(false, out) }; let a = hex(sys.bat(b, i + 1)); let z = hex(sys.bat(b, i + 2)); if a < 0 || z < 0 { return b64.Decoded(false, out) }; sys.bytes_push(out, (a * 16 + z) as u8); i = i + 3
+    }; return b64.Decoded(true, out)
+}
+fn part(b: *sys.Bytes, prefix: str, program: Vec<str>, counter: *sys.Bytes, depth: i64): bool {
+    if depth > 32 { sys.warn("reformime", "MIME nesting too deep"); return false }
+    let headers = Vec<str>(); let pos = 0; let body = 0 - 1
+    while pos < sys.blen(b) {
+        let start = pos; while pos < sys.blen(b) && sys.bat(b, pos) != 10 { pos = pos + 1 }; let end = pos; if end > start && sys.bat(b, end - 1) == 13 { end = end - 1 }; pos = pos < sys.blen(b) ? pos + 1 : pos
+        if end == start { body = pos; break }; let text = sys.bytes_cstr(bytes_slice(b, start, end))
+        if sys.length(text) == 0 { sys.warn("reformime", "invalid MIME header"); return false }
+        if (sys.at(text, 0) == 32 || sys.at(text, 0) == 9) && headers.len() > 0 { let last = headers.len() as i64 - 1; headers[last] = sys.join2(headers[last], sys.join2(" ", trim(text))) } else { headers.push(text) }
+    }
+    if body < 0 { sys.warn("reformime", "missing MIME header separator"); return false }
+    let type = "text/plain"; let disposition = ""; let encoding = "7bit"
+    for header in headers { let colon = sys.find_char(header, 58); if colon < 0 { continue }; let key = lower(trim(sys.slice(header, 0, colon))); let value = trim(sys.slice(header, colon + 1, sys.length(header))); if sys.same(key, "content-type") { type = value } else if sys.same(key, "content-disposition") { disposition = value } else if sys.same(key, "content-transfer-encoding") { encoding = lower(value) } }
+    if sys.starts(lower(type), "multipart/") {
+        let boundary = parameter(type, "boundary"); if sys.length(boundary) == 0 { return false }; let marker = sys.join2("--", boundary); let start = 0 - 1; let closed = false; pos = body
+        while pos < sys.blen(b) {
+            let line = pos; while pos < sys.blen(b) && sys.bat(b, pos) != 10 { pos = pos + 1 }; let end = pos; if end > line && sys.bat(b, end - 1) == 13 { end = end - 1 }; let text = trim(sys.bytes_cstr(bytes_slice(b, line, end))); pos = pos < sys.blen(b) ? pos + 1 : pos
+            if sys.same(text, marker) || sys.same(text, sys.join2(marker, "--")) {
+                if start >= 0 { let stop = line; if stop > start && sys.bat(b, stop - 1) == 10 { stop = stop - 1; if stop > start && sys.bat(b, stop - 1) == 13 { stop = stop - 1 } }; if !part(bytes_slice(b, start, stop), prefix, program, counter, depth + 1) { return false } }
+                if sys.same(text, sys.join2(marker, "--")) { closed = true; break }; start = pos
+            }
+        }; if !closed { sys.warn("reformime", "unterminated MIME boundary"); return false }; return true
+    }
+    let data = bytes_slice(b, body, sys.blen(b)); let decoded = b64.Decoded(true, data)
+    if sys.same(encoding, "base64") { decoded = b64.decode(data) } else if sys.same(encoding, "quoted-printable") { decoded = qp(data) } else if !sys.same(encoding, "7bit") && !sys.same(encoding, "8bit") && !sys.same(encoding, "binary") { return false }
+    if !decoded.ok { sys.warn("reformime", "invalid transfer encoding"); return false }
+    let number = cx.le(counter, 0, 4) + 1; cx.store(counter, 0, 4, number)
+    let name = parameter(disposition, "filename"); if sys.length(name) == 0 { name = parameter(type, "name") }; name = sys.base_name(name)
+    if sys.length(name) == 0 || sys.same(name, ".") || sys.same(name, "..") { name = sys.join2("part", hw.decimal(number)) }
+    # Attachment names cannot escape the caller's chosen output prefix.
+    for i in 0..sys.length(name) { let c = sys.at(name, i); if c < 32 || c == 92 { sys.warn("reformime", "invalid attachment filename"); return false } }
+    let target = sys.join2(prefix, name); let temp = program.len() > 0 ? sys.join2("/tmp/devos-mime-", sys.join2(hw.decimal(proc.my_pid()), sys.join2("-", hw.decimal(number)))) : target
+    let fd = sys.open_fd(temp, 194, 384); if fd < 0 { sys.warn_write("reformime", temp); return false }
+    if program.len() > 0 { fsx.do_unlink(temp) }
+    let ok = tx.write_all(fd, sys.bdata(decoded.bytes), sys.blen(decoded.bytes))
+    if !ok { sys.close_fd(fd); return false }
+    if program.len() > 0 {
+        sys.seek_fd(fd, 0, 0); let env = proc.environment(); env = proc.set_variable(env, "CONTENT_TYPE", type); env = proc.set_variable(env, "CHARSET", parameter(type, "charset")); env = proc.set_variable(env, "FILENAME", name)
+        let pid = proc.launch_fds(program, env, fd, 1); let status = pid >= 0 ? proc.wait_for(pid) : 1; sys.close_fd(fd); return status == 0
+    }
+    sys.close_fd(fd); return true
+}
+fn run_reformime(args: Vec<str>): i64 {
+    let prefix = ""; let paths = Vec<str>(); let program = Vec<str>(); let i = 0
+    while i < args.len() as i64 {
+        if sys.same(args[i], "-x") { if i + 1 >= args.len() as i64 { return 1 }; prefix = args[i + 1]; i = i + 2; continue }
+        if sys.same(args[i], "-X") { for k in (i + 1)..(args.len() as i64) { program.push(args[k]) }; if program.len() == 0 { return 1 }; break }
+        if !sys.starts(args[i], "-") || sys.same(args[i], "-") { paths.push(args[i]) }; i = i + 1
+    }
+    if paths.len() == 0 { paths.push("-") }; let count = cx.buffer(4)
+    for path in paths { let data = sys.read_path(path); if !data.ok { sys.warn_path("reformime", path); return 1 }; if !part(data.bytes, prefix, program, count, 0) { return 1 } }; return 0
+}

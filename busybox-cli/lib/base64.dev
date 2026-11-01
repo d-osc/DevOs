@@ -1,0 +1,25 @@
+use "./sys.dev" as sys
+struct Decoded { ok: bool, bytes: *sys.Bytes }
+fn encode(data: *sys.Bytes, wrap: bool): *sys.Bytes {
+    let out = sys.bytes_new(); let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; let pos = 0; let column = 0
+    while pos < sys.blen(data) {
+        let n = sys.blen(data) - pos; let a = sys.bat(data, pos) as i64; let b = n > 1 ? sys.bat(data, pos + 1) as i64 : 0; let c = n > 2 ? sys.bat(data, pos + 2) as i64 : 0
+        sys.bytes_push(out, sys.at(alphabet, a / 4)); sys.bytes_push(out, sys.at(alphabet, (a % 4) * 16 + b / 16)); sys.bytes_push(out, n > 1 ? sys.at(alphabet, (b % 16) * 4 + c / 64) : (61 as u8)); sys.bytes_push(out, n > 2 ? sys.at(alphabet, c % 64) : (61 as u8)); column = column + 4
+        if wrap && column == 76 { sys.bytes_push(out, 10); column = 0 }; pos = pos + 3
+    }
+    if wrap && column != 0 { sys.bytes_push(out, 10) }; return out
+}
+fn value(c: u8): i64 { if c >= 65 && c <= 90 { return (c - 65) as i64 }; if c >= 97 && c <= 122 { return (c - 71) as i64 }; if c >= 48 && c <= 57 { return (c + 4) as i64 }; if c == 43 { return 62 }; if c == 47 { return 63 }; return 0 - 1 }
+fn decode(data: *sys.Bytes): Decoded {
+    let out = sys.bytes_new(); let group = Vec<i64>(); let ended = false
+    for i in 0..sys.blen(data) {
+        let c = sys.bat(data, i); if c == 32 || c == 9 || c == 13 || c == 10 { continue }
+        if ended { return Decoded(false, out) }; let v = c == 61 ? 64 : value(c); if v < 0 { return Decoded(false, out) }; group.push(v)
+        if group.len() == 4 {
+            let a = group[0]; let b = group[1]; let c1 = group[2]; let d = group[3]
+            if a == 64 || b == 64 || (c1 == 64 && d != 64) || (c1 == 64 && b % 16 != 0) || (d == 64 && c1 != 64 && c1 % 4 != 0) { return Decoded(false, out) }
+            sys.bytes_push(out, (a * 4 + b / 16) as u8); if c1 != 64 { sys.bytes_push(out, ((b % 16) * 16 + c1 / 4) as u8) }; if d != 64 { sys.bytes_push(out, ((c1 % 4) * 64 + d) as u8) }; ended = c1 == 64 || d == 64; group = Vec<i64>()
+        }
+    }
+    return Decoded(group.len() == 0, out)
+}

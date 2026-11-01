@@ -1,0 +1,173 @@
+use "../lib/sys.dev" as sys
+use "../lib/rtnl.dev" as nl
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+
+fn error(reply: nl.Reply): i64 { if reply.ok { return 0 }; sys.warn("ip", sys.join2("netlink error ", hw.decimal(reply.error))); return 1 }
+fn usage(): i64 { sys.warn("ip", "usage: ip [-4|-6] {link|addr|route|rule|tunnel} COMMAND [ARGS]"); return 1 }
+fn tail(args: Vec<str>, start: i64): Vec<str> { let out = Vec<str>(); for i in start..(args.len() as i64) { out.push(args[i]) }; return out }
+fn run_ip(args: Vec<str>): i64 {
+    let family = 0; let i = 0
+    while i < args.len() as i64 && sys.starts(args[i], "-") { if sys.same(args[i], "-4") { family = 2 } else if sys.same(args[i], "-6") { family = 10 } else if !sys.same(args[i], "-o") && !sys.same(args[i], "-oneline") { return usage() }; i = i + 1 }
+    if i >= args.len() as i64 { return usage() }
+    let object = args[i]; let rest = tail(args, i + 1)
+    if sys.same(object, "link") || sys.same(object, "l") { return link(rest) }
+    if sys.same(object, "addr") || sys.same(object, "address") || sys.same(object, "a") { return addr(rest, family) }
+    if sys.same(object, "route") || sys.same(object, "r") { return route(rest, family) }
+    if sys.same(object, "rule") { return rule(rest, family) }
+    if sys.same(object, "tunnel") || sys.same(object, "tunl") { return tunnel(rest, family) }
+    return usage()
+}
+fn selected(args: Vec<str>, start: i64): str { for i in start..(args.len() as i64) { if sys.same(args[i], "dev") && i + 1 < args.len() as i64 { return args[i + 1] } }; if args.len() as i64 == start + 1 { return args[start] }; return "" }
+fn link(args: Vec<str>): i64 {
+    let command = args.len() == 0 ? "show" : args[0]
+    if sys.same(command, "show") || sys.same(command, "list") || sys.same(command, "lst") {
+        let want = selected(args, args.len() == 0 ? 0 : 1); let b = cx.buffer(16); let reply = nl.exchange(18, 768, b)
+        if !reply.ok { return error(reply) }; let found = false
+        for row in reply.rows {
+            if sys.blen(row) < 16 { continue }; let name = nl.attribute(row, 16, 3); let text = sys.bytes_cstr(name)
+            if sys.length(want) > 0 && !sys.same(text, want) { continue }; found = true
+            let mtu = nl.attribute(row, 16, 4); let flags = cx.le(row, 8, 4); let mac = nl.attribute(row, 16, 1)
+            let out = sys.out_new(1); sys.out_str(out, hw.decimal(cx.le(row, 4, 4))); sys.out_str(out, ": "); sys.out_str(out, text)
+            sys.out_str(out, flags % 2 == 1 ? ": <UP> mtu " : ": <DOWN> mtu "); sys.out_str(out, sys.blen(mtu) >= 4 ? hw.decimal(cx.le(mtu, 0, 4)) : "0"); sys.out_str(out, "\n    link/"); sys.out_str(out, cx.le(row, 2, 2) == 772 ? "loopback " : "ether ")
+            let hex = "0123456789abcdef"; for i in 0..sys.blen(mac) { if i > 0 { sys.out_byte(out, 58) }; let v = sys.bat(mac, i) as i64; sys.out_byte(out, sys.at(hex, v / 16)); sys.out_byte(out, sys.at(hex, v % 16)) }; sys.out_byte(out, 10); sys.out_flush(out)
+        }
+        if !found && sys.length(want) > 0 { sys.warn("ip", "device not found"); return 1 }; return 0
+    }
+    if args.len() < 2 { return usage() }
+    let start = sys.same(args[1], "dev") ? 2 : 1; if start >= args.len() as i64 { return usage() }; let name = args[start]
+    let b = cx.buffer(16); let create = sys.same(command, "add"); let remove = sys.same(command, "del") || sys.same(command, "delete")
+    if !create && !remove && !sys.same(command, "set") { return usage() }
+    if create { nl.text(b, 3, name) } else { let idx = nl.index(name); if idx == 0 { sys.warn("ip", "device not found"); return 1 }; cx.store(b, 4, 4, idx) }
+    let i = start + 1
+    while i < args.len() as i64 {
+        let a = args[i]
+        if sys.same(a, "up") || sys.same(a, "down") { cx.store(b, 8, 4, sys.same(a, "up") ? 1 : 0); cx.store(b, 12, 4, 1); i = i + 1; continue }
+        if sys.same(a, "nomaster") { nl.number(b, 10, 0); i = i + 1; continue }
+        if i + 1 >= args.len() as i64 { return usage() }; let value = args[i + 1]; i = i + 2
+        if sys.same(a, "mtu") { let n = cx.unsigned(value); if !n.ok || n.value == 0 { return usage() }; nl.number(b, 4, n.value) }
+        else if sys.same(a, "name") { nl.text(b, 3, value) }
+        else if sys.same(a, "master") || sys.same(a, "link") { let idx = nl.index(value); if idx == 0 { return usage() }; nl.number(b, sys.same(a, "master") ? 10 : 5, idx) }
+        else if sys.same(a, "type") { let info = sys.bytes_new(); nl.text(info, 1, value)
+            if sys.same(value, "veth") && i + 2 < args.len() as i64 && sys.same(args[i], "peer") && sys.same(args[i + 1], "name") { if sys.length(args[i + 2]) > 15 { return usage() }; let peer = cx.buffer(16); nl.text(peer, 3, args[i + 2]); let data = sys.bytes_new(); nl.attr(data, 1, peer); nl.attr(info, 0x8002, data); i = i + 3 }
+            nl.attr(b, 0x8012, info) }
+        else { return usage() }
+    }
+    return error(nl.exchange(remove ? 17 : 16, create ? 1540 : 4, b))
+}
+fn addr(args: Vec<str>, family: i64): i64 {
+    let command = args.len() == 0 ? "show" : args[0]
+    if sys.same(command, "show") || sys.same(command, "list") || sys.same(command, "lst") {
+        let want = selected(args, args.len() == 0 ? 0 : 1); let idx = sys.length(want) > 0 ? nl.index(want) : 0
+        if sys.length(want) > 0 && idx == 0 { sys.warn("ip", "device not found"); return 1 }
+        let b = cx.buffer(8); cx.store(b, 0, 1, family); let reply = nl.exchange(22, 768, b); if !reply.ok { return error(reply) }
+        for row in reply.rows {
+            if sys.blen(row) < 8 { continue }; let index = cx.le(row, 4, 4); if idx != 0 && index != idx { continue }
+            let local = nl.attribute(row, 8, 2); if sys.blen(local) == 0 { local = nl.attribute(row, 8, 1) }
+            sys.put_fd(1, sys.join2(hw.decimal(index), sys.join2(": ", sys.join2(nl.name(index), sys.join2(sys.bat(row, 0) == 10 ? "    inet6 " : "    inet ", sys.join2(nl.ip(local), sys.join2("/", sys.join2(hw.decimal(sys.bat(row, 1) as i64), "\n"))))))));
+        }; return 0
+    }
+    if args.len() < 4 { return usage() }; let remove = sys.same(command, "del") || sys.same(command, "delete"); let replace = sys.same(command, "replace")
+    if !remove && !replace && !sys.same(command, "add") { return usage() }
+    let a = nl.address(args[1], family); let want = selected(args, 2); let idx = nl.index(want)
+    if !a.ok || idx == 0 { return usage() }
+    let b = cx.buffer(8); cx.store(b, 0, 1, a.family); cx.store(b, 1, 1, a.prefix); cx.store(b, 4, 4, idx)
+    nl.attr(b, 1, a.data); nl.attr(b, 2, a.data)
+    let i = 2
+    while i < args.len() as i64 {
+        let option = args[i]; if i + 1 >= args.len() as i64 { return usage() }; let value = args[i + 1]; i = i + 2
+        if sys.same(option, "dev") { continue }
+        if sys.same(option, "label") { nl.text(b, 3, value) }
+        else if sys.same(option, "broadcast") || sys.same(option, "brd") { let broad = nl.address(value, a.family); if !broad.ok { return usage() }; nl.attr(b, 4, broad.data) }
+        else if sys.same(option, "scope") { let scope = sys.same(value, "host") ? 254 : (sys.same(value, "link") ? 253 : (sys.same(value, "global") ? 0 : sys.parse_number(value).value)); cx.store(b, 3, 1, scope) }
+        else { return usage() }
+    }
+    return error(nl.exchange(remove ? 21 : 20, remove ? 4 : (replace ? 1284 : 1540), b))
+}
+fn table(value: str): i64 { if sys.same(value, "main") { return 254 }; if sys.same(value, "local") { return 255 }; if sys.same(value, "default") { return 253 }; let n = cx.unsigned(value); return n.ok ? n.value : 0 - 1 }
+fn route(args: Vec<str>, family: i64): i64 {
+    let command = args.len() == 0 ? "show" : args[0]; let fam = family == 0 ? 2 : family
+    if sys.same(command, "show") || sys.same(command, "list") || sys.same(command, "lst") {
+        let b = cx.buffer(12); cx.store(b, 0, 1, fam); let reply = nl.exchange(26, 768, b); if !reply.ok { return error(reply) }
+        let wanted_table = 254; let wanted_dev = ""; let i = args.len() == 0 ? 0 : 1
+        while i < args.len() as i64 { if i + 1 >= args.len() as i64 { return usage() }; if sys.same(args[i], "table") { wanted_table = sys.same(args[i + 1], "all") ? 0 : table(args[i + 1]) } else if sys.same(args[i], "dev") { wanted_dev = args[i + 1] } else { return usage() }; i = i + 2 }
+        for row in reply.rows {
+            if sys.blen(row) < 12 { continue }; let t = sys.bat(row, 4) as i64; let ta = nl.attribute(row, 12, 15); if sys.blen(ta) >= 4 { t = cx.le(ta, 0, 4) }; if wanted_table != 0 && t != wanted_table { continue }
+            let dev = nl.attribute(row, 12, 4); let name = sys.blen(dev) >= 4 ? nl.name(cx.le(dev, 0, 4)) : ""; if sys.length(wanted_dev) > 0 && !sys.same(wanted_dev, name) { continue }
+            let dst = nl.attribute(row, 12, 1); let gateway = nl.attribute(row, 12, 5); let metric = nl.attribute(row, 12, 6)
+            let out = sys.out_new(1); sys.out_str(out, sys.bat(row, 1) == 0 ? "default" : sys.join2(nl.ip(dst), sys.join2("/", hw.decimal(sys.bat(row, 1) as i64))))
+            if sys.blen(gateway) > 0 { sys.out_str(out, " via "); sys.out_str(out, nl.ip(gateway)) }; if sys.length(name) > 0 { sys.out_str(out, " dev "); sys.out_str(out, name) }
+            if sys.blen(metric) >= 4 { sys.out_str(out, " metric "); sys.out_str(out, hw.decimal(cx.le(metric, 0, 4))) }; sys.out_byte(out, 10); sys.out_flush(out)
+        }; return 0
+    }
+    let remove = sys.same(command, "del") || sys.same(command, "delete"); let replace = sys.same(command, "replace")
+    if (!remove && !replace && !sys.same(command, "add")) || args.len() < 2 { return usage() }
+    let destination = sys.same(args[1], "default") ? nl.address(fam == 10 ? "::/0" : "0.0.0.0/0", fam) : nl.address(args[1], family)
+    if !destination.ok { return usage() }; let b = cx.buffer(12); cx.store(b, 0, 1, destination.family); cx.store(b, 1, 1, destination.prefix); cx.store(b, 4, 1, 254); cx.store(b, 5, 1, 3); cx.store(b, 6, 1, 253); cx.store(b, 7, 1, 1); nl.attr(b, 1, destination.data)
+    if remove { cx.store(b, 5, 1, 0); cx.store(b, 6, 1, 255); cx.store(b, 7, 1, 0) }
+    let i = 2
+    while i < args.len() as i64 {
+        if i + 1 >= args.len() as i64 { return usage() }; let a = args[i]; let value = args[i + 1]; i = i + 2
+        if sys.same(a, "via") || sys.same(a, "src") { let address = nl.address(value, destination.family); if !address.ok { return usage() }; nl.attr(b, sys.same(a, "via") ? 5 : 7, address.data); if sys.same(a, "via") { cx.store(b, 6, 1, 0) } }
+        else if sys.same(a, "dev") { let idx = nl.index(value); if idx == 0 { return usage() }; nl.number(b, 4, idx) }
+        else if sys.same(a, "metric") { let n = cx.unsigned(value); if !n.ok { return usage() }; nl.number(b, 6, n.value) }
+        else if sys.same(a, "table") { let t = table(value); if t < 0 { return usage() }; cx.store(b, 4, 1, t < 256 ? t : 0); if t >= 256 { nl.number(b, 15, t) } }
+        else { return usage() }
+    }
+    return error(nl.exchange(remove ? 25 : 24, remove ? 4 : (replace ? 1284 : 1540), b))
+}
+fn rule(args: Vec<str>, family: i64): i64 {
+    let fam = family == 0 ? 2 : family; let command = args.len() == 0 ? "show" : args[0]
+    if sys.same(command, "show") || sys.same(command, "list") {
+        let b = cx.buffer(12); cx.store(b, 0, 1, fam); let reply = nl.exchange(34, 768, b); if !reply.ok { return error(reply) }
+        for row in reply.rows {
+            if sys.blen(row) < 12 { continue }; let priority = nl.attribute(row, 12, 6); let source = nl.attribute(row, 12, 2); let target = nl.attribute(row, 12, 1)
+            let t = sys.bat(row, 4) as i64; let tb = nl.attribute(row, 12, 15); if sys.blen(tb) >= 4 { t = cx.le(tb, 0, 4) }
+            let out = sys.out_new(1); sys.out_str(out, hw.decimal(sys.blen(priority) >= 4 ? cx.le(priority, 0, 4) : 0)); sys.out_str(out, ": from "); sys.out_str(out, sys.blen(source) == 0 ? "all" : sys.join2(nl.ip(source), sys.join2("/", hw.decimal(sys.bat(row, 2) as i64))))
+            if sys.blen(target) > 0 { sys.out_str(out, " to "); sys.out_str(out, nl.ip(target)); sys.out_str(out, "/"); sys.out_str(out, hw.decimal(sys.bat(row, 1) as i64)) }; sys.out_str(out, " lookup "); sys.out_str(out, t == 254 ? "main" : (t == 255 ? "local" : (t == 253 ? "default" : hw.decimal(t)))); sys.out_byte(out, 10); sys.out_flush(out)
+        }; return 0
+    }
+    let remove = sys.same(command, "del") || sys.same(command, "delete"); if !remove && !sys.same(command, "add") { return usage() }
+    let b = cx.buffer(12); cx.store(b, 0, 1, fam); cx.store(b, 4, 1, 254); cx.store(b, 7, 1, 1); let i = 1
+    while i < args.len() as i64 {
+        if i + 1 >= args.len() as i64 { return usage() }; let a = args[i]; let value = args[i + 1]; i = i + 2
+        if sys.same(a, "from") || sys.same(a, "to") { if sys.same(value, "all") { continue }; let address = nl.address(value, fam); if !address.ok { return usage() }; cx.store(b, sys.same(a, "from") ? 2 : 1, 1, address.prefix); nl.attr(b, sys.same(a, "from") ? 2 : 1, address.data) }
+        else if sys.same(a, "priority") || sys.same(a, "pref") { let n = cx.unsigned(value); if !n.ok { return usage() }; nl.number(b, 6, n.value) }
+        else if sys.same(a, "table") || sys.same(a, "lookup") { let t = table(value); if t < 0 { return usage() }; cx.store(b, 4, 1, t < 256 ? t : 0); nl.number(b, 15, t) }
+        else if sys.same(a, "iif") || sys.same(a, "oif") { nl.text(b, sys.same(a, "iif") ? 3 : 17, value) }
+        else { return usage() }
+    }
+    return error(nl.exchange(remove ? 33 : 32, remove ? 4 : 1540, b))
+}
+fn tunnel(args: Vec<str>, family: i64): i64 {
+    if args.len() == 0 || sys.same(args[0], "show") || sys.same(args[0], "list") {
+        let want = selected(args, args.len() == 0 ? 0 : 1); let reply = nl.exchange(18, 768, cx.buffer(16)); if !reply.ok { return error(reply) }
+        for row in reply.rows {
+            if sys.blen(row) < 16 { continue }; let info = nl.attribute(row, 16, 18); let kind = sys.bytes_cstr(nl.attribute(info, 0, 1))
+            if !sys.same(kind, "ipip") && !sys.same(kind, "sit") && !sys.same(kind, "gre") && !sys.same(kind, "ip6tnl") { continue }
+            let name = sys.bytes_cstr(nl.attribute(row, 16, 3)); if sys.length(want) > 0 && !sys.same(want, name) { continue }
+            let data = nl.attribute(info, 0, 2); let local = nl.attribute(data, 0, 2); let remote = nl.attribute(data, 0, 3)
+            sys.put_fd(1, sys.join2(name, sys.join2(": ", sys.join2(kind, sys.join2(" remote ", sys.join2(sys.blen(remote) == 0 ? "any" : nl.ip(remote), sys.join2(" local ", sys.join2(sys.blen(local) == 0 ? "any" : nl.ip(local), "\n"))))))))
+        }; return 0
+    }
+    if args.len() < 2 { return usage() }; if sys.same(args[0], "del") || sys.same(args[0], "delete") { return link(args) }
+    if !sys.same(args[0], "add") && !sys.same(args[0], "change") { return usage() }
+    let b = cx.buffer(16); let info = sys.bytes_new(); let data = sys.bytes_new(); let mode = "ipip"; let i = 2
+    nl.text(b, 3, args[1]); if sys.same(args[0], "change") { let idx = nl.index(args[1]); if idx == 0 { return usage() }; cx.store(b, 4, 4, idx) }
+    while i < args.len() as i64 {
+        if i + 1 >= args.len() as i64 { return usage() }; let a = args[i]; let value = args[i + 1]; i = i + 2
+        if sys.same(a, "mode") { mode = value }
+        else if sys.same(a, "remote") || sys.same(a, "local") { let ip = nl.address(value, family == 10 ? 10 : 2); if !ip.ok { return usage() }; nl.attr(data, sys.same(a, "local") ? 2 : 3, ip.data) }
+        else if sys.same(a, "dev") { let idx = nl.index(value); if idx == 0 { return usage() }; nl.number(data, 1, idx) }
+        else if sys.same(a, "ttl") || sys.same(a, "tos") { let n = cx.unsigned(value); if !n.ok || n.value > 255 { return usage() }; let byte = cx.buffer(1); cx.store(byte, 0, 1, n.value); nl.attr(data, sys.same(a, "ttl") ? 4 : 5, byte) }
+        else { return usage() }
+    }
+    if !sys.same(mode, "ipip") && !sys.same(mode, "sit") { sys.warn("ip", "unsupported tunnel mode"); return 1 }
+    nl.text(info, 1, mode); nl.attr(info, 0x8002, data); nl.attr(b, 0x8012, info)
+    return error(nl.exchange(16, sys.same(args[0], "add") ? 1540 : 4, b))
+}
+fn run_iplink(args: Vec<str>): i64 { return link(args) }
+fn run_ipaddr(args: Vec<str>): i64 { return addr(args, 0) }
+fn run_iproute(args: Vec<str>): i64 { return route(args, 0) }
+fn run_iprule(args: Vec<str>): i64 { return rule(args, 0) }
+fn run_iptunnel(args: Vec<str>): i64 { return tunnel(args, 0) }

@@ -1,0 +1,18 @@
+use "../lib/sys.dev" as sys
+use "../lib/log_ring.dev" as ring
+use "../lib/signal_fd.dev" as signals
+use "./terminal_extra.dev" as tx
+fn run_logread(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fF"); if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 { sys.warn("logread", "usage: logread [-f]"); return 1 }
+    let memory = ring.open(false, 0); if !memory.ok { sys.warn("logread", "no readable syslog shared-memory buffer"); return 1 }; let guard = signals.open(); if guard.fd < 0 { ring.close(memory); return 1 }
+    let follow = sys.has(o, 102) || sys.has(o, 70); let data = sys.bytes_new(); let previous = 0 - 1; let out = sys.out_new(1); let status = 0
+    while true {
+        let tail = ring.snapshot(memory, data); if tail < 0 { status = 1; break }
+        let pos = previous
+        if pos < 0 { pos = tail; let searched = 0; while searched < memory.size && sys.bat(data, pos) != 0 { pos = (pos + 1) % memory.size; searched = searched + 1 }; if searched >= memory.size { status = 1; break }; pos = (pos + 1) % memory.size }
+        let walked = 0
+        while pos != tail && walked < memory.size { let byte = sys.bat(data, pos); if byte != 0 { sys.out_byte(out, byte) }; pos = (pos + 1) % memory.size; walked = walked + 1 }; sys.out_flush(out); previous = tail
+        if !follow { break }; if tx.readable(guard.fd, 100) { signals.received(guard); break }
+    }
+    signals.close(guard); ring.close(memory); if status != 0 { sys.warn("logread", "shared log buffer became unavailable") }; return status
+}

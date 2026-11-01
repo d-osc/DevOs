@@ -1,0 +1,152 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "./util6.dev" as tty
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+
+extern fn fsync(fd: i32): i32
+extern fn setsid(): i32
+extern fn fork(): i32
+extern fn dup2(from: i32, to: i32): i32
+extern fn execve(path: str, argv: *void, envp: *void): i32
+extern fn exit(code: i32)
+
+fn readable(fd: i64, timeout: i64): bool {
+    let p = cx.buffer(8); cx.store(p, 0, 4, fd); cx.store(p, 4, 2, 1)
+    unsafe { let result = net.poll(sys.bdata(p) as *void, 1, timeout as i32) > 0; sys.free(sys.bdata(p) as *void); sys.free(p as *void); return result }
+}
+fn raw(attrs: *sys.Bytes): *sys.Bytes {
+    let b = cx.buffer(sys.blen(attrs)); for i in 0..sys.blen(attrs) { sys.bptr_set(b, i, sys.bat(attrs, i)) }
+    cx.store(b, 0, 4, 0); cx.store(b, 4, 4, 0); cx.store(b, 12, 4, 0); cx.store(b, 22, 1, 0); cx.store(b, 23, 1, 1); return b
+}
+fn write_all(fd: i64, data: *u8, count: i64): bool {
+    let pos = 0; while pos < count { let n = sys.write_fd(fd, sys.bptr_at(data, pos), count - pos); if n <= 0 { return false }; pos = pos + n }; return true
+}
+fn run_resize(args: Vec<str>): i64 {
+    if args.len() != 0 { sys.warn("resize", "usage: resize"); return 1 }
+    let fd = sys.open_fd("/dev/tty", 2, 0); if fd < 0 { sys.warn("resize", "cannot open /dev/tty"); return 1 }
+    let attrs = tty.get_attrs(fd); if sys.blen(attrs) == 0 { return cx.fail("resize", fd, "cannot read terminal attributes") }
+    if !tty.set_attrs(fd, raw(attrs)) { return cx.fail("resize", fd, "cannot set terminal attributes") }
+    # Save cursor, move beyond the screen, query actual position, restore cursor.
+    let query = sys.bytes_new(); sys.bytes_push(query, 27); sys.bytes_str(query, "7"); sys.bytes_push(query, 27); sys.bytes_str(query, "[999;999H"); sys.bytes_push(query, 27); sys.bytes_str(query, "[6n")
+    let ok = write_all(fd, sys.bdata(query), sys.blen(query)); let reply = sys.bytes_new(); let byte = cx.buffer(1)
+    let deadline = net.now_ms() + 2000
+    while ok && net.now_ms() < deadline && sys.blen(reply) < 64 {
+        if !readable(fd, 50) { continue }
+        if sys.read_into(fd, sys.bdata(byte), 1) != 1 { break }
+        sys.bytes_push(reply, sys.bat(byte, 0)); if sys.bat(byte, 0) == 82 { break }
+    }
+    let restore = sys.bytes_new(); sys.bytes_push(restore, 27); sys.bytes_str(restore, "8"); write_all(fd, sys.bdata(restore), sys.blen(restore)); tty.set_attrs(fd, attrs)
+    let s = sys.bytes_cstr(reply); let semi = sys.find_char(s, 59)
+    if sys.length(s) < 5 || sys.at(s, 0) != 27 || sys.at(s, 1) != 91 || !sys.ends(s, "R") || semi < 3 { return cx.fail("resize", fd, "terminal did not report its size") }
+    let rows = sys.parse_number(sys.slice(s, 2, semi)); let cols = sys.parse_number(sys.slice(s, semi + 1, sys.length(s) - 1))
+    if !rows.ok || !cols.ok || rows.value < 1 || rows.value > 65535 || cols.value < 1 || cols.value > 65535 { return cx.fail("resize", fd, "invalid terminal size") }
+    let ws = cx.buffer(8); cx.store(ws, 0, 2, rows.value); cx.store(ws, 2, 2, cols.value)
+    if hw.control_buffer(fd, 21524, ws) != 0 { return cx.fail("resize", fd, "TIOCSWINSZ failed") }
+    sys.close_fd(fd); sys.put_fd(1, sys.join2("COLUMNS=", sys.join2(hw.decimal(cols.value), sys.join2(";LINES=", sys.join2(hw.decimal(rows.value), ";export COLUMNS LINES;\n"))))); return 0
+}
+
+fn run_script(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "afqtc:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() > 1 { sys.warn("script", "usage: script [-afqt] [-c PROG] [OUTFILE]"); return 1 }
+    let path = o.rest.len() == 1 ? o.rest[0] : "typescript"
+    let log = sys.open_fd(path, sys.has(o, 97) ? 1089 : 577, 438)
+    if log < 0 { sys.warn_path("script", path); return 1 }
+    let master = sys.open_fd("/dev/ptmx", 258, 0)
+    if master < 0 { return cx.fail("script", log, "cannot allocate pseudoterminal") }
+    let unlock = cx.buffer(4); let number = cx.buffer(4)
+    if hw.control_buffer(master, 0x40045431, unlock) != 0 || hw.control_buffer(master, 0x80045430, number) != 0 { sys.close_fd(master); return cx.fail("script", log, "cannot unlock pseudoterminal") }
+    let slave = sys.join2("/dev/pts/", hw.decimal(cx.le(number, 0, 4)))
+    let env = proc.environment(); let variable = proc.lookup(env, "SHELL"); let shell = variable.found && sys.length(variable.value) > 0 ? variable.value : "/bin/sh"
+    let command = sys.has(o, 99) ? Vec<str>(shell, "-c", sys.val(o, 99)) : Vec<str>(shell, "-i")
+    let program = proc.find_program(shell, env)
+    if sys.length(program) == 0 { sys.close_fd(master); return cx.fail("script", log, "shell not found") }
+    let attrs = tty.get_attrs(0); let ws = cx.buffer(8); hw.control_buffer(0, 21523, ws)
+    let argv = proc.pointer_array(command); let envp = proc.pointer_array(env); let pid = 0 - 1
+    unsafe {
+        pid = fork() as i64
+        if pid == 0 {
+            setsid(); let fd = sys.open_fd(slave, 2, 0)
+            if fd < 0 { exit(126) }
+            hw.control(fd, 21518, 0)
+            if sys.blen(attrs) > 0 { tty.set_attrs(fd, attrs) }; hw.control_buffer(fd, 21524, ws)
+            dup2(fd as i32, 0); dup2(fd as i32, 1); dup2(fd as i32, 2)
+            if fd > 2 { sys.close_fd(fd) }; sys.close_fd(master); sys.close_fd(log)
+            execve(program, argv, envp); exit(126)
+        }
+    }
+    if pid < 0 { sys.close_fd(master); return cx.fail("script", log, "fork failed") }
+    if sys.blen(attrs) > 0 { tty.set_attrs(0, raw(attrs)) }
+    if !sys.has(o, 113) { sys.put_fd(1, sys.join2("Script started, file is ", sys.join2(path, "\n"))) }
+    let b = cx.buffer(8192); let active_input = true; let status = 0; let last = net.now_ms()
+    while true {
+        let p = cx.buffer(16); cx.store(p, 0, 4, master); cx.store(p, 4, 2, 1); cx.store(p, 8, 4, active_input ? 0 : 0 - 1); cx.store(p, 12, 2, active_input ? 1 : 0)
+        let polled = 0; unsafe { polled = net.poll(sys.bdata(p) as *void, 2, 200) as i64 }
+        if polled < 0 { status = 1; break }
+        let event = cx.le(p, 6, 2)
+        if event != 0 {
+            let n = sys.read_into(master, sys.bdata(b), 8192)
+            if n <= 0 { break }
+            let now = net.now_ms()
+            if sys.has(o, 116) { let ms = now - last; sys.put_fd(2, sys.join2(hw.decimal(ms / 1000), sys.join2(".", sys.join2(ms % 1000 < 100 ? (ms % 1000 < 10 ? "00" : "0") : "", sys.join2(hw.decimal(ms % 1000), sys.join2(" ", sys.join2(hw.decimal(n), "\n"))))))) }; last = now
+            if !write_all(1, sys.bdata(b), n) || !write_all(log, sys.bdata(b), n) { status = 1; break }
+            if sys.has(o, 102) { unsafe { fsync(log as i32) } }
+        }
+        if active_input && cx.le(p, 14, 2) != 0 {
+            let n = sys.read_into(0, sys.bdata(b), 8192)
+            if n <= 0 { active_input = false } else if !write_all(master, sys.bdata(b), n) { status = 1; break }
+        }
+    }
+    if sys.blen(attrs) > 0 { tty.set_attrs(0, attrs) }
+    sys.close_fd(master); sys.close_fd(log)
+    if status != 0 { proc.send_signal(pid, 1) }
+    let child = proc.wait_for(pid)
+    if !sys.has(o, 113) { sys.put_fd(1, sys.join2("Script done, file is ", sys.join2(path, "\n"))) }
+    if status != 0 { return status }; return child < 0 ? 1 : child
+}
+
+fn run_openvt(args: Vec<str>): i64 {
+    let flags = Vec<str>(); let tail = Vec<str>(); let parsing = true; let index = 0
+    while index < args.len() as i64 {
+        let a = args[index]
+        if parsing && sys.same(a, "--") { parsing = false; index = index + 1; continue }
+        if parsing && sys.starts(a, "-") {
+            flags.push(a)
+            if sys.same(a, "-c") && index + 1 < args.len() as i64 { index = index + 1; flags.push(args[index]) }
+        } else { parsing = false; tail.push(a) }
+        index = index + 1
+    }
+    let o = sys.parse_opts(flags, "c:sw")
+    if o.bad != 0 || o.missing != 0 { sys.warn("openvt", "usage: openvt [-c N] [-sw] [PROG [ARGS]]"); return 1 }
+    let vt = sys.has(o, 99) ? sys.parse_number(sys.val(o, 99)) : sys.Number(true, 0)
+    if !vt.ok || vt.value < 0 || vt.value > 63 || (sys.has(o, 99) && vt.value == 0) { sys.warn("openvt", "invalid VT number"); return 1 }
+    let console = hw.open_console(); if console < 0 { sys.warn("openvt", "cannot open console"); return 1 }
+    let previous = cx.buffer(8)
+    if hw.control_buffer(console, 22019, previous) != 0 { return cx.fail("openvt", console, "VT_GETSTATE failed") }
+    let number = vt.value
+    if number == 0 { let free = cx.buffer(4); if hw.control_buffer(console, 22016, free) != 0 { return cx.fail("openvt", console, "VT_OPENQRY failed") }; number = cx.le(free, 0, 4) }
+    if number < 1 || number > 63 { return cx.fail("openvt", console, "no free virtual terminal") }
+    if number < 16 && (cx.le(previous, 4, 2) / pow2(number)) % 2 == 1 { return cx.fail("openvt", console, "virtual terminal is already in use") }
+    let device = sys.join2("/dev/tty", hw.decimal(number)); let env = proc.environment(); let command = tail
+    if command.len() == 0 { let shell = proc.lookup(env, "SHELL"); command = Vec<str>(shell.found && sys.length(shell.value) > 0 ? shell.value : "/bin/sh") }
+    let program = proc.find_program(command[0], env)
+    if sys.length(program) == 0 { return cx.fail("openvt", console, "program not found") }
+    let argv = proc.pointer_array(command); let envp = proc.pointer_array(env); let pid = 0 - 1
+    unsafe {
+        pid = fork() as i64
+        if pid == 0 {
+            setsid(); let fd = sys.open_fd(device, 2, 0)
+            if fd < 0 { exit(126) }
+            hw.control(fd, 21518, 0); dup2(fd as i32, 0); dup2(fd as i32, 1); dup2(fd as i32, 2)
+            if fd > 2 { sys.close_fd(fd) }; sys.close_fd(console); execve(program, argv, envp); exit(126)
+        }
+    }
+    if pid < 0 { return cx.fail("openvt", console, "fork failed") }
+    if sys.has(o, 115) && (hw.control(console, 22022, number) != 0 || hw.control(console, 22023, number) != 0) { proc.send_signal(pid, 15); proc.wait_for(pid); return cx.fail("openvt", console, "cannot switch VT") }
+    let status = sys.has(o, 119) ? proc.wait_for(pid) : 0
+    if sys.has(o, 119) && sys.has(o, 115) { let old = cx.le(previous, 0, 2); hw.control(console, 22022, old); hw.control(console, 22023, old) }
+    sys.close_fd(console); return status < 0 ? 1 : status
+}
+fn pow2(n: i64): i64 { let value = 1; for i in 0..n { value = value * 2 }; return value }

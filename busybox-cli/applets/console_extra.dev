@@ -1,0 +1,159 @@
+# Linux console, keyboard, tape and MTD operations. Buffers follow Linux UAPI
+# layouts, shared by little-endian x86_64 and aarch64.
+use "../lib/sys.dev" as sys
+use "../lib/lines.dev" as lines
+use "./hardware.dev" as hw
+
+fn buffer(n: i64): *sys.Bytes { let b = sys.bytes_new(); for i in 0..n { sys.bytes_push(b, 0) }; return b }
+fn store(b: *sys.Bytes, off: i64, width: i64, value: i64) {
+    let v = value; for i in 0..width { sys.bptr_set(b, off + i, (v % 256) as u8); v = v / 256 }
+}
+fn le(b: *sys.Bytes, off: i64, width: i64): i64 { let v = 0; let p = 1; for i in 0..width { v = v + (sys.bat(b, off + i) as i64) * p; p = p * 256 }; return v }
+fn output(b: *sys.Bytes): bool { let done = 0; while done < sys.blen(b) { let n = sys.write_fd(1, sys.bptr(b, done), sys.blen(b) - done); if n <= 0 { return false }; done = done + n }; return true }
+fn fail(prog: str, fd: i64, message: str): i64 { sys.close_fd(fd); sys.warn(prog, message); return 1 }
+fn unsigned(text: str): sys.Number {
+    let base = 10; let start = 0; let value = 0
+    if sys.starts(text, "0x") { base = 16; start = 2 }
+    if sys.length(text) <= start || sys.length(text) > 12 { return sys.Number(false, 0) }
+    for i in start..sys.length(text) {
+        let c = sys.at(text, i); let d = c >= 48 && c <= 57 ? (c - 48) as i64 : (c >= 97 && c <= 102 ? (c - 87) as i64 : (c >= 65 && c <= 70 ? (c - 55) as i64 : 99))
+        if d >= base || value > (4294967295 - d) / base { return sys.Number(false, 0) }; value = value * base + d
+    }
+    return sys.Number(true, value)
+}
+fn console(): i64 { if sys.is_tty(0) { return sys.open_fd("/dev/tty", 2, 0) }; return hw.open_console() }
+
+fn run_dumpkmap(args: Vec<str>): i64 {
+    if args.len() != 0 { sys.warn("dumpkmap", "usage: dumpkmap > KEYMAP"); return 1 }
+    let fd = console(); if fd < 0 { sys.warn("dumpkmap", "cannot open console"); return 1 }
+    let tables = buffer(256); let entry = buffer(4); let out = sys.bytes_new(); sys.bytes_str(out, "bkeymap"); let queried = false
+    for table in 0..256 {
+        store(entry, 0, 1, table); store(entry, 1, 1, 0)
+        if hw.control_buffer(fd, 19270, entry) == 0 { queried = true; if le(entry, 2, 2) != 0x27f { store(tables, table, 1, 1) } }
+    }
+    if !queried { return fail("dumpkmap", fd, "KDGKBENT failed") }
+    sys.bytes_append(out, sys.bdata(tables), 256)
+    for table in 0..256 {
+        if sys.bat(tables, table) == 0 { continue }
+        for key in 0..128 {
+            store(entry, 0, 1, table); store(entry, 1, 1, key)
+            if hw.control_buffer(fd, 19270, entry) != 0 { return fail("dumpkmap", fd, "KDGKBENT failed") }
+            sys.bytes_append(out, sys.bptr(entry, 2), 2)
+        }
+    }
+    sys.close_fd(fd); if !output(out) { sys.warn("dumpkmap", "write failed"); return 1 }; return 0
+}
+fn run_loadkmap(args: Vec<str>): i64 {
+    if args.len() != 0 { sys.warn("loadkmap", "usage: loadkmap < KEYMAP"); return 1 }
+    let input = sys.read_fd(0)
+    if !input.ok || sys.blen(input.bytes) < 263 || !sys.starts(sys.bytes_cstr(input.bytes), "bkeymap") { sys.warn("loadkmap", "invalid binary keymap"); return 1 }
+    let b = input.bytes; let count = 0
+    for table in 0..256 { if sys.bat(b, 7 + table) > 1 { sys.warn("loadkmap", "invalid table flag"); return 1 }; if sys.bat(b, 7 + table) == 1 { count = count + 1 } }
+    if sys.blen(b) != 263 + count * 256 { sys.warn("loadkmap", "invalid keymap length"); return 1 }
+    let fd = console(); if fd < 0 { sys.warn("loadkmap", "cannot open console"); return 1 }
+    let pos = 263; let entry = buffer(4)
+    for table in 0..256 {
+        if sys.bat(b, 7 + table) == 0 { continue }
+        for key in 0..128 {
+            store(entry, 0, 1, table); store(entry, 1, 1, key); store(entry, 2, 2, le(b, pos, 2)); pos = pos + 2
+            if hw.control_buffer(fd, 19271, entry) != 0 { return fail("loadkmap", fd, "KDSKBENT failed") }
+        }
+    }
+    sys.close_fd(fd); return 0
+}
+fn run_setkeycodes(args: Vec<str>): i64 {
+    if args.len() == 0 || args.len() % 2 != 0 { sys.warn("setkeycodes", "usage: setkeycodes SCANCODE KEYCODE..."); return 1 }
+    let entry = buffer(8); let values = Vec<i64>()
+    for i in 0..((args.len() as i64) / 2) {
+        let s = args[2 * i]; let value = 0
+        if sys.length(s) != 2 && !(sys.length(s) == 4 && sys.starts(s, "e0")) { sys.warn("setkeycodes", "invalid scancode"); return 1 }
+        for k in 0..sys.length(s) { let c = sys.at(s, k); let digit = c >= 48 && c <= 57 ? (c - 48) as i64 : (c >= 97 && c <= 102 ? (c - 87) as i64 : (c >= 65 && c <= 70 ? (c - 55) as i64 : 0 - 1)); if digit < 0 { sys.warn("setkeycodes", "invalid scancode"); return 1 }; value = value * 16 + digit }
+        if value >= 0xe000 { value = value - 0xe000 + 128 }
+        let key = sys.parse_number(args[2 * i + 1]); if !key.ok || key.value < 0 || key.value > 65535 { sys.warn("setkeycodes", "invalid keycode"); return 1 }
+        values.push(value); values.push(key.value)
+    }
+    let fd = console(); if fd < 0 { sys.warn("setkeycodes", "cannot open console"); return 1 }
+    for i in 0..((values.len() as i64) / 2) { store(entry, 0, 4, values[2 * i]); store(entry, 4, 4, values[2 * i + 1]); if hw.control_buffer(fd, 19277, entry) != 0 { return fail("setkeycodes", fd, "KDSETKEYCODE failed") } }
+    sys.close_fd(fd); return 0
+}
+
+# PSF1, PSF2 and raw 256-glyph fonts. Linux stores each glyph in 32 rows.
+fn font(fd: i64, data: *sys.Bytes): bool {
+    let start = 0; let count = 256; let height = 0; let width = 8; let stride = 0
+    let size = sys.blen(data)
+    if size >= 4 && sys.bat(data, 0) == 0x36 && sys.bat(data, 1) == 4 {
+        start = 4; count = (sys.bat(data, 2) as i64) % 2 == 1 ? 512 : 256; height = sys.bat(data, 3) as i64; stride = height
+    } else if size >= 32 && le(data, 0, 4) == 0x864ab572 {
+        if le(data, 4, 4) != 0 { return false }
+        start = le(data, 8, 4); count = le(data, 16, 4); stride = le(data, 20, 4); height = le(data, 24, 4); width = le(data, 28, 4)
+        if start < 32 { return false }
+    } else { if size % 256 != 0 { return false }; height = size / 256; stride = height }
+    if height < 1 || height > 32 || width < 1 || width > 32 || count < 1 || count > 512 { return false }
+    let row = (width + 7) / 8
+    if stride < row * height || stride > 4096 || start + count * stride > size { return false }
+    let glyphs = buffer(count * 32 * row)
+    for glyph in 0..count { for y in 0..height { for x in 0..row { store(glyphs, (glyph * 32 + y) * row + x, 1, sys.bat(data, start + glyph * stride + y * row + x) as i64) } } }
+    let op = buffer(32); store(op, 8, 4, width); store(op, 12, 4, height); store(op, 16, 4, count)
+    unsafe { store(op, 24, 8, sys.bdata(glyphs) as i64) }
+    return hw.control_buffer(fd, 19314, op) == 0
+}
+fn run_loadfont(args: Vec<str>): i64 {
+    if args.len() != 0 { sys.warn("loadfont", "usage: loadfont < FONT"); return 1 }
+    let input = sys.read_fd(0); if !input.ok { sys.warn("loadfont", "read failed"); return 1 }
+    let fd = console(); if fd < 0 { sys.warn("loadfont", "cannot open console"); return 1 }
+    if !font(fd, input.bytes) { return fail("loadfont", fd, "invalid font or KDFONTOP failed") }; sys.close_fd(fd); return 0
+}
+fn run_setfont(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "m:C:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("setfont", "usage: setfont FONT [-m MAPFILE] [-C TTY]"); return 1 }
+    let input = sys.read_path(o.rest[0]); if !input.ok { sys.warn_path("setfont", o.rest[0]); return 1 }
+    let fd = sys.has(o, 67) ? sys.open_fd(sys.val(o, 67), 2, 0) : console()
+    if fd < 0 { sys.warn("setfont", "cannot open console"); return 1 }
+    if !font(fd, input.bytes) { return fail("setfont", fd, "invalid font or KDFONTOP failed") }
+    if sys.has(o, 109) {
+        let map = sys.read_path(sys.val(o, 109)); if !map.ok { return fail("setfont", fd, "cannot read screen map") }
+        let size = sys.blen(map.bytes)
+        if (size != 256 && size != 512) || hw.control_buffer(fd, size == 256 ? 19265 : 19306, map.bytes) != 0 { return fail("setfont", fd, "invalid screen map or ioctl failed") }
+    }
+    sys.close_fd(fd); return 0
+}
+
+fn run_mt(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "f:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 1 || o.rest.len() > 2 { sys.warn("mt", "usage: mt [-f DEVICE] OPCODE [COUNT]"); return 1 }
+    let names = Vec<str>("reset", "fsf", "bsf", "fsr", "bsr", "weof", "rewind", "offline", "nop", "retension", "bsfm", "fsfm", "eom", "erase", "ras1", "ras2", "ras3", "setblk", "setdensity", "seek", "tell", "drvbuffer", "fss", "bss", "wset", "lock", "unlock", "load", "unload", "datacompression", "setpart", "mkpart", "eof", "rewoffline")
+    let ops = Vec<i64>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 5, 7)
+    let op = 0 - 1; for i in 0..(names.len() as i64) { if sys.same(names[i], o.rest[0]) { op = ops[i] } }
+    let count = o.rest.len() == 2 ? sys.parse_number(o.rest[1]) : sys.Number(true, 1)
+    if op < 0 || !count.ok || count.value < 0 || count.value > 2147483647 { sys.warn("mt", "invalid operation or count"); return 1 }
+    let path = sys.has(o, 102) ? sys.val(o, 102) : "/dev/tape"; let fd = sys.open_fd(path, 2048, 0)
+    if fd < 0 { sys.warn_path("mt", path); return 1 }
+    if op == 23 {
+        let b = buffer(8); if hw.control_buffer(fd, 0x80086d03, b) != 0 { return fail("mt", fd, "MTIOCPOS failed") }
+        sys.put_fd(1, sys.join2(hw.decimal(le(b, 0, 8)), "\n"))
+    } else {
+        let b = buffer(8); store(b, 0, 2, op); store(b, 4, 4, count.value)
+        if hw.control_buffer(fd, 0x40086d01, b) != 0 { return fail("mt", fd, "MTIOCTOP failed") }
+    }
+    sys.close_fd(fd); return 0
+}
+fn flash(args: Vec<str>, lock: bool): i64 {
+    let prog = lock ? "flash_lock" : "flash_unlock"
+    if args.len() != (lock ? 3 : 1) { sys.warn(prog, lock ? "usage: flash_lock MTD_DEVICE OFFSET SECTORS" : "usage: flash_unlock MTD_DEVICE"); return 1 }
+    let offset = lock ? unsigned(args[1]) : sys.Number(true, 0)
+    let sectors = lock ? sys.parse_number(args[2]) : sys.Number(true, 0 - 1)
+    if !offset.ok || !sectors.ok || offset.value < 0 || sectors.value < 0 - 1 || sectors.value == 0 { sys.warn(prog, "invalid offset or sector count"); return 1 }
+    let fd = sys.open_fd(args[0], 2, 0); if fd < 0 { sys.warn_path(prog, args[0]); return 1 }
+    let info = buffer(32)
+    if hw.control_buffer(fd, 0x80204d01, info) != 0 { return fail(prog, fd, "MEMGETINFO failed") }
+    let size = le(info, 8, 4); let erase = le(info, 12, 4)
+    let start = sectors.value == 0 - 1 ? 0 : offset.value
+    if erase == 0 || start > size || (sectors.value >= 0 && sectors.value > (size - start) / erase) { return fail(prog, fd, "range outside device") }
+    let length = sectors.value == 0 - 1 ? size : sectors.value * erase
+    if start % erase != 0 { return fail(prog, fd, "offset is not erase-block aligned") }
+    let range = buffer(8); store(range, 0, 4, start); store(range, 4, 4, length)
+    if hw.control_buffer(fd, lock ? 0x40084d05 : 0x40084d06, range) != 0 { return fail(prog, fd, "flash lock ioctl failed") }
+    sys.close_fd(fd); return 0
+}
+fn run_flash_lock(args: Vec<str>): i64 { return flash(args, true) }
+fn run_flash_unlock(args: Vec<str>): i64 { return flash(args, false) }

@@ -1,0 +1,73 @@
+# Replay classic two-column script timing files, streaming the typescript bytes.
+use "../lib/sys.dev" as sys
+use "../lib/proc.dev" as proc
+use "./date.dev" as date
+
+struct Decimal { ok: bool, value: f64 }
+# Timing files use nonnegative decimal seconds.
+fn decimal(text: str): Decimal {
+    let dots = 0; let digits = 0; let value = 0.0; let scale = 1.0
+    for i in 0..sys.length(text) {
+        let c = sys.at(text, i)
+        if c == 46 { dots = dots + 1; if dots > 1 { return Decimal(false, 0.0) } }
+        else if sys.is_digit(c) {
+            digits = digits + 1
+            if dots == 0 { value = value * 10.0 + (c - 48) as f64 }
+            else { scale = scale * 10.0; value = value + (c - 48) as f64 / scale }
+        } else { return Decimal(false, 0.0) }
+    }
+    if digits == 0 || sys.length(text) > 18 { return Decimal(false, 0.0) }
+    return Decimal(true, value)
+}
+fn run_scriptreplay(args: Vec<str>): i64 {
+    if args.len() < 1 || args.len() > 3 { sys.warn("scriptreplay", "usage: scriptreplay TIMINGFILE [TYPESCRIPT [DIVISOR]]"); return 1 }
+    let divisor = args.len() == 3 ? decimal(args[2]) : Decimal(true, 1.0)
+    if !divisor.ok || divisor.value <= 0.0 { sys.warn("scriptreplay", "invalid divisor"); return 1 }
+    let timing = sys.open_fd(args[0], 0, 0)
+    if timing < 0 { sys.warn_path("scriptreplay", args[0]); return 1 }
+    let path = args.len() >= 2 ? args[1] : "typescript"
+    let input = sys.open_fd(path, 0, 0)
+    if input < 0 { sys.close_fd(timing); sys.warn_path("scriptreplay", path); return 1 }
+    let result = replay(timing, input, divisor.value)
+    sys.close_fd(timing); sys.close_fd(input); return result
+}
+fn replay(timing: i64, input: i64, divisor: f64): i64 {
+    let byte = sys.bytes_new(); sys.bytes_push(byte, 0)
+    let chunk = sys.bytes_new(); for i in 0..8192 { sys.bytes_push(chunk, 0) }
+    let line = sys.bytes_new()
+    while true {
+        sys.bclear(line); let eof = false
+        while true {
+            let n = sys.read_into(timing, sys.bdata(byte), 1)
+            if n < 0 { sys.warn("scriptreplay", "timing read failed"); return 1 }
+            if n == 0 { eof = true; break }
+            if sys.bat(byte, 0) == 10 { break }
+            sys.bytes_push(line, sys.bat(byte, 0))
+            if sys.blen(line) > 128 { sys.warn("scriptreplay", "invalid timing line"); return 1 }
+        }
+        if eof && sys.blen(line) == 0 { return 0 }
+        let words = date.words_of(sys.bytes_cstr(line))
+        if words.len() != 2 { sys.warn("scriptreplay", "invalid timing line"); return 1 }
+        if sys.length(words[1]) > 15 { sys.warn("scriptreplay", "invalid byte count"); return 1 }
+        let delay = decimal(words[0]); let count = sys.parse_number(words[1])
+        # Bound before integer conversion and reject overflow-prone byte counts.
+        if !delay.ok || !count.ok || sys.length(words[1]) > 15 || count.value < 0 || delay.value / divisor > 9223372036854.0 {
+            sys.warn("scriptreplay", "invalid timing values"); return 1
+        }
+        let wait = (delay.value / divisor * 1000000.0) as i64
+        while wait > 0 { let step = wait > 500000 ? 500000 : wait; proc.pause_us(step); wait = wait - step }
+        let left = count.value
+        while left > 0 {
+            let n = sys.read_into(input, sys.bdata(chunk), left > 8192 ? 8192 : left)
+            if n <= 0 { sys.warn("scriptreplay", "typescript is shorter than timing data"); return 1 }
+            let done = 0
+            while done < n {
+                let wrote = sys.write_fd(1, sys.bptr(chunk, done), n - done)
+                if wrote <= 0 { sys.warn("scriptreplay", "output write failed"); return 1 }
+                done = done + wrote
+            }
+            left = left - n
+        }
+    }
+    return 0
+}

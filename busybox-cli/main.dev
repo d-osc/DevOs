@@ -47,10 +47,45 @@ use "./applets/util6.dev" as u6
 use "./applets/hardware.dev" as hw
 use "./applets/pkg.dev" as pk
 use "./applets/fdisk.dev" as fdk
+use "./applets/replay.dev" as replay
+use "./applets/rdate.dev" as rd
+use "./applets/console_extra.dev" as cx
+use "./applets/terminal_extra.dev" as tx
+use "./applets/loop.dev" as loopx
+use "./applets/fbset.dev" as fb
+use "./applets/ip.dev" as ipx
+use "./applets/netadmin.dev" as na
+use "./applets/mime.dev" as mime
+use "./applets/man.dev" as manx
+use "./applets/fsck.dev" as fsckx
+use "./applets/inet_extra.dev" as ix
+use "./applets/lzop.dev" as lzopx
+use "./applets/serial.dev" as serial
+use "./applets/minix.dev" as minix
+use "./applets/mail.dev" as mail
+use "./applets/device_extra.dev" as dx
+use "./applets/events.dev" as ev
+use "./applets/getty.dev" as getty
+use "./applets/ping6.dev" as p6
+use "./applets/traceroute.dev" as trace
+use "./applets/readprofile.dev" as profile
+use "./applets/nmeter.dev" as nmeter
+use "./applets/auth_extra.dev" as auth
+use "./applets/boot.dev" as boot
+use "./applets/logread.dev" as logread
+use "./applets/mdev.dev" as mdev
+use "./applets/fbsplash.dev" as splash
+use "./applets/hdparm.dev" as hdparm
+use "./applets/printing.dev" as printx
+use "./applets/arping.dev" as arping
+use "./applets/vi.dev" as vi
+use "./applets/dhcp_server.dev" as dhcps
+use "./applets/dhcp_client.dev" as dhcpc
+use "./applets/dhcp_relay.dev" as dhcpr
 
 # Every applet this build has, in alphabetical order (busybox --list, busybox --install and the coverage test read it).
 fn applet_names(): Vec<str> {
-    return Vec<str>("[", "[[", "addgroup", "adduser", "adjtimex", "ar", "arp", "awk", "basename", "beep", "blkid", "bunzip2", "bzcat", "bzip2", "cal", "cat", "catv", "chattr", "chgrp", "chmod", "chown", "chpasswd", "chpst", "chroot", "chrt", "chvt", "cksum", "clear", "cmp", "comm", "cp", "cpio", "crond", "crontab", "cryptpw", "cut", "date", "dc", "dd", "deallocvt", "delgroup", "deluser", "devmem", "df", "diff", "dirname", "dmesg", "dnsd", "dos2unix", "dpkg", "du", "echo", "ed", "egrep", "eject", "env", "envdir", "envuidgid", "expand", "expr", "false", "fdflush", "fdisk", "fgrep", "find", "findfs", "fold", "free", "freeramdisk", "fsync", "ftpd", "ftpget", "ftpput", "fuser", "getopt", "grep", "gunzip", "gzip", "hd", "head", "hexdump", "hostid", "hostname", "httpd", "hwclock", "id", "ifconfig", "ifdown", "ifup", "inetd", "inotifyd", "insmod", "install", "ionice", "ipcalc", "ipcrm", "ipcs", "kbd_mode", "kill", "killall", "killall5", "klogd", "last", "length", "less", "ln", "logger", "login", "logname", "ls", "lsattr", "lsmod", "lzmacat", "md5sum", "mesg", "mkdir", "mkdosfs", "mkfifo", "mkfs.vfat", "mknod", "mkpasswd", "mkswap", "mktemp", "modprobe", "more", "mount", "mountpoint", "mv", "nameif", "nc", "netstat", "nice", "nohup", "nslookup", "od", "passwd", "patch", "pgrep", "pidof", "ping", "pivot_root", "pkill", "printenv", "printf", "ps", "pscan", "pwd", "raidautorun", "rdev", "readlink", "realpath", "renice", "reset", "rm", "rmdir", "rmmod", "route", "rpm", "rpm2cpio", "run-parts", "runlevel", "runsv", "runsvdir", "sed", "seq", "setarch", "setconsole", "setlogcons", "setsid", "setuidgid", "sha1sum", "sha256sum", "sha512sum", "sleep", "softlimit", "sort", "split", "start-stop-daemon", "stat", "strings", "stty", "su", "sum", "sv", "svlogd", "swapoff", "swapon", "sync", "sysctl", "syslogd", "tac", "tail", "tar", "taskset", "tcpsvd", "tee", "telnet", "telnetd", "test", "tftp", "tftpd", "time", "timeout", "top", "touch", "tr", "true", "tty", "ttysize", "umount", "uname", "uncompress", "unexpand", "uniq", "unix2dos", "unlzma", "unzip", "uptime", "usleep", "uudecode", "uuencode", "volname", "watch", "watchdog", "wc", "wget", "which", "who", "whoami", "xargs", "yes", "zcat")
+    return Vec<str>("[", "[[", "acpid", "addgroup", "adduser", "adjtimex", "ar", "arp", "arping", "awk", "basename", "beep", "blkid", "brctl", "bunzip2", "bzcat", "bzip2", "cal", "cat", "catv", "chat", "chattr", "chgrp", "chmod", "chown", "chpasswd", "chpst", "chroot", "chrt", "chvt", "cksum", "clear", "cmp", "comm", "cp", "cpio", "crond", "crontab", "cryptpw", "cut", "date", "dc", "dd", "deallocvt", "delgroup", "deluser", "devmem", "df", "dhcprelay", "diff", "dirname", "dmesg", "dnsd", "dos2unix", "dpkg", "du", "dumpkmap", "dumpleases", "echo", "ed", "egrep", "eject", "env", "envdir", "envuidgid", "expand", "expr", "fakeidentd", "false", "fbset", "fbsplash", "fdflush", "fdformat", "fdisk", "fgrep", "find", "findfs", "flash_lock", "flash_unlock", "fold", "free", "freeramdisk", "fsck", "fsck.minix", "fsync", "ftpd", "ftpget", "ftpput", "fuser", "getopt", "getty", "grep", "gunzip", "gzip", "hd", "hdparm", "head", "hexdump", "hostid", "hostname", "httpd", "hwclock", "id", "ifconfig", "ifdown", "ifenslave", "ifplugd", "ifup", "inetd", "init", "inotifyd", "insmod", "install", "ionice", "ip", "ipaddr", "ipcalc", "ipcrm", "ipcs", "iplink", "iproute", "iprule", "iptunnel", "kbd_mode", "kill", "killall", "killall5", "klogd", "last", "length", "less", "ln", "loadfont", "loadkmap", "logger", "login", "logname", "logread", "losetup", "lpd", "lpq", "lpr", "ls", "lsattr", "lsmod", "lzmacat", "lzop", "lzopcat", "makemime", "man", "md5sum", "mdev", "mesg", "microcom", "mkdir", "mkdosfs", "mkfifo", "mkfs.minix", "mkfs.vfat", "mknod", "mkpasswd", "mkswap", "mktemp", "modprobe", "more", "mount", "mountpoint", "mt", "mv", "nameif", "nc", "netstat", "nice", "nmeter", "nohup", "nslookup", "od", "openvt", "passwd", "patch", "pgrep", "pidof", "ping", "ping6", "pivot_root", "pkill", "popmaildir", "printenv", "printf", "ps", "pscan", "pwd", "raidautorun", "rdate", "rdev", "readlink", "readprofile", "realpath", "reformime", "renice", "reset", "resize", "rm", "rmdir", "rmmod", "route", "rpm", "rpm2cpio", "rtcwake", "run-parts", "runlevel", "runsv", "runsvdir", "rx", "script", "scriptreplay", "sed", "sendmail", "seq", "setarch", "setconsole", "setfont", "setkeycodes", "setlogcons", "setsid", "setuidgid", "sha1sum", "sha256sum", "sha512sum", "showkey", "slattach", "sleep", "softlimit", "sort", "split", "start-stop-daemon", "stat", "strings", "stty", "su", "sulogin", "sum", "sv", "svlogd", "swapoff", "swapon", "switch_root", "sync", "sysctl", "syslogd", "tac", "tail", "tar", "taskset", "tcpsvd", "tee", "telnet", "telnetd", "test", "tftp", "tftpd", "time", "timeout", "top", "touch", "tr", "traceroute", "true", "tty", "ttysize", "udhcpc", "udhcpd", "udpsvd", "umount", "uname", "uncompress", "unexpand", "uniq", "unix2dos", "unlzma", "unlzop", "unzip", "uptime", "usleep", "uudecode", "uuencode", "vconfig", "vi", "vlock", "volname", "watch", "watchdog", "wc", "wget", "which", "who", "whoami", "xargs", "yes", "zcat", "zcip")
 }
 
 fn applet(name: str, args: Vec<str>): i64 {
@@ -286,6 +321,75 @@ fn applet(name: str, args: Vec<str>): i64 {
     if sys.same(name, "dpkg") { return pk.run_dpkg(args) }
     if sys.same(name, "rpm") { return pk.run_rpm(args) }
     if sys.same(name, "fdisk") { return fdk.run_fdisk(args) }
+    if sys.same(name, "scriptreplay") { return replay.run_scriptreplay(args) }
+    if sys.same(name, "rdate") { return rd.run_rdate(args) }
+    if sys.same(name, "dumpkmap") { return cx.run_dumpkmap(args) }
+    if sys.same(name, "loadkmap") { return cx.run_loadkmap(args) }
+    if sys.same(name, "setkeycodes") { return cx.run_setkeycodes(args) }
+    if sys.same(name, "loadfont") { return cx.run_loadfont(args) }
+    if sys.same(name, "setfont") { return cx.run_setfont(args) }
+    if sys.same(name, "mt") { return cx.run_mt(args) }
+    if sys.same(name, "flash_lock") { return cx.run_flash_lock(args) }
+    if sys.same(name, "flash_unlock") { return cx.run_flash_unlock(args) }
+    if sys.same(name, "resize") { return tx.run_resize(args) }
+    if sys.same(name, "script") { return tx.run_script(args) }
+    if sys.same(name, "losetup") { return loopx.run_losetup(args) }
+    if sys.same(name, "openvt") { return tx.run_openvt(args) }
+    if sys.same(name, "fbset") { return fb.run_fbset(args) }
+    if sys.same(name, "ip") { return ipx.run_ip(args) }
+    if sys.same(name, "iplink") { return ipx.run_iplink(args) }
+    if sys.same(name, "ipaddr") { return ipx.run_ipaddr(args) }
+    if sys.same(name, "iproute") { return ipx.run_iproute(args) }
+    if sys.same(name, "iprule") { return ipx.run_iprule(args) }
+    if sys.same(name, "iptunnel") { return ipx.run_iptunnel(args) }
+    if sys.same(name, "brctl") { return na.run_brctl(args) }
+    if sys.same(name, "vconfig") { return na.run_vconfig(args) }
+    if sys.same(name, "ifenslave") { return na.run_ifenslave(args) }
+    if sys.same(name, "makemime") { return mime.run_makemime(args) }
+    if sys.same(name, "reformime") { return mime.run_reformime(args) }
+    if sys.same(name, "man") { return manx.run_man(args) }
+    if sys.same(name, "fsck") { return fsckx.run_fsck(args) }
+    if sys.same(name, "udpsvd") { return ix.run_udpsvd(args) }
+    if sys.same(name, "fakeidentd") { return ix.run_fakeidentd(args) }
+    if sys.same(name, "lzop") { return lzopx.run_lzop(args) }
+    if sys.same(name, "unlzop") { return lzopx.run_unlzop(args) }
+    if sys.same(name, "lzopcat") { return lzopx.run_lzopcat(args) }
+    if sys.same(name, "microcom") { return serial.run_microcom(args) }
+    if sys.same(name, "slattach") { return serial.run_slattach(args) }
+    if sys.same(name, "chat") { return serial.run_chat(args) }
+    if sys.same(name, "showkey") { return serial.run_showkey(args) }
+    if sys.same(name, "mkfs.minix") { return minix.run_mkfs_minix(args) }
+    if sys.same(name, "fsck.minix") { return minix.run_fsck_minix(args) }
+    if sys.same(name, "sendmail") { return mail.run_sendmail(args) }
+    if sys.same(name, "popmaildir") { return mail.run_popmaildir(args) }
+    if sys.same(name, "fdformat") { return dx.run_fdformat(args) }
+    if sys.same(name, "rtcwake") { return dx.run_rtcwake(args) }
+    if sys.same(name, "rx") { return dx.run_rx(args) }
+    if sys.same(name, "acpid") { return ev.run_acpid(args) }
+    if sys.same(name, "ifplugd") { return ev.run_ifplugd(args) }
+    if sys.same(name, "getty") { return getty.run_getty(args) }
+    if sys.same(name, "ping6") { return p6.run_ping6(args) }
+    if sys.same(name, "traceroute") { return trace.run_traceroute(args) }
+    if sys.same(name, "readprofile") { return profile.run_readprofile(args) }
+    if sys.same(name, "nmeter") { return nmeter.run_nmeter(args) }
+    if sys.same(name, "sulogin") { return auth.run_sulogin(args) }
+    if sys.same(name, "vlock") { return auth.run_vlock(args) }
+    if sys.same(name, "init") { return boot.run_init(args) }
+    if sys.same(name, "switch_root") { return boot.run_switch_root(args) }
+    if sys.same(name, "logread") { return logread.run_logread(args) }
+    if sys.same(name, "mdev") { return mdev.run_mdev(args) }
+    if sys.same(name, "fbsplash") { return splash.run_fbsplash(args) }
+    if sys.same(name, "hdparm") { return hdparm.run_hdparm(args) }
+    if sys.same(name, "lpd") { return printx.run_lpd(args) }
+    if sys.same(name, "lpq") { return printx.run_lpq(args) }
+    if sys.same(name, "lpr") { return printx.run_lpr(args) }
+    if sys.same(name, "arping") { return arping.run_arping(args) }
+    if sys.same(name, "zcip") { return arping.run_zcip(args) }
+    if sys.same(name, "vi") { return vi.run_vi(args) }
+    if sys.same(name, "udhcpd") { return dhcps.run_udhcpd(args) }
+    if sys.same(name, "dumpleases") { return dhcps.run_dumpleases(args) }
+    if sys.same(name, "udhcpc") { return dhcpc.run_udhcpc(args) }
+    if sys.same(name, "dhcprelay") { return dhcpr.run_dhcprelay(args) }
     sys.warn(name, "applet not found")
     return 127
 }

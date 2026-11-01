@@ -1,0 +1,114 @@
+# RFC 1179 client and inetd-style server. Submitted names are never used as paths
+# until validated; data files are staged privately and published without overwrite.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "./mail.dev" as stream
+use "./mime.dev" as text
+use "./date.dev" as words
+use "./files.dev" as files
+use "./console_extra.dev" as cx
+use "./hardware.dev" as hw
+use "./terminal_extra.dev" as tx
+
+struct Printer { ok: bool, queue: str, host: str, port: i64 }
+fn component(name: str): bool { if sys.length(name) == 0 || sys.length(name) > 128 || sys.same(name, ".") || sys.same(name, "..") { return false }; for i in 0..sys.length(name) { let c = sys.at(name, i); if !(c >= 48 && c <= 57) && !(c >= 65 && c <= 90) && !(c >= 97 && c <= 122) && c != 46 && c != 45 && c != 95 { return false } }; return true }
+fn clean(value: str): str { let b = sys.bytes_new(); for i in 0..sys.length(value) { let c = sys.at(value, i); sys.bytes_push(b, c < 32 || c == 127 ? (95 as u8) : c) }; return sys.bytes_cstr(b) }
+fn printer(value: str): Printer {
+    let queue = value; let host = "localhost"; let port = 515; let at = sys.find_char(value, 64)
+    if at >= 0 { queue = sys.slice(value, 0, at); host = sys.slice(value, at + 1, sys.length(value)); let colon = sys.last_char(host, 58); if colon >= 0 { let n = sys.parse_number(sys.slice(host, colon + 1, sys.length(host))); if !n.ok || n.value < 1 || n.value > 65535 { return Printer(false, "", "", 0) }; port = n.value; host = sys.slice(host, 0, colon) } }
+    return Printer(component(queue) && sys.length(host) > 0, queue, host, port)
+}
+fn selection(o: sys.Opts): Printer { let env = proc.lookup(proc.environment(), "PRINTER"); return printer(sys.has(o, 80) ? sys.val(o, 80) : (env.found && sys.length(env.value) > 0 ? env.value : "lp")) }
+fn connect(p: Printer): i64 { let address = net.resolve(p.host); if address < 0 { return 0 - 1 }; return net.connect_to(address, p.port, 10) }
+fn request(fd: i64, operation: i64, value: str): bool { let b = sys.bytes_new(); sys.bytes_push(b, operation as u8); sys.bytes_str(b, value); sys.bytes_push(b, 10); return tx.write_all(fd, sys.bdata(b), sys.blen(b)) }
+fn ack(fd: i64): bool { let b = cx.buffer(1); return sys.read_into(fd, sys.bdata(b), 1) == 1 && sys.bat(b, 0) == 0 }
+fn respond(value: i64): bool { let b = cx.buffer(1); cx.store(b, 0, 1, value); return tx.write_all(1, sys.bdata(b), 1) }
+fn send_file(fd: i64, operation: i64, name: str, data: *sys.Bytes): bool { if !request(fd, operation, sys.join2(hw.decimal(sys.blen(data)), sys.join2(" ", name))) || !ack(fd) { return false }; let zero = cx.buffer(1); return tx.write_all(fd, sys.bdata(data), sys.blen(data)) && tx.write_all(fd, sys.bdata(zero), 1) && ack(fd) }
+fn run_lpr(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "P:U:J:Vmh"); if o.bad != 0 || o.missing != 0 { sys.warn("lpr", "invalid arguments"); return 1 }; let p = selection(o); if !p.ok { sys.warn("lpr", "invalid printer"); return 1 }
+    let user = sys.has(o, 85) ? sys.val(o, 85) : fsx.user_name(fsx.uid()); if !component(user) { sys.warn("lpr", "invalid username"); return 1 }; let paths = o.rest; if paths.len() == 0 { paths.push("-") }
+    let host_input = sys.read_path("/proc/sys/kernel/hostname"); let hostname = host_input.ok ? clean(text.trim(sys.bytes_cstr(host_input.bytes))) : "localhost"; if !component(hostname) { hostname = "localhost" }
+    let number = proc.my_pid() % 1000; let id = sys.bytes_new(); for d in Vec<i64>(100, 10, 1) { sys.bytes_push(id, (48 + number / d % 10) as u8) }; let job = sys.join2(sys.bytes_cstr(id), hostname)
+    let control = sys.bytes_new(); sys.bytes_str(control, sys.join2("H", sys.join2(hostname, "\n"))); sys.bytes_str(control, sys.join2("P", sys.join2(user, "\n"))); sys.bytes_str(control, sys.join2("J", sys.join2(clean(sys.has(o, 74) ? sys.val(o, 74) : paths[0]), "\n")))
+    if sys.has(o, 104) { sys.bytes_str(control, sys.join2("L", sys.join2(user, "\n"))) }; if sys.has(o, 109) { sys.bytes_str(control, sys.join2("M", sys.join2(user, "\n"))) }
+    let payloads = Vec<*sys.Bytes>(); let names = Vec<str>(); if paths.len() > 26 { sys.warn("lpr", "at most 26 files per job"); return 1 }
+    for i in 0..(paths.len() as i64) {
+        let data = sys.read_path(paths[i]); if !data.ok { sys.warn_path("lpr", paths[i]); return 1 }; let prefix = sys.bytes_new(); sys.bytes_str(prefix, "df"); sys.bytes_push(prefix, (65 + i) as u8); let name = sys.join2(sys.bytes_cstr(prefix), job); names.push(name); payloads.push(data.bytes)
+        sys.bytes_str(control, sys.join2("l", sys.join2(name, "\n"))); sys.bytes_str(control, sys.join2("U", sys.join2(name, "\n"))); sys.bytes_str(control, sys.join2("N", sys.join2(clean(sys.same(paths[i], "-") ? "stdin" : sys.base_name(paths[i])), "\n")))
+    }
+    let fd = connect(p); if fd < 0 { sys.warn("lpr", "cannot connect to printer"); return 1 }; let ok = request(fd, 2, p.queue) && ack(fd)
+    for i in 0..(names.len() as i64) { if ok { ok = send_file(fd, 3, names[i], payloads[i]) } }
+    if ok { ok = send_file(fd, 2, sys.join2("cfA", job), control) }; sys.close_fd(fd)
+    if !ok { sys.warn("lpr", "print job was rejected"); return 1 }; if sys.has(o, 86) { sys.put_fd(2, sys.join2("lpr: submitted job ", sys.join2(sys.bytes_cstr(id), "\n"))) }; return 0
+}
+fn run_lpq(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "P:U:dfs"); if o.bad != 0 || o.missing != 0 { return 1 }; let p = selection(o); if !p.ok { return 1 }; let user = sys.has(o, 85) ? sys.val(o, 85) : fsx.user_name(fsx.uid()); if !component(user) { return 1 }
+    let value = p.queue; if sys.has(o, 100) { value = sys.join2(value, sys.join2(" ", user)) }; for id in o.rest { if !component(id) { return 1 }; value = sys.join2(value, sys.join2(" ", id)) }
+    let fd = connect(p); if fd < 0 { sys.warn("lpq", "cannot connect to printer"); return 1 }; let operation = sys.has(o, 100) ? 5 : (sys.has(o, 102) ? 1 : (sys.has(o, 115) ? 3 : 4)); let ok = request(fd, operation, value)
+    if operation == 1 { ok = ok && ack(fd) } else if ok { let b = cx.buffer(8192); while true { let n = sys.read_into(fd, sys.bdata(b), sys.blen(b)); if n < 0 { ok = false; break }; if n == 0 { break }; if !tx.write_all(1, sys.bdata(b), n) { ok = false; break } } }; sys.close_fd(fd); return ok ? 0 : 1
+}
+struct Control { ok: bool, data: Vec<str>, owner: str, title: str }
+fn control(data: *sys.Bytes): Control {
+    let names = Vec<str>(); let owner = ""; let title = ""; let ls = lines(data)
+    for line in ls {
+        if sys.length(line) == 0 { continue }; let kind = sys.at(line, 0); let value = sys.slice(line, 1, sys.length(line))
+        if kind >= 97 && kind <= 122 { if !component(value) || !sys.starts(value, "df") { return Control(false, names, owner, title) }; names.push(value) }
+        else if kind == 85 { if !component(value) || !sys.starts(value, "df") { return Control(false, names, owner, title) } }
+        else if kind == 80 { owner = value } else if kind == 74 { title = value }
+    }; return Control(names.len() > 0 && component(owner), names, owner, title)
+}
+fn lines(data: *sys.Bytes): Vec<str> { let out = Vec<str>(); let start = 0; for i in 0..(sys.blen(data) + 1) { if i < sys.blen(data) && sys.bat(data, i) == 0 { return Vec<str>() }; if i == sys.blen(data) || sys.bat(data, i) == 10 { let b = sys.bytes_new(); sys.bytes_append(b, sys.bptr(data, start), i - start); out.push(text.trim(sys.bytes_cstr(b))); start = i + 1 } }; return out }
+fn remove_job(directory: str, name: str, c: Control) { for file in c.data { let path = fsx.join_path(directory, file); if sys.is_reg_mode(sys.file_info(path, false).mode) { fsx.do_unlink(path) } }; fsx.do_unlink(fsx.join_path(directory, name)) }
+fn deliver(directory: str, name: str, c: Control, helper: Vec<str>): bool {
+    for file in c.data {
+        let path = fsx.join_path(directory, file); let env = proc.environment(); env = proc.set_variable(env, "DATAFILE", path); env = proc.set_variable(env, "CONTROLFILE", fsx.join_path(directory, name)); if proc.run_wait(helper, env) != 0 { return false }
+    }; remove_job(directory, name, c); return true
+}
+fn run_lpd(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("lpd", "usage: lpd SPOOLDIR [HELPER ARGS]"); return 1 }; let root = files.canonical(args[0], false); if !sys.is_dir(root) { return 1 }; let helper = Vec<str>(); for i in 1..(args.len() as i64) { helper.push(args[i]) }
+    let first = stream.line(0); if !first.ok || sys.length(first.text) < 2 { return 1 }; let operation = sys.at(first.text, 0) as i64; let fields = words.words_of(sys.slice(first.text, 1, sys.length(first.text))); if fields.len() == 0 || !component(fields[0]) { respond(1); return 1 }; let queue = files.canonical(fsx.join_path(root, fields[0]), false); let info = sys.file_info(queue, true)
+    if !info.ok || (!sys.is_dir_mode(info.mode) && info.mode / 4096 != 2 && info.mode / 4096 != 6) { respond(1); return 1 }
+    let directory = sys.is_dir_mode(info.mode)
+    if operation == 1 || operation == 3 || operation == 4 || operation == 5 {
+        if !directory { if operation == 1 { respond(0) }; return 0 }; let names = fsx.list_dir(queue); if !names.ok { return 1 }
+        for name in names.names {
+            if !component(name) || !sys.starts(name, "cf") || !sys.is_reg_mode(sys.file_info(fsx.join_path(queue, name), false).mode) { continue }; let bytes = sys.read_path(fsx.join_path(queue, name)); if !bytes.ok { continue }; let c = control(bytes.bytes); if !c.ok { continue }
+            if operation == 1 { if helper.len() > 0 && !deliver(queue, name, c, helper) { respond(1); return 1 } }
+            else if operation == 5 {
+                if fields.len() < 2 || (!sys.same(c.owner, fields[1]) && !sys.same(fields[1], "root")) { continue }; let selected = fields.len() == 2; let id = sys.length(name) >= 6 ? sys.slice(name, 3, 6) : name
+                for i in 2..(fields.len() as i64) { if sys.same(fields[i], id) || sys.same(fields[i], c.owner) || sys.parse_number(fields[i]).ok && sys.parse_number(fields[i]).value == sys.parse_number(id).value { selected = true } }
+                if selected { remove_job(queue, name, c); sys.put_fd(1, sys.join2("removed ", sys.join2(id, "\n"))) }
+            } else { sys.put_fd(1, sys.join2(name, sys.join2(" ", sys.join2(c.owner, sys.join2(" ", sys.join2(c.title, "\n")))))) }
+        }; if operation == 1 { respond(0) }; return 0
+    }
+    if operation != 2 { respond(1); return 1 }
+    let stage = fsx.join_path(directory ? queue : "/tmp", sys.join2(".devos-lpd-", hw.decimal(proc.my_pid()))); if !fsx.make_dir(stage, 448) { respond(1); return 1 }; let ok = respond(0); let data_names = Vec<str>(); let control_name = ""; let c = Control(false, Vec<str>(), "", ""); let total = 0; let completed = false; let chunk = cx.buffer(65536)
+    while ok && !completed {
+        let header = stream.line(0); if !header.ok || sys.length(header.text) < 1 { ok = false; break }; let kind = sys.at(header.text, 0) as i64; if kind == 1 { ok = false; break }; if kind != 2 && kind != 3 { ok = false; break }; let parts = words.words_of(sys.slice(header.text, 1, sys.length(header.text))); if parts.len() != 2 { ok = false; break }
+        let length = cx.unsigned(parts[0]); let name = parts[1]; if !length.ok || length.value > (kind == 2 ? 65536 : 67108864) || !component(name) || !sys.starts(name, kind == 2 ? "cf" : "df") || data_names.len() >= 26 || (kind == 2 && sys.length(control_name) > 0) { ok = false; break }; total = total + length.value; if total > 268435456 { ok = false; break }
+        let path = fsx.join_path(stage, name); let fd = sys.open_fd(path, 193, 384); if fd < 0 { ok = false; break }; ok = respond(0); let left = length.value
+        while ok && left > 0 { let n = sys.read_into(0, sys.bdata(chunk), left < sys.blen(chunk) ? left : sys.blen(chunk)); if n <= 0 || !tx.write_all(fd, sys.bdata(chunk), n) { ok = false; break }; left = left - n }
+        let end = cx.buffer(1); if ok { ok = sys.read_into(0, sys.bdata(end), 1) == 1 && sys.bat(end, 0) == 0 }; unsafe { if ok { ok = tx.fsync(fd as i32) == 0 } }; sys.close_fd(fd); if !ok { break }
+        if kind == 2 { let input = sys.read_path(path); if !input.ok { ok = false; break }; c = control(input.bytes); if !c.ok { ok = false; break }; control_name = name } else { data_names.push(name) }
+        let ready = c.ok
+        if ready { for required in c.data { let found = false; for have in data_names { if sys.same(have, required) { found = true } }; if !found { ready = false } } }
+        if ready {
+            for have in data_names { let referenced = false; for required in c.data { if sys.same(have, required) { referenced = true } }; if !referenced { ok = false } }
+            if ok && directory {
+                let published = Vec<str>()
+                for name in data_names { if fsx.do_link(fsx.join_path(stage, name), fsx.join_path(queue, name)) != 0 { ok = false; break }; published.push(name) }
+                if ok { ok = fsx.do_link(fsx.join_path(stage, control_name), fsx.join_path(queue, control_name)) == 0; if ok { published.push(control_name) } }
+                if ok { let dir = sys.open_fd(queue, 0, 0); if dir < 0 { ok = false } else { unsafe { ok = tx.fsync(dir as i32) == 0 }; sys.close_fd(dir) } }
+                if !ok { for name in published { fsx.do_unlink(fsx.join_path(queue, name)) } }
+                else if helper.len() > 0 { ok = deliver(queue, control_name, c, helper) }
+            } else if ok {
+                let output = sys.open_fd(queue, 1, 0); if output < 0 { ok = false } else { for name in c.data { let file = sys.open_fd(fsx.join_path(stage, name), 0, 0); if file < 0 { ok = false; break }; while true { let n = sys.read_into(file, sys.bdata(chunk), sys.blen(chunk)); if n < 0 { ok = false; break }; if n == 0 { break }; if !tx.write_all(output, sys.bdata(chunk), n) { ok = false; break } }; sys.close_fd(file); if !ok { break } }; sys.close_fd(output) }
+            }
+            completed = ok
+        }
+        if !ok || !respond(0) { ok = false; break }
+    }
+    if !ok { respond(1) }; fsx.remove_tree(stage); if !ok { sys.warn("lpd", "job rejected or delivery failed"); return 1 }; return completed ? 0 : 1
+}

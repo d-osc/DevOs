@@ -1,0 +1,197 @@
+# MINIX V1/V2 disk structures, using 1 KiB blocks and 14/30-byte names.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/clock.dev" as clock
+use "../lib/lines.dev" as lines
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./sysops.dev" as mounts
+use "./files.dev" as files
+
+struct Format { second: bool, names: i64, inodes: i64, zones: i64, imap: i64, zmap: i64, first: i64 }
+fn write_at(fd: i64, offset: i64, data: *sys.Bytes): bool { if sys.seek_fd(fd, offset, 0) != offset { return false }; return tx.write_all(fd, sys.bdata(data), sys.blen(data)) }
+fn read_at(fd: i64, offset: i64, count: i64): *sys.Bytes {
+    let b = cx.buffer(count); if sys.seek_fd(fd, offset, 0) != offset { sys.bclear(b); return b }; let pos = 0
+    while pos < count { let n = sys.read_into(fd, sys.bptr(b, pos), count - pos); if n <= 0 { sys.bclear(b); break }; pos = pos + n }; return b
+}
+fn mounted(path: str): bool { let canonical = files.canonical(path, false); for row in mounts.mount_table() { if row.len() > 0 && sys.same(files.canonical(row[0], false), canonical) { return true } }; return false }
+fn get_bit(b: *sys.Bytes, offset: i64, bit: i64): bool { return ((sys.bat(b, offset + bit / 8) as i64) / power(bit % 8)) % 2 == 1 }
+fn set_bit(b: *sys.Bytes, offset: i64, bit: i64, value: bool) { let old = get_bit(b, offset, bit); if old == value { return }; let index = offset + bit / 8; let v = sys.bat(b, index) as i64; sys.bptr_set(b, index, (value ? v + power(bit % 8) : v - power(bit % 8)) as u8) }
+fn power(n: i64): i64 { let v = 1; for i in 0..n { v = v * 2 }; return v }
+fn zone_offset(f: Format): i64 { return (2 + f.imap) * 1024 }
+fn inode_offset(f: Format, inode: i64): i64 { return (2 + f.imap + f.zmap) * 1024 + (inode - 1) * (f.second ? 64 : 32) }
+fn zone_bit(f: Format, zone: i64): i64 { return zone - f.first + 1 }
+fn allocate(f: Format, meta: *sys.Bytes, cursor: *sys.Bytes): i64 {
+    let z = cx.le(cursor, 0, 4)
+    while z < f.zones && get_bit(meta, zone_offset(f), zone_bit(f, z)) { z = z + 1 }
+    if z >= f.zones { return 0 }; set_bit(meta, zone_offset(f), zone_bit(f, z), true); cx.store(cursor, 0, 4, z + 1); return z
+}
+fn indirect(f: Format, meta: *sys.Bytes, cursor: *sys.Bytes, bad: Vec<i64>, start: i64, count: i64, depth: i64, blocks: *sys.Bytes): i64 {
+    let z = allocate(f, meta, cursor); if z == 0 { return 0 }; let width = f.second ? 4 : 2; let per = 1024 / width; let span = 1; for i in 1..depth { span = span * per }; let table = cx.buffer(1024); let pos = 0; let slot = 0
+    while pos < count {
+        let n = count - pos < span ? count - pos : span; let target = depth == 1 ? bad[start + pos] : indirect(f, meta, cursor, bad, start + pos, n, depth - 1, blocks)
+        if target == 0 || slot >= per { return 0 }; cx.store(table, slot * width, width, target); pos = pos + n; slot = slot + 1
+    }
+    # Staged writes: block number followed by its 1024-byte payload.
+    let header = cx.buffer(4); cx.store(header, 0, 4, z); sys.bytes_append(blocks, sys.bdata(header), 4); sys.bytes_append(blocks, sys.bdata(table), 1024); return z
+}
+fn run_mkfs_minix(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "cl:n:i:v")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() < 1 || o.rest.len() > 2 || (sys.has(o, 99) && sys.has(o, 108)) { sys.warn("mkfs.minix", "usage: mkfs.minix [-c|-l FILE] [-n 14|30] [-i INODES] [-v] DEVICE [BLOCKS]"); return 1 }
+    let path = o.rest[0]; if mounted(path) { sys.warn("mkfs.minix", "refusing to format a mounted filesystem"); return 1 }
+    let fd = sys.open_fd(path, 2, 0); if fd < 0 { sys.warn_write("mkfs.minix", path); return 1 }
+    let capacity = sys.seek_fd(fd, 0, 2); let count = o.rest.len() == 2 ? sys.parse_number(o.rest[1]) : sys.Number(true, capacity / 1024)
+    let names = sys.has(o, 110) ? sys.parse_number(sys.val(o, 110)) : sys.Number(true, 30); let second = sys.has(o, 118)
+    if !count.ok || count.value < 10 || count.value > (second ? 67108864 : 65535) || count.value > capacity / 1024 || !names.ok || (names.value != 14 && names.value != 30) { return cx.fail("mkfs.minix", fd, "invalid size or filename length") }
+    let requested = sys.has(o, 105) ? sys.parse_number(sys.val(o, 105)) : sys.Number(true, count.value / 3)
+    if !requested.ok || requested.value < 1 { return cx.fail("mkfs.minix", fd, "invalid inode count") }
+    let per = second ? 16 : 32; let inodes = (requested.value + per - 1) / per * per; if inodes > 65535 { inodes = 65535 }
+    let imap = (inodes + 1 + 8191) / 8192; let zmap = 1; let first = 0
+    while true { first = 2 + imap + zmap + (inodes + per - 1) / per; let need = (count.value - first + 1 + 8191) / 8192; if need <= zmap { break }; zmap = need }
+    if first + 1 >= count.value || first * 1024 > 16777216 { return cx.fail("mkfs.minix", fd, "too little space for metadata") }
+    let f = Format(second, names.value, inodes, count.value, imap, zmap, first); let meta = cx.buffer(first * 1024)
+    cx.store(meta, 1024, 2, inodes); cx.store(meta, 1026, 2, second ? 0 : count.value); cx.store(meta, 1028, 2, imap); cx.store(meta, 1030, 2, zmap); cx.store(meta, 1032, 2, first); cx.store(meta, 1034, 2, 0)
+    cx.store(meta, 1036, 4, second ? 2147483647 : 268966912); cx.store(meta, 1040, 2, second ? (names.value == 14 ? 0x2468 : 0x2478) : (names.value == 14 ? 0x137f : 0x138f)); cx.store(meta, 1042, 2, 1); cx.store(meta, 1044, 4, second ? count.value : 0)
+    # Padding bits are unavailable, as required by fsck.minix.
+    for bit in (inodes + 1)..(imap * 8192) { set_bit(meta, 2048, bit, true) }; set_bit(meta, 2048, 0, true); set_bit(meta, 2048, 1, true)
+    for bit in (count.value - first + 1)..(zmap * 8192) { set_bit(meta, zone_offset(f), bit, true) }; set_bit(meta, zone_offset(f), 0, true)
+    let bad = Vec<i64>()
+    if sys.has(o, 108) {
+        let input = sys.read_path(sys.val(o, 108)); if !input.ok { return cx.fail("mkfs.minix", fd, "cannot read bad-block list") }; let ls = lines.split_lines(input.bytes, 10)
+        for k in 0..(ls.starts.len() as i64) { let text = lines.text_of(input.bytes, ls.starts[k], ls.ends[k]); if sys.length(text) == 0 { continue }; let n = sys.parse_number(text); if !n.ok || n.value < first || n.value >= count.value { return cx.fail("mkfs.minix", fd, "invalid or metadata bad block") }; if !get_bit(meta, zone_offset(f), zone_bit(f, n.value)) { bad.push(n.value); set_bit(meta, zone_offset(f), zone_bit(f, n.value), true) } }
+    }
+    if sys.has(o, 99) {
+        for block in 0..count.value { if sys.blen(read_at(fd, block * 1024, 1024)) != 1024 { if block < first { return cx.fail("mkfs.minix", fd, "bad metadata block") }; bad.push(block); set_bit(meta, zone_offset(f), zone_bit(f, block), true) } }
+    }
+    let cursor = cx.buffer(4); cx.store(cursor, 0, 4, first); let root = allocate(f, meta, cursor); if root == 0 { return cx.fail("mkfs.minix", fd, "no root directory block") }
+    let root_inode = inode_offset(f, 1); let now = clock.now(); cx.store(meta, root_inode, 2, 16877)
+    if second { cx.store(meta, root_inode + 2, 2, 2); cx.store(meta, root_inode + 8, 4, (bad.len() > 0 ? 3 : 2) * (names.value + 2)); for off in Vec<i64>(12, 16, 20) { cx.store(meta, root_inode + off, 4, now) }; cx.store(meta, root_inode + 24, 4, root) }
+    else { cx.store(meta, root_inode + 4, 4, (bad.len() > 0 ? 3 : 2) * (names.value + 2)); cx.store(meta, root_inode + 8, 4, now); cx.store(meta, root_inode + 13, 1, 2); cx.store(meta, root_inode + 14, 2, root) }
+    let staged = sys.bytes_new()
+    if bad.len() > 0 {
+        set_bit(meta, 2048, 2, true); let inode = inode_offset(f, 2); cx.store(meta, inode, 2, 32768); cx.store(meta, inode + (second ? 2 : 13), second ? 2 : 1, 1); cx.store(meta, inode + (second ? 8 : 4), 4, (bad.len() as i64) * 1024)
+        let width = second ? 4 : 2; let pointers = inode + (second ? 24 : 14); let pos = 0
+        while pos < bad.len() as i64 && pos < 7 { cx.store(meta, pointers + pos * width, width, bad[pos]); pos = pos + 1 }
+        let depth = 1; let span = 1024 / width
+        while pos < bad.len() as i64 && depth <= (second ? 3 : 2) {
+            let take = (bad.len() as i64) - pos < span ? (bad.len() as i64) - pos : span; let zone = indirect(f, meta, cursor, bad, pos, take, depth, staged); if zone == 0 { return cx.fail("mkfs.minix", fd, "not enough blocks for bad-block inode") }
+            cx.store(meta, pointers + (6 + depth) * width, width, zone); pos = pos + take; depth = depth + 1; span = span * (1024 / width)
+        }
+        if pos != bad.len() as i64 { return cx.fail("mkfs.minix", fd, "too many bad blocks") }
+    }
+    let directory = cx.buffer(1024); cx.store(directory, 0, 2, 1); cx.store(directory, 2, 1, 46); cx.store(directory, names.value + 2, 2, 1); cx.store(directory, names.value + 4, 1, 46); cx.store(directory, names.value + 5, 1, 46)
+    if bad.len() > 0 { let off = 2 * (names.value + 2); cx.store(directory, off, 2, 2); let name = ".badblocks"; for i in 0..sys.length(name) { cx.store(directory, off + 2 + i, 1, sys.at(name, i) as i64) } }
+    if !write_at(fd, 0, meta) || !write_at(fd, root * 1024, directory) { return cx.fail("mkfs.minix", fd, "write failed") }
+    let pos = 0; while pos < sys.blen(staged) { let zone = cx.le(staged, pos, 4); let b = cx.buffer(1024); for i in 0..1024 { sys.bptr_set(b, i, sys.bat(staged, pos + 4 + i)) }; if !write_at(fd, zone * 1024, b) { return cx.fail("mkfs.minix", fd, "indirect block write failed") }; pos = pos + 1028 }
+    fsx.do_sync(); sys.close_fd(fd); sys.put_fd(1, sys.join2(hw.decimal(inodes), sys.join2(" inodes\n", sys.join2(hw.decimal(count.value), " blocks\n")))); return 0
+}
+
+struct Loaded { ok: bool, format: Format, metadata: *sys.Bytes }
+fn load(fd: i64): Loaded {
+    let bad = Loaded(false, Format(false, 0, 0, 0, 0, 0, 0), sys.bytes_new()); let sb = read_at(fd, 1024, 1024); if sys.blen(sb) != 1024 { return bad }
+    let magic = cx.le(sb, 16, 2); if magic != 0x137f && magic != 0x138f && magic != 0x2468 && magic != 0x2478 { return bad }
+    let second = magic == 0x2468 || magic == 0x2478; let f = Format(second, magic == 0x138f || magic == 0x2478 ? 30 : 14, cx.le(sb, 0, 2), second ? cx.le(sb, 20, 4) : cx.le(sb, 2, 2), cx.le(sb, 4, 2), cx.le(sb, 6, 2), cx.le(sb, 8, 2))
+    let per = second ? 16 : 32
+    if cx.le(sb, 10, 2) != 0 || f.inodes < 1 || f.zones < 2 || f.zones > 4194304 || f.imap * 8192 < f.inodes + 1 || f.zmap * 8192 < f.zones - f.first + 1 || f.first < 2 + f.imap + f.zmap + (f.inodes + per - 1) / per || f.first >= f.zones || f.first * 1024 > 16777216 || sys.seek_fd(fd, 0, 2) / 1024 < f.zones { return bad }
+    let meta = read_at(fd, 0, f.first * 1024); return Loaded(sys.blen(meta) == f.first * 1024, f, meta)
+}
+struct Check { automatic: bool, interactive: bool, health: *sys.Bytes, list: bool }
+fn problem(c: Check, message: str, repairable: bool): bool {
+    sys.warn("fsck.minix", message); cx.store(c.health, 0, 4, cx.le(c.health, 0, 4) + 1)
+    let yes = repairable && c.automatic
+    if repairable && c.interactive && !c.automatic { sys.put_fd(2, "Repair? [y/N] "); let reply = sys.read_fd_line(); yes = sys.starts(reply, "y") || sys.starts(reply, "Y") }
+    let off = yes ? 4 : 8; cx.store(c.health, off, 4, cx.le(c.health, off, 4) + 1); return yes
+}
+fn collect(fd: i64, f: Format, zone: i64, depth: i64, count: i64, used: *sys.Bytes, c: Check): Vec<i64> {
+    let out = Vec<i64>()
+    if zone == 0 { for i in 0..count { out.push(0) }; return out }
+    if zone < f.first || zone >= f.zones { problem(c, "inode points outside data area", false); for i in 0..count { out.push(0) }; return out }
+    let references = cx.le(used, zone * 4, 4); cx.store(used, zone * 4, 4, references + 1); if references > 0 { problem(c, sys.join2("duplicate zone ", hw.decimal(zone)), false) }
+    if depth == 0 { out.push(zone); return out }
+    let table = read_at(fd, zone * 1024, 1024); if sys.blen(table) != 1024 { problem(c, "cannot read indirect block", false); return out }
+    let per = f.second ? 256 : 512; let span = 1; for i in 1..depth { span = span * per }; let left = count
+    for slot in 0..per {
+        let pointer = cx.le(table, slot * (f.second ? 4 : 2), f.second ? 4 : 2)
+        if left <= 0 { if pointer != 0 { problem(c, "indirect block past end of file", false) }; continue }
+        let take = left < span ? left : span; let sub = collect(fd, f, pointer, depth - 1, take, used, c); for z in sub { out.push(z) }; left = left - take
+    }; return out
+}
+fn inode_blocks(fd: i64, f: Format, meta: *sys.Bytes, number: i64, used: *sys.Bytes, c: Check): Vec<i64> {
+    let off = inode_offset(f, number); let mode = cx.le(meta, off, 2) / 4096
+    let out = Vec<i64>(); if mode != 8 && mode != 4 && mode != 10 && number != 2 { return out }
+    let size = cx.le(meta, off + (f.second ? 8 : 4), 4); let left = (size + 1023) / 1024
+    if left > f.zones { problem(c, "file is larger than filesystem", false); return out }
+    let pointers = off + (f.second ? 24 : 14); let width = f.second ? 4 : 2
+    for i in 0..7 {
+        let zone = cx.le(meta, pointers + i * width, width)
+        if left <= 0 { if zone != 0 { problem(c, "direct block past end of file", false) }; continue }
+        let blocks = collect(fd, f, zone, 0, 1, used, c); for z in blocks { out.push(z) }; left = left - 1
+    }
+    let span = 1024 / width
+    for depth in 1..(f.second ? 4 : 3) {
+        let zone = cx.le(meta, pointers + (6 + depth) * width, width)
+        if left <= 0 { if zone != 0 { problem(c, "indirect pointer past end of file", false) }; continue }
+        let take = left < span ? left : span; let blocks = collect(fd, f, zone, depth, take, used, c); for z in blocks { out.push(z) }; left = left - take; span = span * (1024 / width)
+    }
+    if left > 0 { problem(c, "inode size exceeds addressable blocks", false) }; return out
+}
+fn walk(fd: i64, f: Format, meta: *sys.Bytes, blocks: Vec<Vec<i64>>, inode: i64, parent: i64, path: str, visited: *sys.Bytes, refs: *sys.Bytes, c: Check, depth: i64) {
+    if depth > 128 { problem(c, "directory nesting too deep", false); return }
+    if sys.bat(visited, inode) != 0 { problem(c, "directory cycle or duplicate directory reference", false); return }; sys.bptr_set(visited, inode, 1)
+    let off = inode_offset(f, inode); if cx.le(meta, off, 2) / 4096 != 4 { problem(c, "root or child directory is not a directory", false); return }
+    let size = cx.le(meta, off + (f.second ? 8 : 4), 4); let position = 0; let entry = f.names + 2
+    if size % entry != 0 { problem(c, "directory size is not entry aligned", false) }
+    let dot = false; let dotdot = false
+    for zone in blocks[inode] {
+        if position >= size { break }; if zone == 0 { problem(c, "hole in directory", false); position = position + 1024; continue }
+        let data = read_at(fd, zone * 1024, 1024); if sys.blen(data) != 1024 { problem(c, "cannot read directory", false); return }
+        let at = 0
+        while at + entry <= 1024 && position < size {
+            let number = cx.le(data, at, 2); let name = sys.bytes_new(); for i in 0..f.names { let byte = sys.bat(data, at + 2 + i); if byte == 0 { break }; sys.bytes_push(name, byte) }; at = at + entry; position = position + entry
+            if number == 0 { continue }; let text = sys.bytes_cstr(name)
+            if number > f.inodes || !get_bit(meta, 2048, number) { problem(c, "directory references a free or invalid inode", false); continue }
+            cx.store(refs, number * 4, 4, cx.le(refs, number * 4, 4) + 1)
+            if sys.same(text, ".") { dot = true; if number != inode { problem(c, "invalid dot entry", false) }; continue }
+            if sys.same(text, "..") { dotdot = true; if number != parent { problem(c, "invalid dotdot entry", false) }; continue }
+            if sys.length(text) == 0 || sys.find_char(text, 47) >= 0 { problem(c, "invalid directory entry name", false); continue }
+            let full = sys.join2(path, sys.join2("/", text)); if c.list { sys.put_fd(1, sys.join2(full, "\n")) }
+            if cx.le(meta, inode_offset(f, number), 2) / 4096 == 4 { walk(fd, f, meta, blocks, number, inode, full, visited, refs, c, depth + 1) } else { sys.bptr_set(visited, number, 1) }
+        }
+    }
+    if !dot || !dotdot { problem(c, "directory is missing dot entries", false) }
+}
+fn run_fsck_minix(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "larvsmf")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("fsck.minix", "usage: fsck.minix [-larvsmf] DEVICE"); return 16 }
+    if mounted(o.rest[0]) { sys.warn("fsck.minix", "refusing to check a mounted filesystem"); return 8 }
+    let repair = sys.has(o, 97) || sys.has(o, 114); let fd = sys.open_fd(o.rest[0], repair ? 2 : 0, 0)
+    if fd < 0 { sys.warn_path("fsck.minix", o.rest[0]); return 8 }
+    let loaded = load(fd); if !loaded.ok { sys.close_fd(fd); sys.warn("fsck.minix", "invalid or unsupported MINIX filesystem (V1/V2, 1KiB zones, <=4M zones required)"); return 8 }
+    let f = loaded.format; let meta = loaded.metadata; let c = Check(sys.has(o, 97), sys.has(o, 114), cx.buffer(12), sys.has(o, 108))
+    if sys.has(o, 115) || sys.has(o, 118) { sys.put_fd(1, sys.join2(hw.decimal(f.inodes), sys.join2(" inodes\n", sys.join2(hw.decimal(f.zones), " zones\n")))) }
+    if !get_bit(meta, 2048, 1) { problem(c, "root inode is marked free", false) }
+    let used = cx.buffer(f.zones * 4); let blocks = Vec<Vec<i64>>(); blocks.push(Vec<i64>())
+    for inode in 1..(f.inodes + 1) {
+        if get_bit(meta, 2048, inode) { blocks.push(inode_blocks(fd, f, meta, inode, used, c)) }
+        else { blocks.push(Vec<i64>()); if sys.has(o, 109) && cx.le(meta, inode_offset(f, inode), 2) != 0 { sys.warn("fsck.minix", "mode not cleared in unused inode") } }
+    }
+    let visited = cx.buffer(f.inodes + 1); let refs = cx.buffer((f.inodes + 1) * 4)
+    if get_bit(meta, 2048, 1) { walk(fd, f, meta, blocks, 1, 1, "", visited, refs, c, 0) }
+    for inode in 1..(f.inodes + 1) {
+        if !get_bit(meta, 2048, inode) || (inode == 2 && cx.le(meta, inode_offset(f, inode), 2) == 0) { continue }
+        let references = cx.le(refs, inode * 4, 4); let off = inode_offset(f, inode) + (f.second ? 2 : 13); let width = f.second ? 2 : 1
+        if sys.bat(visited, inode) == 0 { problem(c, sys.join2("unreachable inode ", hw.decimal(inode)), false); continue }
+        if references != cx.le(meta, off, width) { if problem(c, sys.join2("incorrect link count for inode ", hw.decimal(inode)), references <= (f.second ? 65530 : 250)) { cx.store(meta, off, width, references) } }
+    }
+    for zone in f.first..f.zones {
+        let expected = cx.le(used, zone * 4, 4) != 0; let bit = zone_bit(f, zone)
+        if get_bit(meta, zone_offset(f), bit) != expected { if problem(c, sys.join2("zone bitmap mismatch at ", hw.decimal(zone)), true) { set_bit(meta, zone_offset(f), bit, expected) } }
+    }
+    if !get_bit(meta, 2048, 0) { if problem(c, "reserved inode bitmap bit is clear", true) { set_bit(meta, 2048, 0, true) } }
+    if !get_bit(meta, zone_offset(f), 0) { if problem(c, "reserved zone bitmap bit is clear", true) { set_bit(meta, zone_offset(f), 0, true) } }
+    let changed = cx.le(c.health, 4, 4) > 0; let unfixed = cx.le(c.health, 8, 4) > 0
+    if repair && !unfixed { let state = cx.le(meta, 1042, 2); let clean = (state | 1) & 65533; if clean != state { cx.store(meta, 1042, 2, clean); changed = true } }
+    if changed && !write_at(fd, 0, meta) { sys.close_fd(fd); sys.warn("fsck.minix", "metadata write failed"); return 8 }; if changed { fsx.do_sync() }; sys.close_fd(fd)
+    return (changed ? 1 : 0) | (unfixed ? 4 : 0)
+}

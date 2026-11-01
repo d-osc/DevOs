@@ -1,0 +1,47 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+use "./files.dev" as files
+
+fn show(path: str): i64 {
+    let fd = sys.open_fd(path, 0, 0); if fd < 0 { return 1 }
+    let b = cx.buffer(232)
+    if hw.control_buffer(fd, 0x4c05, b) != 0 { sys.close_fd(fd); return 1 }
+    sys.close_fd(fd)
+    let name = sys.bytes_new(); for i in 56..120 { let c = sys.bat(b, i); if c == 0 { break }; sys.bytes_push(name, c) }
+    sys.put_fd(1, sys.join2(path, sys.join2(": ", sys.join2(hw.decimal(cx.le(b, 24, 8)), sys.join2(" ", sys.join2(sys.bytes_cstr(name), "\n")))))); return 0
+}
+fn run_losetup(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "o:df")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() > 2 || (sys.has(o, 100) && o.rest.len() != 1) || (sys.has(o, 102) && o.rest.len() != 0) { sys.warn("losetup", "usage: losetup [-o OFFSET] LOOPDEV FILE | -d LOOPDEV | [-f] [LOOPDEV]"); return 1 }
+    if sys.has(o, 102) {
+        let fd = sys.open_fd("/dev/loop-control", 2, 0); if fd < 0 { sys.warn_path("losetup", "/dev/loop-control"); return 1 }
+        let number = hw.control(fd, 0x4c82, 0); sys.close_fd(fd)
+        if number < 0 { sys.warn("losetup", "no free loop device"); return 1 }; sys.put_fd(1, sys.join2("/dev/loop", sys.join2(hw.decimal(number), "\n"))); return 0
+    }
+    if sys.has(o, 100) {
+        let fd = sys.open_fd(o.rest[0], 2, 0); if fd < 0 { sys.warn_path("losetup", o.rest[0]); return 1 }
+        if hw.control(fd, 0x4c01, 0) != 0 { return cx.fail("losetup", fd, "LOOP_CLR_FD failed") }; sys.close_fd(fd); return 0
+    }
+    if o.rest.len() == 0 {
+        let dirs = fsx.list_dir("/sys/block"); if !dirs.ok { sys.warn_path("losetup", "/sys/block"); return 1 }
+        for name in dirs.names { if sys.starts(name, "loop") { show(sys.join2("/dev/", name)) } }; return 0
+    }
+    if o.rest.len() == 1 { if show(o.rest[0]) != 0 { sys.warn("losetup", "cannot read loop status"); return 1 }; return 0 }
+    let offset = sys.has(o, 111) ? cx.unsigned(sys.val(o, 111)) : sys.Number(true, 0)
+    if !offset.ok { sys.warn("losetup", "invalid offset"); return 1 }
+    let backing = sys.open_fd(o.rest[1], 2, 0); let readonly = false
+    if backing < 0 { backing = sys.open_fd(o.rest[1], 0, 0); readonly = true }
+    if backing < 0 { sys.warn_path("losetup", o.rest[1]); return 1 }
+    let fd = sys.open_fd(o.rest[0], 2, 0)
+    if fd < 0 { sys.close_fd(backing); sys.warn_path("losetup", o.rest[0]); return 1 }
+    if hw.control(fd, 0x4c00, backing) != 0 { sys.close_fd(backing); return cx.fail("losetup", fd, "LOOP_SET_FD failed") }
+    let info = cx.buffer(232); cx.store(info, 24, 8, offset.value); cx.store(info, 52, 4, readonly ? 1 : 0)
+    let path = files.canonical(o.rest[1], false); if sys.length(path) == 0 { path = o.rest[1] }
+    for i in 0..(sys.length(path) < 63 ? sys.length(path) : 63) { sys.bptr_set(info, 56 + i, sys.at(path, i)) }
+    let result = hw.control_buffer(fd, 0x4c04, info)
+    if result != 0 { hw.control(fd, 0x4c01, 0) }
+    sys.close_fd(backing); sys.close_fd(fd)
+    if result != 0 { sys.warn("losetup", "LOOP_SET_STATUS64 failed"); return 1 }; return 0
+}

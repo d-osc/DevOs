@@ -1,0 +1,102 @@
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/proc.dev" as proc
+use "./accounts.dev" as ac
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./mime.dev" as text
+
+extern fn fork(): i32
+extern fn setsid(): i32
+extern fn dup2(from: i32, to: i32): i32
+extern fn execve(path: str, argv: *void, env: *void): i32
+extern fn exit(status: i32)
+extern fn getnameinfo(address: *void, length: u32, host: *void, host_length: u32, service: *void, service_length: u32, flags: i32): i32
+
+fn listener(ip: i64, port: i64, datagram: bool): i64 {
+    let fd = net.open_socket((datagram ? 2 : 1) + 524288, 0); if fd < 0 { return fd }
+    let one = cx.buffer(4); cx.store(one, 0, 4, 1); let address = net.make_address(ip, port); let rc = 0 - 1
+    unsafe {
+        net.setsockopt(fd as i32, 1, 2, sys.bdata(one) as *void, 4)
+        rc = net.bind(fd as i32, address as *void, 16) as i64
+        if rc == 0 && !datagram { rc = net.listen(fd as i32, 16) as i64 }
+        sys.free(address as *void)
+    }
+    if rc != 0 { sys.close_fd(fd); return 0 - 1 }; return fd
+}
+fn hostname(peer: *u8): str {
+    let host = cx.buffer(1025); let rc = 0 - 1
+    unsafe { rc = getnameinfo(peer as *void, 16, sys.bdata(host) as *void, 1025, 0 as *void, 0, 0) as i64 }
+    return rc == 0 ? sys.bytes_cstr(host) : ""
+}
+fn run_udpsvd(args: Vec<str>): i64 {
+    let split = ac.split_options(args, "cul"); let leading = Vec<str>(); for i in 0..split { leading.push(args[i]) }; let o = sys.parse_opts(leading, "hEvc:u:l:")
+    if o.bad != 0 || o.missing != 0 || args.len() as i64 - split < 3 { sys.warn("udpsvd", "usage: udpsvd [-hEv] [-c N] [-u USER] [-l NAME] IP PORT PROG [ARGS]"); return 1 }
+    let limit = sys.has(o, 99) ? sys.parse_number(sys.val(o, 99)) : sys.Number(true, 30); let port = sys.parse_number(args[split + 1]); let ip = sys.same(args[split], "0") ? 0 : net.resolve(args[split])
+    if !limit.ok || limit.value < 1 || limit.value > 10000 || !port.ok || port.value < 0 || port.value > 65535 || ip < 0 { sys.warn("udpsvd", "invalid address, port or connection limit"); return 1 }
+    let account = sys.has(o, 117) ? ac.account_of(sys.val(o, 117)) : ac.Account(true, 0, 0); if !account.ok { sys.warn("udpsvd", "unknown user"); return 1 }
+    let command = Vec<str>(); for i in (split + 2)..(args.len() as i64) { command.push(args[i]) }; let base = proc.environment(); let program = proc.find_program(command[0], base)
+    if sys.length(program) == 0 { sys.warn("udpsvd", "program not found"); return 1 }
+    let server = listener(ip, port.value, true); if server < 0 { sys.warn("udpsvd", "cannot bind UDP socket"); return 1 }
+    let actual_port = net.socket_port(server); let children = Vec<i64>(); let byte = cx.buffer(1)
+    while true {
+        let live = Vec<i64>(); for child in children { if proc.poll_exit(child) < 0 { live.push(child) } }; children = live
+        if children.len() as i64 >= limit.value { proc.pause_us(50000); continue }
+        if !tx.readable(server, 200) { continue }
+        let peer = net.make_address(0, 0); let length = cx.buffer(4); cx.store(length, 0, 4, 16); let received = 0 - 1
+        unsafe { received = net.recvfrom(server as i32, sys.bdata(byte) as *void, 1, 2, peer as *void, sys.bdata(length) as *void) as i64 }
+        if received < 0 { unsafe { sys.free(peer as *void) }; continue }
+        let rc = 0 - 1; unsafe { rc = net.connect(server as i32, peer as *void, 16) as i64 }
+        if rc != 0 { unsafe { sys.free(peer as *void) }; continue }
+        let next = listener(ip, actual_port, true); if next < 0 { unsafe { sys.free(peer as *void) }; return cx.fail("udpsvd", server, "cannot rebind listener") }
+        let env = base; let remote_ip = net.ip_text(net.peer_ip(peer)); let remote_port = hw.decimal(net.peer_port(peer)); let local_ip = net.ip_text(ip); let local_port = hw.decimal(actual_port)
+        if !sys.has(o, 69) {
+            env = proc.set_variable(env, "PROTO", "UDP"); env = proc.set_variable(env, "UDPREMOTEIP", remote_ip); env = proc.set_variable(env, "UDPREMOTEPORT", remote_port); env = proc.set_variable(env, "UDPLOCALIP", local_ip); env = proc.set_variable(env, "UDPLOCALPORT", local_port)
+            env = proc.set_variable(env, "UDPREMOTEADDR", sys.join2(remote_ip, sys.join2(":", remote_port))); env = proc.set_variable(env, "UDPLOCALADDR", sys.join2(local_ip, sys.join2(":", local_port)))
+            if sys.has(o, 108) { env = proc.set_variable(env, "UDPLOCALHOST", sys.val(o, 108)) }
+            if sys.has(o, 104) { env = proc.set_variable(env, "UDPREMOTEHOST", hostname(peer)) }
+        }
+        if sys.has(o, 118) { sys.put_fd(2, sys.join2("udpsvd: connection from ", sys.join2(remote_ip, sys.join2(":", sys.join2(remote_port, "\n"))))) }
+        let argv = proc.pointer_array(command); let envp = proc.pointer_array(env); let pid = 0 - 1
+        unsafe {
+            pid = fork() as i64
+            if pid == 0 {
+                sys.close_fd(next); dup2(server as i32, 0); dup2(server as i32, 1); if server > 2 { sys.close_fd(server) }
+                if sys.has(o, 117) && !ac.become(account) { exit(126) }
+                execve(program, argv, envp); exit(126)
+            }
+            sys.free(peer as *void)
+        }
+        sys.close_fd(server); server = next
+        if pid < 0 { sys.warn("udpsvd", "fork failed"); continue }; children.push(pid)
+    }
+    return 0
+}
+fn ident(in_fd: i64, out_fd: i64, username: str): i64 {
+    let line = sys.bytes_new(); let byte = cx.buffer(1)
+    while sys.blen(line) < 1024 { let n = sys.read_into(in_fd, sys.bdata(byte), 1); if n <= 0 { break }; let c = sys.bat(byte, 0); if c == 10 || c == 13 { break }; sys.bytes_push(line, c) }
+    if sys.blen(line) == 0 { return 1 }
+    let out = sys.bytes_new(); sys.bytes_str(out, text.trim(sys.bytes_cstr(line))); sys.bytes_str(out, " : USERID : UNIX : "); sys.bytes_str(out, username); sys.bytes_str(out, "\r\n")
+    return tx.write_all(out_fd, sys.bdata(out), sys.blen(out)) ? 0 : 1
+}
+fn run_fakeidentd(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fiwb:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() > 1 { sys.warn("fakeidentd", "usage: fakeidentd [-fiw] [-b ADDR] [STRING]"); return 1 }
+    let user = o.rest.len() == 1 ? o.rest[0] : "nobody"
+    if sys.find_char(user, 10) >= 0 || sys.find_char(user, 13) >= 0 { sys.warn("fakeidentd", "invalid answer string"); return 1 }
+    if sys.has(o, 105) { return ident(0, 1, user) }
+    let ip = sys.has(o, 98) ? net.resolve(sys.val(o, 98)) : 0; if ip < 0 { sys.warn("fakeidentd", "bad bind address"); return 1 }
+    let server = sys.has(o, 119) ? 0 : listener(ip, 113, false)
+    if server < 0 { sys.warn("fakeidentd", "cannot bind port 113"); return 1 }
+    if !sys.has(o, 102) && !sys.has(o, 119) { unsafe { let pid = fork(); if pid < 0 { return cx.fail("fakeidentd", server, "fork failed") }; if pid > 0 { sys.close_fd(server); return 0 }; setsid() } }
+    while true {
+        let client = net.accept_one(server); if client < 0 { continue }; net.set_timeout(client, 20)
+        unsafe {
+            let pid = fork()
+            if pid == 0 { sys.close_fd(server); let status = ident(client, client, user); sys.close_fd(client); exit(status as i32) }
+            if pid < 0 { sys.warn("fakeidentd", "fork failed") }
+        }
+        sys.close_fd(client); proc.poll_exit(0 - 1)
+    }; return 0
+}

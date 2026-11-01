@@ -1,0 +1,77 @@
+use "../lib/sys.dev" as sys
+use "../lib/lines.dev" as lines
+use "./date.dev" as words
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+
+fn run_fbset(args: Vec<str>): i64 {
+    let device = "/dev/fb0"; let database = "/etc/fb.modes"; let mode = ""; let values = Vec<str>(); let changed = false; let show = false; let i = 0; let all = false
+    while i < args.len() as i64 {
+        let a = args[i]
+        if sys.same(a, "-fb") || sys.same(a, "-db") {
+            if i + 1 >= args.len() as i64 { sys.warn("fbset", "missing argument"); return 1 }
+            if sys.same(a, "-fb") { device = args[i + 1] } else { database = args[i + 1] }; i = i + 2; continue
+        }
+        if sys.same(a, "-s") || sys.same(a, "-i") { show = true; i = i + 1; continue }
+        if sys.same(a, "-a") { all = true; i = i + 1; continue }
+        if sys.same(a, "-n") { i = i + 1; continue }
+        if sys.starts(a, "-") {
+            let count = sys.same(a, "-g") || sys.same(a, "-geometry") ? 5 : (sys.same(a, "-t") || sys.same(a, "-timings") ? 7 : 1)
+            if i + count >= args.len() as i64 { sys.warn("fbset", "missing option value"); return 1 }
+            values.push(a); for k in 1..(count + 1) { values.push(args[i + k]) }; i = i + count + 1; changed = true; continue
+        }
+        if sys.length(mode) > 0 { sys.warn("fbset", "too many mode names"); return 1 }; mode = a; i = i + 1
+    }
+    let fd = sys.open_fd(device, 2, 0); if fd < 0 { sys.warn_path("fbset", device); return 1 }
+    let info = cx.buffer(160)
+    if hw.control_buffer(fd, 0x4600, info) != 0 { return cx.fail("fbset", fd, "FBIOGET_VSCREENINFO failed") }
+    if sys.length(mode) > 0 {
+        let input = sys.read_path(database); if !input.ok { return cx.fail("fbset", fd, "cannot read mode database") }
+        let ls = lines.split_lines(input.bytes, 10); let selected = false; let found = false
+        for k in 0..(ls.starts.len() as i64) {
+            let line = lines.text_of(input.bytes, ls.starts[k], ls.ends[k]); let p = words.words_of(line)
+            if p.len() == 0 || sys.starts(p[0], "#") { continue }
+            if sys.same(p[0], "mode") && p.len() >= 2 { let name = p[1]; if sys.starts(name, "\"") && sys.ends(name, "\"") { name = sys.slice(name, 1, sys.length(name) - 1) }; selected = sys.same(name, mode); if selected { found = true }; continue }
+            if sys.same(p[0], "endmode") { selected = false; continue }
+            if selected {
+                if sys.same(p[0], "geometry") && p.len() == 6 { values.push("-g"); for q in 1..6 { values.push(p[q]) } }
+                else if sys.same(p[0], "timings") && p.len() == 8 { values.push("-t"); for q in 1..8 { values.push(p[q]) } }
+                else if (sys.same(p[0], "hsync") || sys.same(p[0], "vsync") || sys.same(p[0], "csync") || sys.same(p[0], "laced") || sys.same(p[0], "double")) && p.len() == 2 { values.push(sys.join2("-", p[0])); values.push(p[1]) }
+                else { return cx.fail("fbset", fd, "unsupported or invalid mode database entry") }
+            }
+        }
+        if !found { return cx.fail("fbset", fd, "unknown video mode") }; changed = true
+    }
+    i = 0
+    while i < values.len() as i64 {
+        let a = values[i]; i = i + 1
+        if sys.same(a, "-g") || sys.same(a, "-geometry") || sys.same(a, "-t") || sys.same(a, "-timings") {
+            let geometry = sys.same(a, "-g") || sys.same(a, "-geometry"); let count = geometry ? 5 : 7
+            let offsets = geometry ? Vec<i64>(0, 4, 8, 12, 24) : Vec<i64>(100, 104, 108, 112, 116, 120, 124)
+            for k in 0..count { let n = cx.unsigned(values[i + k]); if !n.ok { return cx.fail("fbset", fd, "invalid numeric value") }; cx.store(info, offsets[k], 4, n.value) }; i = i + count; continue
+        }
+        let names = Vec<str>("-xres", "-yres", "-vxres", "-vyres", "-depth", "-pixclock", "-left", "-right", "-upper", "-lower", "-hslen", "-vslen")
+        let offsets = Vec<i64>(0, 4, 8, 12, 24, 100, 104, 108, 112, 116, 120, 124); let offset = 0 - 1
+        for k in 0..(names.len() as i64) { if sys.same(a, names[k]) { offset = offsets[k] } }
+        if offset >= 0 { let n = cx.unsigned(values[i]); if !n.ok { return cx.fail("fbset", fd, "invalid numeric value") }; cx.store(info, offset, 4, n.value); i = i + 1; continue }
+        let sync = sys.same(a, "-hsync") || sys.same(a, "-vsync") || sys.same(a, "-csync")
+        let bit = sys.same(a, "-hsync") ? 1 : (sys.same(a, "-vsync") ? 2 : (sys.same(a, "-csync") ? 8 : (sys.same(a, "-laced") ? 1 : (sys.same(a, "-double") ? 2 : 0))))
+        if bit == 0 { return cx.fail("fbset", fd, "unknown option") }
+        let value = values[i]; i = i + 1
+        let on = sys.same(value, "high") || sys.same(value, "true")
+        if !on && !sys.same(value, "low") && !sys.same(value, "false") { return cx.fail("fbset", fd, "invalid boolean value") }
+        let off = sync ? 128 : 132; let flags = cx.le(info, off, 4); let current = (flags / bit) % 2 == 1
+        if on && !current { flags = flags + bit } else if !on && current { flags = flags - bit }; cx.store(info, off, 4, flags)
+    }
+    if changed {
+        if cx.le(info, 0, 4) == 0 || cx.le(info, 4, 4) == 0 || cx.le(info, 8, 4) < cx.le(info, 0, 4) || cx.le(info, 12, 4) < cx.le(info, 4, 4) { return cx.fail("fbset", fd, "invalid geometry") }
+        if all { cx.store(info, 84, 4, 64) }
+        if hw.control_buffer(fd, 0x4601, info) != 0 { return cx.fail("fbset", fd, "FBIOPUT_VSCREENINFO failed") }
+    }
+    if !changed || show {
+        let out = sys.out_new(1); sys.out_str(out, "\nmode \""); sys.out_str(out, hw.decimal(cx.le(info, 0, 4))); sys.out_str(out, "x"); sys.out_str(out, hw.decimal(cx.le(info, 4, 4))); sys.out_str(out, "\"\n    geometry")
+        for off in Vec<i64>(0, 4, 8, 12, 24) { sys.out_str(out, " "); sys.out_str(out, hw.decimal(cx.le(info, off, 4))) }
+        sys.out_str(out, "\n    timings"); for off in Vec<i64>(100, 104, 108, 112, 116, 120, 124) { sys.out_str(out, " "); sys.out_str(out, hw.decimal(cx.le(info, off, 4))) }; sys.out_str(out, "\nendmode\n\n"); sys.out_flush(out)
+    }
+    sys.close_fd(fd); return 0
+}

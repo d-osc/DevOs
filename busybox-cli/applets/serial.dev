@@ -1,0 +1,160 @@
+use "../lib/sys.dev" as sys
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/signal_fd.dev" as signals
+use "./hardware.dev" as hw
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./util6.dev" as tty
+
+fn baud(rate: i64): i64 {
+    for code in Vec<i64>(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 4097, 4098, 4099, 4100, 4101, 4102, 4103, 4104, 4105, 4106, 4107, 4108, 4109, 4110, 4111) { if tty.speed_of(code) == rate { return code } }; return 0 - 1
+}
+fn configure(fd: i64, original: *sys.Bytes, rate: i64, local: bool, flow: bool): bool {
+    let code = baud(rate); if code < 0 { return false }; let attrs = tx.raw(original)
+    let flags = cx.le(attrs, 8, 4); flags = flags - (flags & 0x100f) - (flags & 0x30) - (flags & 0x100) - (flags & 0x80000000) - (flags & 0x800)
+    flags = flags | code | 0xb0; if local { flags = flags | 0x800 }; if flow { flags = flags | 0x80000000 }; cx.store(attrs, 8, 4, flags); return tty.set_attrs(fd, attrs)
+}
+fn run_microcom(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "d:t:s:X")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("microcom", "usage: microcom [-d DELAY] [-t TIMEOUT] [-s SPEED] [-X] TTY"); return 1 }
+    let rate = sys.has(o, 115) ? sys.parse_number(sys.val(o, 115)) : sys.Number(true, 9600); let delay = sys.has(o, 100) ? sys.parse_number(sys.val(o, 100)) : sys.Number(true, 0); let timeout = sys.has(o, 116) ? sys.parse_number(sys.val(o, 116)) : sys.Number(true, 0)
+    if !rate.ok || baud(rate.value) < 0 || !delay.ok || delay.value < 0 || delay.value > 2147483647 || !timeout.ok || timeout.value < 0 || timeout.value > 2147483647 { sys.warn("microcom", "invalid speed, delay or timeout"); return 1 }
+    let fd = sys.open_fd(o.rest[0], 258, 0); if fd < 0 { sys.warn_path("microcom", o.rest[0]); return 1 }
+    let attrs = tty.get_attrs(fd); if sys.blen(attrs) == 0 { return cx.fail("microcom", fd, "not a terminal") }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("microcom", fd, "cannot install signal handling") }
+    if !configure(fd, attrs, rate.value, true, false) { signals.close(guard); return cx.fail("microcom", fd, "cannot configure serial port") }
+    let input_attrs = tty.get_attrs(0); if sys.blen(input_attrs) > 0 { tty.set_attrs(0, tx.raw(input_attrs)) }
+    let last = net.now_ms(); let send_after = last; let status = 0; let b = cx.buffer(4096); let stop = false
+    while !stop {
+        let now = net.now_ms(); if timeout.value > 0 && now - last >= timeout.value { break }
+        let pollfds = cx.buffer(24); cx.store(pollfds, 0, 4, fd); cx.store(pollfds, 4, 2, 1); cx.store(pollfds, 8, 4, 0); cx.store(pollfds, 12, 2, now >= send_after ? 1 : 0); cx.store(pollfds, 16, 4, guard.fd); cx.store(pollfds, 20, 2, 1)
+        let count = 0; unsafe { count = net.poll(sys.bdata(pollfds) as *void, 3, 20) as i64 }; if count < 0 { status = 1; break }
+        if cx.le(pollfds, 22, 2) != 0 { status = 128 + signals.received(guard); break }
+        if cx.le(pollfds, 6, 2) != 0 {
+            let n = sys.read_into(fd, sys.bdata(b), 4096); if n <= 0 { break }; if !tx.write_all(1, sys.bdata(b), n) { status = 1; break }; last = net.now_ms(); send_after = last + delay.value
+        }
+        if cx.le(pollfds, 14, 2) != 0 {
+            let n = sys.read_into(0, sys.bdata(b), 1); if n <= 0 { break }; last = net.now_ms(); send_after = last + delay.value
+            let c = sys.bat(b, 0)
+            if !sys.has(o, 88) && c == 24 { stop = true }
+            else if !sys.has(o, 88) && c == 0 { hw.control(fd, 21513, 0) }
+            else if !tx.write_all(fd, sys.bdata(b), 1) { status = 1; break }
+        }
+    }
+    tty.set_attrs(fd, attrs); if sys.blen(input_attrs) > 0 { tty.set_attrs(0, input_attrs) }; sys.close_fd(fd); signals.close(guard); return status
+}
+fn run_slattach(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "c:ehmLFs:p:")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("slattach", "usage: slattach [-cehmLF] [-s SPEED] [-p PROTOCOL] DEVICE"); return 1 }
+    let protocol = sys.has(o, 112) ? sys.val(o, 112) : "cslip"; let mode = sys.same(protocol, "slip") ? 0 : (sys.same(protocol, "cslip") ? 1 : (sys.same(protocol, "slip6") ? 2 : (sys.same(protocol, "cslip6") || sys.same(protocol, "clisp6") ? 3 : (sys.same(protocol, "adaptive") ? 8 : 0 - 1))))
+    let rate = sys.has(o, 115) ? sys.parse_number(sys.val(o, 115)) : sys.Number(true, 19200)
+    if mode < 0 || !rate.ok || baud(rate.value) < 0 { sys.warn("slattach", "invalid protocol or speed"); return 1 }
+    let fd = sys.open_fd(o.rest[0], 258, 0); if fd < 0 { sys.warn_path("slattach", o.rest[0]); return 1 }
+    let attrs = tty.get_attrs(fd); if sys.blen(attrs) == 0 { return cx.fail("slattach", fd, "not a terminal") }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("slattach", fd, "cannot install signal handling") }
+    if !sys.has(o, 109) && !configure(fd, attrs, rate.value, sys.has(o, 76), !sys.has(o, 70)) { signals.close(guard); return cx.fail("slattach", fd, "cannot configure serial line") }
+    let previous = cx.buffer(4); let discipline = cx.buffer(4); cx.store(discipline, 0, 4, 1)
+    if hw.control_buffer(fd, 21540, previous) != 0 || hw.control_buffer(fd, 21539, discipline) != 0 || hw.control(fd, 0x8926, mode) != 0 {
+        hw.control_buffer(fd, 21539, previous); tty.set_attrs(fd, attrs); sys.close_fd(fd); signals.close(guard); sys.warn("slattach", "cannot install SLIP line discipline"); return 1
+    }
+    if sys.has(o, 101) { sys.close_fd(fd); signals.close(guard); return 0 }
+    if !sys.has(o, 101) {
+        while true {
+            if tx.readable(guard.fd, 200) { signals.received(guard); break }
+            if sys.has(o, 104) { let modem = cx.buffer(4); if hw.control_buffer(fd, 21525, modem) != 0 || (cx.le(modem, 0, 4) / 64) % 2 == 0 { break } }
+        }
+    }
+    hw.control_buffer(fd, 21539, previous); tty.set_attrs(fd, attrs); sys.close_fd(fd); signals.close(guard)
+    if sys.has(o, 99) { return proc.run_wait(Vec<str>("/bin/sh", "-c", sys.val(o, 99)), proc.environment()) }; return 0
+}
+
+fn escaped(text: str): *sys.Bytes {
+    let b = sys.bytes_new(); let i = 0
+    while i < sys.length(text) {
+        let c = sys.at(text, i); i = i + 1
+        if c == 94 && i < sys.length(text) { c = sys.at(text, i) % 32; i = i + 1 }
+        else if c == 92 && i < sys.length(text) {
+            c = sys.at(text, i); i = i + 1
+            if c == 114 { c = 13 } else if c == 110 { c = 10 } else if c == 116 { c = 9 } else if c == 98 { c = 8 } else if c == 115 { c = 32 } else if c == 78 { c = 0 }
+        }
+        sys.bytes_push(b, c)
+    }; return b
+}
+fn suffix(buffer: *sys.Bytes, pattern: *sys.Bytes): bool {
+    let n = sys.blen(pattern); if sys.blen(buffer) < n { return false }; for i in 0..n { if sys.bat(buffer, sys.blen(buffer) - n + i) != sys.bat(pattern, i) { return false } }; return true
+}
+fn send_chat(text: str): bool {
+    let i = 0; let append = true
+    while i < sys.length(text) {
+        if sys.at(text, i) == 92 && i + 1 < sys.length(text) {
+            let c = sys.at(text, i + 1)
+            if c == 100 || c == 112 { proc.pause_us(c == 100 ? 2000000 : 250000); i = i + 2; continue }
+            if c == 99 { append = false; i = i + 2; continue }
+        }
+        let length = sys.at(text, i) == 92 || sys.at(text, i) == 94 ? 2 : 1; if i + length > sys.length(text) { length = 1 }
+        let byte = escaped(sys.slice(text, i, i + length)); if !tx.write_all(1, sys.bdata(byte), sys.blen(byte)) { return false }; i = i + length
+    }
+    if append { let b = cx.buffer(1); cx.store(b, 0, 1, 13); return tx.write_all(1, sys.bdata(b), 1) }; return true
+}
+fn run_chat(args: Vec<str>): i64 {
+    if args.len() == 0 { sys.warn("chat", "usage: chat EXPECT [SEND [EXPECT...]]"); return 1 }
+    let timeout = 45; let aborts = Vec<*sys.Bytes>(); let i = 0; let status = 0; let expect = true
+    let guard = signals.open(); if guard.fd < 0 { sys.warn("chat", "cannot install signal handling"); return 1 }
+    let attrs = tty.get_attrs(0); if sys.blen(attrs) > 0 { tty.set_attrs(0, tx.raw(attrs)) }
+    while i < args.len() as i64 {
+        let word = args[i]; i = i + 1
+        if expect && (sys.same(word, "TIMEOUT") || sys.same(word, "ABORT") || sys.same(word, "SAY")) {
+            if i >= args.len() as i64 { status = 1; break }; let value = args[i]; i = i + 1
+            if sys.same(word, "TIMEOUT") { let n = sys.parse_number(value); if !n.ok || n.value < 1 || n.value > 86400 { status = 1; break }; timeout = n.value }
+            else if sys.same(word, "ABORT") { aborts.push(escaped(value)) }
+            else { let b = escaped(value); tx.write_all(2, sys.bdata(b), sys.blen(b)) }; continue
+        }
+        if !expect { if !send_chat(word) { status = 1; break }; expect = true; continue }
+        let pattern = escaped(word); let seen = sys.bytes_new(); let byte = cx.buffer(1); let end = net.now_ms() + timeout * 1000
+        while !suffix(seen, pattern) {
+            if tx.readable(guard.fd, 0) { status = 128 + signals.received(guard); break }
+            if net.now_ms() >= end { status = 3; break }
+            if !tx.readable(0, 50) { continue }; if sys.read_into(0, sys.bdata(byte), 1) != 1 { status = 1; break }
+            sys.bytes_push(seen, sys.bat(byte, 0))
+            for k in 0..(aborts.len() as i64) { if suffix(seen, aborts[k]) { status = 4 + k; break } }; if status != 0 { break }
+            if sys.blen(seen) > 65536 { let keep = sys.bytes_new(); let maximum = sys.blen(pattern); for p in aborts { if sys.blen(p) > maximum { maximum = sys.blen(p) } }; if maximum > 65536 { status = 1; break }; sys.bytes_append(keep, sys.bptr(seen, sys.blen(seen) - maximum), maximum); seen = keep }
+        }
+        if status != 0 { break }; expect = false
+    }
+    if sys.blen(attrs) > 0 { tty.set_attrs(0, attrs) }; signals.close(guard); return status
+}
+
+fn digits(value: i64, base: i64, width: i64): str {
+    let b = sys.bytes_new(); let divisor = 1; for i in 1..width { divisor = divisor * base }; let alphabet = "0123456789abcdef"
+    for i in 0..width { sys.bytes_push(b, sys.at(alphabet, value / divisor % base)); divisor = divisor / base }; return sys.bytes_cstr(b)
+}
+fn run_showkey(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "aks")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 0 || (sys.has(o, 97) && (sys.has(o, 107) || sys.has(o, 115))) || (sys.has(o, 107) && sys.has(o, 115)) { sys.warn("showkey", "usage: showkey [-a|-k|-s]"); return 1 }
+    let ascii = sys.has(o, 97); let fd = ascii ? sys.open_fd("/dev/tty", 2, 0) : hw.open_console()
+    if fd < 0 { sys.warn("showkey", "cannot open terminal"); return 1 }
+    let attrs = tty.get_attrs(fd); let original_mode = cx.buffer(4)
+    if sys.blen(attrs) == 0 { return cx.fail("showkey", fd, "cannot read terminal attributes") }
+    if !ascii && hw.control_buffer(fd, 19268, original_mode) != 0 { return cx.fail("showkey", fd, "KDGKBMODE failed") }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("showkey", fd, "cannot install signal handling") }
+    if !tty.set_attrs(fd, tx.raw(attrs)) { signals.close(guard); return cx.fail("showkey", fd, "cannot configure terminal") }
+    if !ascii && hw.control(fd, 19269, sys.has(o, 115) ? 0 : 2) != 0 { tty.set_attrs(fd, attrs); signals.close(guard); return cx.fail("showkey", fd, "KDSKBMODE failed") }
+    sys.put_fd(1, ascii ? "Press any keys - Ctrl-D terminates this program\n" : "Press any keys - program terminates after 10 seconds of inactivity\n")
+    let b = cx.buffer(1); let last = net.now_ms(); let status = 0; let extended = 0; let release = false; let key = 0
+    while true {
+        if tx.readable(guard.fd, 0) { status = 128 + signals.received(guard); break }
+        if !ascii && net.now_ms() - last >= 10000 { break }
+        if !tx.readable(fd, 50) { continue }; let n = sys.read_into(fd, sys.bdata(b), 1); if n <= 0 { break }; last = net.now_ms(); let c = sys.bat(b, 0) as i64
+        if ascii {
+            sys.put_fd(1, sys.join2(hw.decimal(c), sys.join2(" 0", sys.join2(digits(c, 8, 3), sys.join2(" 0x", sys.join2(digits(c, 16, 2), "\n")))))); if c == 4 { break }
+        } else if sys.has(o, 115) { sys.put_fd(1, sys.join2("0x", sys.join2(digits(c, 16, 2), "\n"))) }
+        else {
+            if extended > 0 { key = key * 128 + c % 128; extended = extended - 1; if extended > 0 { continue } }
+            else if c == 0 || c == 128 { release = c == 128; key = 0; extended = 2; continue }
+            else { release = c >= 128; key = c % 128 }
+            sys.put_fd(1, sys.join2("keycode ", sys.join2(hw.decimal(key), release ? " release\n" : " press\n")))
+        }
+    }
+    if !ascii { hw.control(fd, 19269, cx.le(original_mode, 0, 4)) }; tty.set_attrs(fd, attrs); sys.close_fd(fd); signals.close(guard); return status
+}

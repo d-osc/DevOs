@@ -1,0 +1,72 @@
+use "../lib/sys.dev" as sys
+use "../lib/proc.dev" as proc
+use "../lib/lines.dev" as lines
+use "./date.dev" as words
+use "./console_extra.dev" as cx
+use "./hardware.dev" as hw
+
+struct Volume { device: str, mount: str, kind: str, pass: i64 }
+fn detect(path: str): str {
+    let fd = sys.open_fd(path, 0, 0); if fd < 0 { return "" }; let b = cx.buffer(4096); let n = sys.read_into(fd, sys.bdata(b), 4096); sys.close_fd(fd)
+    if n >= 1082 && cx.le(b, 1080, 2) == 0xef53 { return "ext2" }
+    if n >= 1044 { let magic = cx.le(b, 1040, 2); if magic == 0x137f || magic == 0x138f || magic == 0x2468 || magic == 0x2478 { return "minix" } }
+    if n >= 512 && sys.bat(b, 510) == 85 && sys.bat(b, 511) == 170 && ((sys.bat(b, 54) == 70 && sys.bat(b, 55) == 65 && sys.bat(b, 56) == 84) || (sys.bat(b, 82) == 70 && sys.bat(b, 83) == 65 && sys.bat(b, 84) == 84)) { return "vfat" }
+    if n >= 4 && sys.starts(sys.bytes_cstr(b), "XFSB") { return "xfs" }; return ""
+}
+fn matches(kind: str, filter: str): bool {
+    if sys.length(filter) == 0 { return true }; let invert = sys.starts(filter, "no"); let text = invert ? sys.slice(filter, 2, sys.length(filter)) : filter
+    let found = false; let start = 0
+    for i in 0..(sys.length(text) + 1) { if i == sys.length(text) || sys.at(text, i) == 44 { if sys.same(kind, sys.slice(text, start, i)) { found = true }; start = i + 1 } }; return invert ? !found : found
+}
+fn run_fsck(args: Vec<str>): i64 {
+    let all = false; let dry = false; let parallel = false; let skip_root = false; let title = true; let verbose = false; let filter = ""; let devices = Vec<str>(); let options = Vec<str>(); let i = 0; let done = false
+    while i < args.len() as i64 {
+        let a = args[i]
+        if !done && sys.same(a, "--") { done = true; i = i + 1; continue }
+        if !done && sys.length(a) > 1 && sys.starts(a, "-") {
+            let forwarded = sys.bytes_new(); sys.bytes_push(forwarded, 45); let k = 1
+            while k < sys.length(a) {
+                let c = sys.at(a, k)
+                if c == 65 { all = true } else if c == 78 { dry = true } else if c == 80 { parallel = true } else if c == 82 { skip_root = true } else if c == 84 { title = false } else if c == 86 { verbose = true }
+                else if c == 116 || c == 67 {
+                    let value = ""; if k + 1 < sys.length(a) { value = sys.slice(a, k + 1, sys.length(a)); k = sys.length(a) } else { i = i + 1; if i >= args.len() as i64 { sys.warn("fsck", "missing option value"); return 16 }; value = args[i] }
+                    if c == 116 { filter = value } else { let fd = sys.parse_number(value); if !fd.ok || fd.value < 0 { return 16 }; options.push("-C"); options.push(value) }
+                } else { sys.bytes_push(forwarded, c) }; k = k + 1
+            }
+            if sys.blen(forwarded) > 1 { options.push(sys.bytes_cstr(forwarded)) }
+        } else { devices.push(a) }; i = i + 1
+    }
+    if title { sys.put_fd(1, "fsck (Dev OS)\n") }
+    let volumes = Vec<Volume>(); let input = sys.read_path("/etc/fstab")
+    if input.ok {
+        let ls = lines.split_lines(input.bytes, 10)
+        for k in 0..(ls.starts.len() as i64) { let p = words.words_of(lines.text_of(input.bytes, ls.starts[k], ls.ends[k])); if p.len() >= 6 && !sys.starts(p[0], "#") { volumes.push(Volume(p[0], p[1], p[2], sys.parse_number(p[5]).value)) } }
+    }
+    let jobs = Vec<Volume>()
+    if all || devices.len() == 0 {
+        let pass = 1; let maximum = 0; for v in volumes { if v.pass > maximum { maximum = v.pass } }
+        while pass <= maximum { for v in volumes { if v.pass == pass && !(skip_root && sys.same(v.mount, "/")) && matches(v.kind, filter) { jobs.push(v) } }; pass = pass + 1 }
+    } else {
+        for device in devices {
+            let kind = ""; let source = device
+            for v in volumes { if sys.same(v.device, device) || sys.same(v.mount, device) { kind = v.kind; source = v.device } }
+            if sys.length(kind) == 0 && sys.length(filter) > 0 && !sys.starts(filter, "no") && sys.find_char(filter, 44) < 0 { kind = filter }
+            if sys.length(kind) == 0 { kind = detect(source) }
+            if sys.length(kind) == 0 { sys.warn("fsck", sys.join2("cannot determine filesystem type for ", device)); return 8 }
+            if matches(kind, filter) { jobs.push(Volume(source, "", kind, 1)) }
+        }
+    }
+    let env = proc.environment(); let status = 0; let pids = Vec<i64>(); let previous_pass = 0
+    for job in jobs {
+        if job.pass != previous_pass { for pid in pids { let rc = proc.wait_for(pid); status = status | (rc < 0 ? 8 : rc) }; pids = Vec<i64>(); previous_pass = job.pass }
+        if sys.same(job.kind, "swap") || sys.same(job.kind, "none") || sys.same(job.kind, "ignore") || sys.same(job.kind, "proc") || sys.same(job.kind, "sysfs") { continue }
+        if sys.starts(job.device, "UUID=") || sys.starts(job.device, "LABEL=") { sys.warn("fsck", "UUID/LABEL lookup is not implemented"); status = status | 8; continue }
+        let cmd = Vec<str>(sys.join2("fsck.", job.kind)); for option in options { cmd.push(option) }; cmd.push(job.device)
+        if verbose || dry { for k in 0..(cmd.len() as i64) { sys.put_fd(1, k == 0 ? "" : " "); sys.put_fd(1, cmd[k]) }; sys.put_fd(1, "\n") }
+        if dry { continue }
+        if sys.length(proc.find_program(cmd[0], env)) == 0 { sys.warn("fsck", sys.join2("checker not found: ", cmd[0])); status = status | 8; continue }
+        if parallel && !sys.same(job.mount, "/") { let pid = proc.launch(cmd, env, 0); if pid < 0 { status = status | 8 } else { pids.push(pid) } }
+        else { for pid in pids { let rc = proc.wait_for(pid); status = status | (rc < 0 ? 8 : rc) }; pids = Vec<i64>(); status = status | proc.run_wait(cmd, env) }
+    }
+    for pid in pids { let rc = proc.wait_for(pid); status = status | (rc < 0 ? 8 : rc) }; return status
+}

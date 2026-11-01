@@ -1,0 +1,63 @@
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/proc.dev" as proc
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./hardware.dev" as hw
+use "./terminal_extra.dev" as tx
+extern fn getaddrinfo(node: str, service: str, hints: *void, result: *void): i32
+extern fn freeaddrinfo(result: *void)
+
+fn address(host: str): *sys.Bytes {
+    let hints = cx.buffer(48); cx.store(hints, 4, 4, 10); if sys.find_char(host, 58) >= 0 { cx.store(hints, 0, 4, 4) }
+    let result = cx.buffer(8); let out = sys.bytes_new()
+    unsafe {
+        if getaddrinfo(host, 0 as str, sys.bdata(hints) as *void, sys.bdata(result) as *void) != 0 { return out }
+        let info = cx.le(result, 0, 8) as *u8
+        if info != 0 as *u8 {
+            let count = sys.le(info, 16, 4); let pointer = sys.le(info, 24, 8) as *u8
+            if count >= 28 && pointer != 0 as *u8 { sys.bytes_append(out, pointer, 28) }
+            freeaddrinfo(info as *void)
+        }
+    }; return out
+}
+fn run_ping6(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "c:s:I:W:w:qv")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("ping6", "usage: ping6 [-q] [-c COUNT] [-s SIZE] [-I IFACE] [-W TIMEOUT] [-w DEADLINE] HOST"); return 1 }
+    let count = sys.has(o, 99) ? sys.parse_number(sys.val(o, 99)) : sys.Number(true, 0); let size = sys.has(o, 115) ? sys.parse_number(sys.val(o, 115)) : sys.Number(true, 56); let wait = sys.has(o, 87) ? sys.parse_number(sys.val(o, 87)) : sys.Number(true, 3); let duration = sys.has(o, 119) ? sys.parse_number(sys.val(o, 119)) : sys.Number(true, 0)
+    if !count.ok || count.value < 0 || (sys.has(o, 99) && count.value == 0) || !size.ok || size.value < 0 || size.value > 65000 || !wait.ok || wait.value < 1 || wait.value > 3600 || !duration.ok || duration.value < 0 || duration.value > 86400 { sys.warn("ping6", "invalid count, size or timeout"); return 1 }
+    let target = address(o.rest[0]); if sys.blen(target) != 28 { sys.warn("ping6", "bad IPv6 address"); return 1 }
+    let fd = 0 - 1; let datagram = true
+    unsafe { fd = net.socket(10, 524290, 58) as i64; if fd < 0 { datagram = false; fd = net.socket(10, 524291, 58) as i64 } }
+    if fd < 0 { sys.warn("ping6", "cannot create ICMPv6 socket"); return 1 }
+    if sys.has(o, 73) {
+        let device = sys.bytes_new(); sys.bytes_str(device, sys.val(o, 73)); sys.bytes_push(device, 0); let rc = 0 - 1
+        unsafe { rc = net.setsockopt(fd as i32, 1, 25, sys.bdata(device) as *void, sys.blen(device) as u32) as i64 }
+        if rc != 0 { return cx.fail("ping6", fd, "cannot bind interface") }
+    }
+    let guard = signals.open(); if guard.fd < 0 { return cx.fail("ping6", fd, "cannot install signal handling") }
+    let sent = 0; let received = 0; let stopped = false; let start = net.now_ms(); let end = duration.value > 0 ? start + duration.value * 1000 : 0; let identifier = proc.my_pid() % 65536
+    sys.put_fd(1, sys.join2("PING ", sys.join2(o.rest[0], sys.join2(" (IPv6): ", sys.join2(hw.decimal(size.value), " data bytes\n")))))
+    let reply = cx.buffer(65536)
+    while !stopped && (count.value == 0 || sent < count.value) && (end == 0 || net.now_ms() < end) {
+        let packet = cx.buffer(8 + size.value); cx.store(packet, 0, 1, 128); cx.store(packet, 4, 1, identifier / 256); cx.store(packet, 5, 1, identifier % 256); let sequence = sent % 65536; cx.store(packet, 6, 1, sequence / 256); cx.store(packet, 7, 1, sequence % 256)
+        for i in 8..sys.blen(packet) { cx.store(packet, i, 1, i % 256) }
+        let stamp = net.now_ms(); let written = 0 - 1; unsafe { written = net.sendto(fd as i32, sys.bdata(packet) as *void, sys.blen(packet) as usize, 0, sys.bdata(target) as *void, 28) as i64 }; sent = sent + 1
+        if written != sys.blen(packet) { sys.warn("ping6", "send failed"); break }
+        let deadline = stamp + wait.value * 1000; if end > 0 && end < deadline { deadline = end }; let matched = false
+        while net.now_ms() < deadline {
+            if tx.readable(guard.fd, 0) { signals.received(guard); stopped = true; break }; if !tx.readable(fd, 50) { continue }
+            let peer = cx.buffer(28); let length = cx.buffer(4); cx.store(length, 0, 4, 28); let n = 0 - 1
+            unsafe { n = net.recvfrom(fd as i32, sys.bdata(reply) as *void, 65536, 0, sys.bdata(peer) as *void, sys.bdata(length) as *void) as i64 }
+            if n != 8 + size.value || sys.bat(reply, 0) != 129 || sys.bat(reply, 1) != 0 || (sys.bat(reply, 6) as i64) * 256 + sys.bat(reply, 7) as i64 != sequence { continue }
+            let valid = true; for i in 8..24 { if sys.bat(peer, i) != sys.bat(target, i) { valid = false } }; if !datagram && (sys.bat(reply, 4) as i64) * 256 + sys.bat(reply, 5) as i64 != identifier { valid = false }; for i in 8..n { if sys.bat(reply, i) != sys.bat(packet, i) { valid = false } }; if !valid { continue }
+            received = received + 1; matched = true
+            if !sys.has(o, 113) { sys.put_fd(1, sys.join2(hw.decimal(n), sys.join2(" bytes from ", sys.join2(o.rest[0], sys.join2(": seq=", sys.join2(hw.decimal(sequence), sys.join2(" time=", sys.join2(hw.decimal(net.now_ms() - stamp), " ms\n")))))))) }; break
+        }
+        if !matched && !stopped && !sys.has(o, 113) { sys.put_fd(1, sys.join2("Request timeout for seq ", sys.join2(hw.decimal(sequence), "\n"))) }
+        if !stopped && (count.value == 0 || sent < count.value) { let pause = stamp + 1000 - net.now_ms(); if pause > 0 && tx.readable(guard.fd, pause) { signals.received(guard); stopped = true } }
+    }
+    sys.close_fd(fd); signals.close(guard)
+    sys.put_fd(1, sys.join2("--- ", sys.join2(o.rest[0], " ping statistics ---\n")))
+    sys.put_fd(1, sys.join2(hw.decimal(sent), sys.join2(" packets transmitted, ", sys.join2(hw.decimal(received), sys.join2(" packets received, ", sys.join2(hw.decimal(sent == 0 ? 100 : (sent - received) * 100 / sent), "% packet loss\n")))))); return received > 0 ? 0 : 1
+}

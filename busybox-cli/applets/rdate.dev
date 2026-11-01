@@ -1,0 +1,50 @@
+# RFC 868 over TCP, with print-only and set-only modes.
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/clock.dev" as clock
+
+extern fn clock_settime(clock: i32, spec: *void): i32
+
+fn run_rdate(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "sp")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 {
+        sys.warn("rdate", "usage: rdate [-s | -p] HOST"); return 1
+    }
+    let host = o.rest[0]; let port = 37
+    let colon = sys.last_char(host, 58)
+    if colon >= 0 {
+        let text = sys.slice(host, colon + 1, sys.length(host))
+        if colon == 0 || sys.length(text) == 0 || sys.length(text) > 5 { sys.warn("rdate", "bad host or port"); return 1 }
+        for i in 0..sys.length(text) { if !sys.is_digit(sys.at(text, i)) { sys.warn("rdate", "bad port"); return 1 } }
+        let number = sys.parse_number(text)
+        if !number.ok || number.value < 1 || number.value > 65535 { sys.warn("rdate", "bad port"); return 1 }
+        port = number.value; host = sys.slice(host, 0, colon)
+    }
+    let ip = net.resolve(host)
+    if ip < 0 { sys.warn("rdate", "bad address"); return 1 }
+    let fd = net.connect_to(ip, port, 10)
+    if fd < 0 { sys.warn("rdate", "cannot connect to time server"); return 1 }
+    let bytes = sys.bytes_new(); for i in 0..4 { sys.bytes_push(bytes, 0) }
+    let got = 0
+    while got < 4 {
+        let n = net.recv_some(fd, sys.bptr(bytes, got), 4 - got)
+        if n <= 0 { sys.close_fd(fd); sys.warn("rdate", "incomplete time response"); return 1 }
+        got = got + n
+    }
+    sys.close_fd(fd)
+    let stamp = 0; for i in 0..4 { stamp = stamp * 256 + sys.bat(bytes, i) as i64 }
+    stamp = stamp - 2208988800
+    # RFC 868 wraps every 2^32 seconds: choose the era nearest the local clock.
+    let now = clock.now()
+    while stamp - now < 0 - 2147483648 { stamp = stamp + 4294967296 }
+    while stamp - now > 2147483647 { stamp = stamp - 4294967296 }
+    if !sys.has(o, 112) {
+        unsafe {
+            let spec = sys.calloc(2, 8) as *i64; spec[0] = stamp
+            let rc = clock_settime(0, spec as *void); sys.free(spec as *void)
+            if rc != 0 { sys.warn("rdate", "cannot set system time"); return 1 }
+        }
+    }
+    if !sys.has(o, 115) || sys.has(o, 112) { sys.put_fd(1, sys.join2(clock.format("%a %b %e %H:%M:%S %Y", clock.fields(stamp, false), stamp, false), "\n")) }
+    return 0
+}

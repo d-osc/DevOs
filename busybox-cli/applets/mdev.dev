@@ -1,0 +1,114 @@
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/regex.dev" as regex
+use "../lib/lines.dev" as lines
+use "./date.dev" as words
+use "./mime.dev" as text
+use "./files.dev" as files
+use "./misc.dev" as nodes
+use "./netadmin.dev" as io
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+
+struct Rule { pattern: *i64, uid: i64, gid: i64, mode: i64, target: str, command: str, event: u8, next: bool }
+struct Context { sysroot: str, devroot: str, rules: Vec<Rule> }
+fn root(variable: str, fallback: str): str { if fsx.uid() == fsx.euid() { let value = proc.lookup(proc.environment(), variable); if value.found { return value.value } }; return fallback }
+fn safe(path: str): bool {
+    if sys.length(path) == 0 || sys.starts(path, "/") { return false }; let start = 0
+    for i in 0..(sys.length(path) + 1) { if i < sys.length(path) && sys.at(path, i) < 32 { return false }; if i == sys.length(path) || sys.at(path, i) == 47 { let part = sys.slice(path, start, i); if sys.length(part) == 0 || sys.same(part, ".") || sys.same(part, "..") { return false }; start = i + 1 } }; return true
+}
+fn under(path: str, directory: str): bool { return sys.same(path, directory) || sys.starts(path, sys.join2(directory, "/")) }
+fn parents(c: Context, relative: str): bool {
+    let last = sys.last_char(relative, 47); if last < 0 { return true }
+    let path = c.devroot; let start = 0
+    for i in 0..(last + 1) {
+        if sys.at(relative, i) != 47 { continue }; path = fsx.join_path(path, sys.slice(relative, start, i)); start = i + 1
+        if !sys.exists(path) && !fsx.make_dir(path, 493) { return false }; let resolved = files.canonical(path, false); if !under(resolved, c.devroot) || !sys.is_dir(resolved) { return false }
+    }; return true
+}
+fn expand(template: str, name: str, captures: *i64, groups: i64): str {
+    let out = sys.bytes_new(); let i = 0
+    while i < sys.length(template) {
+        let c = sys.at(template, i); i = i + 1
+        if c == 37 && i < sys.length(template) && sys.at(template, i) >= 48 && sys.at(template, i) <= 57 {
+            let group = (sys.at(template, i) - 48) as i64; i = i + 1; if group > groups { return "" }; let start = 0 - 1; let end = 0 - 1; unsafe { start = captures[group * 2]; end = captures[group * 2 + 1] }; if start >= 0 && end >= start && end <= sys.length(name) { sys.bytes_str(out, sys.slice(name, start, end)) }
+        } else { sys.bytes_push(out, c) }
+    }; return sys.bytes_cstr(out)
+}
+fn apply(c: Context, name: str, major: i64, minor: i64, subsystem: str, action: str, rule: Rule, captures: *i64): bool {
+    let relative = name; let symlink = false; let skip = sys.same(rule.target, "!")
+    if sys.starts(rule.target, "=") || sys.starts(rule.target, ">") {
+        relative = expand(sys.slice(rule.target, 1, sys.length(rule.target)), name, captures, regex.groups(rule.pattern)); symlink = sys.starts(rule.target, ">"); if sys.ends(relative, "/") { relative = sys.join2(relative, sys.base_name(name)) }
+    }
+    if !safe(relative) || !safe(name) { sys.warn("mdev", "invalid device path"); return false }; let path = fsx.join_path(c.devroot, relative); let removing = sys.same(action, "remove")
+    if removing { let parent = files.canonical(files.parent_of(path), false); if sys.length(parent) > 0 && !under(parent, c.devroot) { sys.warn("mdev", "device parent escapes device directory"); return false } }
+    let env = proc.environment(); env = proc.set_variable(env, "MDEV", name); env = proc.set_variable(env, "ACTION", action); env = proc.set_variable(env, "SUBSYSTEM", subsystem)
+    if major >= 0 { env = proc.set_variable(env, "MAJOR", hw.decimal(major)); env = proc.set_variable(env, "MINOR", hw.decimal(minor)) }
+    let execute = sys.length(rule.command) > 0 && (rule.event == 42 || (removing ? rule.event == 36 : rule.event == 64))
+    if removing && execute { if proc.run_wait(Vec<str>("/bin/sh", "-c", rule.command), env) != 0 { return false } }
+    if !skip && major >= 0 && minor >= 0 {
+        let device = ((major as u64) & (0xfff as u64)) << (8 as u64) | ((major as u64) & (0xfffff000 as u64)) << (32 as u64) | ((minor as u64) & (0xff as u64)) | ((minor as u64) & (0xffffff00 as u64)) << (12 as u64)
+        if removing {
+            let info = sys.file_info(path, false)
+            if info.ok && ((info.mode / 4096 == 2 || info.mode / 4096 == 6) && info.rdev as u64 == device) { if fsx.do_unlink(path) != 0 { return false } }
+            if symlink && sys.is_link_mode(sys.file_info(fsx.join_path(c.devroot, name), false).mode) { fsx.do_unlink(fsx.join_path(c.devroot, name)) }
+        } else {
+            if !parents(c, relative) { sys.warn("mdev", "cannot create safe device parent directories"); return false }; let info = sys.file_info(path, false); let kind = sys.same(subsystem, "block") ? 24576 : 8192
+            if info.ok { if info.mode / 4096 != kind / 4096 || info.rdev as u64 != device { sys.warn("mdev", "refusing to replace a different existing file/device"); return false } }
+            else { let rc = 0 - 1; unsafe { rc = nodes.mknod(path, (kind | rule.mode) as u32, device) as i64 }; if rc != 0 { sys.warn_write("mdev", path); return false } }
+            if fsx.do_chown(path, rule.uid, rule.gid) != 0 || fsx.do_chmod(path, rule.mode) != 0 { return false }
+            if symlink && !sys.same(name, relative) { if !parents(c, name) { return false }; let link = fsx.join_path(c.devroot, name); let current = sys.file_info(link, false); if current.ok && !sys.is_link_mode(current.mode) { return false }; if current.ok { fsx.do_unlink(link) }; if fsx.do_symlink(path, link) != 0 { return false } }
+        }
+    }
+    if !removing && execute { if proc.run_wait(Vec<str>("/bin/sh", "-c", rule.command), env) != 0 { return false } }; return true
+}
+fn event(c: Context, path: str, action: str, override: Vec<str>): bool {
+    let name = ""; let subsystem = ""; let major = 0 - 1; let minor = 0 - 1
+    let uevent = sys.read_path(fsx.join_path(path, "uevent")); let values = override
+    if uevent.ok { let ls = lines.split_lines(uevent.bytes, 10); for i in 0..(ls.starts.len() as i64) { values.push(lines.text_of(uevent.bytes, ls.starts[i], ls.ends[i])) } }
+    # Explicit hotplug environment wins over sysfs file values.
+    for value in values {
+        if sys.starts(value, "DEVNAME=") && sys.length(name) == 0 { name = sys.slice(value, 8, sys.length(value)) }
+        else if sys.starts(value, "SUBSYSTEM=") && sys.length(subsystem) == 0 { subsystem = sys.slice(value, 10, sys.length(value)) }
+        else if sys.starts(value, "MAJOR=") && major < 0 { let n = sys.parse_number(sys.slice(value, 6, sys.length(value))); if n.ok { major = n.value } }
+        else if sys.starts(value, "MINOR=") && minor < 0 { let n = sys.parse_number(sys.slice(value, 6, sys.length(value))); if n.ok { minor = n.value } }
+    }
+    if sys.length(name) == 0 { name = sys.base_name(path) }
+    if sys.length(subsystem) == 0 { subsystem = sys.base_name(fsx.read_link(fsx.join_path(path, "subsystem"))) }
+    if major < 0 || minor < 0 { let number = io.read_text(fsx.join_path(path, "dev")); let colon = sys.find_char(number, 58); if colon >= 0 { let a = sys.parse_number(sys.slice(number, 0, colon)); let b = sys.parse_number(sys.slice(number, colon + 1, sys.length(number))); if a.ok && b.ok { major = a.value; minor = b.value } } }
+    if major > 0xffffffff || minor > 0xffffffff { return false }; let b = sys.bytes_new(); sys.bytes_str(b, name); let matched = false
+    for rule in c.rules { let caps = regex.new_caps(rule.pattern); if regex.search(rule.pattern, sys.bdata(b), sys.blen(b), 0, caps) { matched = true; if !apply(c, name, major, minor, subsystem, action, rule, caps) { return false }; if !rule.next { break } } }
+    if !matched { let pattern = regex.compile(".*", true, false); let rule = Rule(pattern, 0, 0, 432, "", "", 0, false); if !apply(c, name, major, minor, subsystem, action, rule, regex.new_caps(pattern)) { return false } }; return true
+}
+fn scan(c: Context, path: str, depth: i64): bool {
+    if depth > 128 { return false }; let ok = true
+    if sys.exists(fsx.join_path(path, "dev")) { ok = event(c, path, "add", Vec<str>()) }
+    let list = fsx.list_dir(path); if !list.ok { return false }
+    for name in list.names { let child = fsx.join_path(path, name); let info = sys.file_info(child, false); if info.ok && sys.is_dir_mode(info.mode) { if !scan(c, child, depth + 1) { ok = false } } }; return ok
+}
+fn run_mdev(args: Vec<str>): i64 {
+    if args.len() > 1 || (args.len() == 1 && !sys.same(args[0], "-s")) { sys.warn("mdev", "usage: mdev [-s]"); return 1 }
+    let sysroot = files.canonical(root("BUSYBOX_SYS", "/sys"), false); let devroot = files.canonical(root("BUSYBOX_DEV", "/dev"), false); if sys.length(sysroot) == 0 || sys.length(devroot) == 0 { sys.warn("mdev", "sysfs/device directory is unavailable"); return 1 }; let rules = Vec<Rule>(); let etc = root("BUSYBOX_ETC", "/etc")
+    let input = sys.read_path(fsx.join_path(etc, "mdev.conf"))
+    if input.ok {
+        let ls = lines.split_lines(input.bytes, 10)
+        for i in 0..(ls.starts.len() as i64) {
+            let line = text.trim(lines.text_of(input.bytes, ls.starts[i], ls.ends[i])); if sys.length(line) == 0 || sys.starts(line, "#") { continue }; let fields = words.words_of(line); if fields.len() < 3 { sys.warn("mdev", "invalid config line"); return 1 }
+            let colon = sys.find_char(fields[1], 58); if colon < 0 { return 1 }; let uid = fsx.lookup_id(fsx.join_path(etc, "passwd"), sys.slice(fields[1], 0, colon)); let gid = fsx.lookup_id(fsx.join_path(etc, "group"), sys.slice(fields[1], colon + 1, sys.length(fields[1]))); let mode = fsx.apply_mode(fields[2], 0, false)
+            if uid < 0 || gid < 0 || mode < 0 { sys.warn("mdev", "invalid owner or permissions"); return 1 }; let next = sys.starts(fields[0], "-"); let pattern = regex.compile(sys.join2("^", sys.join2(next ? sys.slice(fields[0], 1, sys.length(fields[0])) : fields[0], "$")), true, false); if regex.failed(pattern) { return 1 }
+            let position = 0; for field in 0..3 { while position < sys.length(line) && (sys.at(line, position) == 32 || sys.at(line, position) == 9) { position = position + 1 }; while position < sys.length(line) && sys.at(line, position) != 32 && sys.at(line, position) != 9 { position = position + 1 } }; let tail = text.trim(sys.slice(line, position, sys.length(line))); let target = ""
+            if sys.starts(tail, "=") || sys.starts(tail, ">") || sys.starts(tail, "!") { let end = 0; while end < sys.length(tail) && sys.at(tail, end) != 32 && sys.at(tail, end) != 9 { end = end + 1 }; target = sys.slice(tail, 0, end); tail = text.trim(sys.slice(tail, end, sys.length(tail))) }
+            let command = ""; let when = 0 as u8; if sys.length(tail) > 0 { when = sys.at(tail, 0); if when != 64 && when != 36 && when != 42 { sys.warn("mdev", "invalid action prefix"); return 1 }; command = sys.slice(tail, 1, sys.length(tail)) }; rules.push(Rule(pattern, uid, gid, mode, target, command, when, next))
+        }
+    }
+    let context = Context(sysroot, devroot, rules)
+    if args.len() == 1 { return scan(context, fsx.join_path(sysroot, "devices"), 0) ? 0 : 1 }
+    let env = proc.environment(); let devpath = proc.lookup(env, "DEVPATH"); let action = proc.lookup(env, "ACTION"); let relative = devpath.found && sys.starts(devpath.value, "/") ? sys.slice(devpath.value, 1, sys.length(devpath.value)) : devpath.value
+    if !devpath.found || !action.found || !safe(relative) { sys.warn("mdev", "ACTION and a valid DEVPATH are required"); return 1 }; let path = fsx.join_path(sysroot, relative); let firmware = proc.lookup(env, "FIRMWARE")
+    if firmware.found && !sys.same(action.value, "remove") {
+        if !safe(firmware.value) { return 1 }; let loading = fsx.join_path(path, "loading"); if !io.write_text(loading, "1") { return 1 }; let data = sys.read_path(fsx.join_path(root("BUSYBOX_FIRMWARE", "/lib/firmware"), firmware.value)); let fd = data.ok ? sys.open_fd(fsx.join_path(path, "data"), 1, 0) : 0 - 1; let ok = data.ok && fd >= 0 && tx.write_all(fd, sys.bdata(data.bytes), sys.blen(data.bytes)); if fd >= 0 { sys.close_fd(fd) }; if !io.write_text(loading, ok ? "0" : "-1") { return 1 }; return ok ? 0 : 1
+    }
+    if !sys.same(action.value, "add") && !sys.same(action.value, "remove") { return 0 }
+    return event(context, path, action.value, env) ? 0 : 1
+}

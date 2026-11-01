@@ -6,6 +6,9 @@ use "../lib/proc.dev" as proc
 use "../lib/net.dev" as net
 use "../lib/clock.dev" as clock
 use "./accounts.dev" as ac
+use "../lib/log_ring.dev" as ring
+use "../lib/signal_fd.dev" as signals
+use "./terminal_extra.dev" as terminal
 
 fn decimal(v: i64): str { let b = sys.bytes_new(); sys.bytes_num(b, v); return sys.join2(sys.bytes_cstr(b), "") }
 fn log_socket_path(): str { let v = proc.lookup(proc.environment(), "BUSYBOX_DEVLOG"); return v.found && sys.length(v.value) > 0 ? v.value : "/dev/log" }
@@ -55,7 +58,7 @@ fn looks_like_stamp(s: str): bool {
 }
 fn format_record(packet: str, host: str): str {
     let priority = 13; let body = packet
-    if sys.starts(body, "<") { let close = sys.find_char(body, 62); if close > 0 { let p = sys.parse_number(sys.join2(sys.slice(body, 1, close), "")); if p.ok { priority = p.value }; body = sys.join2(sys.slice(body, close + 1, sys.length(body)), "") } }
+    if sys.starts(body, "<") { let close = sys.find_char(body, 62); if close > 0 { let p = sys.parse_number(sys.join2(sys.slice(body, 1, close), "")); if p.ok && p.value >= 0 && p.value < 192 { priority = p.value }; body = sys.join2(sys.slice(body, close + 1, sys.length(body)), "") } }
     if sys.length(body) > 0 && sys.at(body, 0) == 32 { body = sys.join2(sys.slice(body, 1, sys.length(body)), "") }
     let now = clock.now(); let stamp = clock.format("%b %e %H:%M:%S", clock.fields(now, false), now, false)
     if looks_like_stamp(body) { stamp = sys.join2(sys.slice(body, 0, 15), ""); body = sys.join2(sys.slice(body, 16, sys.length(body)), "") }
@@ -63,24 +66,33 @@ fn format_record(packet: str, host: str): str {
     return sys.join2(sys.join2(sys.join2(stamp, " "), sys.join2(host, " ")), sys.join2(sys.join2(sys.join2(f < (fac.len() as i64) ? fac[f] : "user", "."), lev[l]), sys.join2(" ", body)))
 }
 fn run_syslogd(args: Vec<str>): i64 {
-    let o = sys.parse_opts(args, "nO:l:S:s:b:R:LCm:KD")
+    let normalized = Vec<str>(); let circular = false; let kilobytes = 16; let index = 0
+    while index < args.len() as i64 { let value = args[index]; if sys.starts(value, "-C") { circular = true; if sys.length(value) > 2 { let n = sys.parse_number(sys.slice(value, 2, sys.length(value))); if !n.ok || n.value < 1 || n.value > 1024 { sys.warn("syslogd", "invalid circular buffer size"); return 1 }; kilobytes = n.value }; normalized.push("-C") } else { normalized.push(value) }; index = index + 1 }
+    let o = sys.parse_opts(normalized, "nO:l:S:s:b:R:LCm:KD")
     if o.bad != 0 || o.missing != 0 { sys.warn("syslogd", "invalid usage: syslogd [-n] [-O FILE] [-l LEVEL]"); return 1 }
     let path = log_socket_path()
     fsx.do_unlink(path)
     let fd = net.unix_socket(); if fd < 0 || !net.unix_bind(fd, path) { sys.warn("syslogd", sys.join2(sys.join2("can't bind ", path), "")); return 1 }
     fsx.do_chmod(path, 438)
     let target = sys.has(o, 79) ? sys.val(o, 79) : "/var/log/messages"; let host = hostname()
-    let log_fd = sys.open_fd(target, 1089, 420)
-    if log_fd < 0 { sys.warn_write("syslogd", target); return 1 }
+    let log_fd = circular && !sys.has(o, 79) ? 0 - 1 : (sys.same(target, "-") ? 1 : sys.open_fd(target, 1089, 420))
+    if log_fd < 0 && !(circular && !sys.has(o, 79)) { sys.close_fd(fd); fsx.do_unlink(path); sys.warn_write("syslogd", target); return 1 }
+    let memory = circular ? ring.open(true, kilobytes * 1024) : ring.disabled()
+    if circular && !memory.ok { if log_fd > 2 { sys.close_fd(log_fd) }; sys.close_fd(fd); fsx.do_unlink(path); sys.warn("syslogd", "cannot create circular log (IPC key may already be in use)"); return 1 }
+    let guard = signals.open(); if guard.fd < 0 { if circular { ring.close(memory) }; if log_fd > 2 { sys.close_fd(log_fd) }; sys.close_fd(fd); fsx.do_unlink(path); return 1 }
     let buffer = sys.bytes_new(); for i in 0..2048 { sys.bytes_push(buffer, 0) }
+    let status = 0
     while true {
+        if terminal.readable(guard.fd, 0) { signals.received(guard); break }; if !terminal.readable(fd, 100) { continue }
         let n = net.unix_receive(fd, sys.bdata(buffer), 2047)
         if n <= 0 { continue }
         let text = sys.bytes_new(); for i in 0..n { let c = sys.bat(buffer, i); if c != 0 { sys.bytes_push(text, c) } }
         let line = sys.join2(format_record(sys.join2(sys.bytes_cstr(text), ""), host), "\n")
-        let b = sys.bytes_new(); sys.bytes_str(b, line); sys.write_fd(log_fd, sys.bdata(b), sys.blen(b))
+        let b = sys.bytes_new(); sys.bytes_str(b, line)
+        if log_fd >= 0 && !terminal.write_all(log_fd, sys.bdata(b), sys.blen(b)) { status = 1; break }
+        if circular && !ring.write(memory, b) { sys.warn("syslogd", "circular buffer write failed"); status = 1; break }
     }
-    return 0
+    if circular { ring.close(memory) }; if log_fd > 2 { sys.close_fd(log_fd) }; sys.close_fd(fd); fsx.do_unlink(path); signals.close(guard); return status
 }
 fn run_klogd(args: Vec<str>): i64 {
     let o = sys.parse_opts(args, "nc:")

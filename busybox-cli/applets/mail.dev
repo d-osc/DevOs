@@ -1,0 +1,152 @@
+# SMTP and POP3 protocol clients. TLS can be supplied by the documented
+# connection helper; no other mail client is invoked.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "../lib/net.dev" as net
+use "../lib/clock.dev" as clock
+use "../lib/base64.dev" as b64
+use "./mime.dev" as text
+use "./date.dev" as words
+use "./pw.dev" as pw
+use "./hash.dev" as hash
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+extern fn socketpair(domain: i32, kind: i32, protocol: i32, descriptors: *void): i32
+
+struct Connection { input: i64, output: i64, child: i64 }
+fn helper(command: Vec<str>): Connection {
+    let pair = cx.buffer(8); let rc = 0 - 1; unsafe { rc = socketpair(1, 524289, 0, sys.bdata(pair) as *void) as i64 }
+    if rc != 0 { return Connection(0 - 1, 0 - 1, 0 - 1) }
+    let parent = cx.le(pair, 0, 4); let child = cx.le(pair, 4, 4); let pid = proc.launch_fds(command, proc.environment(), child, child); sys.close_fd(child)
+    if pid < 0 { sys.close_fd(parent); return Connection(0 - 1, 0 - 1, 0 - 1) }; return Connection(parent, parent, pid)
+}
+fn close(c: Connection) {
+    if c.input > 2 { sys.close_fd(c.input) }; if c.output > 2 && c.output != c.input { sys.close_fd(c.output) }
+    if c.child > 0 { let end = net.now_ms() + 1000; while net.now_ms() < end { if proc.poll_exit(c.child) >= 0 { return }; proc.pause_us(10000) }; proc.send_signal(c.child, 9); proc.wait_for(c.child) }
+}
+struct Line { ok: bool, text: str }
+fn line(fd: i64): Line {
+    let b = sys.bytes_new(); let byte = cx.buffer(1)
+    while sys.blen(b) < 1048576 { let n = sys.read_into(fd, sys.bdata(byte), 1); if n != 1 { return Line(false, "") }; let c = sys.bat(byte, 0); if c == 10 { let n = sys.blen(b); if n > 0 && sys.bat(b, n - 1) == 13 { sys.bptr_set(b, n - 1, 0) }; return Line(true, sys.bytes_cstr(b)) }; if c == 0 { return Line(false, "") }; sys.bytes_push(b, c) }; return Line(false, "")
+}
+fn send(c: Connection, command: str): bool { let b = sys.bytes_new(); sys.bytes_str(b, command); sys.bytes_str(b, "\r\n"); return tx.write_all(c.output, sys.bdata(b), sys.blen(b)) }
+fn smtp_reply(c: Connection, expected: i64): bool {
+    for i in 0..100 {
+        let reply = line(c.input); if !reply.ok || sys.length(reply.text) < 3 { return false }; let number = sys.parse_number(sys.slice(reply.text, 0, 3)); if !number.ok || number.value != expected { return false }
+        if sys.length(reply.text) == 3 || sys.at(reply.text, 3) == 32 { return true }; if sys.at(reply.text, 3) != 45 { return false }
+    }; return false
+}
+fn safe_address(value: str): bool { if sys.length(value) == 0 { return false }; for i in 0..sys.length(value) { let c = sys.at(value, i); if c <= 32 || c == 60 || c == 62 || c == 127 { return false } }; return true }
+fn recipients(text_value: str): Vec<str> {
+    let out = Vec<str>(); let start = 0; let angle = false; let quoted = false
+    for i in 0..(sys.length(text_value) + 1) {
+        let c = i == sys.length(text_value) ? (44 as u8) : sys.at(text_value, i)
+        if c == 34 { quoted = !quoted }; if !quoted && c == 60 { angle = true }; if !quoted && c == 62 { angle = false }
+        if c == 44 && !angle && !quoted {
+            let value = text.trim(sys.slice(text_value, start, i)); let left = sys.find_char(value, 60); let right = sys.find_char(value, 62); if left >= 0 && right > left { value = sys.slice(value, left + 1, right) }; if safe_address(value) { out.push(value) }; start = i + 1
+        }
+    }; return out
+}
+fn auth_text(value: str): str { let b = sys.bytes_new(); sys.bytes_str(b, value); return sys.bytes_cstr(b64.encode(b, false)) }
+fn run_sendmail(args: Vec<str>): i64 {
+    let sender = ""; let server = "127.0.0.1"; let helper_text = ""; let username = ""; let password = ""; let timeout = 30; let target = Vec<str>(); let i = 0
+    while i < args.len() as i64 {
+        let a = args[i]
+        if sys.starts(a, "-au") { username = sys.slice(a, 3, sys.length(a)); if sys.length(username) == 0 && i + 1 < args.len() as i64 { i = i + 1; username = args[i] } }
+        else if sys.starts(a, "-ap") { password = sys.slice(a, 3, sys.length(a)); if sys.length(password) == 0 && i + 1 < args.len() as i64 { i = i + 1; password = args[i] } }
+        else if sys.same(a, "-f") || sys.same(a, "-S") || sys.same(a, "-H") || sys.same(a, "-w") || sys.same(a, "-o") {
+            if i + 1 >= args.len() as i64 { sys.warn("sendmail", "missing option argument"); return 1 }; i = i + 1; let value = args[i]
+            if sys.same(a, "-f") { sender = value } else if sys.same(a, "-S") { server = value } else if sys.same(a, "-H") { helper_text = value } else if sys.same(a, "-w") { let n = sys.parse_number(value); if !n.ok || n.value < 1 || n.value > 3600 { return 1 }; timeout = n.value }
+        } else if !sys.starts(a, "-") { if !safe_address(a) { sys.warn("sendmail", "invalid recipient"); return 1 }; target.push(a) }; i = i + 1
+    }
+    if !safe_address(sender) { sys.warn("sendmail", "a valid -f sender is required"); return 1 }
+    let input = sys.read_fd(0); if !input.ok { sys.warn("sendmail", "message read failed"); return 1 }
+    for k in 0..sys.blen(input.bytes) { if sys.bat(input.bytes, k) == 0 { sys.warn("sendmail", "NUL bytes are not valid SMTP message data"); return 1 } }
+    let body = sys.bytes_new(); let pos = 0; let headers = true; let dropping = false; let pending = ""
+    while pos < sys.blen(input.bytes) {
+        let start = pos; while pos < sys.blen(input.bytes) && sys.bat(input.bytes, pos) != 10 { pos = pos + 1 }; let end = pos; if end > start && sys.bat(input.bytes, end - 1) == 13 { end = end - 1 }; if pos < sys.blen(input.bytes) { pos = pos + 1 }
+        let value = sys.slice(sys.bytes_cstr(input.bytes), start, end)
+        if headers {
+            let folded = sys.length(value) > 0 && (sys.at(value, 0) == 32 || sys.at(value, 0) == 9)
+            if !folded {
+                if sys.length(pending) > 0 { for recipient in recipients(pending) { target.push(recipient) }; pending = "" }
+                let colon = sys.find_char(value, 58); let key = colon >= 0 ? text.lower(sys.slice(value, 0, colon)) : ""
+                dropping = sys.same(key, "bcc")
+                if sys.same(key, "to") || sys.same(key, "cc") || dropping { pending = text.trim(sys.slice(value, colon + 1, sys.length(value))) }
+            } else if sys.length(pending) > 0 { pending = sys.join2(pending, sys.join2(" ", text.trim(value))) }
+            if sys.length(value) == 0 { headers = false; dropping = false }
+        }
+        if !dropping { if end > start && sys.bat(input.bytes, start) == 46 { sys.bytes_push(body, 46) }; sys.bytes_append(body, sys.bptr(input.bytes, start), end - start); sys.bytes_str(body, "\r\n") }
+    }
+    if sys.length(pending) > 0 { for recipient in recipients(pending) { target.push(recipient) } }
+    if target.len() == 0 { sys.warn("sendmail", "no recipients"); return 1 }
+    let connection = Connection(0 - 1, 0 - 1, 0 - 1)
+    if sys.length(helper_text) > 0 { connection = helper(Vec<str>("/bin/sh", "-c", helper_text)) }
+    else {
+        let port = 25; let colon = sys.last_char(server, 58); let host = server
+        if colon >= 0 { let n = sys.parse_number(sys.slice(server, colon + 1, sys.length(server))); if !n.ok || n.value < 1 || n.value > 65535 { return 1 }; port = n.value; host = sys.slice(server, 0, colon) }
+        let ip = net.resolve(host); if ip < 0 { sys.warn("sendmail", "bad server address"); return 1 }; let fd = net.connect_to(ip, port, timeout); connection = Connection(fd, fd, 0 - 1)
+    }
+    if connection.input < 0 { sys.warn("sendmail", "cannot connect to SMTP server"); return 1 }; net.set_timeout(connection.input, timeout)
+    let ok = smtp_reply(connection, 220) && send(connection, "EHLO localhost") && smtp_reply(connection, 250)
+    if ok && sys.length(username) > 0 { ok = send(connection, "AUTH LOGIN") && smtp_reply(connection, 334) && send(connection, auth_text(username)) && smtp_reply(connection, 334) && send(connection, auth_text(password)) && smtp_reply(connection, 235) }
+    if ok { ok = send(connection, sys.join2("MAIL FROM:<", sys.join2(sender, ">"))) && smtp_reply(connection, 250) }
+    let seen = Vec<str>()
+    for recipient in target {
+        let duplicate = false; for previous in seen { if sys.same(previous, recipient) { duplicate = true } }; if duplicate { continue }; seen.push(recipient)
+        if ok { ok = send(connection, sys.join2("RCPT TO:<", sys.join2(recipient, ">"))) && smtp_reply(connection, 250) }
+    }
+    if ok { ok = send(connection, "DATA") && smtp_reply(connection, 354) && tx.write_all(connection.output, sys.bdata(body), sys.blen(body)) && send(connection, ".") && smtp_reply(connection, 250) }
+    if ok { send(connection, "QUIT"); smtp_reply(connection, 221) }; close(connection)
+    if !ok { sys.warn("sendmail", "SMTP delivery failed"); return 1 }; return 0
+}
+fn pop(c: Connection, command: str): Line { if !send(c, command) { return Line(false, "") }; let reply = line(c.input); return Line(reply.ok && sys.starts(reply.text, "+OK"), reply.text) }
+fn run_popmaildir(args: Vec<str>): i64 {
+    let skip = false; let keep = false; let top = false; let timeout = 30; let filters = Vec<str>(); let delivery = ""; let i = 0
+    while i < args.len() as i64 && sys.starts(args[i], "-") {
+        let a = args[i]
+        if sys.same(a, "-s") { skip = true } else if sys.same(a, "-k") { keep = true } else if sys.same(a, "-T") { top = true }
+        else if sys.same(a, "-t") || sys.same(a, "-F") || sys.same(a, "-M") || sys.same(a, "-R") || sys.same(a, "-Z") || sys.same(a, "-L") || sys.same(a, "-H") {
+            if i + 1 >= args.len() as i64 { return 1 }; i = i + 1
+            if sys.same(a, "-t") { let n = sys.parse_number(args[i]); if !n.ok || n.value < 1 || n.value > 3600 { return 1 }; timeout = n.value } else if sys.same(a, "-F") { filters.push(args[i]) } else if sys.same(a, "-M") { delivery = args[i] }
+        } else if !sys.same(a, "-b") && !sys.same(a, "-d") && !sys.same(a, "-m") && !sys.same(a, "-V") && !sys.same(a, "-c") && !sys.same(a, "-a") { sys.warn("popmaildir", "unknown option"); return 1 }; i = i + 1
+    }
+    if i >= args.len() as i64 { sys.warn("popmaildir", "usage: popmaildir [OPTIONS] MAILDIR [CONNECTION-HELPER ARGS]"); return 1 }
+    let directory = args[i]; i = i + 1; let command = Vec<str>(); for k in i..(args.len() as i64) { command.push(args[k]) }
+    let username = skip ? "" : pw.read_line_from(0); let password = skip ? "" : pw.read_line_from(0)
+    if !skip && !safe_address(username) { sys.warn("popmaildir", "invalid username"); return 1 }; if sys.find_char(password, 13) >= 0 || sys.find_char(password, 10) >= 0 { return 1 }
+    let c = command.len() > 0 ? helper(command) : Connection(0, 1, 0 - 1); if c.input < 0 { sys.warn("popmaildir", "cannot start connection helper"); return 1 }; net.set_timeout(c.input, timeout)
+    let greeting = line(c.input); let ok = greeting.ok && sys.starts(greeting.text, "+OK")
+    if ok && !skip {
+        let left = sys.find_char(greeting.text, 60); let right = sys.find_char(greeting.text, 62)
+        if left >= 0 && right > left { let b = sys.bytes_new(); sys.bytes_str(b, sys.slice(greeting.text, left, right + 1)); sys.bytes_str(b, password); ok = pop(c, sys.join2("APOP ", sys.join2(username, sys.join2(" ", hash.md5(b))))).ok }
+        else { ok = pop(c, sys.join2("USER ", username)).ok && pop(c, sys.join2("PASS ", password)).ok }
+    }
+    let count = 0
+    if ok { let stat = pop(c, "STAT"); let fields = words.words_of(stat.text); let n = fields.len() >= 2 ? sys.parse_number(fields[1]) : sys.Number(false, 0); ok = stat.ok && n.ok && n.value >= 0 && n.value <= 1000000; count = n.value }
+    if ok { for name in Vec<str>("tmp", "new", "cur") { if !fsx.make_dirs(fsx.join_path(directory, name), 448) { ok = false } } }
+    for message in 1..(count + 1) {
+        if !ok { break }; ok = pop(c, sys.join2(top ? "TOP " : "RETR ", sys.join2(hw.decimal(message), top ? " 999999999" : ""))).ok
+        let data = sys.bytes_new()
+        while ok { let row = line(c.input); if !row.ok { ok = false; break }; if sys.same(row.text, ".") { break }; let value = sys.starts(row.text, "..") ? sys.slice(row.text, 1, sys.length(row.text)) : row.text; sys.bytes_str(data, value); sys.bytes_str(data, "\r\n"); if sys.blen(data) > 67108864 { ok = false; break } }
+        if !ok { break }
+        let name = sys.join2(hw.decimal(clock.now()), sys.join2(".devos-", sys.join2(hw.decimal(proc.my_pid()), sys.join2("-", hw.decimal(message))))); let temp = fsx.join_path(fsx.join_path(directory, "tmp"), name); let target = fsx.join_path(fsx.join_path(directory, "new"), name)
+        let fd = sys.open_fd(temp, 194, 384); if fd < 0 { ok = false; break }; ok = tx.write_all(fd, sys.bdata(data), sys.blen(data))
+        for filter in filters {
+            if !ok { break }; let output = sys.open_fd(sys.join2(temp, ".filtered"), 194, 384); if output < 0 { ok = false; break }; fsx.do_unlink(sys.join2(temp, ".filtered")); sys.seek_fd(fd, 0, 0); let pid = proc.launch_fds(Vec<str>("/bin/sh", "-c", filter), proc.environment(), fd, output); ok = pid >= 0 && proc.wait_for(pid) == 0; sys.close_fd(fd); fd = output
+        }
+        if ok && sys.length(delivery) > 0 { sys.seek_fd(fd, 0, 0); let pid = proc.launch_fds(Vec<str>("/bin/sh", "-c", delivery), proc.environment(), fd, 1); ok = pid >= 0 && proc.wait_for(pid) == 0; sys.close_fd(fd); fsx.do_unlink(temp) }
+        else {
+            # Filters use an unlinked file; copy the final result back to the staged file.
+            if ok && filters.len() > 0 { sys.seek_fd(fd, 0, 0); let filtered = sys.read_fd(fd as i32); let destination = sys.open_fd(temp, 513, 0); ok = filtered.ok && destination >= 0 && tx.write_all(destination, sys.bdata(filtered.bytes), sys.blen(filtered.bytes)); sys.close_fd(fd); fd = destination }
+            if ok { unsafe { ok = tx.fsync(fd as i32) == 0 } }; sys.close_fd(fd)
+            if ok { ok = fsx.do_rename(temp, target) == 0; if ok { let dir = sys.open_fd(fsx.join_path(directory, "new"), 0, 0); if dir < 0 { ok = false } else { unsafe { ok = tx.fsync(dir as i32) == 0 }; sys.close_fd(dir) } } }
+            if !ok { fsx.do_unlink(temp) }
+        }
+        if ok && !keep { ok = pop(c, sys.join2("DELE ", hw.decimal(message))).ok }
+    }
+    if ok { ok = pop(c, "QUIT").ok }; close(c)
+    if !ok { sys.warn("popmaildir", "retrieval or delivery failed"); return 1 }; return 0
+}

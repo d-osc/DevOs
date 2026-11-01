@@ -1,0 +1,53 @@
+# Manual page discovery and formatter/pager orchestration, as in BusyBox man.
+use "../lib/sys.dev" as sys
+use "../lib/fsx.dev" as fsx
+use "../lib/proc.dev" as proc
+use "./gzip.dev" as gz
+use "./hardware.dev" as hw
+use "./terminal_extra.dev" as tx
+
+fn split(text: str, separator: u8): Vec<str> { let out = Vec<str>(); let start = 0; for i in 0..(sys.length(text) + 1) { if i == sys.length(text) || sys.at(text, i) == separator { if i > start { out.push(sys.slice(text, start, i)) }; start = i + 1 } }; return out }
+fn run_man(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "aw")
+    if o.bad != 0 || o.missing != 0 || o.rest.len() == 0 { sys.warn("man", "usage: man [-aw] [SECTION] PAGE..."); return 1 }
+    let env = proc.environment(); let value = proc.lookup(env, "MANPATH"); let paths = split(value.found && sys.length(value.value) > 0 ? value.value : "/usr/local/share/man:/usr/share/man:/usr/man", 58)
+    let sections = Vec<str>("1", "8", "2", "3", "4", "5", "6", "7", "9", "0", "n", "l"); let start = 0
+    if o.rest.len() > 1 && sys.length(o.rest[0]) <= 3 && sys.is_digit(sys.at(o.rest[0], 0)) { sections = Vec<str>(o.rest[0]); start = 1 }
+    let status = 0
+    for i in start..(o.rest.len() as i64) {
+        let page = o.rest[i]; let matches = Vec<str>()
+        if sys.find_char(page, 47) >= 0 { if sys.exists(page) { matches.push(page) } }
+        else {
+            for section in sections {
+                for dir in paths {
+                    for tree in Vec<str>("man", "cat") {
+                        let base = fsx.join_path(fsx.join_path(dir, sys.join2(tree, section)), sys.join2(page, sys.join2(".", section)))
+                        for suffix in Vec<str>("", ".gz") { let candidate = sys.join2(base, suffix); if sys.file_info(candidate, true).ok { matches.push(candidate); break } }
+                        if matches.len() > 0 && !sys.has(o, 97) { break }
+                    }
+                    if matches.len() > 0 && !sys.has(o, 97) { break }
+                }
+                if matches.len() > 0 && !sys.has(o, 97) { break }
+            }
+        }
+        if matches.len() == 0 { sys.warn("man", sys.join2("no manual entry for ", page)); status = 1; continue }
+        for path in matches {
+            if sys.has(o, 119) { sys.put_fd(1, sys.join2(path, "\n")); continue }
+            let source = sys.read_path(path); if !source.ok { sys.warn_path("man", path); status = 1; continue }; let data = source.bytes
+            if sys.ends(path, ".gz") { let unpacked = gz.decompress(data); if !unpacked.ok { sys.warn("man", unpacked.message); status = 1; continue }; data = unpacked.bytes }
+            let command = Vec<str>(); let formatted = sys.find_char(path, 47) >= 0 && contains_cat(path)
+            if !formatted {
+                if sys.length(proc.find_program("mandoc", env)) > 0 { command = Vec<str>("mandoc", "-Tutf8") }
+                else if sys.length(proc.find_program("nroff", env)) > 0 { command = Vec<str>("nroff", "-man") }
+                else { sys.warn("man", "mandoc or nroff is required to format source manual pages"); status = 1; continue }
+            }
+            let temp = sys.join2("/tmp/devos-man-", sys.join2(hw.decimal(proc.my_pid()), sys.join2("-", sys.join2(hw.decimal(i), "-input"))))
+            let fd = sys.open_fd(temp, 194, 384); if fd < 0 { sys.warn_write("man", temp); status = 1; continue }; fsx.do_unlink(temp)
+            if !tx.write_all(fd, sys.bdata(data), sys.blen(data)) { sys.close_fd(fd); status = 1; continue }; sys.seek_fd(fd, 0, 0)
+            if command.len() == 0 { if !tx.write_all(1, sys.bdata(data), sys.blen(data)) { status = 1 } }
+            else { let pid = proc.launch_fds(command, env, fd, 1); if pid < 0 || proc.wait_for(pid) != 0 { status = 1 } }
+            sys.close_fd(fd)
+        }
+    }; return status
+}
+fn contains_cat(path: str): bool { for i in 0..sys.length(path) { if sys.at(path, i) == 47 && i + 4 < sys.length(path) && sys.same(sys.slice(path, i + 1, i + 4), "cat") { return true } }; return false }

@@ -1,0 +1,63 @@
+use "../lib/sys.dev" as sys
+use "../lib/net.dev" as net
+use "../lib/proc.dev" as proc
+use "../lib/packet.dev" as packet
+use "../lib/signal_fd.dev" as signals
+use "./console_extra.dev" as cx
+use "./terminal_extra.dev" as tx
+use "./hardware.dev" as hw
+use "./events.dev" as events
+fn run_arping(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fqbDUAc:w:I:s:"); if o.bad != 0 || o.missing != 0 || o.rest.len() != 1 { sys.warn("arping", "usage: arping [-fqbDUA] [-c COUNT] [-w TIMEOUT] [-I IFACE] [-s SENDER] TARGET"); return 1 }
+    let count = sys.has(o, 99) ? sys.parse_number(sys.val(o, 99)) : sys.Number(true, 0); let duration = sys.has(o, 119) ? sys.parse_number(sys.val(o, 119)) : sys.Number(true, 0)
+    if !count.ok || count.value < 0 || !duration.ok || duration.value < 0 || duration.value > 86400 { return 1 }; let target = net.resolve(o.rest[0]); if target < 0 { sys.warn("arping", "bad target address"); return 1 }
+    let device = packet.open(sys.has(o, 73) ? sys.val(o, 73) : "eth0", 0x806); if !device.ok { sys.warn("arping", "cannot open Ethernet ARP socket"); return 1 }
+    let dad = sys.has(o, 68); let announcement = sys.has(o, 85) || sys.has(o, 65); let source = sys.has(o, 115) ? net.resolve(sys.val(o, 115)) : (dad ? 0 : (announcement ? target : device.ip))
+    if source < 0 || (!dad && !announcement && source == 0) { return cx.fail("arping", device.fd, "no sender IPv4 address") }; let guard = signals.open(); if guard.fd < 0 { sys.close_fd(device.fd); return 1 }
+    let peer = packet.broadcast(); let buffer = cx.buffer(2048); let sent = 0; let received = 0; let start = net.now_ms(); let end = duration.value > 0 ? start + duration.value * 1000 : 0; let stop = false; let good = true
+    while !stop && (count.value == 0 || sent < count.value) && (end == 0 || net.now_ms() < end) {
+        let stamp = net.now_ms(); if !packet.arp(device, source, target, sys.has(o, 65), peer) { good = false; break }; sent = sent + 1; let deadline = stamp + 1000; if end > 0 && end < deadline { deadline = end }
+        while net.now_ms() < deadline {
+            if tx.readable(guard.fd, 0) { signals.received(guard); stop = true; break }; if !tx.readable(device.fd, 50) { continue }; let n = net.recv_some(device.fd, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { good = false; stop = true; break }
+            if !packet.conflict(device, buffer, n, target, dad) { continue }; received = received + 1
+            if !sys.has(o, 113) { sys.put_fd(1, sys.join2("Reply from ", sys.join2(net.ip_text(target), sys.join2(" time=", sys.join2(hw.decimal(net.now_ms() - stamp), " ms\n"))))) }
+            if !sys.has(o, 98) && !announcement { for i in 0..6 { sys.bptr_set(peer, i, sys.bat(buffer, 8 + i)) } }
+            if sys.has(o, 102) || dad { stop = true; break }
+        }
+    }
+    sys.close_fd(device.fd); signals.close(guard); if !sys.has(o, 113) { sys.put_fd(1, sys.join2("Sent ", sys.join2(hw.decimal(sent), sys.join2(" probes; received ", sys.join2(hw.decimal(received), " replies\n"))))) }; if !good { return 1 }; return announcement ? 0 : (dad ? (received == 0 ? 0 : 1) : (received > 0 ? 0 : 1))
+}
+fn candidate(): i64 { let fd = sys.open_fd("/dev/urandom", 0, 0); let bytes = cx.buffer(2); if fd >= 0 { sys.read_into(fd, sys.bdata(bytes), 2); sys.close_fd(fd) } else { cx.store(bytes, 0, 2, proc.my_pid() % 65536) }; return 0xa9fe0000 + (1 + (sys.bat(bytes, 0) as i64) % 254) * 256 + sys.bat(bytes, 1) as i64 }
+fn script(path: str, interface: str, address: i64, action: str, guard: signals.Signals): bool { let env = proc.set_variable(proc.environment(), "interface", interface); if address != 0 { env = proc.set_variable(env, "ip", net.ip_text(address)) }; return signals.run(Vec<str>(path, action), env, guard) == 0 }
+fn run_zcip(args: Vec<str>): i64 {
+    let o = sys.parse_opts(args, "fqr:v"); if o.bad != 0 || o.missing != 0 || o.rest.len() != 2 { sys.warn("zcip", "usage: zcip [-fqv] [-r 169.254.x.x] IFACE SCRIPT"); return 1 }
+    let interface = o.rest[0]; let helper = o.rest[1]; if sys.length(proc.find_program(helper, proc.environment())) == 0 { sys.warn("zcip", "script not found"); return 1 }; let address = sys.has(o, 114) ? net.parse_ip(sys.val(o, 114)) : candidate()
+    if address < 0xa9fe0100 || address > 0xa9fefeff { sys.warn("zcip", "invalid link-local address"); return 1 }; let device = packet.open(interface, 0x806); if !device.ok { sys.warn("zcip", "cannot open Ethernet ARP socket"); return 1 }; let guard = signals.open(); if guard.fd < 0 { sys.close_fd(device.fd); return 1 }
+    let configured = false; let status = 0; let stop = false; let collisions = 0; let defense = 0; let buffer = cx.buffer(2048); let broadcast = packet.broadcast(); let daemonized = false
+    if !script(helper, interface, 0, "init", guard) { status = 1; stop = true }
+    while !stop {
+        if !configured {
+            let conflict = false
+            for probe in 0..3 {
+                if !packet.arp(device, 0, address, false, broadcast) { status = 1; stop = true; break }; let deadline = net.now_ms() + 1000
+                while net.now_ms() < deadline {
+                    if tx.readable(guard.fd, 0) { signals.received(guard); stop = true; break }; if !tx.readable(device.fd, 50) { continue }; let n = net.recv_some(device.fd, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { status = 1; stop = true; break }; if packet.conflict(device, buffer, n, address, true) { conflict = true; break }
+                }; if conflict || stop { break }
+            }
+            if stop { break }
+            if conflict { collisions = collisions + 1; address = candidate(); if collisions >= 10 { if tx.readable(guard.fd, 60000) { signals.received(guard); stop = true }; collisions = 0 }; continue }
+            if !script(helper, interface, address, "config", guard) { status = 1; break }; configured = true; defense = 0
+            if !packet.arp(device, address, address, false, broadcast) { status = 1; break }; if tx.readable(guard.fd, 2000) { signals.received(guard); stop = true; break }; if !packet.arp(device, address, address, false, broadcast) { status = 1; break }
+            if sys.has(o, 118) { sys.put_fd(2, sys.join2("zcip: configured ", sys.join2(net.ip_text(address), "\n"))) }
+            if sys.has(o, 113) { configured = false; break }
+            if !sys.has(o, 102) && !daemonized { let pid = events.daemon(); if pid < 0 { status = 1; break }; if pid > 0 { sys.close_fd(device.fd); signals.close(guard); return 0 }; daemonized = true }
+        }
+        if tx.readable(guard.fd, 0) { signals.received(guard); break }; if !tx.readable(device.fd, 200) { continue }; let n = net.recv_some(device.fd, sys.bdata(buffer), sys.blen(buffer)); if n < 0 { status = 1; break }
+        if packet.conflict(device, buffer, n, address, false) {
+            let now = net.now_ms()
+            if defense == 0 || now - defense >= 10000 { if !packet.arp(device, address, address, false, broadcast) { status = 1; break }; defense = now }
+            else { if !script(helper, interface, address, "deconfig", guard) { status = 1; break }; configured = false; address = candidate() }
+        }
+    }
+    if configured { if !script(helper, interface, address, "deconfig", guard) { status = 1 } }; sys.close_fd(device.fd); signals.close(guard); return status
+}
