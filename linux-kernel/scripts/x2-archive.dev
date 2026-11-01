@@ -1,0 +1,92 @@
+# Internal streaming verifier, invoked with --ffi-lib by verify-x2-source.dev.
+use "std/fs"
+use "std/process"
+use "std/strings"
+use "std/encoding"
+use "std/result"
+extern fn archive_read_new(): *void
+extern fn archive_read_support_filter_all(reader:*void):i32
+extern fn archive_read_support_format_tar(reader:*void):i32
+extern fn archive_read_open_filename(reader:*void, name:str, block:usize):i32
+extern fn archive_read_next_header(reader:*void, entry:*u8):i32
+extern fn archive_entry_pathname(entry:*void):*u8
+extern fn archive_entry_hardlink(entry:*void):*u8
+extern fn archive_entry_filetype(entry:*void):u32
+extern fn archive_read_data(reader:*void, buffer:*u8, length:usize):i64
+extern fn archive_read_free(reader:*void):i32
+extern fn archive_error_string(reader:*void):*u8
+extern fn setlocale(category:i32, locale:str):*u8
+extern fn malloc(length:usize):*u8
+extern fn free(buffer:*void)
+extern fn strlen(text:*u8):usize
+extern fn fopen(name:str, mode:str):*void
+extern fn fread(buffer:*u8, size:usize, count:usize, file:*void):usize
+extern fn fgetc(file:*void):i32
+extern fn ferror(file:*void):i32
+extern fn fclose(file:*void):i32
+extern fn memcmp(left:*u8, right:*u8, length:usize):i32
+fn ctext(pointer:*u8):str {
+    let bytes = Vec<u8>()
+    unsafe { if pointer == 0 as *u8 { return "" }; for i in 0..(strlen(pointer) as i64) { bytes.push(pointer[i]) } }
+    return encoding.decode(bytes,"utf8")
+}
+fn relative(name:str):str {
+    if strings.startsWith(name,"/") { result.raise("Unsafe source archive path: " + name) }
+    let parts = Vec<str>()
+    for part in strings.split(name,"/") {
+        if part == ".." { result.raise("Unsafe source archive path: " + name) }
+        if part != "" && part != "." { parts.push(part) }
+    }
+    if parts.len() < 2 { result.raise("Source archive file has no top-level directory: " + name) }
+    let tail = Vec<str>(); for i in 1..(parts.len() as i64) { tail.push(parts[i]) }
+    return strings.join(tail,"/")
+}
+fn verify(archive:str, source:str):i64 {
+    unsafe {
+        setlocale(0,"C.UTF-8")
+        let reader = archive_read_new()
+        if reader == 0 as *void { result.raise("Cannot allocate archive reader") }
+        let left = malloc(131072); let right = malloc(131072); let slot = malloc(8)
+        let checked = result.attempt(fn():i64 {
+            unsafe {
+                if left == 0 as *u8 || right == 0 as *u8 || slot == 0 as *u8 { result.raise("Cannot allocate source comparison buffers") }
+                if archive_read_support_filter_all(reader) != 0 || archive_read_support_format_tar(reader) != 0 || archive_read_open_filename(reader,archive,131072) != 0 { result.raise("Cannot open source archive: " + archive) }
+                let count = 0
+                while true {
+                    let status = archive_read_next_header(reader,slot)
+                    if status == 1 { break }
+                    if status != 0 { result.raise("Corrupt or truncated source archive: " + archive + " (" + ctext(archive_error_string(reader)) + ")") }
+                    let entry = (slot as *usize)[0] as *void
+                    if archive_entry_filetype(entry) != 32768 || archive_entry_hardlink(entry) != 0 as *u8 { continue }
+                    let file = source + "/" + relative(ctext(archive_entry_pathname(entry)))
+                    if !fs.is_file(file) { result.raise("Cached source differs from archive: " + file) }
+                    let cached = fopen(file,"rb")
+                    if cached == 0 as *void { result.raise("Cannot read cached source: " + file) }
+                    let compared = result.attempt(fn():bool {
+                        unsafe {
+                            while true {
+                                let length = archive_read_data(reader,left,131072)
+                                if length < 0 { result.raise("Corrupt or truncated source archive: " + archive) }
+                                if length == 0 { return fgetc(cached) == -1 && ferror(cached) == 0 }
+                                if fread(right,1,length as usize,cached) != length as usize || memcmp(left,right,length as usize) != 0 { return false }
+                            }
+                            return false
+                        }
+                    })
+                    fclose(cached)
+                    if result.isErr(compared) { result.raise(result.message(compared)) }
+                    if !result.unwrap(compared) { result.raise("Cached source differs from archive: " + file) }
+                    count = count + 1
+                }
+                if count == 0 { result.raise("Source archive contains no regular files") }
+                return count
+            }
+        })
+        free(left as *void); free(right as *void); free(slot as *void); archive_read_free(reader)
+        if result.isErr(checked) { result.raise(result.message(checked)) }
+        return result.unwrap(checked)
+    }
+}
+let arguments = process.argv()
+if arguments.len() != 4 { result.raise("Use verify-x2-source.dev ARCHIVE SOURCE") }
+print("Verified ${verify(arguments[2],arguments[3])} source files against the pinned archive")

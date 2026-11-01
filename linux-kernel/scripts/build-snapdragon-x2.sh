@@ -2,6 +2,7 @@
 # Optional board profile. The default mainline 7.2.11 build stays unchanged.
 set -euo pipefail
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+driver=$(sh "$repo/../packages/react-devlang/tools/toolchain.sh" --runtime)
 work=${DEVOS_X2_WORK:-/var/tmp/devos-kernel-x2}
 archive=${DEVOS_X2_ARCHIVE:-$work/linux-qcom-x1e_7.3.0-22.22.tar.gz}
 source=${DEVOS_X2_SOURCE:-$work/linux-qcom-x1e-7.3.0}
@@ -21,7 +22,7 @@ fi
 printf '%s  %s\n' "$sha" "$archive" | sha512sum -c -
 if [[ ! -d $source ]]; then tar -xf "$archive" -C "$work" --no-same-owner; fi
 # Verify cached source files against the pinned archive before reusing objects.
-python3 "$repo/scripts/verify-x2-source.py" "$archive" "$source"
+"$driver" "$repo/scripts/verify-x2-source.dev" -- "$archive" "$source"
 if [[ ! -f $build/.config ]]; then cp "$repo/config/profiles/snapdragon-x2.config" "$build/.config"; fi
 cmp "$repo/config/profiles/snapdragon-x2.config" "$build/.config" || {
     echo 'Existing build config differs from the pinned X2 profile. Choose a fresh DEVOS_X2_BUILD.' >&2; exit 2;
@@ -38,5 +39,5 @@ cp "$build/arch/arm64/boot/Image" "$bundle/Image"
 cp "$build/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a14-ux3407na.dtb" "$bundle/board.dtb"
 cp "$build/.config" "$bundle/kernel.config"
 make -C "$source" O="$build" ARCH=arm64 INSTALL_MOD_PATH="$bundle/modules" INSTALL_MOD_STRIP=1 modules_install
-python3 "$repo/scripts/verify-x2-source.py" --manifest "$bundle" "$release" "$archive" "$url"
+"$driver" "$repo/scripts/verify-x2-source.dev" -- --manifest "$bundle" "$release" "$archive" "$url"
 echo "DevOs X2 kernel bundle: $bundle (hardware boot testing still required)"

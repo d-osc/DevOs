@@ -1,0 +1,62 @@
+#!/usr/bin/env d
+# Source verification streams through libarchive; manifest hashes stream through sha256sum.
+use "std/fs"
+use "std/path"
+use "std/process"
+use "std/module"
+use "std/json"
+use "std/encoding"
+use "std/strings"
+use "std/child_process"
+use "std/result"
+fn capture(command:str, arguments:Vec<str>):str {
+    let ran = child_process.execFileSync(command,arguments,child_process.options())
+    if !ran.success { result.raise(command + " failed: " + encoding.decode(ran.stderr,"utf8")) }
+    return encoding.decode(ran.stdout,"utf8")
+}
+fn digest(file:str):str { return strings.substring(capture("sha256sum",Vec<str>("--zero","--",file)),0,64) }
+fn manifest(bundle:str, release:str, archive:str, url:str) {
+    let base = path.resolve(process.cwd(),bundle)
+    let zero = encoding.decode(Vec<u8>(0),"utf8")
+    let names = strings.split(capture("find",Vec<str>(base,"-type","f","!","-name","manifest.json","-print0")),zero)
+    names.sort()
+    let files = json.object()
+    for name in names {
+        if name == "" { continue }
+        files = json.set(files,strings.substring(name,strings.charLength(base) + 1,strings.charLength(name)),digest(name))
+    }
+    let source = json.set(json.object(),"url",url)
+    source = json.set(source,"sha256",digest(archive))
+    source = json.set(source,"kind","Linux source with Ubuntu Concept Qualcomm patches; no Ubuntu userspace")
+    let record = json.set(json.object(),"schemaVersion",1)
+    record = json.set(record,"board","asus-ux3407na")
+    record = json.set(record,"architecture","aarch64")
+    record = json.set(record,"release",release)
+    record = json.set(record,"hardwareTested",false)
+    record = json.set(record,"source",source)
+    record = json.set(record,"files",files)
+    fs.writeFileSync(base + "/manifest.json",json.pretty(record) + "\n")
+}
+fn archive_library():str {
+    for loader in Vec<str>("/sbin/ldconfig","/usr/sbin/ldconfig") {
+        if !fs.is_file(loader) { continue }
+        for line in strings.split(capture(loader,Vec<str>("-p")),"\n") {
+            if !strings.startsWith(strings.trim(line),"libarchive.so.13 ") { continue }
+            let fields = strings.split(line,"=>")
+            if fields.len() == 2 { let file = strings.trim(fields[1]); if fs.is_file(file) { return file } }
+        }
+    }
+    result.raise("Source verification requires libarchive.so.13 (Ubuntu: libarchive13 or libarchive13t64)."); return ""
+}
+fn main():i32 {
+    let arguments = process.argv()
+    if arguments.len() == 7 && arguments[2] == "--manifest" {
+        manifest(arguments[3],arguments[4],arguments[5],arguments[6]); return 0
+    }
+    if arguments.len() != 4 { result.raise("Usage: d verify-x2-source.dev -- ARCHIVE SOURCE | --manifest BUNDLE RELEASE ARCHIVE URL") }
+    let helper = path.dirname(path.resolve(process.cwd(),module.entry())) + "/x2-archive.dev"
+    let ran = child_process.execFileSync(arguments[0],Vec<str>(helper,"--ffi-lib",archive_library(),"--",arguments[2],arguments[3]),child_process.options())
+    if !ran.success { result.raise(encoding.decode(ran.stdout,"utf8") + encoding.decode(ran.stderr,"utf8")) }
+    print(strings.trim(encoding.decode(ran.stdout,"utf8"))); return 0
+}
+return main()

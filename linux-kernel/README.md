@@ -60,6 +60,11 @@ Optional, for the ISO: `sudo apt install grub-efi-arm64-bin grub-common mtools x
 
 ## Build
 
+The kernel script helpers are DevLang: `d scripts/gen-banner.dev -- [TEXT]`
+prints the boot banner (default `DEVOS`), and `verify-x2-source.dev` verifies
+the optional board source and generates its bundle manifest. See
+[the X2 profile](config/profiles/README.md) for its host library requirements.
+
 From Windows (WSL2 Ubuntu):
 
 ```bash

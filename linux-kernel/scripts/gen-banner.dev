@@ -1,0 +1,26 @@
+#!/usr/bin/env d
+# ANSI Shadow glyphs; stdout remains compatible with the original banner.
+use "std/process"
+use "std/strings"
+use "std/result"
+fn render(text:str):str {
+    let glyphs = Map<str,Vec<str>>()
+    glyphs.set("D",Vec<str>("██████╗ ", "██╔══██╗", "██║  ██║", "██║  ██║", "██████╔╝", "╚═════╝ "))
+    glyphs.set("E",Vec<str>("███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "███████╗", "╚══════╝"))
+    glyphs.set("V",Vec<str>("██╗   ██╗", "██║   ██║", "██║   ██║", "╚██╗ ██╔╝", " ╚████╔╝ ", "  ╚═══╝  "))
+    glyphs.set("O",Vec<str>(" ██████╗ ", "██╔═══██╗", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "))
+    glyphs.set("S",Vec<str>("███████╗ ", "██╔════╝ ", "███████╗ ", "╚════██║ ", "███████║ ", "╚══════╝ "))
+    let rows = Vec<str>()
+    for row in 0..6 {
+        let cells = Vec<str>()
+        for i in 0..strings.charLength(text) {
+            let ch = strings.charAt(text,i)
+            if !glyphs.contains(ch) { result.raise("Unsupported banner glyph: " + ch) }
+            cells.push(glyphs.get(ch)[row])
+        }
+        rows.push(strings.join(cells," "))
+    }
+    return strings.join(rows,"\n")
+}
+let arguments = process.argv()
+print(render(arguments.len() > 2 ? arguments[2] : "DEVOS"))

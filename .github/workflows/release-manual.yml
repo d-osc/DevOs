@@ -108,7 +108,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libwayland-dev libwayland-bin gjs \
             gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-vte-2.91 \
-            gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl
+              gir1.2-webkit2-4.1 gir1.2-soup-3.0 curl libarchive-dev
       - name: Install pinned DevLang tool runtime
         run: |
           machine=$(uname -m)

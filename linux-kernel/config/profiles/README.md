@@ -1,6 +1,12 @@
 # Snapdragon X2 / ASUS UX3407NA
 
 Build with `bash scripts/build-snapdragon-x2.sh` on an ARM64 Linux host.
+The DevLang helpers require a complete host DevLang installation and the
+`libarchive.so.13` runtime (`libarchive13t64` on newer Ubuntu, `libarchive13`
+on older releases). `sha256sum`, `find` and `ldconfig` must also be available.
+`verify-x2-source.dev` reads archives in bounded chunks through libarchive,
+compares regular-file contents and writes the existing manifest format;
+no Python interpreter is used by these helpers.
 The default mainline 7.2.11 profile is unchanged. This optional profile uses
 pinned Linux 7.3.0-rc6 source with Qualcomm hardware patches distributed by
 Ubuntu Concept. Source provenance is recorded; no distribution rootfs is used.
