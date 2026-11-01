@@ -3,6 +3,7 @@ use "std/test"
 use "std/strings"
 use "std/child_process"
 use "../tools/lib/tool.dev" as tool
+use "../lib/hw.dev" as hw
 use "./lib/react-devlang.dev" as t
 
 # The native Editor is a GTK code view colored by DevLang (highlight.dev); it is built and run under Xvfb like the other native apps.
@@ -17,12 +18,25 @@ test.case("the native Editor opens a file, shows its exact text, undoes and redo
     let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
     let file = d + "/sample.ts"
     fs.writeFileSync(file,"const a = 1\n\tconst \"b\" = 'ü'\n")
-    let env = Map<str,str>(); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings")
+    let env = Map<str,str>(); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings")
     env.set("DEVOS_EDITOR_SMOKE","1"); env.set("DEVOS_EDITOR_FILE",file)
     env.set("PATH","/home/ondev/.local/bin:/usr/local/bin:/usr/bin:/bin")
     let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","editor-native","xvfb-run","-a",executable),env,"",120000)
     test.expect(done.success && strings.contains(t.out(done),"PASS native Editor opened, edited and saved a file"),"Editor: " + t.out(done) + " / " + t.err(done) + " / exit " + (done.success ? "success" : "failed"))
     test.expect(strings.equal(fs.readFileSync(file,"utf8"),"EDITED BY THE TEST"),"the saved file holds the edit: " + fs.readFileSync(file,"utf8"))
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+
+test.case("large JSON loads exact text without quadratic syntax serialization",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/editor-native"
+    let d = strings.trim(tool.exec(Vec<str>("mktemp","-d"))); let file = d + "/large.json"
+    let rows = Vec<str>("[")
+    for i in 0..30000 { rows.push("{\"name\":\"package-${i}\",\"version\":\"1.2.3\",\"enabled\":true,\"description\":\"ภาษาไทย ü\"},") }
+    rows.push("{}]"); fs.writeFileSync(file,strings.join(rows,"\n"))
+    let env = Map<str,str>(); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("G_DEBUG","fatal-warnings"); env.set("DEVOS_EDITOR_LOAD_TEST","1"); env.set("DEVOS_EDITOR_FILE",file)
+    let done = tool.run(Vec<str>("xvfb-run","-a",executable),env,"",30000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS Editor load"),"Large Editor load: " + t.out(done) + t.err(done))
+    for line in strings.split(t.out(done),"\n") { if strings.startsWith(line,"PASS Editor load") { let cells = strings.split(line," "); test.expect(hw.toInt(cells[6],99999) < 2000,"Large file took too long: " + line) } }
     tool.exec(Vec<str>("rm","-rf",d))
 })
 return t.finish()

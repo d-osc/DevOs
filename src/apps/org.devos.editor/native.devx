@@ -6,6 +6,7 @@ use "../org.devos.settings/native-system-pages.devx" as sp
 use "./highlight.dev" as hl
 use "./find.dev" as fnd
 use "./literal.dev" as lit
+extern fn g_get_monotonic_time():i64
 extern fn rc_env(name:str):str
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
@@ -79,9 +80,12 @@ fn App(context:*ui.Context):ui.Node {
     let open = fn(file:ui.Text) { if paletteReady.get() == 0 { pending.set(file); return }; asked.set(1); target.set(file); status.set(plain("Opening…")); sp.send(l,request("read",file,ui.emptyText())) }
     let rehighlight = fn() {
         if code.get() == 0 { return }
+        let highlightStarted:i64 = 0; unsafe { highlightStarted = g_get_monotonic_time() }
         let spans = hl.highlightBytes(conv,codeText(code.get()).bytes,language.get().bytes)
         if has(plain(environment("DEVOS_EDITOR_DEBUG"))) { print("editor: ${spans.len()} bytes of spans for a ${language.get().bytes.len()}-byte language id") }
+        let tagsStarted:i64 = 0; unsafe { tagsStarted = g_get_monotonic_time() }
         applyTags(code.get(),"syn.",ui.Text(spans))
+        if has(plain(environment("DEVOS_EDITOR_LOAD_TEST"))) { unsafe { print("Editor tokenize ${(tagsStarted - highlightStarted) / 1000} ms; tags ${(g_get_monotonic_time() - tagsStarted) / 1000} ms") } }
     }
     # Marks every match of the query; `move` 1 selects the next match after the selection, -1 the previous one before it, 0 only refreshes the marks.
     let refind = fn(move:i64) {
@@ -181,10 +185,15 @@ fn App(context:*ui.Context):ui.Node {
             paintCode(code.get(),ui.Text(lit.unescape(field(f,1).bytes))); asked.set(0); paletteReady.set(1)
             if has(pending.get()) { let file = pending.get(); pending.set(ui.emptyText()); open(file) } else { unsafe { rd_code_focus(code.get() as *void) } }
         } else if asked.get() == 1 && has(field(f,2)) {
+            let started:i64 = 0; unsafe { started = g_get_monotonic_time() }
             let content = ui.Text(lit.unescape(field(f,2).bytes))
             path.set(target.get()); draft.set(target.get()); dirty.set(0); loaded.set(content); language.set(field(f,1))
             setCode(code.get(),content); rehighlight(); if findOpen.value == 1 { refind(0) }
             status.set(plain("Opened")); asked.set(0)
+            if has(plain(environment("DEVOS_EDITOR_LOAD_TEST"))) {
+                if !ui.equalText(codeText(code.get()),content) { print("FAIL Editor load changed text") } else { unsafe { print("PASS Editor load ${content.bytes.len()} bytes in ${(g_get_monotonic_time() - started) / 1000} ms") } }
+                ui.close(context); return ui.noop
+            }
             if smoke() && step.get() == 0 {
                 # DEVOS_EDITOR_SMOKE: the view must hold exactly the file's text, an edit must undo, and the edited text must reach the file.
                 if !ui.equalText(codeText(code.get()),content) { print("FAIL native Editor shows different text than the file"); ui.close(context); return ui.noop }
