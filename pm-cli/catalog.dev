@@ -60,6 +60,17 @@ fn bindings(registry:json.Value):json.Value {
     let out = json.object(); let packages = object(registry,"packages")
     for name in json.keys(packages) { let record = object(json.get(packages,name),"catalog"); let id = text(record,"id"); if id != "" { out = json.set(out,id,name) } }; return out
 }
+fn classify_catalog(data:json.Value, inventory:json.Value):json.Value {
+    let bound = bindings(inventory); let packages = object(inventory,"packages"); let rows = json.array()
+    let original = json.get(data,"apps")
+    for i in 0..(json.len(original) as i64) {
+        let row = json.at(original,i); let id = text(object(row,"manifest"),"id")
+        let active = object(object(packages,text(bound,id)),"active"); let detected = text(active,"softwareType")
+        if detected == "app" || detected == "package" { row = json.set(row,"softwareType",detected) }
+        rows = json.push(rows,row)
+    }
+    return json.set(data,"apps",rows)
+}
 
 fn installed_name(registry:json.Value, value:str):str {
     let packages = object(registry,"packages"); if json.has(packages,value) { return value }

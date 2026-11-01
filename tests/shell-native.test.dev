@@ -39,6 +39,8 @@ test.case("editor and package paths are made absolute against the caller's folde
     t.equal(kinds(router.route(Vec<str>("package-install"),"/w")),"launch:appstore:package-install:")
     t.equal(router.appFor("settings.bluetooth"),"settings")
     t.equal(router.appFor("app-store-extensions"),"appstore")
+    t.equal(router.appFor("app-store-packages"),"appstore")
+    t.equal(router.appFor("app-store-apps"),"appstore")
     t.equal(router.appFor("launcher"),"")
 })
 fn worker(lines:str, log:str):str {

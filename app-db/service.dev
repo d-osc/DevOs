@@ -1,0 +1,76 @@
+#!/usr/bin/env d
+# One read-only catalog service per source. Installed state belongs to pm-cli.
+use "std/args"
+use "std/net"
+use "std/fs"
+use "std/json"
+use "std/uuid"
+use "std/process"
+use "std/encoding"
+use "std/strings"
+use "std/result"
+use "std/timers"
+use "./database.dev" as database
+fn handle(source:str, token:str, body:str):json.Value {
+    let input = json.parse(body)
+    if database.text(input,"token") != token { result.raise("Unauthorized app-db request") }
+    let action = database.text(input,"action")
+    if action == "health" { return {protocol: "devos-app-db-v1", source: source, pid: process.pid(), ready: true} }
+    let arch = database.text(input,"arch")
+    if arch == "aarch64" { arch = "arm64" }; if arch == "amd64" { arch = "x86_64" }
+    if arch != "arm64" && arch != "x86_64" { result.raise("Unsupported catalog architecture") }
+    if action != "catalog" && action != "search" && action != "get" { result.raise("Unknown app-db action") }
+    let data = database.load(source,arch)
+    if action == "catalog" { return data }
+    let query = database.text(input,"query"); let rows = json.array()
+    for row in database.items(database.list(data,"apps")) {
+        let manifest = database.object(row,"manifest"); let matched = database.text(manifest,"id") == query
+        for alias in database.items(database.list(manifest,"aliases")) { if json.string(alias) == query { matched = true } }
+        if action == "search" { matched = strings.contains(strings.toLowerCase(json.stringify(manifest)),strings.toLowerCase(query)) }
+        if matched { if action == "get" { return row }; rows = json.push(rows,row) }
+    }
+    if action == "get" { result.raise("That app is not in the catalog: " + query) }
+    return json.set(json.object(),"apps",rows)
+}
+fn transmit(socket:net.Socket, outgoing:str):bool {
+    if strings.len(outgoing) > 4194304 { socket.end(encoding.encode("{\"error\":\"Catalog exceeds 4 MiB\"}\n","utf8")) } else { socket.end(encoding.encode(outgoing,"utf8")) }
+    return true
+}
+fn serve(socket:net.Socket, source:str, token:str):bool {
+    socket.setTimeout(1000)
+    let response = result.attempt(fn():json.Value {
+        let bytes = Vec<u8>(); let finished = false
+        while !finished {
+            let chunk = socket.read(4096)
+            if chunk.len() == 0 { break }
+            for byte in chunk { if byte == 10 { finished = true; break }; bytes.push(byte) }
+            if bytes.len() > 65536 { result.raise("app-db requests are limited to 64 KiB") }
+        }
+        if !finished { result.raise("Incomplete app-db request") }
+        return handle(source,token,encoding.decode(bytes,"utf8"))
+    })
+    let body = result.isErr(response) ? json.set(json.object(),"error",result.message(response)) : result.unwrap(response)
+    let outgoing = json.stringify(body) + "\n"
+    transmit(socket,outgoing)
+    return true
+}
+fn connection(socket:net.Socket, source:str, token:str) {
+    let served = result.attempt(fn():bool { return serve(socket,source,token) })
+    if result.isErr(served) { print("app-db connection failed: " + result.message(served)) }
+    socket.destroy()
+}
+fn main() {
+    if args.len() != 4 || args.get(0) != "--source" || args.get(2) != "--endpoint" { result.raise("Use service.sh run [SOURCE]") }
+    let source = args.get(1); let endpoint = args.get(3); let token = uuid.v4()
+    # Validate before advertising readiness; a later bad edit is returned as an error.
+    database.load(source,"arm64")
+    let server = net.createServer(fn(socket:net.Socket) { connection(socket,source,token) })
+    server.listenOn(0,"127.0.0.1")
+    let info = {protocol: "devos-app-db-v1", source: source, pid: process.pid(), port: server.address().port, token: token}
+    fs.writeFileSync(endpoint + ".pid","${process.pid()}\n")
+    fs.writeFileSync(endpoint + ".next",json.stringify(info) + "\n")
+    if !fs.renameSync(endpoint + ".next",endpoint) { result.raise("Cannot publish app-db endpoint") }
+    # Temporary desktop/test payloads own their daemon's lifetime.
+    timers.setInterval(fn(timer:timers.Timer) { if !fs.existsSync(source) || !fs.is_file(endpoint) { server.close(); timer.cancel() } },1000)
+}
+main()

@@ -52,4 +52,7 @@ The DevLang runtime caps in-memory data at 8 MiB and has no flock/chmod/symlink 
 The App Store calls the same CLI catalog and installed registry. `packages[name].catalog`
 is an optional package association committed under the PM lock, preserved through
 replace/rollback, and removed with the package. `pm-cli/stage.sh` bundles the canonical
-`app-db` reader and authoring data as `catalog-data/` for deployment.
+`app-db` reader, daemon, client, lifecycle launcher and authoring data as
+`catalog-data/` for deployment. Catalog requests start or reuse the same
+authenticated local service for the selected source. No FFI library is needed
+by this service, including when it runs with the static target runtime.

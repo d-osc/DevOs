@@ -82,7 +82,7 @@ fn launch(role:str, command:str, path:str) {
 # so it is sent over D-Bus as soon as the new window owns its name, the way a running window gets it.
 fn needsReplay(command:str, path:str, special:bool):bool {
     if special { return false }
-    return !strings.equal(path,"") || strings.startsWith(command,"settings.") || strings.startsWith(command,"session.") || strings.equal(command,"app-store-extensions") || strings.equal(command,"extension-store")
+    return !strings.equal(path,"") || strings.startsWith(command,"settings.") || strings.startsWith(command,"session.") || strings.equal(command,"app-store-apps") || strings.equal(command,"app-store-extensions") || strings.equal(command,"app-store-packages") || strings.equal(command,"extension-store")
 }
 fn variantText(value:str):str { return "'" + strings.replaceAll(strings.replaceAll(value,"\\","\\\\"),"'","\\'") + "'" }
 fn replay(id:str, args:Vec<str>) {

@@ -20,6 +20,10 @@ cp "$project/stage.sh" "$target/stage.sh"
 next=$(mktemp -d "$target/.catalog-data-XXXXXX")
 trap 'rm -rf "$next"' EXIT HUP INT TERM
 cp "$database/database.dev" "$database/database-cli.dev" "$next/"
+support=$database
+if [ ! -f "$support/service.dev" ]; then support=$project/../app-db; fi
+cp "$support/service.dev" "$support/service-client.dev" "$support/service.sh" "$next/"
+if [ -d "$support/systemd" ]; then cp -R "$support/systemd" "$next/systemd"; fi
 mkdir -p "$next/apps"
 cp -R "$database/apps/." "$next/apps/"
 if [ -d "$database/extensions" ]; then mkdir -p "$next/extensions"; cp -R "$database/extensions/." "$next/extensions/"; fi

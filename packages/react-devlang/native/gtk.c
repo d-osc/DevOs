@@ -5,7 +5,7 @@
 void *rd_find_name(void *data,const char *name);
 
 typedef void (*RdDispatch)(int32_t, void *, const unsigned char *, int64_t, void *);
-typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; gboolean layer, closing; gint64 fade_start; double fade_from; } RdRoot;
+typedef struct { GtkWidget *window, *host; RdDispatch dispatch; void *data; guint idle; gboolean closed, applying; GtkCssProvider *css; GdkScreen *screen; GDBusConnection *bus; guint bus_name, bus_object; char *command; int64_t css_revision; GPtrArray *popovers; gboolean popup_above; char *prefixes; gboolean layer, closing; gint pointer_x, pointer_y; gint64 fade_start; double fade_from; } RdRoot;
 static int64_t rd_live_widgets = 0;
 static void rd_widget_destroyed(GtkWidget *widget, void *data) { (void)widget; (void)data; rd_live_widgets--; }
 int64_t rd_widget_live_count(void) { return rd_live_widgets; }
@@ -20,8 +20,16 @@ static gboolean rd_crossing(GtkWidget *widget,GdkEventCrossing *event,void *data
     return FALSE;
 }
 static gboolean rd_pressed(GtkWidget *widget,GdkEventButton *event,void *data){
-    if(!g_object_get_data(G_OBJECT(widget),"rd-pointer-enabled") || event->type!=GDK_BUTTON_PRESS || (event->button!=1 && event->button!=3))return FALSE;
-    rd_emit(data,6,widget,event->button==3 ? "context" : "primary");return event->button==3;
+    if(!g_object_get_data(G_OBJECT(widget),"rd-pointer-enabled") || (event->type!=GDK_BUTTON_PRESS && !(event->type==GDK_2BUTTON_PRESS && event->button==1)) || (event->button!=1 && event->button!=3))return FALSE;
+    RdRoot *root=data;
+    if(event->button==3){
+        gint wx=0,wy=0,tx=0,ty=0,hx=0,hy=0;
+        gdk_window_get_origin(event->window,&wx,&wy);
+        gdk_window_get_origin(gtk_widget_get_window(root->window),&tx,&ty);
+        gtk_widget_translate_coordinates(root->host,root->window,0,0,&hx,&hy);
+        root->pointer_x=wx+(gint)event->x-tx-hx;root->pointer_y=wy+(gint)event->y-ty-hy;
+    }
+    rd_emit(data,6,widget,event->button==3 ? "context" : event->type==GDK_2BUTTON_PRESS ? "double" : "primary");return event->button==3 || event->type==GDK_2BUTTON_PRESS;
 }
 void rd_pointer(void *widget,int32_t enabled){
     g_object_set_data(G_OBJECT(widget),"rd-pointer-enabled",GINT_TO_POINTER(enabled));
@@ -439,11 +447,14 @@ int32_t rd_select_name(void *root,const char *name,int32_t index) { GtkWidget *w
 void rd_attach(void *parent, void *child, int32_t index) {
     if(GTK_IS_POPOVER(child)){
         RdRoot *root=g_object_get_data(G_OBJECT(child),"rd-root");const char *name=g_object_get_data(G_OBJECT(child),"rd-anchor");
-        GtkWidget *anchor=name ? rd_find_name(root,name) : NULL;
+        gboolean pointer=name && g_str_has_prefix(name,"@pointer:");
+        /* Context menus must stay inside the app, including near screen edges. */
+        if(pointer)gtk_popover_set_constrain_to(GTK_POPOVER(child),GTK_POPOVER_CONSTRAINT_WINDOW);
+        GtkWidget *anchor=name ? rd_find_name(root,pointer ? name+9 : name) : NULL;
         if(anchor){
             /* The root host outlives reconciled anchors and their children. */
             if(gtk_popover_get_relative_to(GTK_POPOVER(child))!=root->host)gtk_popover_set_relative_to(GTK_POPOVER(child),root->host);
-            gint x=0,y=0;if(gtk_widget_translate_coordinates(anchor,root->host,0,0,&x,&y)){GdkRectangle rect={x,y,gtk_widget_get_allocated_width(anchor),gtk_widget_get_allocated_height(anchor)};gtk_popover_set_pointing_to(GTK_POPOVER(child),&rect);}
+            gint x=0,y=0;if(gtk_widget_translate_coordinates(anchor,root->host,0,0,&x,&y)){GdkRectangle rect={x,y,gtk_widget_get_allocated_width(anchor),gtk_widget_get_allocated_height(anchor)};if(pointer){rect.x=root->pointer_x;rect.y=root->pointer_y;rect.width=1;rect.height=1;}gtk_popover_set_pointing_to(GTK_POPOVER(child),&rect);}
         }
         gboolean wanted=anchor && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(child),"rd-popover-visible"));gboolean opened=GPOINTER_TO_INT(g_object_get_data(G_OBJECT(child),"rd-popover-opened"));
         if(wanted && !opened){g_object_set_data(G_OBJECT(child),"rd-popover-opened",GINT_TO_POINTER(1));gtk_popover_popup(GTK_POPOVER(child));}

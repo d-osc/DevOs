@@ -68,6 +68,7 @@ fn command_flags(command str): Map<str, bool> {
         options.set("catalog-id", true)
     }
     if command == "list" || command == "catalog" || command == "search" { options.set("json", false) }
+    if command == "list" || command == "catalog" { options.set("summary", false) }
     if command == "remove" || command == "uninstall" || command == "un" || command == "rm" {
         options.set("purge", false)
     }
@@ -205,6 +206,12 @@ fn run_cli(args Vec<str>): i64 {
         print("dev ${util.version()}")
         return 0
     }
+    if options.flags.contains("summary") && !options.flags.contains("json") { result.raise("--summary requires --json") }
+    if options.command == "list" && options.flags.contains("summary") {
+        let store = store_mod.open_inventory(options.root)
+        let summary = json.set(store_mod.inventory(store),"bindings",catalog.bindings(store.registry))
+        print(json.stringify(summary)); return 0
+    }
     if options.command == "catalog" || options.command == "search" {
         let data = catalog.load(value_of(options.values,"catalog"))
         if options.command == "search" {
@@ -214,8 +221,11 @@ fn run_cli(args Vec<str>): i64 {
             if options.flags.contains("json") { print(json.stringify(matches)) } else { for i in 0..(json.len(matches) as i64) { let m = json.get(json.at(matches,i),"manifest"); print(catalog.text(m,"id") + "\t" + catalog.text(m,"name") + "\t" + catalog.text(m,"status")) } }; return 0
         }
         if options.positionals.len() != 0 { result.raise("Usage: dev catalog [--json]") }
-        let store = store_mod.open_store(options.root,options.devos_data,options.applications,false)
+        let store = options.flags.contains("summary") ? store_mod.open_inventory(options.root) : store_mod.open_store(options.root,options.devos_data,options.applications,false)
+        let inventory = store_mod.inventory(store)
+        data = catalog.classify_catalog(data,inventory)
         let out = json.set(data,"bindings",catalog.bindings(store.registry)); out = json.set(out,"store",store.root)
+        if options.flags.contains("summary") { out = json.set(out,"inventory",inventory) }
         if options.flags.contains("json") { print(json.stringify(out)) } else { let rows = json.get(data,"apps"); for i in 0..(json.len(rows) as i64) { let m = json.get(json.at(rows,i),"manifest"); print(catalog.text(m,"id") + "\t" + catalog.text(m,"name")) } }; return 0
     }
     if options.command == "catalog-bind" {

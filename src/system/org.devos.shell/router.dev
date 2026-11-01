@@ -20,7 +20,7 @@ fn appFor(command:str):str {
     if strings.equal(command,"task-manager") { return "taskmanager" }
     if strings.equal(command,"browser") { return "browser" }
     if strings.equal(command,"disk-manager") { return "diskmanager" }
-    if contains(Vec<str>("app-store","app-store-extensions","extension-store","settings.store","package-install"),command) { return "appstore" }
+    if contains(Vec<str>("app-store","app-store-apps","app-store-extensions","app-store-packages","extension-store","settings.store","package-install"),command) { return "appstore" }
     if strings.equal(command,"installer") { return "installer" }
     if strings.equal(command,"screenshot-app") { return "screenshot" }
     if strings.startsWith(command,"settings.") { return "settings" }

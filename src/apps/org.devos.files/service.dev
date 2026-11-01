@@ -1,5 +1,5 @@
 #!/usr/bin/env d
-# Data worker of the native Files window. It lists folders, creates a folder, renames, opens a file with the default application, searches (Quick Open),
+# Data worker of the native Files window. It lists folders, creates a folder, renames, opens text in the native Editor and other files with the default application, searches (Quick Open),
 # runs the custom menu actions, installs a package through the App Store and opens a Terminal in a folder; the rules are model.dev, search.dev and
 # custom-menu.dev. One JSON request per line on stdin:
 #   {"action":"list","path":"~/Documents","base":"/home/u","hidden":false}      (path may be absolute, relative to base, or start with ~)
@@ -25,6 +25,7 @@ use "std/json"
 use "std/strings"
 use "std/result"
 use "std/encoding"
+use "std/child_process"
 use "../../../lib/posix.dev" as posix
 use "../../../lib/hw.dev" as hw
 use "../../../lib/ext-prefs.dev" as prefs
@@ -87,6 +88,13 @@ fn frame(path:str, hidden:bool, message:str):str {
 }
 fn quote(value:str):str { return "'" + strings.replaceAll(value,"'","'\\''") + "'" }
 fn opener():str { return testing() && process.hasEnv("DEVOS_FILES_OPEN") ? process.getenv("DEVOS_FILES_OPEN") : "gio open" }
+fn editorFile(path:str):bool {
+    let inspected = result.attempt(fn():bool {
+        let sample = child_process.execFileSync("head",Vec<str>("-c","8192","--",path),child_process.Options("",5000,8192,Vec<u8>()))
+        return sample.success && !sample.timedOut && model.editorText(path,sample.stdout)
+    })
+    return !result.isErr(inspected) && result.unwrap(inspected)
+}
 fn folder(r:json.Value):str {
     let resolved = model.resolve(text(r,"dir"),"/",home())
     return strings.equal(resolved,"") ? home() : resolved
@@ -145,7 +153,13 @@ fn handle(line:str):str {
     if strings.equal(action,"open") {
         let path = text(r,"path")
         if !strings.startsWith(path,"/") || strings.contains(path,"\0") || !fs.existsSync(path) { return kit.failure("That file is no longer there.") }
-        posix.shell(opener() + " " + quote(path) + " >/dev/null 2>&1 &")
+        if fs.is_dir(path) { return frame(path,hidden,"") }
+        if !(testing() && process.hasEnv("DEVOS_FILES_OPEN")) && editorFile(path) {
+            if !sendShell(Vec<str>("editor",path),dir) { return kit.failure("Could not open the Editor.") }
+        } else {
+            let opened = hw.run(Vec<str>("sh","-c",opener() + " " + quote(path)),10000)
+            if opened.code != 0 { return kit.failure("Could not open this file with its default application.") }
+        }
         return frame(dir,hidden,"Opening " + path)
     }
     if strings.equal(action,"install") {

@@ -273,12 +273,29 @@ Checksum ช่วยตรวจว่าไฟล์ตรงกับ digest 
 
 `pm-cli` และหน้าต่าง App Store อ่าน catalog เดียวกันจาก
 `app-db/apps/<id>/app.json` ผ่าน `database-cli.dev` ของแพ็กเกจนี้
+reader นี้ติดต่อ service `app-db` ที่เริ่มอัตโนมัติและใช้ร่วมกันต่อผู้ใช้/source
+ไม่เปิดไฟล์แคตตาล็อกแยกเองในแต่ละ client ดู lifecycle และ protocol ใน
+[app-db README](../app-db/README.md#ฐานข้อมูลที่ใช้งานจริง)
 App Store เรียก PM เพื่ออ่าน catalog และจัดการแพ็กเกจ จึงไม่มีฐานข้อมูลติดตั้งหรือ
 ไฟล์ bindings ชุดที่สอง การแก้ metadata ใน checkout มีผลเมื่อ refresh ทั้งสองฝั่ง
 โดยไม่ต้อง import `registry-data.json` ใหม่
 
+Store ใช้ค้นหาและติดตั้งซอฟต์แวร์จาก catalog ส่วน Apps เก็บรายการที่ติดตั้งแล้ว
+ซึ่งมีไอคอนของแอปหรือ Icon ใน desktop entry และ Packages เก็บเครื่องมือที่ไม่มี
+ไอคอนของแอป เช่น Node.js/Git ไอคอน fallback ที่ PM สร้างไม่ถือเป็นไอคอนของแอป
+ทั้งสองกลุ่มค้นหา rollback/ถอน และติดตั้งจากไฟล์ได้ และใช้ inventory ชุดเดียว
+ที่โหลดพร้อม catalog จึงไม่ต้อง query registry เพิ่มเมื่อเปลี่ยนแท็บ
+
+PM ส่ง `active.softwareType` (`app`, `package`, `extension`) พร้อม `displayIcon`
+ให้ทุก client ใช้กฎเดียวกัน ประเภทคำนวณจาก active generation จึงเปลี่ยนอัตโนมัติ
+หลัง replace/rollback โดยไม่เขียนฐานข้อมูลประเภทแยก Store มีตัวกรอง All/Apps/
+Packages/Extensions และ badge ประเภท สำหรับรายการก่อนติดตั้ง catalog ระบุ
+`software_type: "package"` ได้ (ค่าเริ่มต้นคือ `app`); หลังติดตั้งใช้ประเภทที่ตรวจจริง
+
 ```sh
 dev catalog --json
+dev catalog --summary --json  # catalog + compact installed metadata for the GUI
+dev list --summary --json     # counts/versions without serializing every file record
 dev search claude
 dev install claude          # exact id/alias จาก catalog; เลือกแพ็กเกจของสถาปัตยกรรมปัจจุบัน
 dev info claude
@@ -294,6 +311,9 @@ dev remove claude
 
 สถานะและ mapping อยู่ที่ `registry.json` ของ store เดิม ใน
 `packages[ชื่อแพ็กเกจจริง].catalog` บันทึกพร้อม active/previous ใน transaction เดียวกัน
+`--summary` ใช้เพื่อแสดงข้อมูลเท่านั้น: ตรวจ metadata และขีดจำกัดของ registry
+แต่ไม่ไล่ตรวจ file records ทั้งหมด การติดตั้ง/รัน/ถอน/rollback/verify ยังคงผ่าน
+การตรวจ registry แบบเต็มตามเดิม ไม่มี cache สถานะติดตั้งแยกจาก registry
 การอัปเดตหรือ rollback คง mapping ไว้ และ remove ลบพร้อมแพ็กเกจ คำสั่ง info/verify/
 remove/rollback/update รองรับ catalog id/alias ของแพ็กเกจที่ติดตั้งแล้วด้วย
 การติดตั้งไฟล์เองไม่เดา catalog id; ระบุ `--catalog-id ID` เมื่อต้องการผูกอย่างชัดเจน

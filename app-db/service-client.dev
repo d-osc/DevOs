@@ -1,0 +1,47 @@
+# Local authenticated catalog-service client; works with the static DevLang runtime.
+use "std/net"
+use "std/fs"
+use "std/json"
+use "std/module"
+use "std/path"
+use "std/encoding"
+use "std/strings"
+use "std/process"
+use "std/child_process"
+use "std/result"
+fn request(source:str, action:str, query:str, arch:str):json.Value {
+    let launcher = path.dirname(path.resolve(process.cwd(),module.entry())) + "/service.sh"
+    let launched = child_process.execFileSync("sh",Vec<str>(launcher,"ensure",source,process.argv()[0]),child_process.options())
+    if !launched.success { result.raise("Cannot start app-db service: " + encoding.decode(launched.stderr,"utf8")) }
+    let endpoint = strings.trim(encoding.decode(launched.stdout,"utf8"))
+    let failure = ""
+    for retry in 0..20 {
+        let attempt = result.attempt(fn():json.Value {
+            let info = json.parse(fs.readFileSync(endpoint,"utf8"))
+            if json.string(json.get(info,"protocol")) != "devos-app-db-v1" { result.raise("Invalid app-db endpoint") }
+            let socket = net.connect(json.int(json.get(info,"port")),"127.0.0.1",1000)
+            socket.setTimeout(3000)
+            let received = result.attempt(fn():json.Value {
+                let body = json.set(json.object(),"token",json.get(info,"token"))
+                body = json.set(body,"action",action); body = json.set(body,"query",query); body = json.set(body,"arch",arch)
+                socket.end(encoding.encode(json.stringify(body) + "\n","utf8"))
+                let bytes = Vec<u8>()
+                while true {
+                    let chunk = socket.read(65536)
+                    if chunk.len() == 0 { break }
+                    if bytes.len() + chunk.len() > 4194304 { result.raise("app-db response exceeds 4 MiB") }
+                    for byte in chunk { bytes.push(byte) }
+                }
+                return json.parse(encoding.decode(bytes,"utf8"))
+            })
+            socket.destroy()
+            if result.isErr(received) { result.raise(result.message(received)) }
+            return result.unwrap(received)
+        })
+        if !result.isErr(attempt) { let response = result.unwrap(attempt); if json.has(response,"error") { result.raise(json.string(json.get(response,"error"))) }; return response }
+        failure = result.message(attempt)
+        if retry == 5 || retry == 10 { child_process.execFileSync("sh",Vec<str>(launcher,"ensure",source,process.argv()[0]),child_process.options()) }
+        child_process.execFileSync("sleep",Vec<str>("0.05"),child_process.options())
+    }
+    result.raise("app-db service is unavailable: " + failure); return json.null_value()
+}

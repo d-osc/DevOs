@@ -4,13 +4,21 @@ use "std/result"
 use "std/strings"
 use "std/path"
 use "std/module"
-use "./database.dev" as database
+use "./service-client.dev" as client
 fn main():i32 {
-    let source = path.dirname(module.entry()); let arch = "arm64"
+    let source = path.dirname(module.entry()); let arch = "arm64"; let action = "catalog"; let query = ""
     let i = 0
-    while i < (args.len() as i64) { if args.get(i) == "--source" && i + 1 < (args.len() as i64) { source = args.get(i + 1); i = i + 2 } else if args.get(i) == "--arch" && i + 1 < (args.len() as i64) { arch = args.get(i + 1); i = i + 2 } else { return 2 } }
+    while i < (args.len() as i64) {
+        if i + 1 >= (args.len() as i64) { return 2 }
+        if args.get(i) == "--source" { source = args.get(i + 1) }
+        else if args.get(i) == "--arch" { arch = args.get(i + 1) }
+        else if args.get(i) == "--action" { action = args.get(i + 1) }
+        else if args.get(i) == "--query" { query = args.get(i + 1) }
+        else { return 2 }
+        i = i + 2
+    }
     if arch == "aarch64" { arch = "arm64" }; if arch == "amd64" { arch = "x86_64" }
-    let loaded = result.attempt(fn():json.Value { return database.load(source,arch) })
+    let loaded = result.attempt(fn():json.Value { return client.request(source,action,query,arch) })
     if result.isErr(loaded) { print(json.stringify(json.set(json.object(),"error",result.message(loaded)))); return 1 }
     print(json.stringify(result.unwrap(loaded))); return 0
 }

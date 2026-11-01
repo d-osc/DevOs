@@ -29,6 +29,13 @@ test.case("the worker lists extensions by group and hides those with their own n
     test.expect(strings.equal(rows[0][0],"L") && ids.len() >= 6,"List too short: " + strings.join(ids,","))
     for hidden in Vec<str>("org.devos.theme","org.devos.icons","org.devos.updates","org.devos.background","org.devos.panel") { test.expect(!strings.contains(strings.join(ids,","),hidden),hidden + " has a native page and must not be listed here") }
     for shown in Vec<str>("org.devos.editor","org.devos.files","org.devos.terminal","org.devos.launcher","org.devos.settings","org.devos.clock","org.example.status") { test.expect(strings.contains(strings.join(ids,","),shown),shown + " is missing") }
+    tool.exec(Vec<str>("mkdir","-p",users + "/org.example.empty"))
+    fs.writeFileSync(users + "/org.example.empty/extension.json","{\"id\":\"org.example.empty\",\"name\":\"Empty\",\"description\":\"Only a toggle\",\"version\":\"1.0.0\",\"apiVersion\":1,\"settingsVersion\":1,\"enabledByDefault\":true,\"settings\":[]}")
+    let extensionRows = fieldsOf(worker(preferences,users,"{\"action\":\"extensions\"}\n"))
+    let extensionIds = Vec<str>()
+    for i in 1..(extensionRows.len() as i64) { test.expect(extensionRows[i][3] == "extension","The store's Extensions group included an app"); extensionIds.push(extensionRows[i][0]) }
+    test.expect(strings.contains(strings.join(extensionIds,","),"org.example.status") && strings.contains(strings.join(extensionIds,","),"org.devos.clock"),"The Extensions group lost installed extensions")
+    test.expect(strings.contains(strings.join(extensionIds,","),"org.example.empty"),"An extension without settings cannot be managed")
     test.expect(!strings.contains(strings.join(ids,","),"org.example.evil"),"A user package declaring system UI was listed")
     let editorCount = 0; for i in 1..(rows.len() as i64) { if strings.equal(rows[i][0],"org.devos.editor") { editorCount = editorCount + 1; test.expect(strings.equal(rows[i][1],"Editor") && strings.equal(rows[i][3],"app"),"A user package replaced a bundled id") } }
     test.expect(editorCount == 1,"The editor id appears " + "${editorCount}" + " times")

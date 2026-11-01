@@ -93,6 +93,8 @@ fn element(kind: i32, options: Props, label: Text, children: Vec<Node>): Node {
 }
 fn Box(options: Props, children: Vec<Node>): Node { return element(0, options, emptyText(), children) }
 fn Popover(options:Props,anchor:Text,child:Node,dismissed:fn():void):Node {let node=element(18,options,anchor,Vec<Node>(child));node.clicked=dismissed;node.active=true;return node}
+# A context menu points at the last right-click, in host coordinates.
+fn ContextMenu(options:Props,anchor:Text,child:Node,dismissed:fn():void):Node {return Popover(options,concatText(Vec<Text>(text("@pointer:"),anchor)),child,dismissed)}
 fn onPointer(node:Node,handler:fn(Text):void):Node {node.pointerEnabled=true;node.pointer=handler;return node}
 fn Label(value: str): Node { return TextLabel(text(value)) }
 fn TextLabel(value: Text): Node { return element(1, props(), value, Vec<Node>()) }

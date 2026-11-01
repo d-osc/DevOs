@@ -47,7 +47,7 @@ fn numeric(value:ui.Text):bool {
     return true
 }
 
-fn render(context:*ui.Context):ui.Node {
+fn renderMode(context:*ui.Context, extensionsOnly:bool):ui.Node {
     let list = ui.useText(context,ui.emptyText()); let form = ui.useText(context,ui.emptyText()); let failure = ui.useText(context,ui.emptyText()); let status = ui.useText(context,ui.emptyText())
     let selected = ui.useText(context,ui.emptyText()); let query = ui.useText(context,ui.emptyText()); let draft = ui.useText(context,ui.emptyText()); let enabled = ui.useBool(context,false)
     let pipe = ui.useRef(context,0); let waiting = ui.useRef(context,0); let step = ui.useRef(context,0)
@@ -63,7 +63,7 @@ fn render(context:*ui.Context):ui.Node {
                 form.set(value); draft.set(valuesOf(value)); enabled.set(flag(cell(head,4)))
                 if kind == 3 { status.set(ui.text("Saved.")) } else { status.set(ui.emptyText()) }
             }
-        },fn(value:i64) { pipe.set(value); channel.pause(value,true); waiting.set(1); channel.command(value,ui.text("{\"action\":\"list\"}")) })
+        },fn(value:i64) { pipe.set(value); channel.pause(value,true); waiting.set(1); channel.command(value,ui.text(extensionsOnly ? "{\"action\":\"extensions\"}" : "{\"action\":\"list\"}")) })
     },Vec<i64>())
     let busy = waiting.get() != 0
     # Diagnostic drive (DEVOS_EXTENSIONS_SMOKE): open the first extension, edit its first field, Apply, report and close.
@@ -83,10 +83,11 @@ fn render(context:*ui.Context):ui.Node {
     # Left: the extensions, grouped like the JS list.
     let rows = records(list.value); let shown = 0
     let navigation = Vec<ui.Node>()
-    let search = ui.named("ext-search"); search.placeholder = ui.text("Search apps and extensions…")
+    let search = ui.named("ext-search"); search.placeholder = ui.text(extensionsOnly ? "Search installed extensions…" : "Search apps and extensions…")
     navigation.push(ui.SearchEntry(search,query.value,fn(value:ui.Text) { query.set(value) }))
     let groups = Vec<str>("system","app","extension"); let titles = Vec<str>("SYSTEM","SYSTEM APPS","EXTENSIONS")
     for g in 0..3 {
+        if extensionsOnly && g != 2 { continue }
         let items = Vec<ui.Node>()
         for index in 1..(rows.len() as i64) {
             let parts = cells(rows[index])
@@ -106,7 +107,7 @@ fn render(context:*ui.Context):ui.Node {
             for item in items { navigation.push(item) }
         }
     }
-    if shown == 0 { navigation.push(k.note("No apps or extensions match your search.","settings-description")) }
+    if shown == 0 { navigation.push(k.note(extensionsOnly ? "No installed extensions match your search." : "No apps or extensions match your search.","settings-description")) }
     let sidebarOptions = ui.props(); sidebarOptions.spacing = 6; sidebarOptions.width = 250
     let sidebar = ui.Box(sidebarOptions,navigation)
     # Right: the form of the selected extension.
@@ -114,7 +115,7 @@ fn render(context:*ui.Context):ui.Node {
     let head = form.value.bytes.len() > 0 ? cells(records(form.value)[0]) : Vec<ui.Text>()
     let formId = cell(head,1)
     if form.value.bytes.len() == 0 || !ui.equalText(formId,selected.value) {
-        content.push(k.note(selected.value.bytes.len() == 0 ? "Choose an app or extension to see its settings." : "Loading…","settings-description"))
+        content.push(k.note(selected.value.bytes.len() == 0 ? (extensionsOnly ? "Choose an extension to see its settings." : "Choose an app or extension to see its settings.") : "Loading…","settings-description"))
     } else {
         let system = flag(cell(head,5)); let saved = valuesOf(form.value)
         let dirty = !ui.equalText(draft.value,saved) || enabled.value != flag(cell(head,4))
@@ -177,4 +178,7 @@ fn render(context:*ui.Context):ui.Node {
     let contentOptions = ui.props(); contentOptions.spacing = 14; contentOptions.expand = true
     return row(24,Vec<ui.Node>(sidebar,ui.Scroll(contentOptions,column(14,content))))
 }
+fn render(context:*ui.Context):ui.Node { return renderMode(context,false) }
+fn renderExtensions(context:*ui.Context):ui.Node { return renderMode(context,true) }
 fn page():ui.Node { return ui.component(9330,ui.keyed(903),render) }
+fn extensionsPage():ui.Node { return ui.component(9331,ui.keyed(904),renderExtensions) }

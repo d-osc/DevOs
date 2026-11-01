@@ -29,6 +29,8 @@ try {
     $taskDevlangDirectory = $taskDevlang.Substring(0, $taskDevlang.LastIndexOf('/'))
     & wsl -d Ubuntu --exec cp -- $taskDevlang "$taskDevlangDirectory/devrun" "$taskStage/build/wsl/bin/"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the DevLang d/devrun runtime.' }
+    & wsl -d Ubuntu --exec sh "$taskNativeRoot/tools/setup/stage-pm-runtime.sh" $taskStage
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the package manager and shared app database.' }
     & wsl -d Ubuntu --exec chmod -R +x "$taskStage/bin" "$taskStage/build/native" "$taskStage/build/wsl/bin"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare Linux runtime executables.' }
     # tar.exe from Windows packs files without the execute bit; every native program in dist/native has no dot in its name

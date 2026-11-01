@@ -42,17 +42,55 @@ fn candidate(manifest:json.Value, arch:str):json.Value {
     }; return json.object()
 }
 fn read_json(file:str):json.Value { if !fs.is_file(file) || fs.size(file) > 2097152 { result.raise("Invalid or oversized catalog file: " + file) }; return json.parse(fs.readFileSync(file,"utf8")) }
+fn extension_id(value:str):bool {
+    let parts = strings.split(value,"."); if parts.len() < 2 || strings.charLength(value) > 128 { return false }
+    for part in parts { if !id(part) { return false } }; return true
+}
+fn extension_rows(rows:json.Value):json.Value {
+    let out = json.array(); let seen = Map<str,bool>()
+    for row in items(rows) {
+        let listing = object(row,"listing"); if text(listing,"id") == "" { listing = row }
+        let key = text(listing,"id"); let manifest = object(row,"manifest")
+        if text(manifest,"id") == "" { manifest = object(row,"extension_manifest") }
+        if !json.has(listing,"schema_version") || json.kind(json.get(listing,"schema_version")) != "number" || json.int(json.get(listing,"schema_version")) != 2 { result.raise("Unsupported extension catalog schema") }
+        if !extension_id(key) || text(listing,"kind") != "extension" || text(listing,"name") == "" || text(manifest,"id") != key { result.raise("Invalid extension catalog identity") }
+        if seen.contains(key) { result.raise("Duplicate extension catalog identity: " + key) }; seen.set(key,true)
+        let entry = json.set(listing,"extension_manifest",manifest)
+        entry = json.set(entry,"version",text(manifest,"version"))
+        # A listing alone is not a verified install artifact.
+        entry = json.set(entry,"installable",false)
+        entry = json.set(entry,"softwareType","extension")
+        out = json.push(out,entry)
+    }; return out
+}
+fn directory_extensions(source:str):json.Value {
+    let folder = source + "/extensions"; let rows = json.array()
+    if !fs.is_dir(folder) { return rows }
+    let names = fs.readdirSync(folder); names.sort()
+    for name in names {
+        let directory = folder + "/" + name; let file = directory + "/listing.json"
+        if !fs.is_file(file) { continue }
+        let listing = read_json(file); let relative = text(listing,"manifest")
+        if text(listing,"id") != name || !extension_id(name) || relative == "" || strings.startsWith(relative,"/") || strings.contains(relative,"\\") || strings.contains(relative,":") { result.raise("Invalid extension listing path: " + name) }
+        for part in strings.split(relative,"/") { if part == ".." || part == "" { result.raise("Unsafe extension manifest path") } }
+        let row = json.set(json.object(),"listing",listing)
+        row = json.set(row,"manifest",read_json(directory + "/" + relative))
+        rows = json.push(rows,row)
+    }; return rows
+}
 fn load(source:str, arch:str):json.Value {
-    let rows = json.array()
+    let rows = json.array(); let extensions = json.array()
     if fs.is_file(source) {
         let data = read_json(source)
         if json.kind(data) != "object" || !json.has(data,"schema_version") || json.kind(json.get(data,"schema_version")) != "number" || json.int(json.get(data,"schema_version")) != 2 { result.raise("Unsupported App Store catalog schema") }
         rows = list(data,"apps")
+        extensions = list(data,"extensions")
     } else {
         let folder = source + "/apps"
         if !fs.is_dir(folder) { result.raise("App Store database is unavailable: " + source) }
         let names = fs.readdirSync(folder); names.sort()
         for name in names { let file = folder + "/" + name + "/app.json"; if !fs.is_file(file) { continue }; let manifest = read_json(file); if text(manifest,"id") != name { result.raise("Catalog identity does not match folder: " + name) }; rows = json.push(rows,json.set(json.object(),"manifest",manifest)) }
+        extensions = directory_extensions(source)
     }
     let apps = json.array(); let seen = Map<str,str>()
     for row in items(rows) {
@@ -61,7 +99,12 @@ fn load(source:str, arch:str):json.Value {
         let names = Vec<str>(key)
         for alias in items(list(manifest,"aliases")) { if json.kind(alias) != "string" || !id(json.string(alias)) { result.raise("Invalid catalog alias: " + key) }; names.push(json.string(alias)) }
         for name in names { if seen.contains(name) { result.raise("Duplicate catalog identity or alias: " + name) }; seen.set(name,key) }
-        let item = json.set(json.object(),"manifest",manifest); item = json.set(item,"candidate",candidate(manifest,arch)); apps = json.push(apps,item)
+        let software_type = "app"
+        if json.has(manifest,"software_type") {
+            software_type = text(manifest,"software_type")
+            if software_type != "app" && software_type != "package" { result.raise("Invalid catalog software type: " + key) }
+        }
+        let item = json.set(json.object(),"manifest",manifest); item = json.set(item,"candidate",candidate(manifest,arch)); item = json.set(item,"softwareType",software_type); apps = json.push(apps,item)
     }
-    let data = json.set(json.object(),"schema_version",2); data = json.set(data,"source",source); return json.set(data,"apps",apps)
+    let data = json.set(json.object(),"schema_version",2); data = json.set(data,"source",source); data = json.set(data,"extensions",extension_rows(extensions)); return json.set(data,"apps",apps)
 }

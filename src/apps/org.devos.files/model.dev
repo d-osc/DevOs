@@ -20,6 +20,15 @@ fn extensionOf(name:str):str {
     let parts = strings.split(name,".")
     return parts.len() > 1 ? strings.toLowerCase(parts[parts.len() - 1]) : strings.toLowerCase(name)
 }
+
+# Inspect only a bounded prefix. Media, documents and packages retain their default viewer.
+fn editorText(name:str, bytes:Vec<u8>):bool {
+    let ext = extensionOf(name)
+    for binary in Vec<str>("png","jpg","jpeg","gif","webp","bmp","ico","avif","heic","pdf","doc","docx","xls","xlsx","ppt","pptx","odt","ods","odp","mp3","mp4","mkv","webm","wav","ogg","flac","zip","gz","xz","bz2","zst","tar","7z","rar","deb","rpm","dpk","so","exe","dll","ttf","otf","woff","woff2") { if strings.equal(ext,binary) { return false } }
+    for byte in bytes { if byte == 0 || (byte < 32 && byte != 9 && byte != 10 && byte != 12 && byte != 13) { return false } }
+    return true
+}
+
 fn fileKind(name:str, directory:bool):Kind {
     if directory {
         if strings.equal(name,"node_modules") || strings.equal(name,"vendor") || strings.equal(name,".venv") { return Kind("Dependencies","DEP","neutral") }

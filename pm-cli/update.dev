@@ -331,6 +331,7 @@ fn self_update(): i64 {
     if staged_main == "" { result.raise("The downloaded dev CLI has no main.dev") }
     let database = util.parent_dir(staged_main) + "/catalog-data"
     if !fs.is_file(database + "/database-cli.dev") || !fs.is_file(database + "/database.dev") || !fs.is_dir(database + "/apps") { result.raise("The downloaded CLI is missing its shared app-db database; the current version was kept") }
+      if !fs.is_file(database + "/service.dev") || !fs.is_file(database + "/service-client.dev") || !fs.is_file(database + "/service.sh") { result.raise("The downloaded CLI is missing its app-db service; the current version was kept") }
     # The staged tree must run and report the release version first.
     let check = util.run(Vec<str>("d", staged_main, "--", "--version"), staging, 120000)
     let reported = strings.trim(util.decode(check.stdout))

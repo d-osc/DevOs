@@ -61,4 +61,8 @@ test.case("creating and renaming refuse bad names and never overwrite",fn() {
     test.expect(!strings.equal(m.rename(d,"missing","x"),"") && !strings.equal(m.rename(d,"c.txt","../x"),"") && fs.existsSync(d + "/c.txt"),"A bad rename was accepted")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("text file detection preserves media and rejects binary prefixes",fn() {
+    test.expect(m.editorText("hello.dev",Vec<u8>(112,114,105,110,116,10)) && m.editorText("README",Vec<u8>()) && m.editorText(".env",Vec<u8>(65,61,49)),"Text was not recognized")
+    test.expect(!m.editorText("bad.txt",Vec<u8>(65,0,66)) && !m.editorText("program",Vec<u8>(127,69,76,70,2,1)) && !m.editorText("picture.png",Vec<u8>(65)) && !m.editorText("doc.pdf",Vec<u8>(65)) && !m.editorText("archive.deb",Vec<u8>(65)),"Binary or viewer file was routed to Editor")
+})
 return t.finish()

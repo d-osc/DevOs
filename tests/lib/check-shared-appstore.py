@@ -71,6 +71,7 @@ cp "$FAKE_PACKAGE" "$out"
     assert json.loads(cli("search", "shared-demo", "--json"))[0]["manifest"]["id"] == "store-app"
     package = archive("1.0.0"); env["FAKE_PACKAGE"] = str(package)
     cli("install", "shared-demo")
+    assert catalog()["apps"][0]["softwareType"] == "package"
     lock = root / "store/.dev-lock"
     lock.write_text(str(os.getpid()))
     cli("remove", "native-demo", status=1)
@@ -96,6 +97,7 @@ cp "$FAKE_PACKAGE" "$out"
     assert "native-demo" in cli("info", "store-app")
     cli("remove", "shared-demo")
     assert gui("catalog")[1][8] == ""
+    assert catalog()["apps"][0]["softwareType"] == "app"
 
     # One-time legacy migration writes the PM registry, retains an archive,
     # and never resurrects the old binding after a later uninstall/reinstall.

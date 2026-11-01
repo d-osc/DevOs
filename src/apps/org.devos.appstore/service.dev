@@ -7,8 +7,11 @@
 #   {"action":"installFile","path":"/abs/file.dpk"}      {"action":"remove","id":"hello"}      {"action":"rollback","id":"hello"}
 # Every answer is a frame (records separated by ASCII 30; cells never hold tabs or newlines):
 #   V message                                              the first record
-#   A id name publisher category summary homepage format boundPackage     the catalog
+#     catalog's third cell is "inventory" when its P records are included atomically
+#   A id name publisher category summary homepage format boundPackage softwareType
+#   X id name publisher summary status version                            extension catalog
 #   P id version kind files bytes previous commands title description     what is installed
+#     P also carries displayIcon and the PM's softwareType after description
 #   E message
 # Test hooks (only with DEVOS_APPSTORE_TEST=1): DEVOS_APPSTORE_REGISTRY, DEVOS_APPSTORE_CURL, DEVOS_APPSTORE_ARCH, DEVOS_APPSTORE_TMP.
 # The package manager is DEV_OS_PM when set, else the first of `dev` in PATH, <root>/bin/dev, <root>/build/wsl/bin/dev, ~/.local/bin/dev that answers `--version`.
@@ -95,9 +98,9 @@ fn safeWebsite(address:str):bool {
     let host = slash < 0 ? rest : strings.substring(rest,0,slash)
     return !strings.equal(host,"") && !strings.contains(host,"@") && !strings.contains(host,"?") && !strings.contains(host,"#")
 }
-struct App { id: str, name: str, publisher: str, category: str, summary: str, homepage: str, url: str, format: str }
+struct App { id: str, name: str, publisher: str, category: str, summary: str, homepage: str, url: str, format: str, software_type: str }
 fn registry(root:str):json.Value {
-    let ran = pm(root,Vec<str>("catalog","--json"),30)
+    let ran = pm(root,Vec<str>("catalog","--summary","--json"),30)
     if ran.code != 0 { return json.null_value() }
     let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
     if result.isErr(parsed) { return json.null_value() }; return result.unwrap(parsed)
@@ -105,7 +108,7 @@ fn registry(root:str):json.Value {
 fn migrateBindings(root:str, data:json.Value):json.Value {
     let legacy = bindings(); if json.len(legacy) == 0 { return data }
     let known = obj(data,"bindings"); let changed = false; let failed = false
-    let inventory = pm(root,Vec<str>("list","--json"),30)
+    let inventory = pm(root,Vec<str>("list","--summary","--json"),30)
     if inventory.code != 0 { return data }
     let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(inventory.out)) }); if result.isErr(parsed) { return data }
     let packages = obj(result.unwrap(parsed),"packages")
@@ -132,19 +135,22 @@ fn apps(data:json.Value):Vec<App> {
         let candidate = obj(json.at(rows,i),"candidate")
         let url = text(candidate,"file_url"); let format = text(candidate,"format")
         let homepage = text(obj(manifest,"links"),"homepage")
-        out.push(App(id,text(manifest,"name"),text(obj(manifest,"publisher"),"name"),categoryOf(json.len(categories) > 0 && strings.equal(json.kind(json.at(categories,0)),"string") ? json.string(json.at(categories,0)) : ""),text(manifest,"summary"),safeWebsite(homepage) ? homepage : "",url,format))
+        out.push(App(id,text(manifest,"name"),text(obj(manifest,"publisher"),"name"),categoryOf(json.len(categories) > 0 && strings.equal(json.kind(json.at(categories,0)),"string") ? json.string(json.at(categories,0)) : ""),text(manifest,"summary"),safeWebsite(homepage) ? homepage : "",url,format,text(json.at(rows,i),"softwareType") == "package" ? "package" : "app"))
     }
     return out
 }
 
 # --- frames ---
 fn installedFrame(root:str, message:str):str {
-    let ran = pm(root,Vec<str>("list","--json"),30)
+    let ran = pm(root,Vec<str>("list","--summary","--json"),30)
     if ran.code != 0 { return kit.failure(strings.equal(strings.trim(ran.out),"") ? "Could not list packages." : strings.trim(ran.out)) }
     let parsed = result.attempt(fn():json.Value { return json.parse(strings.trim(ran.out)) })
     if result.isErr(parsed) || !strings.equal(json.kind(result.unwrap(parsed)),"object") { return kit.failure("Could not list packages.") }
     let data = result.unwrap(parsed)
-    let out = "V\t" + kit.clean(message)
+    return "V\t" + kit.clean(message) + installedRecords(data)
+}
+fn installedRecords(data:json.Value):str {
+    let out = ""
     let packages = obj(data,"packages")
     let names = json.keys(packages); names.sort()
     for id in names {
@@ -155,15 +161,19 @@ fn installedFrame(root:str, message:str):str {
         if commands.len() == 0 { commands.push(id) }
         let title = text(manifest,"fullname"); if strings.equal(title,"") { title = text(manifest,"shortname") }; if strings.equal(title,"") { title = id }
         let previous = json.has(item,"previous") && strings.equal(json.kind(json.get(item,"previous")),"object") ? text(obj(json.get(item,"previous"),"manifest"),"version") : ""
-        let files = json.keys(obj(active,"files")).len()
+        let files = json.has(active,"fileCount") ? json.int(json.get(active,"fileCount")) : (json.keys(obj(active,"files")).len() as i64)
         let bytes = json.has(active,"bytes") && strings.equal(json.kind(json.get(active,"bytes")),"number") ? json.int(json.get(active,"bytes")) : 0
-        out = out + kit.rs() + "P\t" + kit.clean(id) + "\t" + kit.clean(text(manifest,"version")) + "\t" + kit.clean(text(active,"kind") == "" ? "app" : text(active,"kind")) + "\t${files}\t${bytes}\t" + kit.clean(previous) + "\t" + kit.clean(strings.join(commands,",")) + "\t" + kit.clean(title) + "\t" + kit.clean(text(manifest,"description"))
+        let icon = text(active,"displayIcon")
+        let software_type = text(active,"softwareType")
+        if software_type == "" { software_type = text(active,"kind") == "extension" ? "extension" : (icon == "" ? "package" : "app") }
+        out = out + kit.rs() + "P\t" + kit.clean(id) + "\t" + kit.clean(text(manifest,"version")) + "\t" + kit.clean(text(active,"kind") == "" ? "app" : text(active,"kind")) + "\t${files}\t${bytes}\t" + kit.clean(previous) + "\t" + kit.clean(strings.join(commands,",")) + "\t" + kit.clean(title) + "\t" + kit.clean(text(manifest,"description")) + "\t" + kit.clean(icon) + "\t" + software_type
     }
     let extensions = obj(data,"extensions")
     let extNames = json.keys(extensions); extNames.sort()
     for id in extNames {
         let item = json.get(extensions,id)
-        out = out + kit.rs() + "P\t" + kit.clean(id) + "\t" + kit.clean(text(item,"version")) + "\textension\t${list(item,"files").len()}\t0\t\t\t" + kit.clean(id) + "\t" + kit.clean(text(item,"description"))
+        let count = json.has(item,"fileCount") ? json.int(json.get(item,"fileCount")) : (list(item,"files").len() as i64)
+        out = out + kit.rs() + "P\t" + kit.clean(id) + "\t" + kit.clean(text(item,"version")) + "\textension\t${count}\t0\t\t\t" + kit.clean(id) + "\t" + kit.clean(text(item,"description")) + "\t\textension"
     }
     return out
 }
@@ -172,10 +182,22 @@ fn catalogFrame(root:str):str {
     if json.is_null(data) { return kit.failure("The app registry is unavailable.") }
     data = migrateBindings(root,data)
     let all = apps(data)
-    if all.len() == 0 { return kit.failure("The app registry is unavailable.") }
     let bound = obj(data,"bindings")
-    let out = "V\t"
-    for a in all { out = out + kit.rs() + "A\t" + kit.clean(a.id) + "\t" + kit.clean(a.name) + "\t" + kit.clean(a.publisher) + "\t" + kit.clean(a.category) + "\t" + kit.clean(a.summary) + "\t" + kit.clean(a.homepage) + "\t" + kit.clean(a.format) + "\t" + kit.clean(text(bound,a.id)) }
+    let complete = json.has(data,"inventory") && json.kind(json.get(data,"inventory")) == "object"
+    let out = complete ? "V\t\tinventory" : "V\t"
+    for a in all {
+        let software_type = a.software_type
+        let installed = obj(obj(obj(data,"inventory"),"packages"),text(bound,a.id))
+        let detected = text(obj(installed,"active"),"softwareType")
+        if detected == "app" || detected == "package" { software_type = detected }
+        out = out + kit.rs() + "A\t" + kit.clean(a.id) + "\t" + kit.clean(a.name) + "\t" + kit.clean(a.publisher) + "\t" + kit.clean(a.category) + "\t" + kit.clean(a.summary) + "\t" + kit.clean(a.homepage) + "\t" + kit.clean(a.format) + "\t" + kit.clean(text(bound,a.id)) + "\t" + software_type
+    }
+    let extensions = list(data,"extensions")
+    for i in 0..(json.len(extensions) as i64) {
+        let entry = json.at(extensions,i)
+        out = out + kit.rs() + "X\t" + kit.clean(text(entry,"id")) + "\t" + kit.clean(text(entry,"name")) + "\t" + kit.clean(text(obj(entry,"publisher"),"name")) + "\t" + kit.clean(text(entry,"summary")) + "\t" + kit.clean(text(entry,"status")) + "\t" + kit.clean(text(entry,"version"))
+    }
+    if complete { out = out + installedRecords(obj(data,"inventory")) }
     return out
 }
 

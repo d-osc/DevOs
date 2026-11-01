@@ -21,6 +21,7 @@ set -eu
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin HOME=/root
 mount -t devtmpfs devtmpfs /dev
 mount -t sysfs sysfs /sys
+ip link set lo up
 export DEV_ROOT=/tmp/store XDG_DATA_HOME=/tmp/data DEV_BIN_DIR=/tmp/commands
 mkdir -p /tmp/hello/bin "$DEV_BIN_DIR" "$XDG_DATA_HOME"
 printf '%s' '{"name":"hello","version":"1.0.0","bin":{"hello":"bin/hello"}}' >/tmp/hello/package.json

@@ -15,5 +15,7 @@ do_install() {
     printf '#!/bin/sh\nDEV_LAUNCHER=/usr/bin/dev exec d /usr/share/devos-pm/cli/main.dev -- "$@"\n' > ${D}${bindir}/devospm
     chmod 0755 ${D}${bindir}/devospm
     ln -s devospm ${D}${bindir}/dev
+    install -d ${D}${nonarch_libdir}/systemd/user
+    install -m0644 ${D}${datadir}/devos-pm/cli/catalog-data/systemd/devos-app-db.service ${D}${nonarch_libdir}/systemd/user/devos-app-db.service
 }
-FILES:${PN} += "${datadir}/devos-pm"
+FILES:${PN} += "${datadir}/devos-pm ${nonarch_libdir}/systemd/user/devos-app-db.service"

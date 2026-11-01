@@ -148,12 +148,21 @@ test.case("a file is opened with the default application, quoted safely, and a m
     test.expect(fs.existsSync(d + "/log") && strings.equal(strings.trim(fs.readFileSync(d + "/log","utf8")),home + "/it's here.txt"),"The opener got the wrong path")
     tool.exec(Vec<str>("rm","-rf",d))
 })
+test.case("text Open reaches the native Editor with the exact path",fn() {
+    let d = rig(); let file = d + "/home/it's code.dev"; fs.writeFileSync(file,"print(42)\n")
+    let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_LOG",d + "/log")
+    let request = "{\"action\":\"open\",\"path\":" + json_text(file) + ",\"dir\":" + json_text(d + "/home") + "}\n"
+    let done = tool.run(Vec<str>("d",t.root() + "/src/apps/org.devos.files/service.dev","--",t.root()),env,request,30000)
+    test.expect(done.success && strings.contains(t.out(done),"Opening " + file),"Text Open failed: " + t.out(done) + t.err(done))
+    test.expect(fs.existsSync(d + "/log") && strings.equal(strings.trim(fs.readFileSync(d + "/log","utf8")),"editor " + file + " @ " + d + "/home"),"Open did not reach native Editor")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
 test.case("the native Files window browses into a folder and creates a folder there under real GTK",fn() {
     let executable = t.root() + "/build/react-devlang/tests/files-native"
     tool.checked(Vec<str>("sh", t.root() + "/packages/react-devlang/tools/build.sh", t.root() + "/src/apps/org.devos.files/native-main.devx", executable), Map<str,str>(), "", 180000)
     let d = rig()
     let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log"); env.set("DEVOS_FILES_SMOKE","1"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs")
-    env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
     let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","files-native","xvfb-run","-a",executable),env,"",120000)
     test.expect(done.success && strings.contains(t.out(done),"PASS native Files browsed into a folder and created one"),"Files window: " + t.out(done) + " / " + t.err(done))
     test.expect(fs.is_dir(d + "/home/Docs/Made"),"The folder was not created inside the folder that was opened")
@@ -164,11 +173,23 @@ test.case("the native Files window searches below the folder, opens a result and
     let d = rig()
     fs.mkdirSync(d + "/home/Docs/deep",false); fs.writeFileSync(d + "/home/Docs/deep/needle-file.txt","x")
     let env = Map<str,str>(); env.set("DEVOS_FILES_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log")
-    env.set("DEVOS_FILES_SMOKE","search"); env.set("DEVOS_FILES_QUERY","needle"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs/deep/needle-file.txt"); env.set("NO_AT_BRIDGE","1")
+    env.set("GDK_BACKEND","x11"); env.set("DEVOS_FILES_SMOKE","search"); env.set("DEVOS_FILES_QUERY","needle"); env.set("DEVOS_FILES_EXPECT",d + "/home/Docs/deep/needle-file.txt"); env.set("NO_AT_BRIDGE","1")
     let done = tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","files-native","xvfb-run","-a",executable),env,"",120000)
     test.expect(done.success && strings.contains(t.out(done),"PASS native Files searched, opened a result and showed its folder"),"Files window: " + t.out(done) + " / " + t.err(done))
     tool.exec(Vec<str>("sleep","1"))
     test.expect(fs.existsSync(d + "/log") && strings.contains(fs.readFileSync(d + "/log","utf8"),d + "/home/Docs/deep/needle-file.txt"),"the opener did not get the result")
+    tool.exec(Vec<str>("rm","-rf",d))
+})
+
+test.case("Files handles native double-click and context events in list and grid",fn() {
+    let executable = t.root() + "/build/react-devlang/tests/files-pointer"
+    let object = executable + ".o"
+    tool.checked(Vec<str>("sh","-c","cc -Wall -Wextra -Werror -fPIC -c \"$1\" $(pkg-config --cflags gtk+-3.0) -o \"$2\"","files-pointer",t.root() + "/tests/react-devlang/files-pointer.c",object),Map<str,str>(),"",30000)
+    tool.checked(Vec<str>("sh",t.root() + "/packages/react-devlang/tools/build.sh",t.root() + "/src/apps/org.devos.files/native-main.devx",executable,object),Map<str,str>(),"",180000)
+    let d = rig(); let env = Map<str,str>()
+    env.set("DEVOS_FILES_TEST","1"); env.set("DEVOS_FILES_POINTER_TEST","1"); env.set("DEV_OS_ROOT",t.root()); env.set("DEVOS_PREFERENCES_DIR",d + "/prefs"); env.set("DEVOS_FILES_HOME",d + "/home"); env.set("DEVOS_FILES_OPEN",d + "/open"); env.set("DEVOS_FILES_LOG",d + "/log"); env.set("GDK_BACKEND","x11"); env.set("G_DEBUG","fatal-warnings"); env.set("NO_AT_BRIDGE","1")
+    let done = tool.run(Vec<str>("xvfb-run","-a",executable),env,"",90000)
+    test.expect(done.success && strings.contains(t.out(done),"PASS Files list/grid double-click"),"Files pointer: " + t.out(done) + " / " + t.err(done))
     tool.exec(Vec<str>("rm","-rf",d))
 })
 return t.finish()

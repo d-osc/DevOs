@@ -75,9 +75,12 @@ fn find(root:str, id:str):Item {
     return Item(json.null_value(),"")
 }
 fn errorOf(state:json.Value):str { return json.has(state,"error") ? json.string(json.get(state,"error")) : "" }
-fn listFrame(root:str):str {
+fn listFrame(root:str, extensionsOnly:bool):str {
     let rows = Vec<Item>()
-    for item in items(root) { if !dedicated(text(item.manifest,"id")) && sectionCount(item.manifest) > 0 { rows.push(item) } }
+    for item in items(root) {
+        let visible = extensionsOnly ? category(item) == "extension" : sectionCount(item.manifest) > 0
+        if !dedicated(text(item.manifest,"id")) && visible { rows.push(item) }
+    }
     # Sorted by name like the JS list.
     let names = Vec<str>(); for item in rows { names.push(strings.toLowerCase(text(item.manifest,"name")) + "\n" + text(item.manifest,"id")) }
     names.sort()
@@ -124,7 +127,7 @@ fn handle(root:str, line:str):str {
     let request = result.unwrap(parsed)
     if !strings.equal(json.kind(request),"object") { return failure("Expected an object request") }
     let action = text(request,"action")
-    if strings.equal(action,"list") { return listFrame(root) }
+    if strings.equal(action,"list") || strings.equal(action,"extensions") { return listFrame(root,action == "extensions") }
     let id = text(request,"id")
     if !prefs.validId(id) { return failure("Extension ID must be namespaced, lowercase, and contain no path separators") }
     let item = find(root,id)

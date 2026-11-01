@@ -8,6 +8,7 @@ mount -t tmpfs -o mode=0755 tmpfs /run
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
 hostname devos
+ip link set lo up
 printf '\nDevOs independent Linux base\n'
 cat /etc/os-release
 printf 'Kernel: '; uname -r

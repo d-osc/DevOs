@@ -122,6 +122,12 @@ PM บันทึก snapshot metadata ใน `packages[actual-package-name].ca
 หรือ binding file แยกอีกต่อไป replace/rollback คง association และ remove ลบพร้อมกัน
 PM list/canonical catalog query เป็นแหล่ง installed state เดียวสำหรับทั้งสอง client
 
+Catalog query ผ่าน service `service.dev` โดย `database-cli.dev` เป็น client
+service เป็น read-only, เริ่มอัตโนมัติและใช้ process เดียวต่อผู้ใช้/source path
+สถาปัตยกรรมเป็นข้อมูลในแต่ละ request จึงใช้ service เดียวกันได้ทั้ง ARM64/x86_64
+การติดตั้งและเขียน registry ยังคงอยู่ใน PM; ไม่ส่งคำสั่ง install ผ่าน service
+ดู endpoint discovery, authentication, ขีดจำกัด และ lifecycle ใน README
+
 Legacy bindings ของ GUI ย้ายผ่านคำสั่ง PM ที่ตรวจ package/id จริง ไม่ทับ binding
 ปัจจุบัน และเก็บ JSON เดิมเป็น `.migrated` เพื่อไม่ resurrect หลัง uninstall
 `--root`/`DEV_ROOT` ยังคงแยก installed store ส่วน catalog override คือ `--catalog`

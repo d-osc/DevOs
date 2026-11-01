@@ -121,6 +121,9 @@ fn empty_registry(): json.Value {
 
 # Snapshot::validate for one snapshot JSON node.
 fn validate_snapshot(snapshot json.Value, name str) {
+    validate_snapshot_mode(snapshot,name,true)
+}
+fn validate_snapshot_mode(snapshot json.Value, name str, detailed bool) {
     let m = manifest.manifest_from_registry(json.get(snapshot, "manifest"))
     if m.name != name { result.raise("Registry package name mismatch") }
     let directory = json.string(json.get(snapshot, "directory"))
@@ -131,6 +134,12 @@ fn validate_snapshot(snapshot json.Value, name str) {
         result.raise("Invalid generation directory in registry")
     }
     let files = json.get(snapshot, "files")
+    if json.kind(files) != "object" || (json.len(files) as i64) > max_files() { result.raise("Invalid registry sizes") }
+    if !detailed {
+        let bytes = json.int(json.get(snapshot,"bytes"))
+        if bytes < 0 || bytes > max_bytes() { result.raise("Invalid registry sizes") }
+        return
+    }
     let keys = json.keys(files)
     if (keys.len() as i64) > max_files() { result.raise("Invalid registry sizes") }
     let bytes = 0
@@ -161,6 +170,12 @@ fn valid_hex_digest(digest str): bool {
 # Open the store, creating directories, taking the write lock when needed and
 # validating the registry exactly like Manager::open_with.
 fn open_store(root_opt str, devos_opt str, applications_opt str, writable bool): Store {
+    return open_store_mode(root_opt,devos_opt,applications_opt,writable,true)
+}
+# Display-only metadata reads cannot execute a package or mutate its registry.
+fn open_inventory(root_opt str): Store { return open_store_mode(root_opt,"","",false,false) }
+fn open_store_mode(root_opt str, devos_opt str, applications_opt str, writable bool, detailed bool): Store {
+    if writable && !detailed { result.raise("Write operations require complete registry validation") }
     let root = root_opt
     if root == "" { root = default_root() }
     let devos = devos_opt
@@ -201,7 +216,7 @@ fn open_store(root_opt str, devos_opt str, applications_opt str, writable bool):
         }
         let schema = json.int(json.get(registry, "schema"))
         if schema != 1 && schema != registry_schema() { result.raise("Unsupported registry schema") }
-        validate_registry(registry)
+        validate_registry_mode(registry,detailed)
     }
 
     let bin_dir = shim.default_dir()
@@ -209,6 +224,9 @@ fn open_store(root_opt str, devos_opt str, applications_opt str, writable bool):
 }
 
 fn validate_registry(registry json.Value) {
+    validate_registry_mode(registry,true)
+}
+fn validate_registry_mode(registry json.Value, detailed bool) {
     let generations = Map<str, bool>()
     let commands = Map<str, bool>(); let catalog_ids = Map<str,bool>()
     let packages = json.get(registry, "packages")
@@ -222,14 +240,14 @@ fn validate_registry(registry json.Value) {
             let id = json.string(json.get(catalog,"id")); if catalog_ids.contains(id) { result.raise("Duplicate catalog binding in package registry") }; catalog_ids.set(id,true)
         }
         let active = json.get(package, "active")
-        validate_snapshot(active, name)
+        validate_snapshot_mode(active, name, detailed)
         if generations.contains(json.string(json.get(active, "directory"))) {
             result.raise("Duplicate generation in registry")
         }
         generations.set(json.string(json.get(active, "directory")), true)
         if json.has(package, "previous") && !json.is_null(json.get(package, "previous")) {
             let previous = json.get(package, "previous")
-            validate_snapshot(previous, name)
+            validate_snapshot_mode(previous, name, detailed)
             if generations.contains(json.string(json.get(previous, "directory"))) {
                 result.raise("Duplicate generation in registry")
             }
@@ -262,6 +280,73 @@ fn validate_registry(registry json.Value) {
             result.raise("Registry extension ID mismatch")
         }
     }
+}
+
+# Only real package icons and upstream desktop Icon= values classify an installed
+# entry as an app. The generated generic launcher icon is deliberately excluded.
+fn inventory_relative(value str): bool {
+    if value == "" || strings.len(value) > 1024 || strings.startsWith(value,"/") || strings.contains(value,"\\") || strings.contains(value,":") || util.has_control(value) { return false }
+    for part in strings.split(value,"/") { if part == ".." || part == "." || part == "" { return false } }
+    return true
+}
+fn inventory_icon(store Store, active json.Value): str {
+    let m = manifest.manifest_from_registry(json.get(active,"manifest"))
+    if m.kind == "extension" { return "" }
+    let root = snapshot_path(store,active); let files = json.get(active,"files")
+    if m.icon != "" && json.has(files,m.icon) && fs.is_file(root + "/" + m.icon) { return root + "/" + m.icon }
+    for name in json.keys(files) {
+        if !strings.endsWith(name,".desktop") { continue }
+        if !inventory_relative(name) { continue }
+        let file = root + "/" + name
+        if !fs.is_file(file) || fs.size(file) > 65536 { continue }
+        let in_group = false; let icon = ""; let application = false
+        for raw in strings.split(fs.readFileSync(file,"utf8"),"\n") {
+            let line = strings.trim(raw)
+            if strings.startsWith(line,"[") { in_group = line == "[Desktop Entry]" }
+            if !in_group { continue }
+            if line == "Type=Application" { application = true }
+            if strings.startsWith(line,"Icon=") { icon = strings.substring(line,5,strings.charLength(line)) }
+        }
+        if !application || icon == "" { continue }
+        let relative = strings.startsWith(icon,"/") ? strings.substring(icon,1,strings.charLength(icon)) : icon
+        if inventory_relative(relative) && json.has(files,relative) && fs.is_file(root + "/" + relative) { return root + "/" + relative }
+        # XDG desktop entries may refer to a themed icon by name.
+        if strings.charLength(icon) > 128 { continue }
+        let themed = true
+        for i in 0..strings.charLength(icon) { if !strings.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",strings.charAt(icon,i)) { themed = false } }
+        if themed { return icon }
+    }
+    return ""
+}
+fn inventory(store Store): json.Value {
+    let packages = json.object(); let source = json.get(store.registry,"packages")
+    for name in json.keys(source) {
+        let record = json.get(source,name); let active = json.get(record,"active")
+        let summary = json.set(json.object(),"manifest",json.get(active,"manifest"))
+        summary = json.set(summary,"bytes",json.get(active,"bytes"))
+        summary = json.set(summary,"kind","app")
+        if json.has(active,"kind") { summary = json.set(summary,"kind",json.get(active,"kind")) }
+        summary = json.set(summary,"fileCount",json.len(json.get(active,"files")))
+        let icon = inventory_icon(store,active)
+        let software_type = json.has(active,"kind") && json.string(json.get(active,"kind")) == "extension" ? "extension" : (icon == "" ? "package" : "app")
+        summary = json.set(summary,"displayIcon",icon)
+        summary = json.set(summary,"softwareType",software_type)
+        let entry = json.set(json.object(),"active",summary)
+        let previous = json.null_value()
+        if json.has(record,"previous") && !json.is_null(json.get(record,"previous")) { previous = json.set(json.object(),"manifest",json.get(json.get(record,"previous"),"manifest")) }
+        entry = json.set(entry,"previous",previous)
+        if json.has(record,"catalog") { entry = json.set(entry,"catalog",json.get(record,"catalog")) }
+        packages = json.set(packages,name,entry)
+    }
+    let extensions = json.object(); let original = json.get(store.registry,"extensions")
+    for id in json.keys(original) {
+        let source = json.get(original,id); let entry = json.object()
+        for field in Vec<str>("id","version","description") { if json.has(source,field) { entry = json.set(entry,field,json.get(source,field)) } }
+        entry = json.set(entry,"fileCount",json.has(source,"files") ? json.len(json.get(source,"files")) : 0)
+        entry = json.set(entry,"softwareType","extension")
+        extensions = json.set(extensions,id,entry)
+    }
+    return json.set(json.set(json.object(),"packages",packages),"extensions",extensions)
 }
 
 # Atomic registry save: temporary file in the store root, then rename.

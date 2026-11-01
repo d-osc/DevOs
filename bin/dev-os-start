@@ -5,6 +5,14 @@ if [ -f "$base/src/system/command.dev" ]; then root=$base; else root="$base/shar
 export DEV_OS_ROOT="$root"
 export DEV_OS_SHELL="$base/bin/dev-os-shell"
 . "$base/bin/dev-os-runtime-env"
+# Warm the same catalog daemon used by standalone CLI requests. A catalog error
+# must not prevent the desktop from starting; App Store reports it in its UI.
+for database in "$root/pm-cli/catalog-data" "$root/app-db" /usr/share/devos-pm/cli/catalog-data; do
+    if [ -f "$database/service.sh" ]; then
+        sh "$database/service.sh" start >/dev/null 2>&1 || printf '%s\n' 'Dev OS: app-db service could not start.' >&2
+        break
+    fi
+done
 # Boot animation: continue it as a window over the compositor until the shell reports ready (fire-and-forget, never blocks).
 splash_window="$root/dist/native/boot-splash"
 if [ -x "$splash_window" ] && command -v devos-splash >/dev/null 2>&1; then

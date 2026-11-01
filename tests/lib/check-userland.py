@@ -51,6 +51,7 @@ if "--root" in sys.argv:
     assert os.geteuid() == 0
     assert os.readlink("/proc/self/ns/mnt") != os.readlink("/proc/1/ns/mnt"), "use unshare -mn"
     run(["mount", "--make-rprivate", "/"])
+    run(["ip", "link", "set", "lo", "up"])
     (stage / "proc").mkdir(exist_ok=True)
     # PID 1 must be able to start the first /bin/sh before procfs exists.
     assert "FIRST_SHELL" in run(["unshare", "-mpf", "chroot", str(stage), "/bin/sh", "-c", "echo FIRST_SHELL"])
@@ -58,6 +59,10 @@ if "--root" in sys.argv:
     (stage / "tmp").mkdir(exist_ok=True)
     (stage / "dev").mkdir(exist_ok=True)
     run(["mount", "--bind", "/dev", str(stage / "dev")])
+    # DrvFS assigns the Windows checkout's UID even to files created by root.
+    # Endpoint ownership must be tested on a real Linux filesystem.
+    service_runtime = tempfile.mkdtemp(dir="/dev/shm", prefix="devos-app-db-check-")
+    os.environ["DEVOS_APP_DB_RUNTIME"] = service_runtime
     try:
         assert run(["chroot", str(stage), "/usr/bin/dev", "--version"]).strip() == "dev 0.7.0"
         catalog = json.loads(run(["chroot", str(stage), "/usr/bin/dev", "catalog", "--json"]))
@@ -91,6 +96,8 @@ fi
             output = run(["chroot", str(stage), "/bin/sh", "-ec", script])
             assert "hello image" in output, output
     finally:
+        run(["chroot", str(stage), "/bin/sh", "/usr/share/devos-pm/cli/catalog-data/service.sh", "stop"])
+        shutil.rmtree(service_runtime)
         run(["umount", str(stage / "dev")])
         run(["umount", str(stage / "proc")])
     print("Isolated first-shell boot, pm-cli version/pack/install/verify/run/list/remove passed")

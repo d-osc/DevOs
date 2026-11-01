@@ -13,6 +13,51 @@
 
 ## ฐานข้อมูลที่ใช้งานจริง
 
+`app-db` ทำงานเป็น service ภาษา DevLang ผ่าน `service.dev` และ `service-client.dev`
+PM และ App Store อ่านผ่าน service ตัวเดียวต่อผู้ใช้และ source path โดยเริ่มอัตโนมัติ
+เมื่อมีคำขอแรก หรือเตรียมล่วงหน้าเมื่อ desktop เริ่มทำงาน ไม่ต้องใช้ root
+
+```sh
+sh bin/dev-os-app-db start
+sh bin/dev-os-app-db health
+sh bin/dev-os-app-db catalog
+sh bin/dev-os-app-db search firefox
+sh bin/dev-os-app-db get claude
+sh bin/dev-os-app-db stop
+```
+
+ใช้ `DEVOS_APPSTORE_DATABASE` เพื่อเลือก source อื่น เช่น
+`DEVOS_APPSTORE_DATABASE=/path/to/app-db sh bin/dev-os-app-db health`
+เมื่อแก้ `apps/*/app.json` service จะอ่านข้อมูลล่าสุดในคำขอถัดไป
+คำสั่ง `run` รัน foreground สำหรับ service manager; อิมเมจ OpenEmbedded
+ติดตั้ง user unit `devos-app-db.service` ซึ่งเปิดใช้ได้ด้วย
+`systemctl --user enable --now devos-app-db.service`
+
+service รับ JSON หนึ่งบรรทัดต่อ connection ที่ `127.0.0.1` บนพอร์ตที่ระบบเลือก
+รองรับ `health`, `catalog`, `get`, `search` และไม่รับคำสั่งแก้ไข/ติดตั้ง
+endpoint/token อยู่ใต้ `$XDG_RUNTIME_DIR/devos-app-db` (directory 0700, file 0600)
+หรือ private directory ใน `/tmp` เมื่อไม่มี XDG runtime directory
+`DEVOS_APP_DB_RUNTIME` ใช้เลือก directory สำหรับการทดสอบ
+ทุกคำขอต้องมี token, request จำกัด 64 KiB, response จำกัด 4 MiB และมี read timeout
+ล็อก `flock` ป้องกัน service ซ้ำ ส่วน client เริ่มใหม่ให้อัตโนมัติหลัง process หยุด
+service ของ temporary source จะหยุดเมื่อ source ถูกลบ
+
+ตัว service ใช้เฉพาะ DevLang standard runtime; `service.sh` จัดการ lifecycle
+ด้วยเครื่องมือ Linux มาตรฐานที่ PM ใช้อยู่แล้ว รวม `flock`, `nohup`, `sha256sum`
+ไม่มีฐานข้อมูลสถานะติดตั้งแยก: registry และ transaction ของ PM ยังคงเป็นผู้เขียน
+สถานะติดตั้ง, binding และ rollback เพียงจุดเดียว
+
+ผล `catalog` มี `apps` และ `extensions` แยกกัน โดย extension อ่านจาก
+`extensions/<id>/listing.json` และ manifest ที่ listing ระบุ App Store แสดง
+แท็บ Extensions สำหรับ catalog กับการเปิด/ปิดและตั้งค่า extension ที่ติดตั้งแล้ว
+รายการ draft แสดงว่าไม่ได้เผยแพร่ และไม่ถือเป็น artifact ที่ติดตั้งได้
+
+แต่ละรายการมี `softwareType` สำหรับกรองประเภทใน Store: extension เป็น
+`extension`; manifest ใน `apps/` ระบุ `software_type` เป็น `app` หรือ `package`
+ได้ โดยค่าเริ่มต้นเป็น `app` เพื่อรองรับข้อมูลเดิม หลังติดตั้ง PM จะส่งประเภท
+ที่ตรวจจาก manifest/ไอคอนของ active generation มาแทน hint ของ catalog
+การมี `.deb`/`.rpm` หรือชื่อคำสั่งไม่ได้ใช้เดาประเภท
+
 `database.dev`/`database-cli.dev` เป็น reader และตัวเลือก artifact ร่วมของ CLI กับ
 App Store โดยอ่าน `apps/*/app.json` โดยตรงใน checkout หรืออ่าน snapshot
 `catalog-data/` ที่แพ็กไปกับ CLI ผ่าน `pm-cli/stage.sh` การเปิดหน้าร้านไม่ดาวน์โหลดแอป
