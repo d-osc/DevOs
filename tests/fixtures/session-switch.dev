@@ -1,0 +1,7 @@
+use "../../src/system/org.devos.shell/session-switch.dev" as switching
+use "../../lib/hw.dev" as hw
+use "std/result"
+use "std/fs"
+let done=result.run(fn(){switching.linux("alice",fn():bool {fs.appendFileSync(hw.env("SWITCH_LOG"),"LOCK\n");return hw.env("SWITCH_LOCK_FAIL")!="1"})})
+if result.isErr(done) {print(result.message(done));return 1}
+print("PASS switched");return 0

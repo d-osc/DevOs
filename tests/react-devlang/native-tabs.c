@@ -77,19 +77,62 @@ extern void *rd_host_child(void *);
 static void *first_view,*second_view;
 static void *web(const char *id){return rd_host_child(find(id));}
 static int page_is(const char *id,const char *expected){void *w=web(id);const char *(*title)(void *)=dlsym(RTLD_DEFAULT,"webkit_web_view_get_title");return w && title && g_strcmp0(title(w),expected)==0;}
+static GAction *inspect_action;
+static gboolean inspect_menu(void *view,void *menu,void *event,void *hit,void *unused){
+    (void)view;(void)event;(void)hit;(void)unused;
+    GList *(*items)(void *)=dlsym(RTLD_DEFAULT,"webkit_context_menu_get_items");
+    int (*stock)(void *)=dlsym(RTLD_DEFAULT,"webkit_context_menu_item_get_stock_action");
+    GAction *(*action)(void *)=dlsym(RTLD_DEFAULT,"webkit_context_menu_item_get_gaction");
+    GType (*type)(void)=dlsym(RTLD_DEFAULT,"webkit_context_menu_action_get_type");
+    check(items && stock && action && type,"context menu API unavailable");
+    GEnumClass *values=g_type_class_ref(type());
+    GEnumValue *inspect=g_enum_get_value_by_name(values,"WEBKIT_CONTEXT_MENU_ACTION_INSPECT_ELEMENT");
+    check(inspect!=NULL,"Inspect action enum unavailable");
+    for(GList *p=items(menu);p;p=p->next)if(stock(p->data)==inspect->value)inspect_action=g_object_ref(action(p->data));
+    g_type_class_unref(values);
+    check(inspect_action!=NULL,"right click menu is missing Inspect Element");
+    return FALSE;
+}
+static GtkWidget *inspect_item(GtkWidget *w){
+    if(GTK_IS_MENU_ITEM(w) && g_strrstr(gtk_menu_item_get_label(GTK_MENU_ITEM(w)),"Inspect"))return w;
+    if(GTK_IS_CONTAINER(w)){GList *children=gtk_container_get_children(GTK_CONTAINER(w));GtkWidget *found=NULL;for(GList *p=children;p && !found;p=p->next)found=inspect_item(p->data);g_list_free(children);return found;}
+    return NULL;
+}
 static void browser(void){
-    if(step==0){if(!page_is("browser-host","First page"))return;first_view=web("browser-host");click("browser-tab-new");}
-    else if(step==1){if(!web("browser-host-1"))return;entry("browser-url",g_getenv("DEVOS_TABS_SECOND"));click("browser-go");}
-    else if(step==2){if(!page_is("browser-host-1","Second page"))return;second_view=web("browser-host-1");capture("browser-tab-1");click("browser-tab-0");}
-    else if(step==3){check(web("browser-host")==first_view && page_is("browser-host","First page"),"switch reloaded or replaced original web view");entry("browser-url",g_getenv("DEVOS_TABS_SECOND"));click("browser-go");}
-    else if(step==4){if(!page_is("browser-host","Second page"))return;if(!gtk_widget_is_sensitive(find("browser-back")))return;click("browser-back");}
-    else if(step==5){if(!page_is("browser-host","First page"))return;click("browser-tab-1");}
-    else if(step==6){check(web("browser-host-1")==second_view && page_is("browser-host-1","Second page"),"tabs shared navigation state");drag("browser-tab-0","browser-tab-1");}
-    else if(step==7){mouse(from_x+30,from_y,0,0);}
-    else if(step==8){mouse(to_x,to_y,0,0);}
-    else if(step==9){mouse(to_x,to_y,1,0);}
-    else if(step==10){reordered("browser-tab-0","browser-tab-1");int x=0,y=0;point(find("browser-tab-0"),&x,&y);mouse(x,y,2,1);mouse(x,y,2,0);}
-    else if(step==11){check(!find("browser-tab-0") && web("browser-host-1")==second_view && page_is("browser-host-1","Second page"),"closing one page damaged other page");g_print("PASS Browser tabs keep separate live views and history; Chrome drag and middle close\n");click("browser-tab-close-1");}
+    if(step==0){
+        if(!page_is("browser-host","First page"))return;
+        GtkWidget *view=web("browser-host");
+        check(gtk_widget_get_allocated_height(view)>300 && gtk_widget_get_allocated_width(view)>600,"web page has no usable content area");
+        int x=0,y=0;point(view,&x,&y);mouse(x,y,1,1);mouse(x,y,1,0);
+    }
+    else if(step==1){if(!page_is("browser-host","Interactive page"))return;first_view=web("browser-host");click("browser-tab-new");}
+    else if(step==2){if(!page_is("browser-host-1","New tab"))return;entry("browser-url",g_getenv("DEVOS_TABS_SECOND"));g_signal_emit_by_name(find("browser-url"),"activate");}
+    else if(step==3){if(!page_is("browser-host-1","Second page"))return;second_view=web("browser-host-1");capture("browser-tab-1");click("browser-tab-0");}
+    else if(step==4){check(web("browser-host")==first_view && page_is("browser-host","Interactive page"),"switch reloaded or replaced original web view");entry("browser-url",g_getenv("DEVOS_TABS_SECOND"));g_signal_emit_by_name(find("browser-url"),"activate");}
+    else if(step==5){if(!page_is("browser-host","Second page"))return;if(!gtk_widget_is_sensitive(find("browser-back")))return;click("browser-back");}
+    else if(step==6){if(!page_is("browser-host","Interactive page"))return;click("browser-tab-1");}
+    else if(step==7){check(web("browser-host-1")==second_view && page_is("browser-host-1","Second page"),"tabs shared navigation state");drag("browser-tab-0","browser-tab-1");}
+    else if(step==8){mouse(from_x+30,from_y,0,0);}
+    else if(step==9){mouse(to_x,to_y,0,0);}
+    else if(step==10){mouse(to_x,to_y,1,0);}
+    else if(step==11){reordered("browser-tab-0","browser-tab-1");int x=0,y=0;point(find("browser-tab-0"),&x,&y);mouse(x,y,2,1);mouse(x,y,2,0);}
+    else if(step==12){check(!find("browser-tab-0") && web("browser-host-1")==second_view && page_is("browser-host-1","Second page"),"closing one page damaged other page");g_signal_connect(second_view,"context-menu",G_CALLBACK(inspect_menu),NULL);int x=0,y=0;point(second_view,&x,&y);mouse(x,y,3,1);mouse(x,y,3,0);}
+    else if(step==13){
+        if(!inspect_action)return;
+        GList *windows=gtk_window_list_toplevels();GtkWidget *item=NULL;
+        for(GList *p=windows;p && !item;p=p->next)item=inspect_item(p->data);
+        g_list_free(windows);if(!item)return;
+        GtkWidget *menu=gtk_widget_get_parent(item);gtk_menu_shell_activate_item(GTK_MENU_SHELL(menu),item,TRUE);g_clear_object(&inspect_action);
+    }
+    else if(step==14){
+        void *(*inspector_for)(void *)=dlsym(RTLD_DEFAULT,"webkit_web_view_get_inspector");
+        void *(*inspector_view)(void *)=dlsym(RTLD_DEFAULT,"webkit_web_inspector_get_web_view");
+        void (*close_inspector)(void *)=dlsym(RTLD_DEFAULT,"webkit_web_inspector_close");
+        check(inspector_for && inspector_view && close_inspector,"inspector API unavailable");
+        void *inspector=inspector_for(second_view);if(!inspector_view(inspector))return;
+        close_inspector(inspector);
+        g_print("PASS Browser tabs render an interactive page, follow Enter, preserve history and open Inspect Element from the right click menu\n");click("browser-tab-close-1");
+    }
     step++;
 }
 static void send_terminal(const char *id,const char *command){void (*feed)(void *,const char *,gssize)=dlsym(RTLD_DEFAULT,"vte_terminal_feed_child");check(feed && web(id),"terminal unavailable");feed(web(id),command,-1);}

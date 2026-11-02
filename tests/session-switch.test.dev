@@ -1,0 +1,23 @@
+use "std/test"
+use "std/strings"
+use "../tools/lib/tool.dev" as tool
+use "./lib/react-devlang.dev" as t
+fn scenario(name:str,lockFails:bool,expected:str,forbidden:str) {
+    tool.scope("session-switch-",fn(dir:str) {
+        let login=dir+"/loginctl";let system=dir+"/systemctl";let log=dir+"/log"
+        tool.copy(t.root()+"/tests/fixtures/session-switch-loginctl.sh",login);tool.chmod(login,"755")
+        tool.write(system,"#!/bin/sh\nprintf 'systemctl %s\\n' \"$*\" >> \"$SWITCH_LOG\"\n");tool.chmod(system,"755")
+        let env=Map<str,str>();env.set("DEVOS_SWITCH_TEST","1");env.set("DEVOS_SWITCH_loginctl",login);env.set("DEVOS_SWITCH_systemctl",system);env.set("XDG_SESSION_ID","c0");env.set("SWITCH_LOG",log);env.set("SCENARIO",name);env.set("SWITCH_LOCK_FAIL",lockFails ? "1" : "0")
+        let done=tool.run(Vec<str>("d",t.root()+"/tests/fixtures/session-switch.dev"),env,"",30000)
+        let text=tool.read(log);t.contains(text,expected);if !strings.equal(forbidden,"") {t.lacks(text,forbidden)}
+        if lockFails || strings.equal(name,"full") {test.expect(!done.success,"A failed switch reported success")} else {t.success(done);t.contains(t.out(done),"PASS switched")}
+        if strings.contains(text,"loginctl activate") || strings.contains(text,"systemctl start") {test.expect(strings.indexOf(text,"LOCK")<strings.indexOf(text,expected),"Session was switched before locking")}
+    })
+}
+test.case("an existing graphical session is reused after locking",fn(){scenario("existing",false,"loginctl activate c1","systemctl start")})
+test.case("an existing greeter is reused without terminating the desktop",fn(){scenario("greeter",false,"loginctl activate c1","systemctl start")})
+test.case("a new user gets a greeter on a free VT",fn(){scenario("new",false,"systemctl start devos-switch-greeter@7.service","loginctl activate")})
+test.case("sessions on another seat cannot be activated",fn(){scenario("other-seat",false,"systemctl start devos-switch-greeter@7.service","loginctl activate")})
+test.case("a failed lock prevents switching",fn(){scenario("existing",true,"LOCK","loginctl activate")})
+test.case("exhausted VTs fail without locking or ending any session",fn(){scenario("full",false,"loginctl list-sessions","LOCK")})
+return t.finish()

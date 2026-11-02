@@ -2,16 +2,22 @@ use "react_devlang/ui" as ui
 use "react_devlang/channel" as channel
 use "react_devlang/tabs" as tabs
 use "../org.devos.settings/native-kit.devx" as k
-use "../org.devos.settings/native-extensions-page.devx" as ext
+use "./native-start.devx" as startPage
 extern fn rd_host_child(host:*void):*void
 extern fn rc_env(name:str):str
+extern fn g_setenv(name:str,value:str,overwrite:i32):i32
 extern fn rd_control(root:*void,id:str,command:str):i32
 extern fn rd_identity(id:str)
 extern fn rd_app_header_for(root:*void,title:str,icons:str,name:str,icon:str)
 extern fn rd_theme_follow(root:*void,snapshot:str,fallback:str)
 extern fn rd_default_theme():str
 # libwebkit2gtk is linked by path (tools/build/native-apps.sh), so no WebKit header is needed: only the calls below are declared.
+extern fn webkit_web_view_load_html(view:*void,html:*u8,base:*u8)
+extern fn webkit_web_view_stop_loading(view:*void)
+extern fn gtk_widget_set_tooltip_text(widget:*void,text:str)
 extern fn webkit_web_view_new():*void
+extern fn webkit_web_view_get_settings(view:*void):*void
+extern fn webkit_settings_set_enable_developer_extras(settings:*void,enabled:i32)
 extern fn webkit_web_view_load_uri(view:*void, uri:*u8)
 extern fn webkit_web_view_get_uri(view:*void):*u8
 extern fn webkit_web_view_get_title(view:*void):*u8
@@ -63,7 +69,12 @@ fn trimmed(value:ui.Text):ui.Text {
     let out = Vec<u8>(); for i in start..end { out.push(value.bytes[i]) }; return ui.Text(out)
 }
 fn load(view:*void, entered:ui.Text) { unsafe {
-    let native = ui.nativeText(address(entered))
+    let target=address(entered)
+    if ui.equalText(target,plain("about:blank")) {
+        let html=ui.nativeText(startPage.html());let base=ui.nativeText(plain("about:blank"))
+        webkit_web_view_load_html(view,html,base);ui.rd_buffer_free(html as *void);ui.rd_buffer_free(base as *void);return
+    }
+    let native = ui.nativeText(target)
     webkit_web_view_load_uri(view,native)
     ui.rd_buffer_free(native as *void)
 } }
@@ -72,18 +83,24 @@ fn address(entered:ui.Text):ui.Text {
     if !has(t) { return plain("about:blank") }
     if contains(t,"://") || startsWith(t,"about:") || startsWith(t,"file:") { return t }
     if contains(t," ") || !contains(t,".") {
-        let query = Vec<u8>(); for b in t.bytes { query.push(b == 32 ? (43 as u8) : b) }
+        let query = Vec<u8>(); let hex=plain("0123456789ABCDEF").bytes
+        for b in t.bytes {
+            if (b>=65 && b<=90) || (b>=97 && b<=122) || (b>=48 && b<=57) || b==45 || b==46 || b==95 || b==126 {query.push(b)}
+            else {query.push(37 as u8);query.push(hex[(b as i64)/16]);query.push(hex[(b as i64)%16])}
+        }
         return ui.concatText(Vec<ui.Text>(plain("https://duckduckgo.com/?q="),ui.Text(query)))
     }
     return ui.concatText(Vec<ui.Text>(plain("https://"),t))
 }
 
 # The toolbar controls only the selected tab. Keyed Page components keep every WebKit view alive.
-fn toolbar(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = 8; options.className = ui.text("browser-toolbar"); return ui.Box(options,children) }
+fn toolbar(children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.vertical = false; options.spacing = 6; options.className = ui.text("browser-toolbar"); return ui.Box(options,children) }
+fn navButton(options:ui.Props,icon:str,clicked:fn():void):ui.Node {options.className=plain("browser-nav");let image=ui.props();image.iconSize=17;return ui.WidgetButton(options,ui.Icon(image,icon),clicked)}
 fn viewFor(context:*ui.Context,id:i64):*void { unsafe { return rd_host_child(ui.find(context,id == 0 ? "browser-host" : "browser-host-${id}")) } }
 fn Page(context:*ui.Context,id:i64,start:ui.Text):ui.Node {
     ui.useEffect(context,fn():fn():void { unsafe {
         let host=ui.find(context,id == 0 ? "browser-host" : "browser-host-${id}");if rd_host_child(host)!=null {return ui.noop};let web=webkit_web_view_new()
+        webkit_settings_set_enable_developer_extras(webkit_web_view_get_settings(web),1);
         gtk_box_pack_start(host,web,1,1,0);gtk_widget_show(web);load(web,start);return ui.noop
     } },Vec<i64>())
     let host=ui.named(id == 0 ? "browser-host" : "browser-host-${id}");host.expand=true;return ui.Box(host,Vec<ui.Node>())
@@ -104,6 +121,7 @@ fn App(context:*ui.Context):ui.Node {
         let root=environment("DEV_OS_ROOT");let mode=environment("DEV_OS_THEME");let family=environment("DEV_OS_THEME_FAMILY")
         if !has(plain(mode)) {unsafe {mode=rd_default_theme()}};if !has(plain(family)) {family="vscode"}
         unsafe {rd_theme_follow((*context).native,"${environment("XDG_RUNTIME_DIR")}/devos-native-theme.css","${root}/dist/native/theme.${family}.${mode}.css");rd_app_header_for((*context).native,"Browser","${root}/data/icons","browser","dev-os-browser");rd_control((*context).native,environment("DEV_OS_NATIVE_ID"),"browser")}
+        unsafe {gtk_widget_set_tooltip_text(ui.find(context,"browser-back"),"Back");gtk_widget_set_tooltip_text(ui.find(context,"browser-forward"),"Forward");gtk_widget_set_tooltip_text(ui.find(context,"browser-reload"),"Reload / Stop loading");gtk_widget_set_tooltip_text(ui.find(context,"browser-home"),"New tab page");gtk_widget_set_tooltip_text(ui.find(context,"browser-go"),"Go")}
         ui.onCommand(context,"browser.",fn(line:ui.Text) {if ui.equalText(line,plain("tabs:receive")){let row=tabs.received(context);if has(row){snapshot();let rows=tabs.unpack(pages.get());rows.push(row);pages.set(tabs.pack(rows));choose(channel.integer(tabs.unpack(row)[0]))};return};let parts=channel.split(line,31);if parts.len()>1 && has(parts[1]) {added(parts[1])}})
         ui.onTick(context,250,fn() {unsafe {
             let rows=Vec<ui.Text>()
@@ -111,7 +129,7 @@ fn App(context:*ui.Context):ui.Node {
                 let f=tabs.unpack(row);let id=channel.integer(f[0]);let w=viewFor(context,id)
                 if w!=null {
                     let uri=owned(webkit_web_view_get_uri(w));let heading=owned(webkit_web_view_get_title(w))
-                    if !ui.equalText(uri,f[2]) {f[2]=uri;f[3]=uri;if id==active.get() {current.set(uri);draft.set(uri)}}
+                    if !ui.equalText(uri,f[2]) {f[2]=uri;let addressText=ui.equalText(uri,plain("about:blank")) ? ui.emptyText() : uri;f[3]=addressText;if id==active.get() {current.set(uri);draft.set(addressText)}}
                     f[1]=has(heading) ? heading : plain(webkit_web_view_is_loading(w)!=0 ? "Loading…" : "New tab")
                     if id==active.get() {title.set(heading);back.set(webkit_web_view_can_go_back(w) as i64);forward.set(webkit_web_view_can_go_forward(w) as i64);loading.set(webkit_web_view_is_loading(w) as i64);f[3]=draft.get()}
                 }
@@ -119,9 +137,10 @@ fn App(context:*ui.Context):ui.Node {
             }
             pages.set(tabs.pack(rows))
             if has(plain(environment("DEVOS_BROWSER_SMOKE"))) {
+                if has(plain(environment("DEVOS_BROWSER_EXPECT_COMPOSITING"))) && !ui.equalText(plain(environment("WEBKIT_DISABLE_COMPOSITING_MODE")),plain(environment("DEVOS_BROWSER_EXPECT_COMPOSITING"))) {print("FAIL Browser did not select the expected compositing mode");ui.close(context);return}
                 let heading=title.get();let nextUri=environment("DEVOS_BROWSER_NEXT")
                 if step.get()==0 && ui.equalText(heading,plain(environment("DEVOS_BROWSER_EXPECT_TITLE"))) {
-                    if !has(plain(nextUri)) {print("PASS native Browser loaded a page and read its title");ui.close(context)} else {step.set(1);ui.change(context,"browser-url",nextUri);ui.click(context,"browser-go")}
+                    if !has(plain(nextUri)) {print("PASS native Browser loaded a page and read its title");ui.close(context)} else {step.set(1);ui.change(context,"browser-url",nextUri);ui.activate(context,"browser-url")}
                 } else if step.get()==1 && ui.equalText(heading,plain(environment("DEVOS_BROWSER_NEXT_TITLE"))) {print("PASS native Browser followed the typed address");ui.close(context)}
             }
         }})
@@ -133,12 +152,23 @@ fn App(context:*ui.Context):ui.Node {
         let props=ui.keyed(id);props.expand=true;views.push(ui.component(8001,props,fn(child:*ui.Context):ui.Node{return Page(child,id,f[4])}))
     }
     let backButton=ui.named("browser-back");backButton.sensitive=back.value!=0;let forwardButton=ui.named("browser-forward");forwardButton.sensitive=forward.value!=0
-    let url=ui.named("browser-url");url.expand=true;url.placeholder=plain("Search or type an address")
-    let bar=toolbar(Vec<ui.Node>(ui.Button(backButton,"Back",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_go_back(w)}}}),ui.Button(forwardButton,"Forward",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_go_forward(w)}}}),ui.Button(ui.named("browser-reload"),"Reload",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_reload(w)}}}),ui.Entry(url,draft.value,fn(value:ui.Text){draft.set(value)}),ui.Button(ui.named("browser-go"),"Go",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {load(w,draft.get())}}})))
+    let url=ui.named("browser-url");url.expand=true;url.placeholder=plain("Search or enter a web address");url.className=plain("browser-url")
+    let navigate=fn(){unsafe {let w=viewFor(context,active.get());if w!=null {load(w,draft.get())}}}
+    let location=ui.props();location.vertical=false;location.expand=true;location.spacing=8;location.className=plain("browser-location")
+    let locationIcon=ui.props();locationIcon.iconSize=16;locationIcon.className=plain("browser-location-icon")
+    let addressBox=ui.Box(location,Vec<ui.Node>(ui.Icon(locationIcon,startsWith(current.value,"https://") ? "network-server-symbolic" : "edit-find-symbolic"),ui.onActivate(ui.Entry(url,draft.value,fn(value:ui.Text){draft.set(value)}),navigate),navButton(ui.named("browser-go"),"go-next-symbolic",navigate)))
+    let bar=toolbar(Vec<ui.Node>(navButton(backButton,"go-previous-symbolic",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_go_back(w)}}}),navButton(forwardButton,"go-next-symbolic",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {webkit_web_view_go_forward(w)}}}),navButton(ui.named("browser-reload"),loading.value!=0 ? "process-stop-symbolic" : "view-refresh-symbolic",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {if webkit_web_view_is_loading(w)!=0 {webkit_web_view_stop_loading(w)} else {webkit_web_view_reload(w)}}}}),addressBox,navButton(ui.named("browser-home"),"go-home-symbolic",fn(){unsafe {let w=viewFor(context,active.get());if w!=null {load(w,ui.emptyText())}}})))
     let stack=ui.named("browser-pages");stack.expand=true;stack.key=1000000000
-    return ext.column(0,Vec<ui.Node>(tabs.ChromeStrip("browser",buttons,true,fn(){added(plain("about:blank"))}),bar,ui.Stack(stack,at,views)))
+    let frame=ui.props();frame.expand=true;return ui.Box(frame,Vec<ui.Node>(tabs.ChromeStrip("browser",buttons,true,fn(){added(plain("about:blank"))}),bar,ui.Stack(stack,at,views)))
 }
 fn run():i32 {
+    # llvmpipe compositing adds another software rendering pass to the Inspector.
+    # Set this before WebKit creates its context so the Inspector process inherits it.
+    if ui.equalText(plain(environment("WLR_RENDERER")),plain("pixman")) || ui.equalText(plain(environment("LIBGL_ALWAYS_SOFTWARE")),plain("1")) {
+        if !has(plain(environment("WEBKIT_DISABLE_COMPOSITING_MODE"))) {
+            unsafe {g_setenv("WEBKIT_DISABLE_COMPOSITING_MODE","1",1)}
+        }
+    }
     let id = environment("DEV_OS_NATIVE_ID"); if ui.text(id).bytes.len() == 0 { id = "org.devos.App.browser.Native" }
     unsafe { rd_identity(id) }
     return ui.run("Browser",1100,720,App) ? 0 : 1

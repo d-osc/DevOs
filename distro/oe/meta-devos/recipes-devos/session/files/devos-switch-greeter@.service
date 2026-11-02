@@ -1,0 +1,13 @@
+[Unit]
+Description=DevOs additional login screen on VT %i
+After=systemd-user-sessions.service dbus.service
+[Service]
+ExecStart=/usr/libexec/devos-switch-greeter %i
+Restart=on-failure
+RestartSec=2
+StandardInput=tty
+TTYPath=/dev/tty%i
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+KillMode=mixed

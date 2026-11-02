@@ -26,13 +26,60 @@ static const char *rd_tabs_css =
 "\n"
 ".chrome-tab label { color: @dv_fg_muted; font-size: 12px; }\n"
 ".chrome-tab-active label { color: @dv_fg_strong; }\n"
-".chrome-tab image { color: @dv_fg_muted; }\n";
+".chrome-tab image { color: @dv_fg_muted; }\n"
+"#browser .browser-toolbar { background: @dv_s0; padding: 10px 12px; border-bottom: 1px solid @dv_border_soft; }\n"
+"#browser button.browser-nav { background: transparent; background-image: none; border: 1px solid transparent; box-shadow: none; border-radius: 10px; min-width: 22px; min-height: 22px; padding: 7px; color: @dv_fg_muted; }\n"
+"#browser button.browser-nav:hover { background: alpha(@dv_fg, 0.07); color: @dv_fg_strong; }\n"
+"#browser button.browser-nav:disabled { opacity: 0.3; }\n"
+"#browser .browser-location { background: @dv_s1; border: 1px solid @dv_border; border-radius: 13px; padding: 0 5px 0 14px; margin: 0 6px; }\n"
+"#browser .browser-toolbar entry.browser-url { background: transparent; background-image: none; border: 0; box-shadow: none; padding: 8px 0; min-height: 22px; font-size: 13px; color: @dv_fg; }\n"
+"#browser .browser-toolbar entry.browser-url:focus { box-shadow: none; border: 0; }\n"
+"#browser .browser-toolbar entry.browser-url:focus { color: @dv_fg_strong; }\n"
+"#browser .browser-location-icon { color: @dv_fg_muted; }\n"
+;
+static const char *rd_settings_css =
+"#settings .settings-native { background: @dv_s0; }\n"
+"#settings .settings-native .settings-sidebar { background: @dv_s1; padding: 20px 14px 16px; border-right: 1px solid @dv_border_soft; }\n"
+"#settings .settings-native .settings-brand { background: transparent; border: 0; border-radius: 0; padding: 4px 8px 22px; }\n"
+"#settings .settings-native .settings-brand-icon { background: @dv_accent_t2; color: @dv_accent_fg; border-radius: 13px; padding: 11px; }\n"
+"#settings .settings-native .settings-brand-title { font-size: 20px; font-weight: bold; color: @dv_fg_strong; }\n"
+"#settings .settings-native .settings-brand-detail { font-size: 11px; color: @dv_fg_muted; }\n"
+"#settings .settings-native entry.settings-search { background: @dv_s0; border: 1px solid @dv_border; border-radius: 10px; padding: 10px 12px; margin: 0 3px 12px; font-size: 12px; }\n"
+"#settings .settings-native entry.settings-search:focus { border-color: @dv_accent; }\n"
+"#settings .settings-native .settings-navigation-scroll, #settings .settings-native .settings-navigation-scroll viewport { background: transparent; border: 0; }\n"
+"#settings .settings-native .settings-navigation-list { padding: 0 3px 12px; }\n"
+"#settings .settings-native .settings-nav-group { font-size: 10px; font-weight: bold; letter-spacing: 1px; color: @dv_fg_dim; padding: 20px 11px 8px; }\n"
+"#settings .settings-native button.settings-nav { background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 10px 12px; min-height: 17px; }\n"
+"#settings .settings-native button.settings-nav:hover { background: alpha(@dv_fg, 0.05); border-color: transparent; }\n"
+"#settings .settings-native button.settings-nav label { font-size: 12px; color: @dv_fg_muted; }\n"
+"#settings .settings-native button.settings-nav image { color: @dv_fg_muted; }\n"
+"#settings .settings-native button.settings-nav-active { background: @dv_accent_t2; border-color: @dv_accent_t3; box-shadow: inset 3px 0 @dv_accent; }\n"
+"#settings .settings-native button.settings-nav-active:hover { background: @dv_accent_t3; }\n"
+"#settings .settings-native button.settings-nav-active label, #settings .settings-native button.settings-nav-active image { color: @dv_accent_fg; }\n"
+"#settings .settings-native .settings-search-empty { padding: 20px 10px; color: @dv_fg_muted; font-size: 12px; }\n"
+"#settings .settings-native .settings-sidebar-footer { margin-top: 10px; padding: 16px 10px 0; border-top: 1px solid @dv_border_soft; }\n"
+"#settings .settings-native .settings-content { background: @dv_s0; }\n"
+"#settings .settings-native .settings-page-header { background: @dv_s0; border-bottom: 1px solid @dv_border_soft; padding: 30px 32px 26px; }\n"
+"#settings .settings-native .settings-header-icon { background: @dv_accent_t2; color: @dv_accent_fg; border: 1px solid @dv_accent_t3; border-radius: 16px; padding: 16px; }\n"
+"#settings .settings-native .settings-eyebrow { font-size: 10px; letter-spacing: 1.3px; color: @dv_accent_fg; }\n"
+"#settings .settings-native .heading { font-size: 28px; color: @dv_fg_strong; }\n"
+"#settings .settings-native .settings-description { font-size: 12px; color: @dv_fg_muted; }\n"
+"#settings .settings-native .settings-form { padding: 26px 32px 32px; }\n"
+"#settings .settings-native .settings-card { background: @dv_s1; border: 1px solid @dv_border_soft; border-radius: 15px; }\n"
+"#settings .settings-native .system-card { padding: 22px; }\n"
+"#settings .settings-native .settings-card-header { background: alpha(@dv_fg, 0.025); border-bottom: 1px solid @dv_border_soft; border-radius: 15px 15px 0 0; padding: 18px 20px; }\n"
+"#settings .settings-native .section-heading { font-size: 15px; color: @dv_fg_strong; }\n"
+"#settings .settings-native .settings-field { padding: 16px 20px; }\n"
+"#settings .settings-native .settings-field-title { font-size: 13px; }\n"
+"#settings .settings-native .power-mode { border-radius: 11px; padding: 14px; }\n"
+;
+
 typedef struct { void *root; GFileMonitor *monitor; char *snapshot; } RdTheme;
 static void rd_theme_load(RdTheme *theme,const char *path) {
     char *css=NULL;
     if (theme->root && g_file_get_contents(path,&css,NULL,NULL)) {
         gboolean dark=g_str_has_prefix(css,"/* devos-theme:dark */");
-        char *styled=g_strconcat(css,rd_tabs_css,
+        char *styled=g_strconcat(css,rd_tabs_css,rd_settings_css,
             "\n#task-manager .app-titlebar button.titlebutton { background: transparent; background-image: none; color: @dv_fg_muted; border: 1px solid transparent; border-radius: 6px; box-shadow: none; text-shadow: none; min-height: 16px; min-width: 16px; padding: 3px 4px; margin: 0; }"
             "#task-manager .app-titlebar button.titlebutton image { color: @dv_fg_muted; }"
             "#task-manager .app-titlebar button.titlebutton:hover { background: @dv_hover; }"

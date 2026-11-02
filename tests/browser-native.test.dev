@@ -6,7 +6,7 @@ use "../tools/lib/tool.dev" as tool
 use "./lib/react-devlang.dev" as t
 
 # The native Browser window is built against the libwebkit2gtk that is installed (linked by path, no WebKit header needed) and run under Xvfb
-# with the sandbox and GPU compositing off, which a headless test machine does not have.
+# with the sandbox off. Browser must select software compositing itself for this headless software-rendered session.
 fn library():str { return strings.trim(tool.exec(Vec<str>("sh","-c","cc -print-file-name=libwebkit2gtk-4.1.so.0"))) }
 fn build():str {
     let executable = t.root() + "/build/react-devlang/tests/browser-native"
@@ -15,10 +15,10 @@ fn build():str {
 }
 fn page(directory:str, name:str, title:str) { fs.writeFileSync(directory + "/" + name,"<!doctype html><html><head><title>" + title + "</title></head><body><h1>" + title + "</h1></body></html>") }
 fn run(executable:str, start:str, expect:str, next:str, nextTitle:str):child_process.Output {
-    let env = Map<str,str>(); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS","1"); env.set("WEBKIT_DISABLE_COMPOSITING_MODE","1"); env.set("LIBGL_ALWAYS_SOFTWARE","1")
-    env.set("DEVOS_BROWSER_SMOKE","1"); env.set("DEVOS_BROWSER_START",start); env.set("DEVOS_BROWSER_EXPECT_TITLE",expect)
+    let env = Map<str,str>(); env.set("GDK_BACKEND","x11"); env.set("DEV_OS_ROOT",t.root()); env.set("NO_AT_BRIDGE","1"); env.set("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS","1"); env.set("LIBGL_ALWAYS_SOFTWARE","1")
+    env.set("DEVOS_BROWSER_EXPECT_COMPOSITING","1");env.set("DEVOS_BROWSER_SMOKE","1"); env.set("DEVOS_BROWSER_START",start); env.set("DEVOS_BROWSER_EXPECT_TITLE",expect)
     if !strings.equal(next,"") { env.set("DEVOS_BROWSER_NEXT",next); env.set("DEVOS_BROWSER_NEXT_TITLE",nextTitle) }
-    return tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","browser-native","env","-u","AT_SPI_BUS_ADDRESS","dbus-run-session","--","xvfb-run","-a",executable),env,"",90000)
+    return tool.run(Vec<str>("sh","-c","ulimit -c 0; exec \"$@\"","browser-native","env","-u","AT_SPI_BUS_ADDRESS","-u","WEBKIT_DISABLE_COMPOSITING_MODE","dbus-run-session","--","xvfb-run","-a",executable),env,"",90000)
 }
 
 test.case("the native Browser loads a local page in a WebKit view and reads its title",fn() {
@@ -29,7 +29,7 @@ test.case("the native Browser loads a local page in a WebKit view and reads its 
     test.expect(done.success && strings.contains(t.out(done),"PASS native Browser loaded a page and read its title"),"Browser: " + t.out(done) + " / " + t.err(done))
     tool.exec(Vec<str>("rm","-rf",d))
 })
-test.case("a typed address is loaded when Go is pressed",fn() {
+test.case("a typed address is loaded when Enter is pressed",fn() {
     let executable = build()
     let d = strings.trim(tool.exec(Vec<str>("mktemp","-d")))
     page(d,"one.html","First page"); page(d,"two.html","Second page")

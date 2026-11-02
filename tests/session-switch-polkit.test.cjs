@@ -1,0 +1,10 @@
+const fs=require('node:fs');const vm=require('node:vm');const assert=require('node:assert/strict');
+let rule;const context={polkit:{addRule:f=>rule=f,Result:{YES:'yes',NOT_HANDLED:'no'}}};
+vm.runInNewContext(fs.readFileSync('distro/oe/meta-devos/recipes-devos/session/files/51-devos-switch-user.rules','utf8'),context);
+const action=(unit,verb='start',id='org.freedesktop.systemd1.manage-units')=>({id,lookup:key=>key==='unit'?unit:verb});
+for(let vt=7;vt<=12;vt++)assert.equal(rule(action(`devos-switch-greeter@${vt}.service`),{local:true,active:true}),'yes');
+for(const unit of ['devos-switch-greeter@1.service','devos-switch-greeter@2.service','devos-switch-greeter@6.service','devos-switch-greeter@13.service','devos-switch-greeter@2.service.extra','sshd.service','devos-switch-greeter@../../x.service'])assert.equal(rule(action(unit),{local:true,active:true}),'no');
+for(const subject of [{local:false,active:true},{local:true,active:false}])assert.equal(rule(action('devos-switch-greeter@7.service'),subject),'no');
+for(const verb of ['stop','restart','reload'])assert.equal(rule(action('devos-switch-greeter@7.service',verb),{local:true,active:true}),'no');
+assert.equal(rule(action('devos-switch-greeter@7.service','start','other'),{local:true,active:true}),'no');
+console.log('PASS switch-user polkit allows only active local users starting VT 7–12 greeters');

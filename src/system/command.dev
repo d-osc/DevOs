@@ -8,6 +8,8 @@ use "std/result"
 use "../../lib/shell-command.dev" as command
 use "../../lib/hw.dev" as hw
 use "../../lib/doctor.dev" as doctor
+use "./org.devos.shell/session-switch.dev" as switching
+use "./org.devos.shell/lock.dev" as locker
 fn version(root:str):str {
     for relative in Vec<str>("dist/build-info.json","release.json","package.json") {
         if fs.is_file(root+"/"+relative) {return json.string(json.get(json.parse(fs.readFileSync(root+"/"+relative,"utf8")),"version"))}
@@ -24,6 +26,15 @@ fn main():i32 {
         let checks=doctor.checks(hw.env("DEV_OS_ROOT"))
         if command.contains(values,"--json") {print(json.pretty(checks))} else {for key in json.keys(checks) {print((json.bool(json.get(checks,key)) ? "OK: " : "MISSING: ")+key)}}
         return doctor.healthy(checks) ? 0 : 1
+    }
+    # Wait for the switch backend, so Settings and the panel receive real failures.
+    if strings.equal(values[0],"switch-user") && values.len()==2 {
+        let root=hw.env("DEV_OS_ROOT")
+        switching.perform(root,values[1],fn():bool {
+            let problem=locker.lock(hw.which(hw.envOr("DEVOS_SHELL_SWAYLOCK","swaylock")),root,hw.envOr("DEV_OS_THEME_FAMILY","vscode"),hw.envOr("DEV_OS_THEME","dark"))
+            if !strings.equal(problem,"") {hw.stderr(problem);return false};return true
+        })
+        return 0
     }
     let status=command.remote(values,hw.env("XDG_RUNTIME_DIR"),hw.envOr("WAYLAND_DISPLAY","default"),process.cwd())
     if status==-1 {

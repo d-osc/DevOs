@@ -52,3 +52,5 @@ sh "$root/tools/build/native-system.sh"
 sh "$root/tools/build/native-supervisor.sh"
 sh "$root/tools/build/native-splash.sh"
 sh "$root/tools/build/native-bluetooth-agent.sh"
+
+sh "$root/tools/build/native-login.sh"

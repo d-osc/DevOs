@@ -5,7 +5,7 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 source_dir="$project_root/build/wsl/labwc-source"
 binary="$project_root/build/wsl/bin/labwc"
 test -d "$source_dir/.git" && test -x "$binary" || exit 1
-for asset in tools/setup/patch-task-view-workspaces.dev tools/setup/devos-workspaces.c native/protocols/devos-workspaces-v1.xml tools/setup/patch-task-view-gesture.dev tools/setup/devos-task-view.h tools/setup/devos-desktop-animation.h tools/setup/devos-window-animation.c tools/setup/patch-touchpad.dev tools/setup/devos-touchpad.h tools/setup/patch-menu-shape.dev tools/setup/devos-menu-shape.h tools/setup/patch-tab-drag.dev tools/setup/devos-tab-drag.h; do
+for asset in tools/setup/patch-task-view-workspaces.dev tools/setup/devos-workspaces.c native/protocols/devos-workspaces-v1.xml tools/setup/patch-task-view-gesture.dev tools/setup/devos-task-view.h tools/setup/devos-desktop-animation.h tools/setup/devos-window-animation.c tools/setup/patch-touchpad.dev tools/setup/devos-touchpad.h tools/setup/patch-menu-shape.dev tools/setup/devos-menu-shape.h tools/setup/patch-tab-drag.dev tools/setup/devos-tab-drag.h tools/setup/patch-session-title.dev; do
     test "$project_root/$asset" -nt "$binary" && exit 1
 done
 for fix in window-menu tab-drag-focus app-icons; do
@@ -18,3 +18,5 @@ grep -q 'DEVOS_MENU_SHAPE_V1' "$source_dir/src/menu/menu.c" || exit 1
 grep -q 'devos_tab_drag_key(server, keyboard->wlr_keyboard, event' "$source_dir/src/input/keyboard.c" || exit 1
 
 grep -Eq 'DEVOS_DND_DESKTOP_RELEASE|cursor_process_button_release' "$source_dir/src/input/cursor.c" || exit 1
+
+grep -q DEVOS_SESSION_TITLE "$source_dir/src/output.c" || exit 1

@@ -38,6 +38,7 @@ fi
 "$devlang_bin" "$project_root/tools/setup/patch-touchpad.dev" -- "$source_dir"
 "$devlang_bin" "$project_root/tools/setup/patch-menu-shape.dev" -- "$source_dir"
 "$devlang_bin" "$project_root/tools/setup/patch-tab-drag.dev" -- "$source_dir"
+"$devlang_bin" "$project_root/tools/setup/patch-session-title.dev" -- "$source_dir"
 set --
 if [ -f "$build_dir/build.ninja" ]; then set -- --reconfigure; fi
 # Newer distro headers add enum members unknown to wlroots 0.17. Keep warnings

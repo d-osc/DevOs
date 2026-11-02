@@ -1,0 +1,16 @@
+use "std/args"
+use "std/fs"
+use "std/strings"
+use "std/result"
+fn main():i32 {
+    if args.len()==1 && strings.equal(args.get(0),"--validate") {return 0}
+    if args.len()!=1 {result.raise("Usage: patch-session-title.dev -- LABWC_SOURCE")}
+    let file=args.get(0)+"/src/output.c"
+    let text=strings.replaceAll(fs.readFileSync(file,"utf8"),"\r\n","\n")
+    if strings.contains(text,"DEVOS_SESSION_TITLE") {return 0}
+    let anchor="\tstruct wlr_output *wlr_output = data;"
+    if strings.split(text,anchor).len()!=2 {result.raise("Session title output anchor missing")}
+    let fix="\n\t/* DEVOS_SESSION_TITLE: distinguish WSL desktops belonging to different UIDs. */\n\tconst char *devos_title = getenv(\"DEV_OS_SESSION_TITLE\");\n\tif (devos_title && *devos_title && wlr_output_is_wl(wlr_output)) {\n\t\twlr_wl_output_set_title(wlr_output, devos_title);\n\t}\n"
+    fs.writeFileSync(file,strings.replace(text,anchor,anchor+fix));return 0
+}
+return main()

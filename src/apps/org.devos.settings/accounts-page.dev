@@ -109,7 +109,7 @@ fn handle(root:str, line:str):str {
         let listed = false; let users = json.has(system,"users") ? json.get(system,"users") : json.array()
         for i in 0..(json.len(users) as i64) { if strings.equal(text(json.at(users,i),"username"),username) { listed = true } }
         if !listed || strings.equal(username,"devos") || strings.equal(username,text(system,"currentUser")) { return kit.failure("Choose another user on this device.") }
-        let ran = hw.run(switchCommand(root,username),30000)
+        let ran = hw.run(hw.concat(Vec<str>("sh","-c","exec \"$@\" 2>&1","switch-user"),switchCommand(root,username)),180000)
         if ran.code != 0 { return kit.failure("Could not switch user: " + strings.trim(ran.out)) }
         return frame(state.value)
     }

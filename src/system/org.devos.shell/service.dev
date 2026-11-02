@@ -16,6 +16,7 @@ use "./router.dev" as router
 use "./gestures.dev" as gestures
 use "./theme.dev" as theme
 use "./lock.dev" as locker
+use "./session-switch.dev" as switching
 use "../../../lib/ext-prefs.dev" as prefs
 use "../../services/window-state.dev" as tracking
 
@@ -215,6 +216,7 @@ fn handle(line:str):str {
     let failed = ""
     for s in router.route(args,cwd) {
         if strings.equal(s.kind,"launch") { launch(s.role,s.command,s.path) }
+        else if strings.equal(s.kind,"switch") {note("switch user "+s.command);if !testing() {let done=result.run(fn(){switching.perform(root(),s.command,fn():bool {return runCommand("lock",cwd)})});if result.isErr(done) {failed=result.message(done);say(failed)}}}
         else if strings.equal(s.kind,"overlay") { overlay(s.role,s.command,strings.equal(s.path,"open")) }
         else if strings.equal(s.kind,"run") { if !runCommand(s.command,strings.equal(s.path,"") ? cwd : s.path) { failed = "Could not run " + s.command + "." } }
         else if strings.equal(s.kind,"message") { say(s.path) }

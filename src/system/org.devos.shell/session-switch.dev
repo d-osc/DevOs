@@ -1,0 +1,66 @@
+# Switching never terminates a user's desktop. Authentication remains with the locker/greeter.
+use "std/fs"
+use "std/strings"
+use "std/json"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+use "../../../lib/accounts.dev" as accounts
+use "../../../lib/desktop.dev" as desktop
+use "./wsl-switch.dev" as wsl
+struct Session {id:str,user:str,seat:str,kind:str,type:str,vt:i64}
+fn program(name:str):str {return hw.env("DEVOS_SWITCH_TEST")=="1" ? hw.envOr("DEVOS_SWITCH_"+name,name) : name}
+fn run(name:str,args:Vec<str>):hw.Run {return hw.run(hw.concat(Vec<str>(program(name)),args),15000)}
+fn property(text:str,key:str):str {for line in strings.split(text,"\n") {if strings.startsWith(line,key+"=") {return strings.substring(line,strings.charLength(key)+1,strings.charLength(line))}};return ""}
+fn session(id:str):Session {
+    let reply=run("loginctl",Vec<str>("show-session",id,"--no-pager","-p","Name","-p","Seat","-p","Class","-p","Type","-p","VTNr","-p","Remote"))
+    if reply.code!=0 || strings.equal(property(reply.out,"Remote"),"yes") {return Session(id,"","","","",0)}
+    return Session(id,property(reply.out,"Name"),property(reply.out,"Seat"),property(reply.out,"Class"),property(reply.out,"Type"),hw.toInt(property(reply.out,"VTNr"),0))
+}
+fn sessions():Vec<Session> {
+    let reply=run("loginctl",Vec<str>("list-sessions","--no-legend","--no-pager"));let all=Vec<Session>()
+    if reply.code!=0 {result.raise("The Linux session manager is unavailable.")}
+    for line in strings.split(reply.out,"\n") {let text=strings.trim(line);if !strings.equal(text,"") {all.push(session(strings.split(text," ")[0]))}}
+    return all
+}
+fn linux(target:str,lock:fn():bool) {
+    let current=session(hw.envOr("XDG_SESSION_ID","self"));let seat=current.seat
+    if strings.equal(seat,"") || current.vt==0 {result.raise("This desktop has no local Linux seat. Start DevOs from its login manager.")}
+    let all=sessions();let chosen="";let greeter="";let used=Vec<i64>()
+    for s in all {
+        if s.seat!=seat {continue};used.push(s.vt)
+        if s.kind=="greeter" || s.user=="devos-greeter" {greeter=s.id}
+        if s.user==target && s.id!=current.id && s.kind=="user" && (s.type=="wayland" || s.type=="x11") {chosen=s.id}
+    }
+    if !strings.equal(chosen,"") {
+        if !lock() {result.raise("Could not lock the current desktop. User switching was cancelled.")}
+        let done=run("loginctl",Vec<str>("activate",chosen));if done.code!=0 {result.raise("Could not activate the selected user's session.")};return
+    }
+    if !strings.equal(greeter,"") {
+        if !lock() {result.raise("Could not lock the current desktop.")}
+        if run("loginctl",Vec<str>("activate",greeter)).code!=0 {result.raise("Could not activate the login screen.")};return
+    }
+    # A greetd instance per unused VT keeps the original greetd user session alive.
+    if hw.env("DEVOS_SWITCH_TEST")=="1" || fs.is_file("/usr/lib/systemd/system/devos-switch-greeter@.service") || fs.is_file("/lib/systemd/system/devos-switch-greeter@.service") {
+        if seat!="seat0" {result.raise("An additional VT login screen is only available on seat0.")}
+        let free:i64=0
+        for vt in 7..13 {let occupied=false;for number in used {if number==vt {occupied=true}};if !occupied && free==0 {free=vt}}
+        if free==0 {result.raise("No free desktop terminal is available. Sign out of an unused session first.")}
+        if !lock() {result.raise("Could not lock the current desktop.")}
+        if run("systemctl",Vec<str>("start","devos-switch-greeter@${free}.service")).code!=0 {result.raise("Could not start another DevOs login screen.")};return
+    }
+    if !strings.equal(hw.which("dm-tool"),"") {
+        if !lock() {result.raise("Could not lock the current desktop.")}
+        if run("dm-tool",Vec<str>("switch-to-user",target)).code!=0 {result.raise("The display manager could not switch user.")};return
+    }
+    result.raise("Install the DevOs session-switch service to open another login screen.")
+}
+fn perform(root:str,target:str,lock:fn():bool) {
+    accounts.human(target)
+    if strings.equal(target,hw.env("USER")) {result.raise("Choose another user on this device.")}
+    if desktop.wsl() && hw.env("DEVOS_SWITCH_TEST")!="1" {
+        let title=wsl.start(root,target)
+        if !lock() {result.raise("Could not lock the current desktop. The other desktop remains open in its own window.")}
+        if !wsl.focus(title) {result.raise("The selected desktop is running. Select its DevOs window in the Windows taskbar.")};return
+    }
+    linux(target,lock)
+}

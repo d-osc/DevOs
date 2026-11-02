@@ -1,0 +1,40 @@
+# WSLg desktops run as real, independent Linux UIDs. Windows owns WSL's user transition.
+use "std/fs"
+use "std/strings"
+use "std/result"
+use "../../../lib/hw.dev" as hw
+fn command(user:str):Vec<str> {return Vec<str>("/mnt/c/Windows/System32/wsl.exe","--distribution",hw.env("WSL_DISTRO_NAME"),"--user",user,"--exec")}
+fn call(user:str,args:Vec<str>,input:str,timeout:i64):hw.Run {return hw.runInput(hw.concat(command(user),args),input,timeout)}
+fn currentRecord() {
+    let pid=hw.env("LABWC_PID");let runtime=hw.env("XDG_RUNTIME_DIR")
+    if strings.equal(pid,"") || strings.equal(runtime,"") {return}
+    let title=hw.envOr("DEV_OS_SESSION_TITLE","wlroots - WL-1 ("+hw.env("WSL_DISTRO_NAME")+")")
+    let file=runtime+"/devos-wsl-session";fs.writeFileSync(file,pid+"\n"+title+"\n");hw.run(Vec<str>("chmod","600",file),5000)
+}
+fn existing(user:str):str {
+    let script="uid=$(id -u); f=/run/user/$uid/devos-wsl-session; [ -f \"$f\" ] && [ ! -L \"$f\" ] || exit 1; { IFS= read -r pid; IFS= read -r title; } < \"$f\"; case $pid in \"\"|*[!0-9]*) exit 1;; esac; kill -0 \"$pid\" 2>/dev/null || exit 1; [ \"$(cat /proc/$pid/comm)\" = labwc ] || exit 1; [ \"$(stat -c %u /proc/$pid)\" = \"$uid\" ] || exit 1; printf '%s' \"$title\""
+    let response=call(user,Vec<str>("/bin/sh","-c",script),"",10000)
+    return response.code==0 ? strings.trim(response.out) : ""
+}
+fn focus(title:str):bool {
+    let escaped=strings.replaceAll(title,"'","''")
+    let code="$w = New-Object -ComObject WScript.Shell; if ($w.AppActivate('"+escaped+"')) { exit 0 } else { exit 1 }\n"
+    return hw.runInput(Vec<str>("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-Command","-"),code,15000).code==0
+}
+fn prepare(root:str,user:str):str {
+    let script="set -eu\nuid=$(id -u \"$1\"); gid=$(id -g \"$1\"); [ \"$uid\" -ge 1000 ] && [ \"$uid\" -lt 65534 ]\nruntime=/run/user/$uid\n[ ! -L \"$runtime\" ]\nif [ ! -e \"$runtime\" ]; then mkdir -m700 \"$runtime\"; chown \"$uid:$gid\" \"$runtime\"; fi\n[ \"$(stat -c %u \"$runtime\")\" = \"$uid\" ]\nstage=$(mktemp -d /tmp/dev-os-runtime-XXXXXXXX)\nfor item in bin lib config data dist src native build/native build/wsl/bin build/wsl/vte pm-cli app-db; do if [ -e \"$2/$item\" ]; then mkdir -p \"$stage/$(dirname \"$item\")\"; cp -a -- \"$2/$item\" \"$stage/$item\"; fi; done\nchown -hR \"$uid:$gid\" \"$stage\"\nprintf '%s' \"$stage\"\n"
+    let response=call("root",Vec<str>("/bin/sh","-s","--",user,root),script,120000)
+    let stage=strings.trim(response.out)
+    if response.code!=0 || !strings.startsWith(stage,"/tmp/dev-os-runtime-") || strings.contains(stage,"\n") {result.raise("Could not prepare a separate WSL desktop for "+user+": "+hw.clean(response.out)+" (exit ${response.code}).")}
+    return stage
+}
+fn start(root:str,user:str):str {
+    currentRecord()
+    let title=existing(user)
+    if !strings.equal(title,"") {return title}
+    let stage=prepare(root,user)
+    let pid=hw.spawnDetached(hw.concat(command(user),Vec<str>("/bin/sh",stage+"/bin/dev-os-wsl-user-session")))
+    if pid<=0 {result.raise("Could not start the selected WSL user.")}
+    for attempt in 0..40 {title=existing(user);if !strings.equal(title,"") {return title};hw.sleepSeconds(0.5)}
+    result.raise("The WSL desktop did not become ready. Check ~/.local/state/devos/session.log for "+user+".");return ""
+}

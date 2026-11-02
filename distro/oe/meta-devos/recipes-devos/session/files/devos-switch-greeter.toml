@@ -1,0 +1,6 @@
+[terminal]
+vt = "current"
+switch = true
+[default_session]
+command = "/usr/bin/devos-greeter"
+user = "devos-greeter"

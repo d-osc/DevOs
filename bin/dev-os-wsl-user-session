@@ -1,0 +1,29 @@
+#!/bin/sh
+# Runs as the selected Linux user; WSL owns the UID transition, never the shell UI.
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+uid=$(id -u)
+[ "$uid" -ge 1000 ] && [ "$uid" -lt 65534 ] || { echo 'Choose a regular desktop user.' >&2; exit 1; }
+export HOME=$(getent passwd "$uid" | cut -d: -f6)
+export USER=$(id -un) LOGNAME=$(id -un)
+export XDG_RUNTIME_DIR=/run/user/$uid
+[ -d "$XDG_RUNTIME_DIR" ] && [ ! -L "$XDG_RUNTIME_DIR" ] && [ "$(stat -c %u "$XDG_RUNTIME_DIR")" = "$uid" ] || { echo 'The user runtime directory is unavailable.' >&2; exit 1; }
+# Serialize concurrent requests for the same UID and reuse a live desktop.
+exec 9>"$XDG_RUNTIME_DIR/devos-wsl-start.lock"
+flock -n 9 || exit 0
+record="$XDG_RUNTIME_DIR/devos-wsl-session"
+if [ -f "$record" ] && [ ! -L "$record" ]; then
+    IFS= read -r pid < "$record" || pid=
+    case "$pid" in ''|*[!0-9]*) ;; *)
+        if kill -0 "$pid" 2>/dev/null && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = labwc ]; then exit 0; fi ;;
+    esac
+fi
+export PATH="$base/build/wsl/bin:$base/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/mnt/c/Windows/System32:/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
+export WAYLAND_DISPLAY=/mnt/wslg/runtime-dir/wayland-0 DISPLAY=:0
+export DEV_OS_SESSION_TITLE="DevOs - $USER - ${WSL_DISTRO_NAME:-WSL}"
+export DEV_OS_LOGIN=0 DEV_OS_SKIP_DOCTOR=1
+unset DBUS_SESSION_BUS_ADDRESS DEV_OS_NATIVE_ID RD_HIDDEN WLR_BACKENDS
+cd "$HOME"
+mkdir -p "$HOME/.local/state/devos"
+exec >>"$HOME/.local/state/devos/session.log" 2>&1
+"$base/bin/dev-os-session" --nested

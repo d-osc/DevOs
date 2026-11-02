@@ -1,0 +1,8 @@
+// Active local users may start only a bounded additional greeter, never arbitrary services.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.systemd1.manage-units" && subject.local && subject.active &&
+        action.lookup("verb") === "start" && /^devos-switch-greeter@([7-9]|1[0-2])\.service$/.test(action.lookup("unit") || "")) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

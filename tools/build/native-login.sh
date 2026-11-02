@@ -10,3 +10,8 @@ trap 'rm -f -- "$temporary"' EXIT
 trap 'exit 1' HUP INT TERM
 install -m0755 "$output/login" "$temporary"
 mv -f -- "$temporary" "$root/dist/native/login-preview"
+
+sh "$root/packages/react-devlang/tools/build.sh" "$root/src/system/login/native-session.devx" "$output/login-session" "$output/host.o"
+temporary=$(mktemp "$root/dist/native/.login.XXXXXX")
+install -m0755 "$output/login-session" "$temporary"
+mv -f -- "$temporary" "$root/dist/native/login"

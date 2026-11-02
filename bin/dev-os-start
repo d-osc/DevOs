@@ -5,6 +5,10 @@ if [ -f "$base/src/system/command.dev" ]; then root=$base; else root="$base/shar
 export DEV_OS_ROOT="$root"
 export DEV_OS_SHELL="$base/bin/dev-os-shell"
 . "$base/bin/dev-os-runtime-env"
+# One reusable WSL desktop per Linux UID. The parent compositor exports LABWC_PID.
+if [ -n "${WSL_DISTRO_NAME:-}" ] && [ -n "${LABWC_PID:-}" ]; then
+    (umask 077; printf '%s\n%s\n' "$LABWC_PID" "${DEV_OS_SESSION_TITLE:-wlroots - WL-1 ($WSL_DISTRO_NAME)}" > "$XDG_RUNTIME_DIR/devos-wsl-session")
+fi
 # Warm the same catalog daemon used by standalone CLI requests. A catalog error
 # must not prevent the desktop from starting; App Store reports it in its UI.
 for database in "$root/pm-cli/catalog-data" "$root/app-db" /usr/share/devos-pm/cli/catalog-data; do

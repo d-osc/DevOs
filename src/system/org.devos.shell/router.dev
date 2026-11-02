@@ -67,7 +67,7 @@ fn route(args:Vec<str>, cwd:str):Vec<Step> {
     if strings.equal(command,"snap-layouts") { return overlay("snap","snap-panel","snap-layouts") }
     if strings.equal(command,"overlays-hide") { return overlayHides("") }
     if settingsPage(command) { out.push(step("launch","settings","settings." + command,"")); return out }
-    if strings.equal(command,"switch-user") { out.push(step("launch","settings","session.switch-user",args.len() > 1 ? args[1] : "")); return out }
+    if strings.equal(command,"switch-user") { if args.len()>1 {out.push(step("switch","",args[1],""))} else {out.push(step("launch","settings","settings.accounts",""))};return out }
     if strings.equal(command,"reload") { out.push(step("reload","","","")); return out }
     if strings.equal(command,"terminal") || strings.equal(command,"lock") || strings.equal(command,"files") || strings.equal(command,"screenshot") { out.push(step("run","",command,cwd)); return out }
     if strings.equal(command,"package-install") || strings.equal(command,"editor") {

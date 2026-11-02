@@ -25,7 +25,7 @@ if [ "${1:-}" = --ui ]; then
     polkit-gnome-authentication-agent-1 &
     agent=$!
     trap 'kill "$agent" 2>/dev/null || true' EXIT
-    gjs -m /usr/share/dev-os/dist/login.js
+    /usr/share/dev-os/dist/native/login
     kill "$agent" 2>/dev/null || true
     exec labwc --exit
 fi

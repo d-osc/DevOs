@@ -23,6 +23,7 @@ do_install() {
     for directory in dist data config lib; do
         cp -R --no-preserve=ownership ${S}/$directory ${D}${datadir}/dev-os/
     done
+    chmod 0755 ${D}${datadir}/dev-os/dist/native/login
     chmod 0755 ${D}${datadir}/dev-os/dist/native/taskmanager ${D}${datadir}/dev-os/dist/native/diskmanager ${D}${datadir}/dev-os/dist/native/installer
     chmod 0755 ${D}${datadir}/dev-os/dist/native/system-displaycare
     chmod 0755 ${D}${datadir}/dev-os/dist/native/system-panel ${D}${datadir}/dev-os/dist/native/panel ${D}${datadir}/dev-os/dist/native/panel-settings

@@ -1,0 +1,31 @@
+use "react_devlang/ui" as ui
+
+fn icon(index:i64):str {
+    return Vec<str>("battery-good-symbolic","weather-windy-symbolic","network-workgroup-symbolic","input-touchpad-symbolic","audio-input-microphone-symbolic","input-keyboard-symbolic","drive-harddisk-symbolic","audio-speakers-symbolic","preferences-desktop-locale-symbolic","video-display-symbolic","applications-graphics-symbolic","preferences-desktop-icons-symbolic","software-update-available-symbolic","application-x-addon-symbolic","user-desktop-symbolic","computer-symbolic","drive-harddisk-symbolic","battery-good-symbolic","preferences-system-time-symbolic","input-mouse-symbolic","input-keyboard-symbolic","avatar-default-symbolic","network-wireless-symbolic","network-vpn-symbolic","network-wireless-hotspot-symbolic","airplane-mode-symbolic","network-server-symbolic","network-workgroup-symbolic","bluetooth-symbolic","audio-volume-high-symbolic","video-display-symbolic","printer-symbolic","preferences-desktop-wallpaper-symbolic","view-list-symbolic")[index]
+}
+fn group(index:i64):str {
+    if index<10 {return "Hardware"}
+    if index<15 {return "Personalization"}
+    if index<22 {return "System"}
+    if index<28 {return "Network & Internet"}
+    if index<32 {return "Devices"}
+    return "Desktop"
+}
+fn lower(byte:u8):u8 {return byte>=65 && byte<=90 ? byte+32 : byte}
+fn matches(title:str,query:ui.Text):bool {
+    let text=ui.text(title).bytes;let needle=query.bytes
+    if needle.len()==0 {return true}
+    if text.len()<needle.len() {return false}
+    for i in 0..((text.len()-needle.len()+1) as i64) {
+        let found=true
+        for j in 0..(needle.len() as i64) {if lower(text[i+j])!=lower(needle[j]) {found=false;break}}
+        if found {return true}
+    }
+    return false
+}
+fn item(options:ui.Props,index:i64,title:str,chosen:fn():void):ui.Node {
+    let row=ui.props();row.vertical=false;row.spacing=12
+    let image=ui.props();image.iconSize=17
+    let label=ui.props();label.expand=true;label.xalign=0.0
+    return ui.WidgetButton(options,ui.Box(row,Vec<ui.Node>(ui.Icon(image,icon(index)),ui.withProps(ui.Label(title),label))),chosen)
+}

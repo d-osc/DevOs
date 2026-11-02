@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in 7|8|9|10|11|12) ;; *) exit 2;; esac
+# Never take a terminal from a logged-in user, even when the unit is called directly.
+sessions=$(loginctl list-sessions --no-legend --no-pager)
+while read -r session rest; do
+    [ -n "$session" ] || continue
+    vt=$(loginctl show-session "$session" -p VTNr --value)
+    if [ "$vt" = "$1" ]; then echo 'This terminal already has a session.' >&2; exit 1; fi
+done <<EOF
+$sessions
+EOF
+if systemctl is-active --quiet "getty@tty$1.service"; then echo 'This terminal has a console login.' >&2; exit 1; fi
+for greeter in /usr/bin/greetd /usr/sbin/greetd; do
+    if [ -x "$greeter" ]; then exec "$greeter" --config /etc/greetd/switch.toml --vt "$1"; fi
+done
+echo 'greetd is not installed.' >&2
+exit 1

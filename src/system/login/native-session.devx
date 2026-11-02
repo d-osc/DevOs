@@ -1,0 +1,5 @@
+use "./native.devx" as login
+use "react_devlang/ui" as ui
+let root=login.environment("DEV_OS_ROOT");let runner=login.environment("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
+if ui.text(login.environment("GREETD_SOCK")).bytes.len()==0 {print("A greetd authentication socket is required.");return 1}
+return login.run(login.Config(root,runner,"${root}/src/system/login/service.dev",false,fn(context:*ui.Context) {}))

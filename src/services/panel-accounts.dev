@@ -17,7 +17,7 @@ while true {let line=io.read_line();if strings.equal(line,"") {break}
         let request=json.parse(line);if !strings.equal(json.kind(request),"object") {result.raise("Invalid account request")}
         let next=system;let now=util.monotonic();let stamp=updated
         if updated==0 || now-updated>=60 || hw.jbool(request,"refresh",false) || json.has(request,"switch") {next=hw.jget(accounts.execute(json.value({action:"get"})),"system");stamp=now}
-        if json.has(request,"switch") {let args=model.choose(next,hw.jget(request,"switch"));let status=shell.remote(args,hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),hw.home());if status!=0 {result.raise("Could not open the user switcher.")};return Reply(next,stamp,true)}
+        if json.has(request,"switch") {let args=model.choose(next,hw.jget(request,"switch"));let argv=Vec<str>("sh",hw.env("DEV_OS_ROOT")+"/bin/dev-os-shell");for argument in args {argv.push(argument)};let done=hw.run(hw.concat(Vec<str>("sh","-c","exec \"$@\" 2>&1","switch-user"),argv),180000);if done.code!=0 {result.raise(strings.equal(strings.trim(done.out),"") ? "Could not switch user." : strings.trim(done.out))};return Reply(next,stamp,true)}
         return Reply(next,stamp,false)
     })
     if result.isErr(response) {print("E\t"+wire.encoded(hw.errorText(result.message(response))));continue}
