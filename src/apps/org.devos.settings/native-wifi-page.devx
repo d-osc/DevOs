@@ -62,7 +62,7 @@ fn render(context:*ui.Context):ui.Node {
     let nodes = Vec<ui.Node>()
     let status = have ? join(Vec<ui.Text>(plain("Connected to "),sp.cell(connected,1))) : radioOff ? plain("Wi-Fi is turned off") : plain("Find a network. Make yourself at home.")
     let refresh = ui.named("wifi-refresh"); refresh.sensitive = !busy
-    nodes.push(ext.row(14,Vec<ui.Node>(ext.expand(ext.column(6,Vec<ui.Node>(k.note("CONNECTIONS","settings-eyebrow"),k.note("Wi-Fi","heading"),ext.named(k.caption(status,"settings-description"),"wifi-status")))),
+    nodes.push(ext.row(14,Vec<ui.Node>(ext.expand(ext.column(6,Vec<ui.Node>(k.note("NETWORK STATUS","settings-eyebrow"),ext.named(k.caption(status,"settings-description"),"wifi-status")))),
         ui.Button(refresh,busy ? "Scanning…" : "Refresh",fn() { sp.send(l,plain("{\"action\":\"scan\"}")) }))))
     if native {
         let toggle = ui.named("wifi-radio"); toggle.sensitive = !busy && has(radio); toggle.valign = 3
@@ -70,9 +70,9 @@ fn render(context:*ui.Context):ui.Node {
             ui.Switch(toggle,!k.isText(radio,"0"),fn(next:bool) { if has(radio) && next != !k.isText(radio,"0") { sp.send(l,plain(next ? "{\"action\":\"radio\",\"enabled\":true}" : "{\"action\":\"radio\",\"enabled\":false}")) } }))))
     }
     if !radioOff {
-        let card = Vec<ui.Node>(ext.row(14,Vec<ui.Node>(ui.Icon(ui.props(),have ? signalIcon(number(connected)) : "network-wireless-offline-symbolic"),
+        let card = Vec<ui.Node>(ext.row(14,Vec<ui.Node>(ui.Icon(connectionIcon(),have ? signalIcon(number(connected)) : "network-wireless-offline-symbolic"),
             ext.expand(ext.column(6,Vec<ui.Node>(k.note(have ? "CURRENT NETWORK" : "YOUR CONNECTION","wifi-overline"),k.caption(have ? sp.cell(connected,1) : plain("Not connected to Wi-Fi"),"wifi-network-title")))),
-            k.note(have ? "●  Connected" : "Offline","wifi-status-badge"))))
+            connectionBadge(have ? "●  Connected" : "Offline"))))
         if have {
             let disconnect = ui.named("wifi-disconnect"); disconnect.sensitive = !busy
             let details = Vec<ui.Node>(k.caption(plain(signalLabel(number(connected)) + " · " + "${number(connected)}%"),"settings-description"),
@@ -109,7 +109,7 @@ fn render(context:*ui.Context):ui.Node {
             let connect = ui.named("wifi-connect-${shown}"); shown = shown + 1
             connect.sensitive = !busy && sp.flag(sp.cell(n,8)); connect.className = ui.text(has(sp.cell(n,2)) ? "wifi-connect-button" : "wifi-setup-button")
             let detail = join(Vec<ui.Text>(plain(signalWord(number(n)) + " · ${number(n)}% · " + (sp.flag(sp.cell(n,6)) ? "Secured" : "Open")),has(sp.cell(n,2)) ? plain(" · Saved") : ui.emptyText()))
-            list.push(ext.row(12,Vec<ui.Node>(ui.Icon(ui.props(),signalIcon(number(n))),ext.expand(ext.column(5,Vec<ui.Node>(k.caption(sp.cell(n,1),"wifi-row-name"),k.caption(detail,"wifi-row-detail")))),
+            list.push(networkRow(Vec<ui.Node>(ui.Icon(ui.props(),signalIcon(number(n))),ext.expand(ext.column(5,Vec<ui.Node>(k.caption(sp.cell(n,1),"wifi-row-name"),k.caption(detail,"wifi-row-detail")))),
                 ui.Button(connect,has(sp.cell(n,2)) || native ? "Connect" : "Set up",fn() {
                     if native && !has(sp.cell(n,2)) && sp.flag(sp.cell(n,6)) && !k.isText(sp.cell(n,9),"owe") { joining.set(keyOf(n)); password.set(ui.emptyText()); reveal.set(false) }
                     else if !native && !has(sp.cell(n,2)) { sp.send(l,plain("{\"action\":\"settings\"}")) }
@@ -131,8 +131,11 @@ fn render(context:*ui.Context):ui.Node {
         nodes.push(ext.column(10,Vec<ui.Node>(k.note("More connection options","wifi-manage-title"),k.note("Add a new password, manage saved networks, or turn Wi-Fi on and off in Windows.","settings-description"),
             ui.Button(manage,"Open Windows Wi-Fi settings",fn() { sp.send(l,plain("{\"action\":\"settings\"}")) }))))
     }
-    return ext.column(20,nodes)
+    return ext.detail("wifi-page",nodes)
 }
+fn connectionIcon():ui.Props {let options=ui.props();options.iconSize=32;options.className=plain("wifi-hero-icon");return options}
+fn connectionBadge(value:str):ui.Node {let options=ui.props();options.valign=3;options.className=plain("wifi-status-badge");return ui.withProps(ui.Label(value),options)}
+fn networkRow(children:Vec<ui.Node>):ui.Node {let options=ui.props();options.vertical=false;options.spacing=14;options.className=ui.text("wifi-network-row");return ui.Box(options,children)}
 fn signalWord(signal:i64):str { return signal >= 75 ? "Excellent" : signal >= 45 ? "Good" : "Weak" }
 fn number(n:Vec<ui.Text>):i64 { return sp.number(sp.cell(n,5)) }
 fn page():ui.Node { return ui.component(9390,ui.keyed(950),render) }

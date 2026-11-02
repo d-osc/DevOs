@@ -7,7 +7,7 @@ SRC_URI = "file://devos-runtime.tar.gz"
 S = "${UNPACKDIR}/devos-runtime"
 DEPENDS = "wayland wayland-native"
 RDEPENDS:${PN} = "gstreamer1.0 gstreamer1.0-plugins-base-videoconvertscale gstreamer1.0-plugins-base-audioconvert gstreamer1.0-plugins-base-audioresample gstreamer1.0-plugins-base-playback gstreamer1.0-plugins-good-gtk gstreamer1.0-plugins-good-video4linux2 gstreamer1.0-plugins-good-pulseaudio gstreamer1.0-plugins-good-level gstreamer1.0-plugins-good-jpeg gstreamer1.0-plugins-good-multifile gstreamer1.0-plugins-good-wavenc devlang gjs gtk+3 gtk-layer-shell libvte webkitgtk3 libsoup labwc wlr-randr pulseaudio-client-tools cups dbus util-linux-setsid coreutils networkmanager-nmcli networkmanager-openvpn util-linux-rfkill glib-networking gsettings-desktop-schemas dconf bash ca-certificates adwaita-icon-theme adwaita-icon-theme-cursors librsvg-gtk util-linux-sfdisk util-linux-blkid util-linux-lsblk util-linux-findmnt util-linux-findfs util-linux-blockdev util-linux-wipefs dosfstools e2fsprogs e2fsprogs-mke2fs efibootmgr tar shadow"
-RDEPENDS:${PN} += "grim"
+RDEPENDS:${PN} += "grim pango gdk-pixbuf cairo"
 inherit pkgconfig mime
 do_configure[noexec] = "1"
 do_compile() {
@@ -74,6 +74,11 @@ do_install() {
     install -d ${D}${sysconfdir}/devos
     install -m0644 ${S}/config/app-store.json ${D}${sysconfdir}/devos/app-store.json
     install -m0644 ${S}/data/polkit-1/actions/org.devos.accounts.policy ${D}${datadir}/polkit-1/actions/
+    # Architecture-dependent native programs and FFI libraries belong in libdir.
+    # Keep the runtime's public path via a directory link, not development .so links.
+    install -d ${D}${libdir}/devos
+    mv ${D}${datadir}/dev-os/dist/native ${D}${libdir}/devos/native
+    ln -s ${libdir}/devos/native ${D}${datadir}/dev-os/dist/native
 }
-FILES:${PN} += "${datadir}/mime/packages ${datadir}/icons/default ${prefix}/lib/*.dev ${datadir}/dev-os ${datadir}/polkit-1/actions ${localstatedir}/lib/devos ${sysconfdir}/devos ${sysconfdir}/polkit-1/rules.d/46-devos-base-apps.rules"
+FILES:${PN} += "${libdir}/devos ${datadir}/mime/packages ${datadir}/icons/default ${prefix}/lib/*.dev ${datadir}/dev-os ${datadir}/polkit-1/actions ${localstatedir}/lib/devos ${sysconfdir}/devos ${sysconfdir}/polkit-1/rules.d/46-devos-base-apps.rules"
 CONFFILES:${PN} += "${sysconfdir}/devos/app-store.json"

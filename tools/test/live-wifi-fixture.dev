@@ -1,0 +1,9 @@
+# Disposable QEMU-only helper: no NetworkManager/radio operations.
+use "std/io"
+use "std/json"
+use "std/fs"
+let request=json.parse(io.read_line());let action=json.string(json.get(request,"action"))
+if action=="connect" {fs.writeFileSync("/tmp/devos-test-wifi-connected","1")}
+if action!="connect" && action!="scan" {print("{\"ok\":false,\"error\":\"Unexpected fixture request\"}");return 1}
+print(json.stringify({ok:true,wirelessEnabled:true,networks:[{ssid:"DevOs fixture",profile:"DevOs-Fixture",adapter:"wlan0",interfaceId:"11111111-2222-5333-8444-555555555555",signal:80,secure:true,connected:fs.is_file("/tmp/devos-test-wifi-connected"),connectable:true,security:"psk"}]}))
+return 0

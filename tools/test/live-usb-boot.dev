@@ -20,10 +20,12 @@ fn checkInitrd(staging: str, temporary: str): str {
     tool.copy(tool.root() + "/lib", fixture + "/lib")
     tool.copy(tool.root() + "/tools/lib", fixture + "/tools/lib")
     tool.copy(tool.root() + "/tools/test/live-root-check.dev", fixture + "/tools/test/live-root-check.dev")
-    for name in Vec<str>("wifi-test", "wifi-native-test") { tool.copy(tool.root() + "/dist/" + name + ".js", tree + "/test/" + name + ".js") }
-    tool.write(tree + "/test/check.service", "[Unit]\nAfter=greetd.service\n[Service]\nType=oneshot\nStandardOutput=journal+console\nStandardError=journal+console\nExecStart=/usr/bin/d /usr/libexec/devos-live-test/tools/test/live-root-check.dev\n")
+    fs.mkdirSync(fixture+"/bin",true)
+    tool.copy(tool.root()+"/tools/test/live-wifi-fixture.dev",fixture+"/bin/dev-os-network-linux")
+    tool.write(fixture+"/check.sh","#!/bin/sh\nset -eu\nfor lib in /usr/lib/libcrypt.so.1 /lib/libcrypt.so.1 /usr/lib/aarch64-linux-gnu/libcrypt.so.1; do if [ -f \"$lib\" ]; then exec /usr/bin/d /usr/libexec/devos-live-test/tools/test/live-root-check.dev --ffi-lib \"$lib\"; fi; done\necho 'Live test requires libcrypt' >&2\nexit 1\n")
+    tool.write(tree + "/test/check.service", "[Unit]\nAfter=greetd.service\n[Service]\nType=oneshot\nStandardOutput=journal+console\nStandardError=journal+console\nExecStart=/bin/sh /usr/libexec/devos-live-test/check.sh\n")
     tool.write(tree + "/test/output.conf", "[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n")
-    let hook = "cp -a /test/fixture /newroot/usr/libexec/devos-live-test\ncp /test/check.service /newroot/etc/systemd/system/devos-root-check.service\nmkdir -p /newroot/etc/systemd/system/multi-user.target.wants\nln -s ../devos-root-check.service /newroot/etc/systemd/system/multi-user.target.wants/devos-root-check.service\ncp /test/wifi-test.js /newroot/usr/share/dev-os/dist/wifi-test.js\ncp /test/wifi-native-test.js /newroot/usr/share/dev-os/dist/wifi-native-test.js\n"
+    let hook = "cp -a /test/fixture /newroot/usr/libexec/devos-live-test\ncp /test/check.service /newroot/etc/systemd/system/devos-root-check.service\nmkdir -p /newroot/etc/systemd/system/multi-user.target.wants\nln -s ../devos-root-check.service /newroot/etc/systemd/system/multi-user.target.wants/devos-root-check.service\n"
     for service in Vec<str>("devos-zram", "devos-memory") {
         hook = hook + "mkdir -p /newroot/etc/systemd/system/" + service + ".service.d\ncp /test/output.conf /newroot/etc/systemd/system/" + service + ".service.d/test-output.conf\n"
     }

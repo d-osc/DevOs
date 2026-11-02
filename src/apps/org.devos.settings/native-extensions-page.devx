@@ -17,6 +17,17 @@ fn row(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); o
 fn column(spacing:i32, children:Vec<ui.Node>):ui.Node { let options = ui.props(); options.spacing = spacing; return ui.Box(options,children) }
 fn expand(node:ui.Node):ui.Node { let options = node.props; options.expand = true; return ui.withProps(node,options) }
 fn named(node:ui.Node, id:str):ui.Node { let options = node.props; options.id = ui.text(id); return ui.withProps(node,options) }
+# Consistent page surfaces for the native Settings detail views.
+fn detail(name:str,children:Vec<ui.Node>):ui.Node {let options=ui.props();options.spacing=20;options.className=ui.text("settings-detail-page "+name);return ui.Box(options,children)}
+fn surface(name:str,children:Vec<ui.Node>):ui.Node {let options=ui.props();options.spacing=14;options.className=ui.text("settings-card "+name);return ui.Box(options,children)}
+fn catalogIcon(id:ui.Text,group:i64):str {
+    if k.isText(id,"org.devos.editor") {return "dev-os-editor-symbolic"}
+    if k.isText(id,"org.devos.files") {return "dev-os-files-symbolic"}
+    if k.isText(id,"org.devos.terminal") {return "dev-os-terminal-symbolic"}
+    if k.isText(id,"org.devos.settings") {return "dev-os-settings-symbolic"}
+    if k.isText(id,"org.devos.clock") {return "preferences-system-time-symbolic"}
+    return group==0 ? "preferences-system-symbolic" : group==1 ? "application-x-executable-symbolic" : "application-x-addon-symbolic"
+}
 fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
 # The field values of a form frame, joined with ASCII 30 (the draft has the same shape).
 fn valuesOf(frame:ui.Text):ui.Text {
@@ -96,25 +107,28 @@ fn renderMode(context:*ui.Context, extensionsOnly:bool):ui.Node {
             let id = cell(parts,0); let active = ui.equalText(selected.value,id)
             let options = ui.named("ext-nav-${shown}"); options.className = ui.text(active ? "settings-nav settings-nav-active" : "settings-nav")
             shown = shown + 1
-            items.push(ui.TextButton(options,cell(parts,1),fn() {
+            let image=ui.props();image.iconSize=18;image.className=ui.text("extensions-item-icon")
+            let title=ui.props();title.expand=true;title.ellipsize=true;title.widthChars=18
+            items.push(ui.WidgetButton(options,row(10,Vec<ui.Node>(ui.Icon(image,catalogIcon(id,g)),ui.withProps(ui.TextLabel(cell(parts,1)),title))),fn() {
                 if waiting.get() != 0 { return }
                 selected.set(id); status.set(ui.emptyText()); failure.set(ui.emptyText()); waiting.set(2)
                 channel.command(pipe.get(),join(Vec<ui.Text>(ui.text("{\"action\":\"form\",\"id\":"),channel.quote(id),ui.text("}"))))
             }))
         }
         if items.len() > 0 {
-            navigation.push(k.note(titles[g],"settings-sidebar-title"))
+            navigation.push(k.note(titles[g],"settings-nav-group"))
             for item in items { navigation.push(item) }
         }
     }
     if shown == 0 { navigation.push(k.note(extensionsOnly ? "No installed extensions match your search." : "No apps or extensions match your search.","settings-description")) }
-    let sidebarOptions = ui.props(); sidebarOptions.spacing = 6; sidebarOptions.width = 250
-    let sidebar = ui.Box(sidebarOptions,navigation)
+    let sidebarOptions = ui.props(); sidebarOptions.spacing = 6; sidebarOptions.width = 204;sidebarOptions.className=ui.text("extensions-catalog");let scroll=ui.props();scroll.height=440;scroll.width=220
+    let sidebar = ui.Scroll(scroll,ui.Box(sidebarOptions,navigation))
     # Right: the form of the selected extension.
     let content = Vec<ui.Node>()
     let head = form.value.bytes.len() > 0 ? cells(records(form.value)[0]) : Vec<ui.Text>()
     let formId = cell(head,1)
     if form.value.bytes.len() == 0 || !ui.equalText(formId,selected.value) {
+        let icon=ui.props();icon.iconSize=42;icon.className=ui.text("extensions-empty-icon");content.push(ui.Icon(icon,"application-x-addon-symbolic"));content.push(k.note("Your apps, your preferences","section-heading"))
         content.push(k.note(selected.value.bytes.len() == 0 ? (extensionsOnly ? "Choose an extension to see its settings." : "Choose an app or extension to see its settings.") : "Loading…","settings-description"))
     } else {
         let system = flag(cell(head,5)); let saved = valuesOf(form.value)
@@ -143,7 +157,7 @@ fn renderMode(context:*ui.Context, extensionsOnly:bool):ui.Node {
                     let control = ui.named("ext-field-${number}")
                     content.push(row(16,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Switch(control,flag(current),fn(next:bool) { draft.set(with(draft.get(),number,ui.text(next ? "1" : "0"))); status.set(ui.emptyText()) }))))
                 } else {
-                    let control = ui.named("ext-field-${number}"); control.width = 220
+                    let control = ui.named("ext-field-${number}"); control.width = 160
                     if k.isText(kindName,"number") && (cell(parts,6).bytes.len() > 0 || cell(parts,7).bytes.len() > 0) { texts.push(k.caption(join(Vec<ui.Text>(ui.text("Allowed: "),cell(parts,6),ui.text(" – "),cell(parts,7))),"settings-description")) }
                     content.push(row(16,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Entry(control,current,fn(value:ui.Text) { if !ui.equalText(value,at(draft.get(),number)) { draft.set(with(draft.get(),number,value)); status.set(ui.emptyText()) } }))))
                 }
@@ -176,7 +190,7 @@ fn renderMode(context:*ui.Context, extensionsOnly:bool):ui.Node {
             }))))
     }
     let contentOptions = ui.props(); contentOptions.spacing = 14; contentOptions.expand = true
-    return row(24,Vec<ui.Node>(sidebar,ui.Scroll(contentOptions,column(14,content))))
+    contentOptions.className=ui.text("settings-card extensions-editor");let layout=ui.props();layout.vertical=false;layout.spacing=20;layout.className=ui.text("settings-detail-page extensions-page");return ui.Box(layout,Vec<ui.Node>(sidebar,ui.Box(contentOptions,content)))
 }
 fn render(context:*ui.Context):ui.Node { return renderMode(context,false) }
 fn renderExtensions(context:*ui.Context):ui.Node { return renderMode(context,true) }

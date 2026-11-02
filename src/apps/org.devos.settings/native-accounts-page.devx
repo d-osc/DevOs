@@ -53,7 +53,7 @@ fn render(context:*ui.Context):ui.Node {
     if profileName.bytes.len() == 0 { profileName = field(f,3).bytes.len() > 0 ? field(f,3) : ui.text("Guest") }
     let who = linked ? ui.concatText(Vec<ui.Text>(ui.text("@"),bindingLogin,ui.text(" · "),current)) : current
     let badge = ui.props(); badge.className = ui.text(linked ? "accounts-status accounts-status-connected" : "accounts-status"); badge.valign = 1
-    nodes.push(ext.row(18,Vec<ui.Node>(ui.Icon(ui.props(),"avatar-default-symbolic"),
+    let avatar=ui.props();avatar.iconSize=36;avatar.className=ui.text("accounts-avatar");let profile=ui.props();profile.vertical=false;profile.spacing=18;profile.className=ui.text("settings-card accounts-profile");nodes.push(ui.Box(profile,Vec<ui.Node>(ui.Icon(avatar,"avatar-default-symbolic"),
         ext.expand(ext.column(7,Vec<ui.Node>(k.note("CURRENT PROFILE","accounts-overline"),ext.named(k.caption(profileName,"accounts-profile-name"),"accounts-name"),k.caption(who,"settings-description")))),
         ui.withProps(ui.Label(linked ? "GITHUB LINKED" : "LOCAL ACCOUNT"),badge))))
     # GitHub sign-in.
@@ -61,7 +61,7 @@ fn render(context:*ui.Context):ui.Node {
     let github = ui.named("accounts-github"); github.sensitive = canConnect; github.className = ui.text(linked ? "" : "settings-primary")
     let buttons = Vec<ui.Node>(ui.Button(github,linked ? "Reconnect GitHub" : available ? "Connect GitHub" : "Sign in with GitHub",fn() { sp.send(l,ui.text("{\"action\":\"begin\"}")) }))
     if linked { let unlink = ui.named("accounts-unlink"); unlink.sensitive = !busy && code.bytes.len() == 0; buttons.push(ui.Button(unlink,"Unlink account",fn() { sp.send(l,ui.text("{\"action\":\"unlink\"}")) })) }
-    let card = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(4,Vec<ui.Node>(k.note("GitHub sign-in","section-heading"),k.note("Connect your online identity to this OS profile.","settings-description")))))),
+    let card = Vec<ui.Node>(ext.row(12,Vec<ui.Node>(ext.expand(ext.column(4,Vec<ui.Node>(k.heading("network-server-symbolic","GitHub sign-in"),k.note("Connect your online identity to this OS profile.","settings-description")))))),
         k.caption(linked ? ui.concatText(Vec<ui.Text>(ui.text("Signed in with @"),bindingLogin,ui.text(". You can use GitHub or your local password at the DevOs login screen."))) : ui.text("Sign in through your browser to link GitHub. DevOs uses your public profile to identify you."),"settings-description"),
         ext.row(10,buttons))
     if k.isText(current,"devos") { card.push(k.note("Create a personal user to connect GitHub. The public Guest profile stays separate.","settings-description")) }
@@ -76,7 +76,7 @@ fn render(context:*ui.Context):ui.Node {
         let signout = ui.named("accounts-signout"); signout.sensitive = !busy && code.bytes.len() == 0
         card.push(ext.row(10,Vec<ui.Node>(ext.expand(k.note("Online sign-out keeps your OS login link. Use Unlink to remove it.","settings-description")),ui.Button(signout,"Sign out online",fn() { sp.send(l,ui.text("{\"action\":\"signout\"}")) }))))
     }
-    let cardOptions = ui.props(); cardOptions.spacing = 14; cardOptions.className = ui.text("settings-card")
+    let cardOptions = ui.props(); cardOptions.spacing = 14; cardOptions.className = ui.text("settings-card accounts-github-card")
     nodes.push(ui.Box(cardOptions,card))
     # People on this device.
     let people = Vec<ui.Node>(); let count = 0
@@ -94,7 +94,7 @@ fn render(context:*ui.Context):ui.Node {
         let rowOptions = ui.props(); rowOptions.vertical = false; rowOptions.spacing = 14; rowOptions.className = ui.text("accounts-user-row")
         people.push(ui.Box(rowOptions,rowNodes))
     }
-    let peopleCard = Vec<ui.Node>(k.note("People on this device","section-heading"),k.note("${count} profiles · Separate files and settings for each person.","settings-description"))
+    let peopleCard = Vec<ui.Node>(k.heading("system-users-symbolic","People on this device"),k.note("${count} profiles · Separate files and settings for each person.","settings-description"))
     for item in people { peopleCard.push(item) }
     if !available { peopleCard.push(k.note("User management is unavailable in this session.","settings-description")) }
     else { peopleCard.push(k.note("Switch profiles here or from the account button on your panel. To add a person, use New user on the login screen.","settings-description")) }
@@ -104,6 +104,6 @@ fn render(context:*ui.Context):ui.Node {
     if l.failure.value.bytes.len() > 0 { nodes.push(ext.named(k.caption(l.failure.value,"settings-error-banner"),"accounts-error")) }
     let refresh = ui.named("accounts-refresh"); refresh.sensitive = !busy && code.bytes.len() == 0
     nodes.push(ui.Button(refresh,"Refresh",fn() { sp.send(l,ui.text("{\"action\":\"get\"}")) }))
-    return ext.column(18,nodes)
+    return ext.detail("accounts-page",nodes)
 }
 fn page():ui.Node { return ui.component(9360,ui.keyed(920),render) }

@@ -1,6 +1,7 @@
 use "react_devlang/ui" as ui
 use "react_devlang/channel" as channel
 use "./native-kit.devx" as k
+use "./native-extensions-page.devx" as ext
 extern fn rc_env(name:str):str
 
 # Native Updates page: checks GitHub Releases, installs the latest release or an update file the user has (after a second click),
@@ -81,7 +82,7 @@ fn render(context:*ui.Context):ui.Node {
         k.caption(join(Vec<ui.Text>(ui.text("Running "),field(shown,4),ui.text("  ·  Installed "),field(shown,5))),"settings-description"))
     if field(shown,3).bytes.len() > 0 { status.push(named(k.caption(field(shown,3),"error"),"updates-error")) }
     if field(shown,9).bytes.len() > 0 { status.push(named(k.caption(field(shown,9),"settings-description"),"updates-live")) }
-    let checkOptions = ui.named("updates-check"); checkOptions.sensitive = !busy && !dirty
+    let checkOptions = ui.named("updates-check");checkOptions.className=ui.text("settings-primary");checkOptions.halign=1; checkOptions.sensitive = !busy && !dirty
     let blockedNow = field(shown,9).bytes.len() > 0
     let send = fn(body:ui.Text) {
         if waiting.get() != 0 { return }
@@ -107,7 +108,7 @@ fn render(context:*ui.Context):ui.Node {
     }
     if waiting.get() == 3 { status.push(named(k.note("Working… downloading and installing can take several minutes.","settings-description"),"updates-working")) }
     if field(shown,8).bytes.len() > 0 { status.push(k.caption(join(Vec<ui.Text>(ui.text("Last checked "),field(shown,8))),"settings-description")) }
-    nodes.push(card("updates-summary",status))
+    let badge=ui.props();badge.iconSize=36;badge.className=ui.text("updates-hero-icon");let summary=ui.named("updates-summary");summary.vertical=false;summary.spacing=20;summary.className=ui.text("settings-card updates-hero");nodes.push(ui.Box(summary,Vec<ui.Node>(ui.Icon(badge,"software-update-available-symbolic"),expand(column(12,status)))))
     if !ui.equalText(field(shown,5),field(shown,4)) && hideShell.value == 0 {
         let shellNodes = Vec<ui.Node>(k.caption(join(Vec<ui.Text>(ui.text("Ready to use Dev OS "),field(shown,5))),"section-heading"),
             k.note("Installation is complete. Switch the desktop to the installed version when you are ready; your preferences are kept.","settings-description"))
@@ -212,6 +213,6 @@ fn render(context:*ui.Context):ui.Node {
     sourceCard.push(toggle("updates-periodic","Check for updates daily in the background (sends a request to GitHub)",flag(field(latest.value,21)),!busy,fn(next:bool) { saveToggles(flag(field(latest.value,20)),next) }))
     nodes.push(card("updates-source",sourceCard))
     nodes.push(named(k.note("Windows / WSL: .\\dev.ps1 updated","settings-description"),"updates-readonly"))
-    return column(16,nodes)
+    return ext.detail("updates-page",nodes)
 }
 fn page():ui.Node { return ui.component(9320,ui.keyed(902),render) }

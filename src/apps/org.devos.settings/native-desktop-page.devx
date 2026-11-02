@@ -18,12 +18,12 @@ fn entry(id:str, title:str, detail:str, value:ui.Text, wide:bool, changed:fn(ui.
     let texts = Vec<ui.Node>(k.note(title,"settings-field-title"))
     if detail != "" { texts.push(k.note(detail,"settings-description")) }
     let textColumn = ui.props(); textColumn.spacing = 4; textColumn.expand = true
-    let control = ui.named(id); control.width = wide ? 360 : 200; control.expand = wide
-    return ext.row(16,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Entry(control,value,changed)))
+    let control = ui.named(id); control.width = wide ? -1 : 220; control.expand = wide;control.className=ui.text(wide ? "desktop-command" : "desktop-control")
+    let options=ui.props();options.vertical=wide;options.spacing=wide ? 10 : 18;options.className=ui.text("desktop-field");return ui.Box(options,Vec<ui.Node>(ui.Box(textColumn,texts),ui.Entry(control,value,changed)))
 }
 fn section(title:str, detail:str, rows:Vec<ui.Node>):ui.Node {
     let options = ui.props(); options.spacing = 14; options.className = ui.text("settings-card")
-    let all = Vec<ui.Node>(k.note(title,"section-heading"),k.note(detail,"settings-description"))
+    let icon=title=="Appearance" ? "user-desktop-symbolic" : title=="Panel & clock" ? "preferences-system-time-symbolic" : "utilities-terminal-symbolic";let all = Vec<ui.Node>(k.heading(icon,title),k.note(detail,"settings-description"))
     for item in rows { all.push(item) }
     return ui.Box(options,all)
 }
@@ -85,7 +85,7 @@ fn render(context:*ui.Context):ui.Node {
                 ui.text(",\"lock\":"),channel.quote(ext.at(value,5)),ui.text(",\"autostart\":"),channel.quote(ext.at(value,6)),ui.text("}"))
             waiting.set(2); failure.set(ui.emptyText()); channel.command(pipe.get(),join(body))
         }))))
-    return ext.column(16,nodes)
+    return ext.detail("desktop-page",nodes)
 }
 fn join(parts:Vec<ui.Text>):ui.Text { return ui.concatText(parts) }
 fn page():ui.Node { return ui.component(9340,ui.keyed(904),render) }
