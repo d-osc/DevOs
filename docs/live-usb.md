@@ -1,5 +1,21 @@
 # Independent DevOs Live USB (ARM64)
 
+UX3407NA firmware-display builds require the host package `device-tree-compiler`
+(`dtc`, `fdtget`, `fdtoverlay`). With the Samsung panel module blacklisted, preparation
+and diagnostic staging apply `profiles/asus/ux3407na/kernel/firmware-display.dtso`
+to a private DTB to keep `VREG_EDP_3P3` on. The physical boot `b41e97c8` showed
+this rail being disabled despite a rendered desktop. `regulator-boot-on` alone
+allows later shutdown; `regulator-always-on` prevents it (see the
+[Linux regulator binding](https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/1f6ee9be92f8df85a8c9a5a78c20fd39c0c21a95/Documentation/devicetree/bindings/regulator/regulator.yaml)).
+This candidate still requires a physical display test. The collector records
+the live DT constraint and regulator summary in `display.txt` for verification.
+
+Two helpers support that loop: `sh tools/test/live-usb-window.sh STAGING [LOG]`
+boots a staged image in a visible QEMU/WSLg window (real root session, splash
+included, throwaway overlay), and `python3 tools/test/verify-ux3407na-live.py
+STAGING` re-reads both EFI images to confirm the blacklist, preserved boot
+animation and patched DTB actually shipped in the artifact.
+
 ## Release script: build and write the Live USB in one command
 
 `tools/live/release-live-usb.ps1` replaces the manual sequence (OE build, `live-usb.ps1
@@ -514,7 +530,9 @@ the existing Pixman/software rendering fallback; this revision does not enable
 GPU acceleration.
 The panel has a real sysfs backlight slider and the standard brightness/volume
 keys are bound. A missing kernel backlight remains unavailable instead of being
-simulated with a dark overlay.
+simulated with a dark overlay — the one exception is the firmware-display
+fallback (boot `686e0fdf` below), where no kernel backlight can ever exist and
+the slider drives display-care's input-transparent dim overlay.
 
 Three-finger swipe down sends the idempotent `overlays-hide` command to dismiss
 Task View and Applications; outside overlays it retains the existing minimize behavior. Editor asset reads now use
@@ -920,6 +938,66 @@ and `bluetooth-scan-37.txt` from the ESP `DEVOS-LOGS` folder (or run
 - `scan: FAIL` and `btmon` shows command errors: controller/firmware issue; send the files.
 Only a result from the laptop decides whether any DT or kernel change follows.
 
+## UX3407NA firmware-display session verified (boot `686e0fdf`, 2026-11-03)
+
+The first boot of the `terminal-single-tab-20261103-223625` image (logs in
+`build/live-usb/hardware-logs-20261103-boot1/`) confirms the panel mitigation chain
+end to end: with `panel_samsung_atna33xc20`, `msm` and `dispcc_glymur` blacklisted and
+`VREG_EDP_3P3` forced on, the physical panel shows the desktop (simpledrm scanout,
+`WLR_RENDERER=pixman`, labwc). The early `qrtr`/`qrtr_smd` load also works: `ath12k`
+brings `wlan0` up and Wi-Fi client scans list ~28 networks, and the audio ADSP remoteproc
+boots (`remote processor adsp is now up`) with the GLYMUR ASoC card, two WSA884x
+speakers, a real PipeWire sink (`Built-in Audio Speaker playback`) and a real source
+(`Built-in Audio Internal microphones`). One `qcom-apm` GPR command timeout at boot
+remains (opcode `1001021`); it does not stop the card.
+
+Findings and the fixes they led to (all app/service level, no kernel change):
+
+- **Wi-Fi connect fails with a raw D-Bus error.** The router rejected the password:
+  `wpa_supplicant: CTRL-EVENT-SSID-TEMP-DISABLED ... reason=WRONG_KEY` after a successful
+  association and 4-way handshake start (both `N_587_2.4G` and `N_587_5G`). NetworkManager
+  then asks an agent for new secrets, none exists (the PSK was inlined via
+  `AddAndActivateConnection`), activation fails instantly, the ActiveConnection object is
+  destroyed, and the Settings page displayed the raw
+  `Object does not exist at path .../ActiveConnection/3` GDBus error.
+  `lib/network.dev` now polls the device state instead (NEED_AUTH 60 / FAILED 120 with
+  StateReason NO_SECRETS 8 / SUPPLICANT_DISCONNECT 9 → "The Wi-Fi password was rejected by
+  the router"), and the password form keeps the typed password after a failure so it can be
+  corrected. The radio, driver and scan are healthy; a correct password should connect.
+  *Follow-up (boot `9d7362f8`, 2026-11-04):* the first version of that fix had a regression —
+  it treated the device's transient NEED_AUTH (60), which NetworkManager always passes
+  through while binding the inlined secrets, as a verdict and deactivated + deleted the
+  connection 0.4 ms into every activation (the journal shows `config -> need-auth -> config`
+  followed by our own `connection-deactivate`). The poll loop now decides from the
+  ActiveConnection's own state while activation runs, and classifies via the device's
+  StateReason only once activation has actually ended; `tests/network-linux.test.py` covers
+  the transient-NEED_AUTH path that must not abort.
+- **Quick-settings sliders were dead from a boot race.** The tray worker snapshots audio
+  state once when the panel starts, before PipeWire/wireplumber expose the real sink, and
+  never re-queried, so the volume slider stayed insensitive forever. The popup now refreshes
+  the snapshot when it opens and every 2 s while open. *Follow-up (2026-11-04, boots on the
+  `wifi-needauth-fix` image):* that refresh made the sliders snap back — every refresh frame
+  rewrote the thumb, and the pending action disabled the scale mid-drag. Sliders now show the
+  dragged value (echo) until the worker confirms it, stay usable while a command is pending,
+  and one retry re-sends a value that changed in the meantime; a value the backend clamps is
+  accepted after the retry. A failed action also logs a line to `root-session.log`.
+- **Brightness: no kernel backlight by design in this fallback.** `/sys/class/backlight`
+  is empty (the panel driver is the only provider of `dp_aux_backlight`). The slider now
+  drives a software dim: `dev-os-backlight` stores `screenBrightness` (1..100) in the
+  display-care settings when the cmdline carries `module_blacklist=panel...`, the
+  display-care service paints an input-transparent full-screen veil (TOP layer, empty
+  input region) at up to 75 % dark, and the quick-settings slider reports the software
+  level. Machines with a kernel backlight never take this path.
+- **Microphone meter.** The meter sampled the GStreamer level bus every 250 ms and kept
+  only the last message (4 fps, transients dropped). It now ticks at 100 ms, shows the
+  loudest peak of each batch, eases down between messages, tolerates `peak=<...>` without
+  the `GValueArray` annotation, has a device-list Refresh button (sources appear when
+  PipeWire finishes registering them) and says so when a test captures silence for 5 s.
+
+All of this is covered by tests (`network-linux.test.py` simulates the vanished
+ActiveConnection; `panel-devices-native.test.dev` covers the software brightness;
+`display-care.test.*` the new setting).
+
 ## Wi-Fi hotspot (UX3407NA, `ath12k`)
 
 Evidence from the 2026-10-24 boot `c69b55bf` (`hardware-logs-20261024-1017`): the chip is
@@ -1009,3 +1087,21 @@ Next boot: open Settings → Bluetooth, press Scan nearby, wait 10 s. Expect a l
 devices first. If it still fails, report what the page shows (spinner stuck, red error text, or
 an empty list) and send `root-session.log` — the `Bluetooth UI:` lines say which. Verified offline
 only: Python bridge tests and `tsc`; the GTK/gjs tests were not run, and a new image is needed.
+
+### Bluetooth root cause found: double-boxed busctl variants (boot `686e0fdf`, 2026-11-03)
+
+The physical panel boot confirmed the radio end to end (hci0, firmware setup, adapter powered,
+`bluetoothctl` scans listing 15 devices) yet the Settings page still showed Bluetooth as
+unusable. The cause is in `bin/dev-os-devices-linux`: a real
+`busctl call --json=short ... GetManagedObjects` boxes every property value **twice** —
+`"Powered": {"type":"v","data":{"type":"b","data":true}}` — one box per variant nesting level.
+`vGet()` unwrapped a single box, so against real busctl the adapter read as `powered:false`
+with an empty name, every device arrived nameless, and the page answered every request with
+"Turn on a Bluetooth adapter before scanning." The offline test fake had emitted the
+single-boxed shape, which is why the suite passed while hardware failed. `vGet()` now unwraps
+boxes until a concrete value is left, verified against the real busctl binary (fake org.bluez on
+a private D-Bus, reached through a PATH stub) and encoded in
+`tests/bluetooth-linux.test.py::test_busctl_wire_reply_unwraps_return_tuple_and_variants`.
+The quick-settings tile was unaffected (it uses `bluetoothctl show`). Kernel gaps that remain:
+`bnep` and `RFCOMM` are not built, so PAN tethering and Hands-Free profiles cannot work; A2DP
+endpoints and pairing do not need them.

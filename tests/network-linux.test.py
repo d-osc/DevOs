@@ -45,6 +45,9 @@ class NetworkTests(unittest.TestCase):
     def setUp(self):
         type(self).calls = []
         type(self).state = 2
+        type(self).states = None  # optional sequence of ActiveConnection State answers; None = vanished
+        type(self).device_state = None
+        type(self).device_reason = 0
         type(self).radio = True
         type(self).missing = False
     @classmethod
@@ -53,16 +56,28 @@ class NetworkTests(unittest.TestCase):
         if path == DEVICE and interface.endswith('.Wireless'):
             return {'AccessPoints': V('ao', [POINT]), 'ActiveAccessPoint': V('o', POINT)}
         if path == DEVICE:
-            return {'DeviceType': V('u', 2), 'Interface': V('s', 'wlan0'), 'AvailableConnections': V('ao', [SAVED])}
+            values = {'DeviceType': V('u', 2), 'Interface': V('s', 'wlan0'), 'AvailableConnections': V('ao', [SAVED])}
+            if cls.device_state is not None:
+                values['State'] = V('u', cls.device_state)
+                values['StateReason'] = V('(uu)', (cls.device_state, cls.device_reason))
+            return values
         if path == POINT:
             return {'Ssid': V('ay', SSID.encode()), 'Strength': V('y', 87), 'Flags': V('u', 1), 'WpaFlags': V('u', 0), 'RsnFlags': V('u', 0x100)}
-        if path == ACTIVE: return {'State': V('u', cls.state)}
+        if path == ACTIVE:
+            if cls.state is None: raise KeyError('ActiveConnection object vanished')
+            return {'State': V('u', cls.state)}
         return {}
     @classmethod
     def call(cls, connection, sender, path, interface, method, parameters, invocation):
         args = parameters.unpack()
         cls.calls.append((path, method, args))
         try:
+            if method == 'Get' and path == ACTIVE and args[1] == 'State' and cls.states is not None:
+                # A scripted sequence of ActiveConnection answers: consumed one per poll; None = the object vanished.
+                value = cls.states.pop(0) if cls.states else None
+                if value is None: invocation.return_dbus_error('org.devos.Test.Error', 'ActiveConnection object vanished')
+                else: invocation.return_value(V('(v)', (V('u', value),)))
+                return
             if method == 'GetAll': invocation.return_value(V('(a{sv})', (cls.props(path, args[0]),)))
             elif method == 'Get': invocation.return_value(V('(v)', (cls.props(path, args[0])[args[1]],)))
             elif method == 'GetDevices': invocation.return_value(V('(ao)', ([] if cls.missing else [DEVICE],)))
@@ -104,6 +119,39 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(settings['802-11-wireless-security']['key-mgmt'], 'wpa-psk')
             self.assertEqual((device, point), (DEVICE, POINT))
             if state == 4: self.assertEqual([call[1] for call in self.calls[-2:]], ['DeactivateConnection', 'Delete'])
+    def test_vanished_active_connection_reports_rejected_password(self):
+        # A fast activation failure destroys the ActiveConnection object; the device state explains it.
+        type(self).state = None
+        type(self).device_state = 120
+        type(self).device_reason = 8  # NO_SECRETS: NetworkManager asked for a new key after a supplicant mismatch.
+        result = self.execute(self.request())
+        self.assertFalse(result['ok'], result)
+        self.assertIn('password was rejected', result['error'])
+        self.assertEqual([call[1] for call in self.calls[-2:]], ['DeactivateConnection', 'Delete'])
+    def test_need_auth_after_vanish_reports_rejected_password(self):
+        type(self).state = None
+        type(self).device_state = 60
+        type(self).device_reason = 9  # SUPPLICANT_DISCONNECT: the 4-way handshake failed on the password.
+        result = self.execute(self.request())
+        self.assertFalse(result['ok'], result)
+        self.assertIn('password was rejected', result['error'])
+    def test_transient_need_auth_does_not_abort_an_ongoing_activation(self):
+        # Regression (boot 9d7362f8): the device sits in NEED_AUTH while NM binds the inlined secrets, and
+        # the page must wait through it instead of deactivating and deleting the profile mid-activation.
+        type(self).states = [1, 1, 2]
+        type(self).device_state = 60
+        result = self.execute(self.request())
+        self.assertTrue(result['ok'], result)
+        self.assertNotIn('DeactivateConnection', [call[1] for call in self.calls])
+        self.assertNotIn('Delete', [call[1] for call in self.calls])
+    def test_vanished_after_activating_classifies_the_device_outcome(self):
+        type(self).states = [1, None]
+        type(self).device_state = 120
+        type(self).device_reason = 8  # NO_SECRETS: NM asked for a new key after a supplicant mismatch.
+        result = self.execute(self.request())
+        self.assertFalse(result['ok'], result)
+        self.assertIn('password was rejected', result['error'])
+        self.assertEqual([call[1] for call in self.calls[-2:]], ['DeactivateConnection', 'Delete'])
     def test_invalid_password_and_enterprise_are_rejected_before_activation(self):
         for value in (self.request(password='short'), self.request(security='enterprise')):
             result = self.execute(value)

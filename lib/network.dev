@@ -93,6 +93,27 @@ fn connectionSettings(ssid: str, password: str, security: str): str {
 fn nmCall(bus: *void, method: str, parameters: str): json.Value {
     return dbus.call(bus, "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager", method, parameters, 10000)
 }
+fn deviceState(bus: *void, device: str): i64 {
+    let state = result.attempt(fn(): json.Value { return dbus.property(bus, device, "org.freedesktop.NetworkManager.Device", "State") })
+    return result.isOk(state) ? util.number(result.unwrap(state)) : -1
+}
+# NetworkManager destroys the ActiveConnection object the moment activation ends, so polling it can fail with
+# "Object does not exist at path .../ActiveConnection/N". The device then explains the outcome: ACTIVATED (100)
+# means it actually connected, and a NEED_AUTH (60) or FAILED (120) device whose StateReason is NO_SECRETS (8)
+# or SUPPLICANT_DISCONNECT (9) had its password rejected by the router.
+fn activationFailure(bus: *void, device: str): str {
+    let state = deviceState(bus, device)
+    if state == 100 { return "" }
+    if state == 60 || state == 120 {
+        let reason = result.attempt(fn(): json.Value { return dbus.property(bus, device, "org.freedesktop.NetworkManager.Device", "StateReason") })
+        if result.isOk(reason) {
+            let pair = result.unwrap(reason)
+            let code = json.len(pair) >= 2 ? json.int(json.at(pair, 1)) : 0
+            if code == 8 || code == 9 { return "The Wi-Fi password was rejected by the router. Check the password and try again." }
+        }
+    }
+    return "Wi-Fi connection failed. Check the password and signal, then try again."
+}
 fn activateNew(bus: *void, device: str, pointPath: str, point: json.Value, password: str) {
     let settings = connectionSettings(ssidOf(util.get(point, "Ssid")), password, securityKind(point))
     let reply = nmCall(bus, "AddAndActivateConnection", "(" + settings + ", objectpath " + json.stringify(device) + ", objectpath " + json.stringify(pointPath) + ")")
@@ -101,9 +122,28 @@ fn activateNew(bus: *void, device: str, pointPath: str, point: json.Value, passw
     let outcome = result.run(fn() {
             let deadline = time.now_ms() + 25000
             while time.now_ms() < deadline {
-                let state = dbus.property(bus, active, "org.freedesktop.NetworkManager.Connection.Active", "State")
-                if json.int(state) == 2 { return }
-                util.require(json.int(state) != 4, "Wi-Fi connection failed. Check the password and signal, then try again.")
+                # The device passes through NEED_AUTH (60) briefly while NM binds the inlined secrets — that is
+                # not a verdict. The ActiveConnection's own state decides while activation runs; only a vanished
+                # object (or a DEACTIVATED one) ends it, and the device state then says what happened.
+                let connection = result.attempt(fn(): json.Value { return dbus.property(bus, active, "org.freedesktop.NetworkManager.Connection.Active", "State") })
+                if result.isOk(connection) {
+                    let current = json.int(result.unwrap(connection))
+                    if current == 2 { return }
+                    if current == 4 {
+                        let message = activationFailure(bus, device)
+                        if !strings.equal(message, "") { result.raise(message) }
+                        return
+                    }
+                    time.sleep_ms(200)
+                    continue
+                }
+                let state = deviceState(bus, device)
+                if state == 100 { return }
+                if state == 30 || state == 60 || state == 120 {
+                    let message = activationFailure(bus, device)
+                    if !strings.equal(message, "") { result.raise(message) }
+                    return
+                }
                 time.sleep_ms(200)
             }
             result.raise("Wi-Fi connection timed out. Check the password and signal.")

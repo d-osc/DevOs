@@ -30,10 +30,12 @@ fn connectRequest(n:Vec<ui.Text>, password:ui.Text, native:bool):ui.Text {
 fn render(context:*ui.Context):ui.Node {
     let l = sp.link(context,"wifi-page.dev","{\"action\":\"scan\"}")
     let query = ui.useText(context,ui.emptyText()); let joining = ui.useText(context,ui.emptyText()); let password = ui.useText(context,ui.emptyText()); let reveal = ui.useBool(context,false)
+    let retry = ui.useText(context,ui.emptyText())
     let step = ui.useRef(context,0); let acted = ui.useRef(context,0)
     ui.useEffect(context,fn():fn():void {
-        # A successful answer after Connect closes the form.
-        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { joining.set(ui.emptyText()); password.set(ui.emptyText()) } }
+        # A successful answer after Connect closes the form; a failure keeps it open with the typed password,
+        # so a rejected password can be corrected instead of retyped.
+        if acted.get() == 1 { acted.set(0); if l.failure.value.bytes.len() == 0 { joining.set(ui.emptyText()); password.set(ui.emptyText()); retry.set(ui.emptyText()) } else if has(retry.value) { password.set(retry.value) } }
         let mode = smoke()
         if mode.len() > 0 && l.frame.value.bytes.len() > 0 {
             if step.get() == 0 && mode[0] == 115 { step.set(2); acted.set(1); ui.click(context,"wifi-connect-0") }
@@ -99,8 +101,8 @@ fn render(context:*ui.Context):ui.Node {
         nodes.push(ext.column(12,Vec<ui.Node>(ext.named(k.caption(join(Vec<ui.Text>(plain("Connect to "),sp.cell(n,1))),"section-heading"),"wifi-join-form"),
             k.note(wpa3 ? "This network uses WPA3. Enter its password." : "Enter the network password (at least 8 characters).","settings-description"),
             ext.row(8,Vec<ui.Node>(input,ui.Button(eye,reveal.value ? "Hide" : "Show",fn() { reveal.set(!reveal.value) }))),
-            ext.row(10,Vec<ui.Node>(ui.Button(cancel,"Cancel",fn() { joining.set(ui.emptyText()); password.set(ui.emptyText()); reveal.set(false) }),
-                ui.Button(confirm,busy ? "Connecting…" : "Connect",fn() { let secret = password.get(); password.set(ui.emptyText()); acted.set(1); sp.send(l,connectRequest(n,secret,native)) }))))))
+            ext.row(10,Vec<ui.Node>(ui.Button(cancel,"Cancel",fn() { joining.set(ui.emptyText()); password.set(ui.emptyText()); retry.set(ui.emptyText()); reveal.set(false) }),
+                ui.Button(confirm,busy ? "Connecting…" : "Connect",fn() { let secret = password.get(); retry.set(secret); password.set(ui.emptyText()); acted.set(1); sp.send(l,connectRequest(n,secret,native)) }))))))
     }
     if !radioOff {
         let list = Vec<ui.Node>(); let shown = 0

@@ -29,10 +29,18 @@ class BluetoothTests(unittest.TestCase):
             self.assertEqual(value['state']['devices'][0]['id'],DEVICE)
 
     def test_busctl_wire_reply_unwraps_return_tuple_and_variants(self):
+        # The shape a real `busctl call --json=short org.bluez / ... GetManagedObjects` prints (verified on
+        # the wire): the outer reply box, and every property value double-boxed — {"type":"v","data":{...}}.
+        # With a single box the adapter read as unpowered and every property as empty (physical boot 686e0fdf).
         bridge=BridgeFixture('bin/dev-os-devices-linux'); self.addCleanup(bridge.close)
-        tree={path:{interface:{key:{'type':'b' if isinstance(value,bool) else 's','data':value} for key,value in props.items()} for interface,props in interfaces.items()} for path,interfaces in OBJECTS.items()}
+        def box(value):
+            kind='b' if isinstance(value,bool) else ('s' if isinstance(value,str) else 'o')
+            return {'type':'v','data':{'type':kind,'data':value}}
+        tree={path:{interface:{key:box(value) for key,value in props.items()} for interface,props in interfaces.items()} for path,interfaces in OBJECTS.items()}
         reply=json.dumps({'type':'a{oa{sa{sv}}}','data':[tree]},ensure_ascii=False)
         bridge.replace('capture',f'fn capture(command: str): str {{ return {json.dumps(reply,ensure_ascii=False)} }}')
+        adapters=bridge.value('bridge.adaptersOf(bridge.objects())')
+        self.assertEqual(adapters[0]['name'],'Radio'); self.assertTrue(adapters[0]['powered'])
         device=bridge.value('bridge.devicesOf(bridge.objects())')[0]
         self.assertEqual(device['name'],'หูฟัง "Test"'); self.assertTrue(device['paired']); self.assertFalse(device['connected'])
 

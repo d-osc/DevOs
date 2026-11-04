@@ -593,8 +593,11 @@ static int run_daemon(const Options *o) {
     }
     note("leaving: quit=%d reveal=%d t=%.1f graphics=%d display=%d", (int)signal_quit, reveal, t_end(start), graphics, display.fd >= 0);
     int quiet = fade_out_at >= 0 && signal_quit != 2 && !reveal;
-    if (display.fd >= 0 && quiet) memset(display.map, 0, display.length);
-    if (graphics) tty_show(o->tty, quiet || reveal); /* a quiet exit leaves a blank console, a text exit keeps what is there */
+    /* Once the compositor's splash window covers the screen, simpledrm shares this framebuffer with it: blanking it now
+     * would erase the desktop, and an idle compositor never repaints (black screen after the animation). */
+    int handed_over = covered && !reveal;
+    if (display.fd >= 0 && quiet && !handed_over) memset(display.map, 0, display.length);
+    if (graphics) tty_show(o->tty, (quiet || reveal) && !handed_over); /* a quiet exit leaves a blank console, a text exit keeps what is there */
     if (reveal) tty_write(o->tty, "Dev OS: boot animation stopped.\n");
     if (reveal && access("/run/systemd/system", F_OK) == 0) kill(1, SIGRTMIN + 20); /* systemd as PID 1: show boot status again */
     for (int i = 0; i < input_count; i++) close(inputs[i]);

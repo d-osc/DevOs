@@ -22,7 +22,7 @@ fn checkInitrd(staging: str, temporary: str): str {
     tool.copy(tool.root() + "/tools/test/live-root-check.dev", fixture + "/tools/test/live-root-check.dev")
     fs.mkdirSync(fixture+"/bin",true)
     tool.copy(tool.root()+"/tools/test/live-wifi-fixture.dev",fixture+"/bin/dev-os-network-linux")
-    tool.write(fixture+"/check.sh","#!/bin/sh\nset -eu\nfor lib in /usr/lib/libcrypt.so.1 /lib/libcrypt.so.1 /usr/lib/aarch64-linux-gnu/libcrypt.so.1; do if [ -f \"$lib\" ]; then exec /usr/bin/d /usr/libexec/devos-live-test/tools/test/live-root-check.dev --ffi-lib \"$lib\"; fi; done\necho 'Live test requires libcrypt' >&2\nexit 1\n")
+    tool.write(fixture+"/check.sh","#!/bin/sh\nset -eu\nfor lib in /usr/lib/libcrypt.so.2 /lib/libcrypt.so.2 /usr/lib/libcrypt.so.1 /lib/libcrypt.so.1 /usr/lib/aarch64-linux-gnu/libcrypt.so.1; do if [ -f \"$lib\" ]; then exec /usr/bin/d /usr/libexec/devos-live-test/tools/test/live-root-check.dev --ffi-lib \"$lib\"; fi; done\necho 'Live test requires libcrypt' >&2\nexit 1\n")
     tool.write(tree + "/test/check.service", "[Unit]\nAfter=greetd.service\n[Service]\nType=oneshot\nStandardOutput=journal+console\nStandardError=journal+console\nExecStart=/bin/sh /usr/libexec/devos-live-test/check.sh\n")
     tool.write(tree + "/test/output.conf", "[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n")
     let hook = "cp -a /test/fixture /newroot/usr/libexec/devos-live-test\ncp /test/check.service /newroot/etc/systemd/system/devos-root-check.service\nmkdir -p /newroot/etc/systemd/system/multi-user.target.wants\nln -s ../devos-root-check.service /newroot/etc/systemd/system/multi-user.target.wants/devos-root-check.service\n"
@@ -53,7 +53,8 @@ fn main(): i32 {
     let staging: str = tool.resolve(tool.option("--staging", ""))
     let log: str = tool.resolve(tool.option("--log", ""))
     let timeout: i64 = json.int(json.parse(tool.option("--timeout", "90"))) * 1000
-    tool.require(timeout > 0 && timeout <= 290000, "Timeout must be 1–290 seconds.")
+    let maximum = tool.has("--desktop-check") ? 600000 : 290000
+    tool.require(timeout > 0 && timeout <= maximum, "Timeout exceeds the bounded boot/desktop check limit.")
     let storage = tool.option("--storage", "usb")
     tool.require(strings.equal(storage, "usb") || strings.equal(storage, "virtio"), "Use usb or virtio storage.")
     let record: json.Value = json.parse(tool.read(staging + "/manifest.json"))

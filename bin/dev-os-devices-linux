@@ -35,11 +35,15 @@ fn isWsl(): bool {
 }
 
 fn vGet(value: json.Value): json.Value {
-    # busctl --json encodes variants as {"type":"..","data":..}
-    if strings.equal(json.kind(value), "object") && json.has(value, "data") {
-        return json.get(value, "data")
+    # busctl --json=short boxes every value as {"type":T,"data":X}, and a variant arrives double-boxed:
+    # {"type":"v","data":{"type":"s","data":...}} — one box per nesting level. Unwrap until a concrete value
+    # is left; values already parsed from plain JSON (tests) pass through unchanged.
+    let inner = value
+    for depth in 0..8 {
+        if !strings.equal(json.kind(inner), "object") || !json.has(inner, "type") || !json.has(inner, "data") { break }
+        inner = json.get(inner, "data")
     }
-    return value
+    return inner
 }
 
 fn vText(value: json.Value): str {

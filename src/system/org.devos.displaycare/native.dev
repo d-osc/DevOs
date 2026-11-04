@@ -27,7 +27,7 @@ extern fn cairo_pattern_create_linear(x:f64,y:f64,x1:f64,y1:f64):*void
 extern fn cairo_pattern_add_color_stop_rgba(pattern:*void,offset:f64,r:f64,g:f64,b:f64,a:f64)
 extern fn cairo_set_source(cr:*void,pattern:*void)
 extern fn cairo_pattern_destroy(pattern:*void)
-struct Plan { index:i32, id:i64, target:bool, x:i64,y:i64,width:i64,height:i64,strength:i64,saver:bool,token:ui.Text,dismissed:ui.Text,shown:i64 }
+struct Plan { index:i32, id:i64, target:bool, x:i64,y:i64,width:i64,height:i64,strength:i64,dim:i64,saver:bool,token:ui.Text,dismissed:ui.Text,shown:i64 }
 struct Model { host:*void,pipe:i64,generation:i64,events:ui.Text,eventCount:i64,plans:Vec<Plan>,failed:bool }
 fn owned(bytes:*u8,length:i64):ui.Text { unsafe { let out=Vec<u8>(); for i in 0..length { out.push(bytes[i]) }; return ui.Text(out) } }
 fn number(text:ui.Text):i64 {
@@ -48,7 +48,7 @@ fn update(model:*Model,frame:ui.Text) { unsafe {
     let plans=Vec<Plan>(); let now=g_get_monotonic_time()
     for i in 2..(fields.len() as i64) {
         let values=channel.split(fields[i],44); if values.len()<10 { continue }
-        let plan=Plan(number(values[0]) as i32,number(values[9]),number(values[1])!=0,number(values[2]),number(values[3]),number(values[4]),number(values[5]),number(values[6]),number(values[7])!=0,values[8],ui.emptyText(),now)
+        let plan=Plan(number(values[0]) as i32,number(values[9]),number(values[1])!=0,number(values[2]),number(values[3]),number(values[4]),number(values[5]),number(values[6]),values.len()>=11 ? number(values[10]) : 0,number(values[7])!=0,values[8],ui.emptyText(),now)
         for old in (*model).plans {
             if old.id!=plan.id { continue }
             plan.dismissed=old.dismissed
@@ -63,7 +63,7 @@ fn update(model:*Model,frame:ui.Text) { unsafe {
     }
     (*model).plans=plans
     for plan in plans {
-        ds_show((*model).host,plan.index,0,plan.target || plan.strength>0 ? 1 : 0)
+        ds_show((*model).host,plan.index,0,plan.target || plan.strength>0 || plan.dim>0 ? 1 : 0)
         ds_show((*model).host,plan.index,1,plan.saver && !ui.equalText(plan.token,plan.dismissed) ? 1 : 0)
     }
 } }
@@ -81,6 +81,8 @@ fn draw(model:*Model,index:i32,kind:i32,cr:*void,width:i32,height:i32) { unsafe 
             cairo_set_source_rgba(cr,r,g,b,1.0); cairo_paint(cr); return
         }
         let w=width as f64; let h=height as f64
+        # Firmware-display brightness: an even, input-transparent dark veil over the whole screen.
+        if plan.dim>0 { cairo_set_source_rgba(cr,0.0,0.0,0.0,plan.dim as f64/100.0); cairo_rectangle(cr,0.0,0.0,w,h); cairo_fill(cr) }
         if plan.target {
             cairo_set_source_rgba(cr,0.0,0.0,0.0,0.6); cairo_rectangle(cr,0.0,0.0,w,h); cairo_rectangle(cr,plan.x as f64,plan.y as f64,plan.width as f64,plan.height as f64); cairo_set_fill_rule(cr,1); cairo_fill(cr); cairo_set_fill_rule(cr,0)
         }

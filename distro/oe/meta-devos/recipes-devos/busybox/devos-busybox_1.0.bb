@@ -21,6 +21,10 @@ python __anonymous() {
     inventory = os.path.join(d.getVar('DEVOS_PAYLOAD_DIR'), 'busybox-applets.txt')
     with open(inventory) as stream:
         names = stream.read().split()
+    # These names are owned directly by kbd, CUPS and the compression tools,
+    # which do not register alternatives for them. Keep their full implementations.
+    direct_tools = {'kbd_mode', 'setfont', 'setkeycodes', 'lpq', 'lpr', 'uncompress'}
+    names = [name for name in names if name not in direct_tools]
     keys = {'[': 'lbracket', '[[': 'double-lbracket'}
     d.setVar('ALTERNATIVE:' + d.getVar('PN'), ' '.join(keys.get(name, name) for name in names))
     for name in names:

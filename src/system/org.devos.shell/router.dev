@@ -79,3 +79,8 @@ fn route(args:Vec<str>, cwd:str):Vec<Step> {
     out.push(step("none","","",""))
     return out
 }
+// Terminal's initial folder is consumed by its first tab through the environment.
+fn replayOnStart(command:str, path:str, special:bool):bool {
+    if special || strings.equal(command,"terminal") || strings.equal(command,"terminal.native") { return false }
+    return !strings.equal(path,"") || strings.startsWith(command,"settings.") || strings.startsWith(command,"session.") || strings.equal(command,"app-store-apps") || strings.equal(command,"app-store-extensions") || strings.equal(command,"app-store-packages") || strings.equal(command,"extension-store")
+}

@@ -18,7 +18,7 @@ TOOL = PROFILES / 'devos-hwprofile'
 SHELL = os.environ.get('DEVOS_TEST_SH') or 'sh'
 BUSYBOX = os.environ.get('DEVOS_BUSYBOX') or '/var/tmp/devos-usb/busybox-build/busybox'
 # mem_sleep_default=s2idle comes from the UX3407NA suspend correction (Modern Standby only).
-KERNEL_ARGS = ['clk_ignore_unused', 'pd_ignore_unused', 'arm64.nopauth', 'mem_sleep_default=s2idle']
+KERNEL_ARGS = ['clk_ignore_unused', 'pd_ignore_unused', 'arm64.nopauth', 'mem_sleep_default=s2idle', 'module_blacklist=panel_samsung_atna33xc20,msm,dispcc_glymur']
 
 def tool(*args, root=None, arch='x86_64', profiles=PROFILES):
     env = {'PATH': os.environ['PATH'], 'DEVOS_PROFILES_DIR': str(profiles), 'DEVOS_HW_ARCH': arch}
@@ -180,8 +180,9 @@ class MergeTests(HardwareTests):
         self.assertEqual(conf['test_status'], 'untested-on-hardware')
     def test_lists_are_concatenated_in_order_without_duplicates(self):
         merged = self.merge('ux3407na-dmi')
-        self.assertEqual(self.lines(merged, 'early.modules'), ['qcom_rpmh_regulator', 'qcom_refgen_regulator', 'phy_qcom_m31_eusb2', 'phy_qcom_qmp_usb', 'dwc3_qcom',
-            'xhci_plat_hcd', 'usb_storage', 'uas'])  # proven USB bring-up order of the pre-profile init
+        self.assertEqual(self.lines(merged, 'early.modules'), ['qrtr', 'qrtr_smd', 'qcom_rpmh_regulator', 'qcom_refgen_regulator', 'phy_qcom_m31_eusb2', 'phy_qcom_qmp_usb', 'dwc3_qcom',
+            'xhci_plat_hcd', 'usb_storage', 'uas'])
+        self.assertEqual(self.lines(merged, 'modules.load')[-2:], ['qrtr', 'qrtr_smd'])
         self.assertEqual(self.lines(merged, 'kernel.args'), KERNEL_ARGS)
         self.assertIn('ath12k/QCC2072/hw1.0/board.bin', self.lines(merged, 'firmware.list'))
     def test_later_layer_can_remove_an_inherited_entry(self):
@@ -278,7 +279,8 @@ class InitramfsEnvironmentTests(unittest.TestCase):
         self.assertEqual((identity['vendor'], identity['arch']), ('asus', 'aarch64'))
         self.assertEqual(json.loads((out / 'selection.json').read_text())['profile'], 'asus/ux3407na')
         modules = (out / 'early.modules').read_text().split()
-        self.assertEqual(modules[:5], ['qcom_rpmh_regulator', 'qcom_refgen_regulator', 'phy_qcom_m31_eusb2', 'phy_qcom_qmp_usb', 'dwc3_qcom'])
+        self.assertEqual(modules[:2], ['qrtr', 'qrtr_smd'])
+        self.assertEqual(modules[2:7], ['qcom_rpmh_regulator', 'qcom_refgen_regulator', 'phy_qcom_m31_eusb2', 'phy_qcom_qmp_usb', 'dwc3_qcom'])
         self.assertEqual(modules[-3:], ['xhci_plat_hcd', 'usb_storage', 'uas'])
         self.assertEqual((out / 'kernel.args').read_text().split(), KERNEL_ARGS)
         self.assertIn('qcom/glymur/ASUSTeK/UX3407NA/qcadsp8480.mbn', (out / 'firmware.list').read_text().split())
@@ -287,6 +289,7 @@ class InitramfsEnvironmentTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertIn('asus/ux3407na', applied.stdout)
         self.assertTrue((target / 'etc/systemd/logind.conf.d/95-devos-hwprofile.conf').is_file())
+        self.assertEqual((target / 'etc/modules-load.d/50-devos-hwprofile.conf').read_text().splitlines()[-2:], ['qrtr', 'qrtr_smd'])
     def test_device_tree_only_boot_under_the_live_busybox(self):
         result, out, _ = self.boot('ux3407na-real-dt-only')
         self.assertEqual(result.returncode, 0, result.stderr)

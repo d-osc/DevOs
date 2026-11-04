@@ -30,8 +30,11 @@ fn profiles(bus: *void): json.Value {
     let running = json.object()
     for i in 0..(json.len(active) as i64) {
         let path = json.string(json.at(active, i))
-        let props = dbus.properties(bus, path, "org.freedesktop.NetworkManager.Connection.Active")
-        running = json.set(running, util.text(util.get(props, "Uuid")), {path: path, state: util.number(util.get(props, "State"))})
+        # ActiveConnection objects vanish the moment activation ends; a disappearing one is simply not running.
+        let props = result.attempt(fn(): json.Value { return dbus.properties(bus, path, "org.freedesktop.NetworkManager.Connection.Active") })
+        if result.isErr(props) { continue }
+        let present = result.unwrap(props)
+        running = json.set(running, util.text(util.get(present, "Uuid")), {path: path, state: util.number(util.get(present, "State"))})
     }
     let found = json.array()
     for i in 0..(json.len(list) as i64) {

@@ -313,6 +313,14 @@ fn profileKernelArgs(profile: str): str {
     return text
 }
 
+# The panel blacklist alone leaves its unused fixed regulator free to turn off.
+# Scope the DT change to the same firmware-display fallback policy.
+fn preserveFirmwareDisplay(output: str): bool {
+    if !strings.contains(profileKernelArgs(st.boardProfile()), "module_blacklist=panel_samsung_atna33xc20") { return false }
+    run(Vec<str>("sh", st.here() + "/preserve-firmware-display", output + "/board.dtb", st.profiles() + "/asus/ux3407na/kernel/firmware-display.dtso"))
+    return true
+}
+
 # ---- staging helpers -----------------------------------------------------------------------------------------------------
 fn dumpFromRootfs(rootfs: str, source: str, target: str) {
     run(Vec<str>("debugfs", "-R", "dump " + source + " \"" + target + "\"", rootfs))
@@ -494,6 +502,9 @@ fn check(output: str): json.Value {
     }
     let hashes = io.digestAll(output, names)
     for i in 0..(names.len() as i64) { require(strings.equal(hashes[i], json.string(json.get(files, names[i]))), "Checksum mismatch: " + names[i]) }
+    if hw.jbool(record, "firmwareDisplayPowerPreserved", false) {
+        run(Vec<str>("sh", st.here() + "/preserve-firmware-display", "--check", output + "/board.dtb"))
+    }
     if hw.jbool(record, "rootfsShrunk", false) { checkShrunk(output + "/rootfs.ext4", hw.jint(record, "rootfsMarginBytes", shrinkMargin())) }
     if hw.jbool(record, "imageReady", false) && strings.equal(jstr(record, "board"), "asus-ux3407na") {
         require(json.has(files, "board-audio-provenance.json"), "Old UX3407NA staging lacks the matching microphone/audio routing correction. Prepare a fresh corrected board bundle and staging directory.")
@@ -542,6 +553,11 @@ fn diagnose(o: Options) {
     let files = json.keys(json.get(record, "files"))
     for i in 0..(files.len() as i64) { run(Vec<str>("ln", "--", base + "/" + files[i], destination + "/" + files[i])) }
     run(Vec<str>("cp", "-al", "--", base + "/initramfs", destination + "/initramfs"))
+    if json.has(json.get(record, "files"), "board.dtb") {
+        let preserved = preserveFirmwareDisplay(destination)
+        record = json.set(record, "firmwareDisplayPowerPreserved", preserved)
+        record = json.set(record, "files", json.set(json.get(record, "files"), "board.dtb", digest(destination + "/board.dtb")))
+    }
     installBootTools(destination + "/initramfs", st.regular(o.busybox))
     installSplash(destination + "/initramfs")
     # Replace the linked old initrd without changing the original candidate.
@@ -597,6 +613,7 @@ fn prepare(o: Options) {
         say("Installing the matching X2 modules into the private DevOs rootfs copy...")
         installModules(output + "/rootfs.ext4", bundle.modules, output, "")
         io.copyFile(kernelDir + "/board.dtb", output + "/board.dtb")
+        preserveFirmwareDisplay(output)
         io.copyFile(kernelDir + "/manifest.json", output + "/kernel-provenance.json")
         io.copyFile(kernelDir + "/kernel.config", output + "/kernel.config")
         io.copyFile(kernelDir + "/board-fixes.json", output + "/board-audio-provenance.json")
@@ -645,6 +662,7 @@ fn prepare(o: Options) {
     manifest = json.set(manifest, "filesystemUuid", filesystemUuid)
     manifest = json.set(manifest, "hardwareReady", false)
     manifest = json.set(manifest, "imageReady", hasBundle)
+    manifest = json.set(manifest, "firmwareDisplayPowerPreserved", hasBundle && strings.contains(profileKernelArgs(st.boardProfile()), "module_blacklist=panel_samsung_atna33xc20"))
     manifest = json.set(manifest, "rootfsShrunk", shrunk)
     manifest = json.set(manifest, "rootfsMarginBytes", shrinkMargin())
     let reason = hasBundle ? "X2 kernel/DTB/modules integrated. Experimental USB candidate; physical UX3407NA boot and device testing pending." : "Snapdragon X2 board kernel/Device Tree integration is pending; this is a staging bundle, not a bootable USB image."
@@ -687,6 +705,8 @@ fn build(output: str) {
     let diagnostics = hw.jbool(record, "bootDiagnostics", false)
     if diagnostics {
         let id = jstr(record, "espVolumeId")
+        # USB-local diagnostics must not override the normal animated boot.
+        # Explicit debug/show_status flags remain available as user escape hatches.
         cmdline = cmdline + " devos.live.esp_uuid=" + strings.substring(id, 0, 4) + "-" + strings.substring(id, 4, strings.charLength(id)) + " panic=0 systemd.log_target=journal"
     }
     if hw.jbool(record, "kernelInitcallDebug", false) { cmdline = cmdline + " initcall_debug log_buf_len=4M" }

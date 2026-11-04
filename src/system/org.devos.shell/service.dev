@@ -71,20 +71,17 @@ fn launch(role:str, command:str, path:str) {
     let native = root() + "/dist/native/" + executable
     if !isExecutable(native) { say("Native " + executable + " is missing. Run sh tools/build/native-apps.sh."); return }
     extra.push("DEV_OS_NATIVE_ID=" + id); extra.push("DEV_OS_SHELL_ID=" + shellId())
+    if strings.equal(role,"terminal") && !strings.equal(path,"") { extra.push("DEVOS_TERMINAL_DIRECTORY=" + path) }
     if background { extra.push("DEVOS_BACKGROUND_ROLE=settings") }
     if panel { extra.push("DEVOS_PANEL_ROLE=settings") }
     for item in themeEnv() { extra.push(item) }
     argv.push(native)
     for item in args { argv.push(item) }
     startProcess(argv,extra)
-    if needsReplay(command,path,background || panel) { replay(id,args) }
+    if router.replayOnStart(command,path,background || panel) { replay(id,args) }
 }
 # A command that says more than "open the app" (a Settings page, a file to edit or install, the extension store) is not read from the argument list of a window that is just starting,
 # so it is sent over D-Bus as soon as the new window owns its name, the way a running window gets it.
-fn needsReplay(command:str, path:str, special:bool):bool {
-    if special { return false }
-    return !strings.equal(path,"") || strings.startsWith(command,"settings.") || strings.startsWith(command,"session.") || strings.equal(command,"app-store-apps") || strings.equal(command,"app-store-extensions") || strings.equal(command,"app-store-packages") || strings.equal(command,"extension-store")
-}
 fn variantText(value:str):str { return "'" + strings.replaceAll(strings.replaceAll(value,"\\","\\\\"),"'","\\'") + "'" }
 fn replay(id:str, args:Vec<str>) {
     if testing() { note("replay " + id + " " + strings.join(args," ")); return }

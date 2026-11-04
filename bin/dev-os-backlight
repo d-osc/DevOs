@@ -1,11 +1,14 @@
 #!/usr/bin/env d
-# Set a real kernel backlight. Never emulate brightness with a color overlay.
+# Set a real kernel backlight. Only the firmware-display fallback (native display drivers blacklisted, no
+# kernel backlight can exist) emulates brightness through display-care's input-transparent dim overlay;
+# machines with a backlight never use a colour overlay.
 use "std/fs"
 use "std/json"
 use "std/child_process"
 use "std/strings"
 use "std/args"
 use "std/encoding"
+use "../lib/display-care.dev" as care
 
 fn decodeText(bytes: Vec<u8>): str {
     let out = ""
@@ -53,10 +56,29 @@ fn digitOf(ch: str): i64 {
     return 0
 }
 
+fn softwareLevel(): i64 {
+    let level = 100
+    let values = care.loadSettings()
+    if strings.equal(json.kind(json.get(values, "screenBrightness")), "number") { level = json.int(json.get(values, "screenBrightness")) }
+    if level < 1 { return 1 }
+    if level > 100 { return 100 }
+    return level
+}
+
+fn setSoftwareBrightness(percent: i64): json.Value {
+    if percent < 1 || percent > 100 { return json.set(json.object(), "error", "Brightness must be between 1 and 100 percent.") }
+    let values = care.loadSettings()
+    care.saveSettings(json.set(values, "screenBrightness", percent))
+    return json.set(json.set(json.object(), "device", "software-dim"), "brightness", percent)
+}
+
 fn setBrightness(percent: i64): json.Value {
     if percent < 1 || percent > 100 { return json.set(json.object(), "error", "Brightness must be between 1 and 100 percent.") }
     let candidates = deviceNames()
-    if candidates.len() == 0 { return json.set(json.object(), "error", "No kernel backlight device is available. The display driver must support brightness control.") }
+    if candidates.len() == 0 {
+        if care.firmwareDisplay("/proc") { return setSoftwareBrightness(percent) }
+        return json.set(json.object(), "error", "No kernel backlight device is available. The display driver must support brightness control.")
+    }
     let name = candidates[0]
     let base = "/sys/class/backlight/" + name
     let maximum = intValue(fs.readFileSync(base + "/max_brightness", "utf8"))
@@ -80,8 +102,15 @@ fn main(): i32 {
     if args.len() == 1 && (strings.equal(args.get(0), "up") || strings.equal(args.get(0), "down")) {
         let candidates = deviceNames()
         if candidates.len() == 0 {
-            print("No kernel backlight device is available.")
-            return 1
+            if !care.firmwareDisplay("/proc") {
+                print("No kernel backlight device is available.")
+                return 1
+            }
+            let percent = softwareLevel() + (strings.equal(args.get(0), "up") ? 5 : -5)
+            if percent < 1 { percent = 1 }
+            if percent > 100 { percent = 100 }
+            print(json.stringify(setSoftwareBrightness(percent)))
+            return 0
         }
         let base = "/sys/class/backlight/" + candidates[0]
         let maximum = intValue(fs.readFileSync(base + "/max_brightness", "utf8"))

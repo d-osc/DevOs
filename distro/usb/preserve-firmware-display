@@ -1,0 +1,32 @@
+#!/bin/sh
+# Patch a private UX3407NA DTB, preserving every existing node and phandle.
+# Usage: preserve-firmware-display DTB OVERLAY | --check DTB
+set -eu
+for tool in fdtget dtc fdtoverlay; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo 'Install device-tree-compiler on the build host (fdtget, dtc, fdtoverlay required).' >&2
+        exit 1
+    }
+done
+check=no
+if [ "${1:-}" = --check ]; then check=yes; shift; fi
+dtb=${1:?missing DTB}
+case " $(fdtget -t s "$dtb" / compatible) " in
+    *' asus,zenbook-a14-ux3407na '*) ;;
+    *) echo 'Not a UX3407NA DTB' >&2; exit 1 ;;
+esac
+[ "$(fdtget -t s "$dtb" /regulator-edp regulator-name)" = VREG_EDP_3P3 ]
+[ "$(fdtget -t s "$dtb" /regulator-edp compatible)" = regulator-fixed ]
+if [ "$check" = yes ]; then
+    fdtget "$dtb" /regulator-edp regulator-boot-on >/dev/null
+    fdtget "$dtb" /regulator-edp regulator-always-on >/dev/null
+    exit 0
+fi
+overlay=${2:?missing overlay}
+work=$(mktemp -d "$(dirname "$dtb")/.display-fallback.XXXXXX")
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+dtc -q -I dts -O dtb -o "$work/overlay.dtbo" "$overlay"
+fdtoverlay -i "$dtb" -o "$work/board.dtb" "$work/overlay.dtbo"
+sh "$0" --check "$work/board.dtb"
+# Replace the directory entry, never write through a staging hardlink.
+mv "$work/board.dtb" "$dtb"

@@ -62,7 +62,46 @@ for iteration in $(seq 1 60); do
         esac
         DEVOS_BT_SCAN=0 /usr/libexec/devos-bluetooth-report "$destination/bluetooth-report.txt"
     fi
-    for source in /run/devos-live/root-session.log /root/.local/state/devos/logs/*.log; do
+    # Display evidence distinguishes a rendered desktop from a panel/scanout fault.
+    {
+        echo '=== Kernel command line ==='
+        cat /proc/cmdline
+        echo '=== Panel power state ==='
+        echo '=== Display / QMI module state ==='
+        for module in msm panel_samsung_atna33xc20 dispcc_glymur phy_qcom_edp qrtr qrtr_smd; do
+            if [ -d "/sys/module/$module" ]; then echo "$module: loaded"; else echo "$module: absent"; fi
+        done
+        echo '=== Display clock state ==='
+        grep -E 'disp_cc|edp|mdss' /sys/kernel/debug/clk/clk_summary 2>/dev/null
+        echo 'Firmware eDP regulator always-on constraint:'
+        if [ -e /sys/firmware/devicetree/base/regulator-edp/regulator-always-on ]; then echo present; else echo absent; fi
+        echo '=== Regulator state ==='
+        cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null
+        echo '=== Panel power state (backlight) ==='
+        for file in /sys/class/backlight/*/bl_power /sys/class/backlight/*/actual_brightness /sys/bus/dp-aux/drivers/samsung_atana33xc20/*/power/runtime_status; do
+            [ ! -f "$file" ] || { echo "$file"; cat "$file"; }
+        done
+        echo '=== Graphics devices ==='
+        ls -l /dev/dri 2>&1
+        echo '=== Connector state ==='
+        for file in /sys/class/drm/card*-*/status /sys/class/drm/card*-*/enabled /sys/class/drm/card*-*/dpms /sys/class/drm/card*-*/modes; do
+            [ ! -f "$file" ] || { echo "$file"; cat "$file"; }
+        done
+        echo '=== DRM state ==='
+        for file in /sys/kernel/debug/dri/*/state; do [ ! -f "$file" ] || { echo "$file"; cat "$file"; }; done
+        echo '=== Wayland outputs ==='
+        for socket in /run/user/0/wayland-*; do
+            [ ! -S "$socket" ] || /usr/bin/timeout -k 1 5 env XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY="$(basename "$socket")" wlr-randr
+        done
+    } >"$destination/display.txt.new" 2>&1
+    mv "$destination/display.txt.new" "$destination/display.txt"
+    case "$iteration" in
+        1|5|13)
+            for socket in /run/user/0/wayland-*; do
+                [ ! -S "$socket" ] || /usr/bin/timeout -k 1 8 env XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY="$(basename "$socket")" grim "$destination/desktop-$iteration.png" >>"$destination/display-capture.log" 2>&1
+            done ;;
+    esac
+    for source in /run/devos-splash.log /run/devos-live/root-session.log /root/.local/state/devos/logs/*.log; do
         [ ! -f "$source" ] || cp "$source" "$destination/$(basename "$source")"
     done
     sync

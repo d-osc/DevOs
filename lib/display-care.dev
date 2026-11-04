@@ -56,10 +56,11 @@ fn defaults(): json.Value {
     v = json.set(v, "panelTransparency", true)
     v = json.set(v, "targetMode", false)
     v = json.set(v, "edgeBrightness", 0)
+    v = json.set(v, "screenBrightness", 100)
     return v
 }
 fn settingKeys(): Vec<str> {
-    return Vec<str>("splendid", "temperature", "eyeCare", "gamut", "dimming", "pixelRefresh", "autoHidePanel", "panelTransparency", "targetMode", "edgeBrightness")
+    return Vec<str>("splendid", "temperature", "eyeCare", "gamut", "dimming", "pixelRefresh", "autoHidePanel", "panelTransparency", "targetMode", "edgeBrightness", "screenBrightness")
 }
 # The settings Reset button restores exactly these (plus the backlight).
 fn resetKeys(): Vec<str> { return Vec<str>("splendid", "temperature", "eyeCare", "gamut", "dimming") }
@@ -68,6 +69,11 @@ fn configDir(): str { return hw.configHome() + "/devos" }
 fn statePath(): str { return configDir() + "/display-care.json" }
 fn runtimeDir(): str { return hw.envOr("XDG_RUNTIME_DIR", "/tmp") }
 fn flagPath(): str { return runtimeDir() + "/devos-pixel-refresh" }
+
+# Firmware-display fallback: with the native display drivers blacklisted (module_blacklist=panel... on the
+# cmdline) the panel is scanned out from the firmware framebuffer, so no kernel backlight can ever exist and
+# brightness is emulated with the display-care dim overlay instead.
+fn firmwareDisplay(proc: str): bool { return strings.contains(hw.readTrim(proc + "/cmdline"), "module_blacklist=panel") }
 
 # ---- validation ----------------------------------------------------------------------------------------------------------
 fn integer(value: str, low: i64, high: i64, name: str): i64 {
@@ -101,6 +107,7 @@ fn validate(key: str, value: str): json.Value {
     }
     if strings.equal(key, "dimming") { return json.value(integer(value, 0, 100, "Dimming level")) }
     if strings.equal(key, "edgeBrightness") { return json.value(integer(value, 0, 4, "Adaptive Edge Brightness")) }
+    if strings.equal(key, "screenBrightness") { return json.value(integer(value, 1, 100, "Screen brightness")) }
     if strings.equal(key, "pixelRefresh") || strings.equal(key, "autoHidePanel") || strings.equal(key, "panelTransparency") || strings.equal(key, "targetMode") {
         return json.value(boolean(value, key))
     }

@@ -1,0 +1,3 @@
+# Also bring up the socket family on an installed-system boot.
+qrtr
+qrtr_smd

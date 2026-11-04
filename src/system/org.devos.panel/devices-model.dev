@@ -1,6 +1,7 @@
 use "std/json"
 use "std/strings"
 use "../../../lib/hw.dev" as hw
+use "../../../lib/display-care.dev" as care
 fn wpVolume(raw:str):json.Value {
     let parts=strings.split(raw,"Volume:");if parts.len()<2 {return json.null_value()}
     let words=hw.words(parts[1]);if words.len()==0 {return json.null_value()}
@@ -22,6 +23,15 @@ fn audio(run:fn(Vec<str>):hw.Run,available:fn(str):bool):json.Value {
     }
     return {audio:json.null_value(),volume:json.null_value(),muted:false}
 }
+# Firmware-display fallback: no kernel backlight can exist while the native display drivers are blacklisted;
+# the quick-settings slider drives display-care's dim overlay (screenBrightness) instead. Missing values are
+# undimmed (100), and machines with a working display driver keep reporting no brightness at all.
+fn softwareBrightness(proc:str,saved:json.Value):json.Value {
+    if !care.firmwareDisplay(proc) { return json.null_value() }
+    let level = 100
+    if json.has(saved,"screenBrightness") && strings.equal(json.kind(json.get(saved,"screenBrightness")),"number") { level = hw.toInt(json.stringify(json.get(saved,"screenBrightness")),100) }
+    return json.value(level<1 ? 1 : level>100 ? 100 : level)
+}
 fn snapshot(sys:str,proc:str,connected:bool,wsl:bool,run:fn(Vec<str>):hw.Run,available:fn(str):bool):json.Value {
     let adapter=false;for name in hw.listDir(sys+"/class/net") {if hw.isDir(sys+"/class/net/"+name+"/wireless") {adapter=true}}
     let route="";for line in strings.split(hw.readTrim(proc+"/net/route"),"\n") {let fields=hw.words(line);if fields.len()>1 && strings.equal(fields[1],"00000000") {route=fields[0];break}}
@@ -30,6 +40,7 @@ fn snapshot(sys:str,proc:str,connected:bool,wsl:bool,run:fn(Vec<str>):hw.Run,ava
     for name in names {let path=sys+"/class/backlight/"+name;let maximum=hw.toFloat(hw.readTrim(path+"/max_brightness"),0.0)
         if maximum>0.0 {let value=hw.toFloat(hw.readTrim(path+"/brightness"),-1.0);if value>=0.0 {brightness=json.value(((value/maximum*100.0+0.5) as i64))};break}
     }
+    if json.is_null(brightness) { brightness = softwareBrightness(proc, care.loadSettings()) }
     let wifi=json.null_value();if adapter && available("nmcli") {let value=run(Vec<str>("nmcli","radio","wifi"));if value.code==0 {wifi=json.value(strings.equal(strings.trim(value.out),"enabled"))}}
     let bluetooth=json.null_value();if available("bluetoothctl") {let value=run(Vec<str>("bluetoothctl","show"));if value.code==0 {if strings.contains(value.out,"Powered: yes") {bluetooth=json.value(true)} else if strings.contains(value.out,"Powered: no") {bluetooth=json.value(false)}}}
     let result=audio(run,available)

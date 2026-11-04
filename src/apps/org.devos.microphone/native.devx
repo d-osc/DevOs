@@ -24,9 +24,10 @@ extern fn gst_object_unref(object:*void)
 extern fn g_free(pointer:*void)
 
 # Native Microphone window: test the level of an input or record it to a WAV file in ~/Music/Recordings. The level comes from the GStreamer `level`
-# element: its messages are taken from the pipeline's bus on every clock tick (250 ms) and the text of the structure is parsed, because DevLang
-# callbacks cannot be handed to GLib. The meter is the loudest channel's peak on a -60..0 dB scale. Stopping a recording sends EOS and waits (up to 5 s)
-# for it, so the WAV header is finished. Frame V: message; M: name label.
+# element: its messages are taken from the pipeline's bus on every clock tick (100 ms) and the text of the structure is parsed, because DevLang
+# callbacks cannot be handed to GLib. The meter shows the loudest peak of the batch (the element reports every 100 ms) and eases down between
+# messages, so short transients stay visible. Stopping a recording sends EOS and waits (up to 5 s) for it, so the WAV header is finished.
+# Frame V: message; M: name label.
 fn environment(name:str):str { unsafe { return rc_env(name) } }
 fn smoke():bool { return ui.text(environment("DEVOS_MICROPHONE_SMOKE")).bytes.len() > 0 }
 fn plain(value:str):ui.Text { return ui.text(value) }
@@ -52,12 +53,15 @@ fn indexOf(text:ui.Text, needle:str):i64 {
     return 0 - 1
 }
 # The meter value 0..1000 of the loudest channel in "peak=(GValueArray)< -20.9, -19.8 >" (dB, -60 is silence, 0 is full scale); -1 when there is none.
+# A GStreamer build that serialises the array without its type annotation ("peak=< -20.9 >") is accepted too.
 fn peakOf(structure:ui.Text):i64 {
     let at = indexOf(structure,"peak=(GValueArray)<")
+    let skip = 19
+    if at < 0 { let plain = indexOf(structure,"peak=<"); if plain >= 0 { at = plain; skip = 6 } }
     if at < 0 { return 0 - 1 }
     let best = 0 - 1000000; let negative = false; let whole = 0; let tenth = 0; let seenDecimal = false; let digits = false; let found = false; let infinite = false
     let flush = fn() { }
-    let i = at + 19
+    let i = at + skip
     while i < (structure.bytes.len() as i64) {
         let c = structure.bytes[i]
         if c == 62 || c == 44 {
@@ -93,6 +97,7 @@ fn App(context:*ui.Context):ui.Node {
     let asked = ui.useRef(context,0); let devices = ui.useText(context,ui.emptyText()); let choice = ui.useState(context,0); let status = ui.useText(context,plain("Ready · recording starts only when you press a button"))
     let mode = ui.useState(context,0); let pipe = ui.useRef(context,0); let path = ui.useText(context,ui.emptyText()); let want = ui.useRef(context,0); let level = ui.useState(context,0)
     let step = ui.useRef(context,0); let ticks = ui.useRef(context,0); let startedAt = ui.useRef(context,0); let finishAt = ui.useRef(context,0); let lastDevice = ui.useRef(context,0); let peak = ui.useRef(context,0)
+    let hintShown = ui.useRef(context,0)
     let ids = Vec<ui.Text>(); let labels = Vec<ui.Text>()
     for record in sp.records(devices.value) { if sp.kindOf(record,77) { let c = sp.cells(record); ids.push(sp.cell(c,1)); labels.push(sp.cell(c,2)) } }
     let release = fn() { unsafe {
@@ -107,7 +112,7 @@ fn App(context:*ui.Context):ui.Node {
         ui.rd_buffer_free(description as *void)
         if made == null { status.set(plain("Cannot open the microphone. It may be busy, disconnected or access denied.")); return }
         gst_element_set_state(made,4)
-        pipe.set(made as i64); peak.set(0); mode.set(record ? 2 : 1); startedAt.set(ticks.get())
+        pipe.set(made as i64); peak.set(0); hintShown.set(0); mode.set(record ? 2 : 1); startedAt.set(ticks.get())
         status.set(record ? plain("Recording microphone") : plain("Microphone is on · level test"))
     } }
     let finish = fn(message:ui.Text) { release(); mode.set(0); status.set(message) }
@@ -122,7 +127,7 @@ fn App(context:*ui.Context):ui.Node {
             gst_init(null,null)
         }
         ui.onCommand(context,"microphone.",fn(line:ui.Text) {})
-        ui.onTick(context,250,fn() { unsafe {
+        ui.onTick(context,100,fn() { unsafe {
             ticks.set(ticks.get() + 1)
             if pipe.get() != 0 {
                 let bus = gst_element_get_bus(pipe.get() as *void)
@@ -136,24 +141,27 @@ fn App(context:*ui.Context):ui.Node {
                         let raw = gst_structure_to_string(structure)
                         let value = peakOf(owned(raw))
                         g_free(raw as *void)
-                        if value >= 0 { latest = value }
+                        if value > latest { latest = value }
                     }
                     gst_mini_object_unref(message)
                 }
                 if latest >= 0 { level.set(latest); if latest > peak.get() { peak.set(latest) } }
+                else { if level.get() > 0 { let fall = level.get() - 40; level.set(fall < 0 ? 0 : fall) } }
                 let failed = gst_bus_pop_filtered(bus,2)
                 if failed != null { gst_mini_object_unref(failed); gst_object_unref(bus); if has(path.get()) && mode.get() == 2 { asked.set(2); sp.send(l,join(Vec<ui.Text>(plain("{\"action\":\"discard\",\"path\":"),channel.quote(path.get()),plain("}")))) }; finish(plain("Device error: capture failed")); return }
                 if mode.get() == 3 {
                     let ended = gst_bus_pop_filtered(bus,1)
                     if ended != null { gst_mini_object_unref(ended); gst_object_unref(bus); finish(join(Vec<ui.Text>(plain("Saved · "),path.get()))); return }
-                    if ticks.get() > finishAt.get() + 20 { gst_object_unref(bus); finish(plain("Recording could not be finalized. Check the audio device.")); return }
+                    if ticks.get() > finishAt.get() + 50 { gst_object_unref(bus); finish(plain("Recording could not be finalized. Check the audio device.")); return }
                 }
+                # A level test that has shown nothing after 5 s is capturing silence, not waves.
+                if hintShown.get() == 0 && mode.get() == 1 && peak.get() == 0 && ticks.get() > startedAt.get() + 50 { hintShown.set(1); status.set(plain("No signal from this device yet. Speak into the microphone, pick another device, or refresh the list.")) }
                 gst_object_unref(bus)
             }
             # DEVOS_MICROPHONE_SMOKE=1: after 1 s pick the test tone and record, stop 2 s later, finish when the recording is saved.
             if !smoke() { return }
-            if step.get() == 0 && ticks.get() >= 4 && lastDevice.get() > 0 { step.set(1); choice.set(lastDevice.get() - 1); ui.click(context,"mic-record") }
-            else if step.get() == 1 && mode.get() == 2 && ticks.get() >= startedAt.get() + 8 { step.set(2); ui.click(context,"mic-record") }
+            if step.get() == 0 && ticks.get() >= 10 && lastDevice.get() > 0 { step.set(1); choice.set(lastDevice.get() - 1); ui.click(context,"mic-record") }
+            else if step.get() == 1 && mode.get() == 2 && ticks.get() >= startedAt.get() + 20 { step.set(2); ui.click(context,"mic-record") }
             else if step.get() == 2 && mode.get() == 0 { print("PASS native Microphone recorded audio (peak ${peak.get()})"); ui.close(context) }
         } })
         return ui.noop
@@ -176,6 +184,8 @@ fn App(context:*ui.Context):ui.Node {
     let testButton = ui.named("mic-test"); testButton.sensitive = (m == 0 || m == 1) && !busy && ids.len() > 0
     let recordButton = ui.named("mic-record"); recordButton.sensitive = (m == 0 || m == 2) && !busy && ids.len() > 0
     let folderButton = ui.named("mic-folder")
+    # Sources appear when PipeWire finishes registering them; the list is refreshed on demand, not only at open.
+    let refreshButton = ui.named("mic-refresh"); refreshButton.sensitive = m == 0 && !busy
     let meter = ui.named("mic-level"); meter.expand = true
     let nodes = Vec<ui.Node>(ext.expand(ui.Select(select,labels,choice.value,fn(index:i64) { choice.set(index) })))
     nodes.push(ext.named(k.caption(has(l.failure.value) ? l.failure.value : status.value,has(l.failure.value) ? "settings-error-banner" : "settings-description"),"mic-status"))
@@ -188,6 +198,7 @@ fn App(context:*ui.Context):ui.Node {
             if m == 2 { unsafe { gst_element_send_event(pipe.get() as *void,gst_event_new_eos()) }; mode.set(3); finishAt.set(ticks.get()); status.set(plain("Saving recording…")) }
             else { want.set(2); path.set(ui.emptyText()); asked.set(1); sp.send(l,plain("{\"action\":\"prepare\"}")) }
         }),
+        ui.Button(refreshButton,"Refresh",fn() { asked.set(0); sp.send(l,plain("{\"action\":\"devices\"}")) }),
         ui.Button(folderButton,"Open recordings",fn() { asked.set(3); sp.send(l,plain("{\"action\":\"folder\"}")) }))))
     return mediaContent(nodes)
 }

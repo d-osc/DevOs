@@ -194,6 +194,7 @@ mkdir -p /newroot/usr/libexec /newroot/etc/systemd/system/bluetooth.service.want
 cp /diagnostics/bluetooth-recover /newroot/usr/libexec/devos-bluetooth-recover
 chmod 755 /newroot/usr/libexec/devos-bluetooth-recover
 cp /diagnostics/bluetooth-recover.service /newroot/etc/systemd/system/devos-bluetooth-recover.service
+chmod 644 /newroot/etc/systemd/system/devos-bluetooth-recover.service
 ln -sf ../devos-bluetooth-recover.service /newroot/etc/systemd/system/bluetooth.service.wants/devos-bluetooth-recover.service
 cp /diagnostics/bluetooth-report /newroot/usr/libexec/devos-bluetooth-report
 chmod 755 /newroot/usr/libexec/devos-bluetooth-report
@@ -212,6 +213,7 @@ if [ -n "$esp_uuid" ]; then
     chmod 755 /newroot/usr/libexec/devos-camera-report
     chmod 755 /newroot/usr/libexec/devos-live-diagnostics
     cp /diagnostics/collector.service /newroot/etc/systemd/system/devos-live-diagnostics.service
+    chmod 644 /newroot/etc/systemd/system/devos-live-diagnostics.service
     ln -s ../devos-live-diagnostics.service /newroot/etc/systemd/system/multi-user.target.wants/devos-live-diagnostics.service
 fi
 status '[5/6] starting systemd; GUI service diagnostics enabled'

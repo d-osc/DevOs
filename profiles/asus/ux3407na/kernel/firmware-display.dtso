@@ -1,0 +1,13 @@
+// Keep the firmware display powered while the native MSM pipeline is unavailable.
+// The Samsung panel driver must also remain blacklisted in this fallback.
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/regulator-edp";
+        __overlay__ {
+            regulator-always-on;
+        };
+    };
+};

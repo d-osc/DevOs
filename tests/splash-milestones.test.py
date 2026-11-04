@@ -30,15 +30,17 @@ class MilestoneWiringTests(unittest.TestCase):
             self.assertNotIn('devos-splash --quit', text, 'the splash is no longer ended when the session starts')
 
     def test_greeter_and_shell_say_when_they_are_ready(self):
-        login = (ROOT / 'src/login.tsx').read_text()
-        self.assertIn("devos-splash --step ready", login)
-        self.assertLess(login.index('window.show_all()'), login.index('devos-splash --step ready'))
-        self.assertIn('try {', login.split('devos-splash --step ready')[0].splitlines()[-1])  # never throws
-        shell = (ROOT / 'packages/shell/index.ts').read_text()
-        self.assertIn("splashStep('shell')", shell)
-        self.assertIn("splashStep('ready')", shell)
-        self.assertLess(shell.index("splashStep('shell')"), shell.index("splashStep('ready')"))
-        self.assertIn('catch', shell.split('function splashStep')[1].split('\n}')[0])  # fire-and-forget
+        # Login and shell now use the native C/DevLang hosts, not the removed
+        # TypeScript entry points. Both report readiness asynchronously.
+        login = (ROOT / 'src/system/login/host.c').read_text()
+        self.assertIn('"devos-splash","--step","ready"', login)
+        self.assertIn('g_timeout_add(400,login_ready,NULL)', login)
+        self.assertIn('if(child)g_object_unref(child)', login)  # missing splash is harmless
+        shell = (ROOT / 'src/system/org.devos.shell/service.dev').read_text()
+        self.assertIn('splash("shell")', shell)
+        self.assertIn('exec devos-splash --step ready', shell)
+        self.assertLess(shell.index('splash("shell")'), shell.index('exec devos-splash --step ready'))
+        self.assertIn('hw.spawnDetached', shell.split('fn splash(')[1])
 
     def test_compositor_start_launches_the_window_splash_when_enabled(self):
         for text in ((ROOT / 'bin/dev-os-start').read_text(), (SESSION / 'devos-greeter').read_text()):
@@ -77,6 +79,11 @@ class MilestoneWiringTests(unittest.TestCase):
         self.assertIn('DEVOS_SPLASH_WINDOW_TIMEOUT', renderer)
         self.assertIn('GDK_KEY_Escape', (ROOT / 'src/system/splash-host.c').read_text())
         self.assertNotIn('gjs', renderer)
+
+    def test_exit_never_blanks_the_framebuffer_under_the_compositor(self):
+        # simpledrm shares fb0 with labwc: zeroing it after hand-over leaves an idle desktop black on real hardware.
+        source = (FILES / 'devos-splash.c').read_text()
+        self.assertIn('quiet && !handed_over) memset(display.map', source)
 
 
 class MilestoneDaemonTests(unittest.TestCase):

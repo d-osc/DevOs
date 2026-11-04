@@ -2,7 +2,7 @@
 Type=Application
 Name=Terminal
 Comment=Native terminal with the Dev OS window header
-Exec=dev-os-shell terminal
+Exec=dev-os-terminal
 Icon=dev-os-terminal
 Terminal=false
 Categories=System;TerminalEmulator;

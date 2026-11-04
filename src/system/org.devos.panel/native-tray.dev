@@ -21,18 +21,43 @@ fn decorate(context:*ui.Context,frame:ui.Text) {unsafe {for record in channel.sp
 };panel_tray_trace((*context).native);panel_battery_trace((*context).native)}}
 fn View(context:*ui.Context,command:fn(ui.Text):void,commandReady:bool,fatal:fn():void):ui.Node {
     let frame=ui.useText(context,ui.emptyText());let error=ui.useText(context,ui.emptyText());let busy=ui.useState(context,0);let open=ui.useState(context,0);let pipe=ui.useRef(context,0)
+    # The dragged slider value (echo) is shown until the worker confirms it, so a refresh frame cannot snap
+    # the thumb back mid-drag; sliders stay usable while a command is pending, and one retry re-sends a
+    # value that changed in the meantime. A value the backend refuses (clamps) is accepted after the retry.
+    let echoVolume=ui.useState(context,-1);let echoBrightness=ui.useState(context,-1);let retry=ui.useRef(context,0)
+    let deviceCommand=fn(action:ui.Text,value:i64):ui.Text {return ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"systemNetwork\":true,\"action\":{\"action\":"),channel.quote(action),ui.text(",\"value\":"),ui.scalarText(value),ui.text("}}")))}
+    let send=fn(json:ui.Text) {busy.set(1);error.set(ui.emptyText());channel.command(pipe.get(),json)}
+    let settle=fn(fields:Vec<ui.Text>) {unsafe {
+        if fields.len()<19 {return}
+        let volume=channel.integer(fields[17]);let brightness=channel.integer(fields[18])
+        if echoVolume.get()>=0 {if echoVolume.get()==volume {echoVolume.set(-1)} else if retry.get()==0 {retry.set(1);send(deviceCommand(ui.text("volume"),echoVolume.get()))} else {echoVolume.set(-1)}}
+        if echoBrightness.get()>=0 {if echoBrightness.get()==brightness {echoBrightness.set(-1)} else if retry.get()==0 {retry.set(1);send(deviceCommand(ui.text("brightness"),echoBrightness.get()))} else {echoBrightness.set(-1)}}
+    }}
     ui.useEffect(context,fn():fn():void {unsafe {if !(*context).alive {return ui.noop};let root=tasks.rc_env("DEV_OS_ROOT");let runner=tasks.rc_env("DEVLANG_RUN");if ui.text(runner).bytes.len()==0 {runner="d"}
         return channel.connectWithLibrary(context,runner,"${root}/src/services/panel-devices.dev",root,"${root}/dist/native/libpanel-taskbar.so",fn(value:ui.Text) {
             let records=channel.split(value,30);let fields=channel.split(records[0],9)
-            if fields.len()==2 && ui.equalText(fields[0],ui.text("E")) {busy.set(0);error.set(tasks.decoded(fields[1]));if channel.failed(pipe.get()) {fatal()};return}
+            if fields.len()==2 && ui.equalText(fields[0],ui.text("E")) {busy.set(0);echoVolume.set(-1);echoBrightness.set(-1);print("Quick settings: device action failed (message shown on the panel error banner)");error.set(tasks.decoded(fields[1]));if channel.failed(pipe.get()) {fatal()};return}
             if fields.len()<19 || !ui.equalText(fields[0],ui.text("D")) {fatal();return};frame.set(value)
             for record in records {if ui.equalText(record,ui.text("A")) {busy.set(0)}}
+            if busy.get()==0 {settle(fields)}
         },fn(value:i64) {pipe.set(value);channel.send(value,ui.text("{\"wire\":true,\"systemNetwork\":true}"))})
     }},Vec<i64>())
     ui.useEffect(context,fn():fn():void {unsafe {if (*context).alive {decorate(context,frame.value);quick.decorate(context,frame.value)};return ui.noop}},Vec<i64>(frame.revision,open.value))
+    # The worker snapshot runs once at panel start, when PipeWire may not be up yet; re-query when the popup
+    # opens and every 2 s while it stays open, so audio/brightness backends that appear late unlock the sliders.
+    ui.useEffect(context,fn():fn():void {unsafe {if open.value!=0 && busy.value==0 && !channel.failed(pipe.get()) {channel.command(pipe.get(),ui.text("{\"wire\":true,\"systemNetwork\":true}"))};return ui.noop}},Vec<i64>(open.value))
+    ui.useEffect(context,fn():fn():void {unsafe {
+        ui.onTick(context,2000,fn() {unsafe {if open.value!=0 && busy.value==0 && !channel.failed(pipe.get()) {channel.command(pipe.get(),ui.text("{\"wire\":true,\"systemNetwork\":true}"))}}})
+        return ui.noop
+    }},Vec<i64>())
     let present=false;for record in channel.split(frame.value,30) {let fields=channel.split(record,9);if fields.len()>=8 && ui.equalText(fields[0],ui.text("B")) {present=tasks.flag(fields,7)}}
     let care=batteryCare.View(context,present,fatal)
     let nodes=Vec<ui.Node>(render(frame.value,fn() {open.set(open.get()==0 ? 1 : 0)},frame.value.bytes.len()>0))
-    if open.value!=0 {nodes.push(quick.render(frame.value,busy.value!=0,commandReady,error.value,care,fn(action:ui.Text,value:i64) {if busy.get()!=0 {return};busy.set(1);error.set(ui.emptyText());channel.command(pipe.get(),ui.concatText(Vec<ui.Text>(ui.text("{\"wire\":true,\"systemNetwork\":true,\"action\":{\"action\":"),channel.quote(action),ui.text(",\"value\":"),ui.scalarText(value),ui.text("}}"))))},fn(value:ui.Text) {open.set(0);command(value)},fn() {open.set(0)}))}
+    if open.value!=0 {nodes.push(quick.render(frame.value,busy.value!=0,commandReady,error.value,care,fn(action:ui.Text,value:i64) {
+        if ui.equalText(action,ui.text("volume")) {echoVolume.set(value)} else if ui.equalText(action,ui.text("brightness")) {echoBrightness.set(value)}
+        retry.set(0)
+        if busy.get()!=0 {return}
+        send(deviceCommand(action,value))
+    },fn(value:ui.Text) {open.set(0);command(value)},fn() {open.set(0)},echoVolume.value,echoBrightness.value))}
     let props=ui.props();props.vertical=false;return ui.Box(props,nodes)
 }

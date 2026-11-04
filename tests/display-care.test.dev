@@ -11,7 +11,7 @@ fn none(): Vec<str> { return Vec<str>() }
 fn text(value: json.Value, key: str): str { return hw.jstr(value, key, "") }
 fn flag(value: json.Value, key: str): bool { return hw.jbool(value, key, false) }
 fn defaults(): json.Value {
-    return json.parse("{\"splendid\":\"normal\",\"temperature\":0,\"eyeCare\":3,\"gamut\":\"native\",\"dimming\":100,\"pixelRefresh\":true,\"autoHidePanel\":false,\"panelTransparency\":true,\"targetMode\":false,\"edgeBrightness\":0}")
+    return json.parse("{\"splendid\":\"normal\",\"temperature\":0,\"eyeCare\":3,\"gamut\":\"native\",\"dimming\":100,\"pixelRefresh\":true,\"autoHidePanel\":false,\"panelTransparency\":true,\"targetMode\":false,\"edgeBrightness\":0,\"screenBrightness\":100}")
 }
 
 # Environment of the helper: config, runtime dir, a stub for the service starter and the backlight tool, a fake /sys.
@@ -83,7 +83,7 @@ fn t_set(base: str) {
     good.push(set("edgeBrightness", "3")); good.push(set("targetMode", "on")); good.push(set("pixelRefresh", "off")); good.push(set("autoHidePanel", "true")); good.push(set("panelTransparency", "off"))
     for i in 0..(good.len() as i64) { harness.equalInt(helper(base, good[i], none()).code, 0, strings.join(good[i], " ")) }
     let value = saved(base)
-    harness.same(value, json.parse("{\"dimming\":40,\"splendid\":\"eyecare\",\"eyeCare\":5,\"temperature\":-20,\"edgeBrightness\":3,\"targetMode\":true,\"pixelRefresh\":false,\"autoHidePanel\":true,\"panelTransparency\":false,\"gamut\":\"native\"}"), "saved")
+    harness.same(value, json.parse("{\"dimming\":40,\"splendid\":\"eyecare\",\"eyeCare\":5,\"temperature\":-20,\"edgeBrightness\":3,\"targetMode\":true,\"pixelRefresh\":false,\"autoHidePanel\":true,\"panelTransparency\":false,\"gamut\":\"native\",\"screenBrightness\":100}"), "saved")
     harness.expect(harness.waitFor(fn(): bool { return harness.exists(base + "/calls.log") && strings.contains(harness.read(base + "/calls.log"), "serve") }, 10.0), "set starts serve")
     let bad = Vec<Vec<str>>()
     bad.push(set("dimming", "101")); bad.push(set("dimming", "-1")); bad.push(set("dimming", "abc")); bad.push(set("temperature", "51")); bad.push(set("eyeCare", "0"))

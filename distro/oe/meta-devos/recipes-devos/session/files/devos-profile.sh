@@ -1,7 +1,7 @@
 # Interactive Bash in DevOs Terminal. User startup files can override this.
 case $- in
     *i*) if [ -n "${BASH_VERSION:-}" ]; then
-        # Green user@host for a normal user ($); red for the administrator (root, #) so admin mode is obvious.
+        # user@host:directory; Bash uses # for root and $ for ordinary users.
         if [ -n "${TERM:-}" ] && [ "$TERM" != dumb ]; then
             if [ "$(id -u)" = 0 ]; then PS1='\[\e[1;31m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[1;31m\]\$\[\e[0m\] '
             else PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '; fi

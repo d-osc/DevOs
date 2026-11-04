@@ -3,6 +3,13 @@
     "devos-qemu": {
       "command": "d",
       "args": ["tools/mcp/qemu-vm/server.dev"]
+    },
+    "virtualbox": {
+      "command": "npx",
+      "args": ["-y", "mcp-virtualbox@1.0.1"],
+      "env": {
+        "VBOXMANAGE_PATH": "C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe"
+      }
     }
   }
 }

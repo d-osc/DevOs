@@ -70,8 +70,9 @@ fn Page(context:*ui.Context,id:i64,cwd:ui.Text):ui.Node {
         let mode=environment("DEV_OS_THEME");if !has(plain(mode)) {mode=rd_default_theme()};paint(terminal,environment("DEV_OS_THEME_FAMILY"),mode)
         gtk_widget_show(terminal);rd_watch_child(terminal);rd_terminal_keys(terminal)
         if has(plain(environment("DEVOS_TERMINAL_SMOKE"))) && g_signal_lookup("copy-clipboard",vte_terminal_get_type())!=0 && g_signal_lookup("paste-clipboard",vte_terminal_get_type())!=0 {print("PASS native Terminal has copy-clipboard and paste-clipboard")}
-        let command=environment("DEVOS_TERMINAL_COMMAND");let shell=environment("SHELL");if !has(plain(shell)) {shell="/bin/sh"}
-        let argv=has(plain(command)) ? argvOf(Vec<str>("/bin/sh","-c",command)) : argvOf(Vec<str>(shell))
+        let command=environment("DEVOS_TERMINAL_COMMAND");let shell=environment("SHELL");if !has(plain(shell)) || same(shell,"/bin/sh") {shell="/bin/bash"}
+        let shellArgs=(same(shell,"/bin/bash") || same(shell,"/usr/bin/bash")) ? Vec<str>(shell,"--login") : Vec<str>(shell)
+        let argv=has(plain(command)) ? argvOf(Vec<str>("/bin/sh","-c",command)) : argvOf(shellArgs)
         let native=ui.nativeText(cwd)
         # The spawn callback records the shell PID, allowing a new tab to inherit its actual cwd.
         vte_terminal_spawn_async(terminal,0,native,argv,null,0x4,null,null,null,-1,null,rd_terminal_spawn_callback(),null)

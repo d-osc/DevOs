@@ -239,25 +239,32 @@ fn file_clock(): i64 {
     return (whole.ok ? whole.value : 0) * 1000 + (frac.ok ? frac.value * 10 : 0)
 }
 fn run_timeout(args: Vec<str>): i64 {
-    let seconds = 10; let sig = 15; let i = 0; let n = args.len() as i64
+    let seconds = 10; let sig = 15; let kill_after = 0; let i = 0; let n = args.len() as i64;let explicit=false
     while i < n {
-        let a = args[i]
-        if sys.same(a, "-t") && i + 1 < n { let v = sys.parse_number(args[i + 1]); if !v.ok { say("timeout", sys.join2("invalid number ", quoted(args[i + 1]))); return 1 }; seconds = v.value; i = i + 2 }
-        else if sys.same(a, "-s") && i + 1 < n { sig = proc.parse_signal(args[i + 1]); if sig < 0 { say("timeout", sys.join2("unknown signal ", quoted(args[i + 1]))); return 1 }; i = i + 2 }
-        else if sys.length(a) > 1 && sys.at(a, 0) == 45 && sys.is_digit(sys.at(a, 1)) { let v = sys.parse_number(sys.slice(a, 1, sys.length(a))); if v.ok { seconds = v.value }; i = i + 1 }
-        else { break }
+        let a=args[i]
+        if sys.same(a,"--") {i=i+1;break}
+        if (sys.same(a,"-t") || sys.same(a,"-k") || sys.same(a,"--kill-after")) && i+1<n {
+            let v=sys.parse_number(args[i+1]);if !v.ok || v.value<0 {say("timeout","invalid duration");return 125}
+            if sys.same(a,"-t") {seconds=v.value;explicit=true} else {kill_after=v.value};i=i+2
+        } else if sys.same(a,"-s") && i+1<n {
+            sig=proc.parse_signal(args[i+1]);if sig<0 {say("timeout","unknown signal");return 125};i=i+2
+        } else if sys.length(a)>0 && sys.at(a,0)==45 {say("timeout","unknown option");return 125}
+        else {break}
     }
-    if i >= n { say("timeout", "invalid usage: timeout [-t SECS] [-s SIG] PROG [ARGS]"); return 1 }
-    let argv = Vec<str>(); for k in i..n { argv.push(args[k]) }
-    let pid = proc.launch(argv, proc.environment(), 0)
-    if pid == 0 - 2 { say("timeout", sys.join2(sys.join2("can't execute ", quoted(argv[0])), ": No such file or directory")); return 127 }
-    if pid < 0 { return 126 }
-    let waited = 0
-    while waited < seconds * 10 {
-        let r = proc.poll_exit(pid)
-        if r >= 0 { return r }
-        proc.pause_us(100000); waited = waited + 1
+    if i<n && !explicit {let duration=sys.parse_number(args[i]);if duration.ok {if duration.value<0 {return 125};seconds=duration.value;i=i+1}}
+    if i>=n {say("timeout","usage: timeout [-s SIG] [-k SECS] SECS PROG [ARGS]");return 125}
+    let argv=Vec<str>();for k in i..n {argv.push(args[k])}
+    let pid=proc.launch(argv,proc.environment(),1)
+    if pid==0-2 {say("timeout",sys.join2("can't execute ",quoted(argv[0])));return 127}
+    if pid<0 {return 126}
+    if seconds==0 {return proc.wait_for(pid)}
+    let waited=0
+    while waited<seconds*10 {let r=proc.poll_exit(pid);if r>=0 {return r};proc.pause_us(100000);waited=waited+1}
+    proc.send_signal(0-pid,sig);proc.send_signal(pid,sig)
+    if kill_after>0 {
+        waited=0
+        while waited<kill_after*10 {let r=proc.poll_exit(pid);if r>=0 {return 124};proc.pause_us(100000);waited=waited+1}
+        proc.send_signal(0-pid,9);proc.send_signal(pid,9);proc.wait_for(pid);return 137
     }
-    proc.send_signal(pid, sig)
-    return proc.wait_for(pid)
+    proc.wait_for(pid);return 124
 }

@@ -11,7 +11,19 @@ export PATH=/usr/bin:/usr/sbin:/usr/libexec:/bin:/sbin
 unset GREETD_SOCK
 case " $(cat /proc/cmdline) " in
     *' devos.renderer=pixman '*) export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1 ;;
+    *' devos.renderer=gles2 '*|*' devos.renderer=vulkan '*) ;;
+    *)
+        # Firmware simpledrm can scan out without an operational GPU. Avoid
+        # probing software EGL/Vulkan as if it were hardware acceleration.
+        have_render_node=no
+        for node in /dev/dri/renderD*; do [ ! -c "$node" ] || have_render_node=yes; done
+        if [ "$have_render_node" = no ]; then
+            export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1
+            echo 'DevOs Live: no GPU render node; using pixman software rendering.' >&2
+        fi ;;
 esac
+# GTK3 windows use Cairo/shared-memory buffers on the software desktop.
+if [ "${WLR_RENDERER:-}" = pixman ]; then export GDK_GL=disable; fi
 echo '<6>DEVOS_LIVE_ROOT_SESSION_UID=0' >/dev/kmsg
 if [ "${1:-}" != --session ]; then
     exec dbus-run-session -- "$0" --session >>/run/devos-live/root-session.log 2>&1

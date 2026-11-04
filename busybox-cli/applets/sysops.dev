@@ -74,6 +74,12 @@ fn do_mount(source: str, target: str, fstype: str, options: str, extra_flags: i6
     return r
 }
 fn run_mount(args: Vec<str>): i64 {
+    # Mount relocation is required when handing the live overlay to systemd.
+    if args.len() > 0 && sys.same(args[0], "--move") {
+        if args.len() != 3 { sys.warn("mount", "usage: mount --move SOURCE TARGET"); return 1 }
+        if do_mount(args[1], args[2], "", "", 8192) != 0 { sys.warn("mount", "moving mount failed"); return 1 }
+        return 0
+    }
     let o = sys.parse_opts(args, "t:o:rwnfavsl")
     if o.bad != 0 || o.missing != 0 { sys.warn("mount", "invalid usage: mount [-t TYPE] [-o OPTIONS] [-r] [-w] DEVICE DIRECTORY"); return 1 }
     let out = sys.out_new(1)

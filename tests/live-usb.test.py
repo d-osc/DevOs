@@ -457,12 +457,12 @@ exec /bin/sh "$@"
 
     def test_hardware_profile_selects_boot_modules_and_kernel_arguments(self):
         # The X2 command line and USB bring-up order moved into asus/ux3407na unchanged.
-        self.assertEqual(usb.profile_kernel_args(),'clk_ignore_unused pd_ignore_unused arm64.nopauth mem_sleep_default=s2idle')
+        self.assertEqual(usb.profile_kernel_args(),'clk_ignore_unused pd_ignore_unused arm64.nopauth mem_sleep_default=s2idle module_blacklist=panel_samsung_atna33xc20,msm,dispcc_glymur')
         with tempfile.TemporaryDirectory() as tmp:
             merged=Path(tmp)/'merged'
             subprocess.run(['sh',str(usb.PROFILES/'devos-hwprofile'),'compose',usb.BOARD_PROFILE,str(merged)],check=True,capture_output=True)
             order=(merged/'early.modules').read_text().split()
-            self.assertEqual(order,['qcom_rpmh_regulator','qcom_refgen_regulator','phy_qcom_m31_eusb2','phy_qcom_qmp_usb','dwc3_qcom','xhci_plat_hcd','usb_storage','uas'])
+            self.assertEqual(order,['qrtr','qrtr_smd','qcom_rpmh_regulator','qcom_refgen_regulator','phy_qcom_m31_eusb2','phy_qcom_qmp_usb','dwc3_qcom','xhci_plat_hcd','usb_storage','uas'])
         init=(usb.HERE/'init').read_text()
         self.assertIn('/live/devos-hwprofile boot /run/devos-hw',init)
         self.assertIn('$early_modules',init)

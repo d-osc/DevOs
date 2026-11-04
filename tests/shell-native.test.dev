@@ -13,6 +13,13 @@ use "../src/system/org.devos.shell/lock.dev" as lockscreen
 # name without a window. Nothing is started: DEVOS_SHELL_TEST makes the worker log what it would do.
 fn us():str { return encoding.decode(Vec<u8>(31),"utf8") }
 fn kinds(steps:Vec<router.Step>):str { let out = Vec<str>(); for s in steps { out.push(s.kind + ":" + s.role + ":" + s.command + ":" + s.path) }; return strings.join(out,"|") }
+
+test.case("a cold Terminal uses its first tab without replaying the startup directory",fn() {
+    test.expect(!router.replayOnStart("terminal.native","/home/alice/Docs",false),"Terminal startup would create a duplicate tab")
+    test.expect(!router.replayOnStart("terminal","/home/alice",false),"Terminal alias would create a duplicate tab")
+    test.expect(router.replayOnStart("editor","/home/alice/note.txt",false),"Editor must still receive its file")
+    test.expect(router.replayOnStart("settings.wifi","",false),"Settings must still receive its requested page")
+})
 test.case("commands are routed to the app that owns them, settings pages to Settings, and overlays close the others",fn() {
     t.equal(kinds(router.route(Vec<str>("settings"),"/")),"launch:settings:settings:")
     t.equal(kinds(router.route(Vec<str>("wifi"),"/")),"launch:settings:settings.wifi:")

@@ -4,7 +4,7 @@ use "./native-taskbar.dev" as tasks
 fn text(value:ui.Text,className:str):ui.Node {let props=ui.props();props.className=ui.text(className);props.xalign=0.0;props.wrap=true;return ui.withProps(ui.TextLabel(value),props)}
 fn icon(name:ui.Text,size:i32):ui.Node {let props=ui.props();props.iconSize=size;return ui.element(11,props,name,Vec<ui.Node>())}
 fn row(children:Vec<ui.Node>,spacing:i32):ui.Node {let props=ui.props();props.vertical=false;props.spacing=spacing;return ui.Box(props,children)}
-fn render(frame:ui.Text,busy:bool,commandReady:bool,error:ui.Text,care:ui.Node,action:fn(ui.Text,i64):void,command:fn(ui.Text):void,dismiss:fn():void):ui.Node {
+fn render(frame:ui.Text,busy:bool,commandReady:bool,error:ui.Text,care:ui.Node,action:fn(ui.Text,i64):void,command:fn(ui.Text):void,dismiss:fn():void,echoVolume:i64,echoBrightness:i64):ui.Node {
     let fields=Vec<ui.Text>();let battery=Vec<ui.Text>();for record in channel.split(frame,30) {let parts=channel.split(record,9);if parts.len()>=19 && ui.equalText(parts[0],ui.text("D")) {fields=parts};if parts.len()>=8 && ui.equalText(parts[0],ui.text("B")) {battery=parts}}
     if fields.len()<19 {let props=ui.props();props.visible=false;return ui.Box(props,Vec<ui.Node>())}
     let title=ui.props();title.expand=true;title.className=ui.text("popup-title");title.xalign=0.0;let settings=ui.named("panel-quick-settings-open");settings.className=ui.text("popup-icon");settings.sensitive=commandReady && !busy
@@ -15,12 +15,14 @@ fn render(frame:ui.Text,busy:bool,commandReady:bool,error:ui.Text,care:ui.Node,a
         tiles.push(ui.WidgetButton(props,ui.Box(stack,Vec<ui.Node>(icon(ui.text(wifi ? "network-wireless-symbolic" : "bluetooth-active-symbolic"),24),ui.withProps(ui.Label(wifi ? "Wi-Fi" : "Bluetooth"),caption),ui.withProps(ui.TextLabel(tasks.decoded(fields[wifi ? 11 : 12])),detail))),fn() {if wifi {command(ui.text("wifi"))} else {action(ui.text("bluetooth"),0)}}))
     };children.push(row(tiles,10));children.push(row(Vec<ui.Node>(icon(tasks.decoded(fields[1]),16),text(tasks.decoded(fields[4]),"popup-muted")),8))
     let mute=ui.named("panel-mute");mute.className=ui.text("popup-icon");mute.sensitive=!busy && tasks.flag(fields,9)
-    let volume=ui.named("panel-volume");volume.expand=true;volume.sensitive=!busy && tasks.flag(fields,9);let percent=ui.named("panel-volume-label");percent.widthChars=4;percent.xalign=0.5
-    children.push(row(Vec<ui.Node>(ui.WidgetButton(mute,icon(tasks.decoded(fields[7]),20),fn() {action(ui.text("mute"),0)}),ui.Scale(volume,0,100,channel.integer(fields[17]),fn(value:i64) {action(ui.text("volume"),value)}),ui.withProps(ui.TextLabel(tasks.decoded(fields[5])),percent)),12))
+    # Sliders stay usable while a command is pending; the dragged value (echo) is displayed until the worker
+    # confirms it, so a periodic refresh frame cannot snap the thumb back mid-drag.
+    let volume=ui.named("panel-volume");volume.expand=true;volume.sensitive=tasks.flag(fields,9);let percent=ui.named("panel-volume-label");percent.widthChars=4;percent.xalign=0.5
+    children.push(row(Vec<ui.Node>(ui.WidgetButton(mute,icon(tasks.decoded(fields[7]),20),fn() {action(ui.text("mute"),0)}),ui.Scale(volume,0,100,echoVolume>=0 ? echoVolume : channel.integer(fields[17]),fn(value:i64) {action(ui.text("volume"),value)}),ui.withProps(ui.TextLabel(tasks.decoded(fields[5])),percent)),12))
     if fields.len()>19 && fields[19].bytes.len()>0 {children.push(text(tasks.decoded(fields[19]),"popup-muted"))}
-    let brightness=ui.named("panel-brightness");brightness.expand=true;brightness.sensitive=!busy && tasks.flag(fields,10)
+    let brightness=ui.named("panel-brightness");brightness.expand=true;brightness.sensitive=tasks.flag(fields,10)
     let brightnessLabel=ui.named("panel-brightness-label");brightnessLabel.widthChars=4;brightnessLabel.xalign=0.5
-    children.push(row(Vec<ui.Node>(icon(ui.text("display-brightness-symbolic"),20),ui.Scale(brightness,0,100,channel.integer(fields[18]),fn(value:i64) {action(ui.text("brightness"),value)}),ui.withProps(ui.TextLabel(tasks.decoded(fields[6])),brightnessLabel)),12))
+    children.push(row(Vec<ui.Node>(icon(ui.text("display-brightness-symbolic"),20),ui.Scale(brightness,0,100,echoBrightness>=0 ? echoBrightness : channel.integer(fields[18]),fn(value:i64) {action(ui.text("brightness"),value)}),ui.withProps(ui.TextLabel(tasks.decoded(fields[6])),brightnessLabel)),12))
     if fields.len()>20 && fields[20].bytes.len()>0 {children.push(text(tasks.decoded(fields[20]),"popup-muted"))}
     if battery.len()>=8 && tasks.flag(battery,6) {children.push(text(tasks.decoded(battery[4]),"popup-muted"))}
     if battery.len()>=8 && tasks.flag(battery,7) {children.push(care)}

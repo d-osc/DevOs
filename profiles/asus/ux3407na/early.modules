@@ -4,6 +4,10 @@
 -xhci_plat_hcd
 -usb_storage
 -uas
+# Load the protocol family before USB discovery can stop the background loader.
+# QMI's AF_QIPCRTR family has no DT modalias for the later device scan.
+qrtr
+qrtr_smd
 qcom_rpmh_regulator
 qcom_refgen_regulator
 phy_qcom_m31_eusb2

@@ -37,6 +37,13 @@ fn frame(request:json.Value,values:json.Value,battery:care.Battery,idle:str):str
     if !strings.equal(json.kind(monitors),"array") || !strings.equal(json.kind(windows),"array") { return out }
     let strength=0
     if geometry.edgeActive(num(get(values,"edgeBrightness")),battery.present,battery.onBattery) {strength=geometry.edgePercent(num(get(values,"edgeBrightness")))}
+    # Firmware-display brightness: screenBrightness 1..100 becomes a full-screen dim (100 = undimmed), capped
+    # at 75% dark so the screen stays readable. Unused when a kernel backlight exists.
+    let dim=0
+    if care.firmwareDisplay("/proc") {
+        let level=num(get(values,"screenBrightness")); if level<1 {level=1}; if level>100 {level=100}
+        dim=(100-level)*3/4
+    }
     let token=strings.equal(idle,"") ? "" : crypto.hashText("sha256",idle)
     for i in 0..(json.len(monitors) as i64) {
         let monitor=json.at(monitors,i); let target=false; let hole={x:0,y:0,width:0,height:0}
@@ -49,7 +56,7 @@ fn frame(request:json.Value,values:json.Value,battery:care.Battery,idle:str):str
             }
         }
         let saver=flag(get(values,"pixelRefresh")) && !strings.equal(token,"")
-        out=out+"\t${i},${target ? 1 : 0},${num(get(hole,"x"))},${num(get(hole,"y"))},${num(get(hole,"width"))},${num(get(hole,"height"))},${strength},${saver ? 1 : 0},${token},${num(get(monitor,"id"))}"
+        out=out+"\t${i},${target ? 1 : 0},${num(get(hole,"x"))},${num(get(hole,"y"))},${num(get(hole,"width"))},${num(get(hole,"height"))},${strength},${saver ? 1 : 0},${token},${num(get(monitor,"id"))},${dim}"
     }
     return out
 }

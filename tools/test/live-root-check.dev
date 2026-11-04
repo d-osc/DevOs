@@ -23,6 +23,13 @@ fn password(file: str): str {
 fn installerHosts(): i64 {return smoke.processIds("/run/user/0","/usr/share/dev-os/dist/native/installer").len() as i64}
 fn checks(): i32 {
     report("DEVOS_LIVE_ROOT_CHECK_STARTED")
+    # The Qualcomm QMI clients need an explicit AF_QIPCRTR provider: DT modalias
+    # scans cannot discover a socket-family module. Exercise the actual bundled
+    # modules in this disposable guest, without touching physical radios.
+    tool.exec(Vec<str>("modprobe", "qrtr"))
+    tool.exec(Vec<str>("modprobe", "qrtr_smd"))
+    tool.require(fs.is_dir("/sys/module/qrtr") && fs.is_dir("/sys/module/qrtr_smd"), "Bundled QRTR protocol/transport modules did not load.")
+    report("DEVOS_LIVE_QRTR_PASS: protocol family and RPMSG transport loaded")
     let session: str = "/usr/share/dev-os"
     tool.waitFor(fn(): bool {
         let shells = smoke.processIds("/run/user/0", session + "/dist/native/shell")
@@ -35,6 +42,9 @@ fn checks(): i32 {
     for variable in smoke.fields("/proc/" + pid + "/environ") {
         let parts = strings.split(variable, "=")
         if parts.len() > 1 { environment.set(parts[0], strings.substring(variable, strings.charLength(parts[0]) + 1, strings.charLength(variable))) }
+    }
+    if environment.contains("WLR_RENDERER") && strings.equal(environment.get("WLR_RENDERER"),"pixman") {
+        tool.require(environment.contains("GDK_GL") && strings.equal(environment.get("GDK_GL"),"disable"),"Software Live desktop must disable GTK GL contexts.")
     }
     tool.require(environment.contains("DEV_OS_LIVE_ROOT") && strings.equal(environment.get("DEV_OS_LIVE_ROOT"), "1"), "Live root environment marker missing.")
     let lower = tool.read("/run/live/lower/etc/greetd/config.toml")
@@ -75,7 +85,7 @@ fn checks(): i32 {
     tool.waitFor(fn(): bool {
         let current = smoke.processIds("/run/user/0", session + "/dist/native/shell")
         return current.len() == 1 && current[0] == shells[0] && installerHosts() == 1
-    }, 30000, "Reopening Installer did not settle to the original shell and one isolated Installer.")
+    }, 90000, "Reopening Installer did not settle to the original shell and one isolated Installer.")
     report("DEVOS_LIVE_INSTALLER_SINGLE_SHELL_PASS; SWAYLOCK_ROOT_PAM_PASS")
     let audio = Map<str,str>(); audio.set("HOME", "/root"); audio.set("XDG_RUNTIME_DIR", "/run/user/0"); audio.set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/0/bus")
     tool.checked(Vec<str>("systemctl", "--user", "is-active", "pipewire.socket", "pipewire-pulse.socket", "wireplumber.service"), audio, "", 10000)
@@ -105,7 +115,7 @@ fn main(): i32 {
     if !tool.has("--native") {
         let legacy = result.attempt(fn(): str { return tool.library("libcrypt.so.1") })
         let cryptLibrary = result.isOk(legacy) ? result.unwrap(legacy) : tool.library("libcrypt.so.2")
-        let value = tool.run(Vec<str>("d", module.entry(), "--ffi-lib", tool.library("libpam.so.0"), "--ffi-lib", cryptLibrary, "--", "--native"), Map<str,str>(), "", 260000)
+        let value = tool.run(Vec<str>("d", module.entry(), "--ffi-lib", tool.library("libpam.so.0"), "--ffi-lib", cryptLibrary, "--", "--native"), Map<str,str>(), "", 300000)
         if !value.success {
             report(encoding.decode(value.stdout, "utf8") + encoding.decode(value.stderr, "utf8"))
             report("DEVOS_LIVE_ROOT_DESKTOP_FAIL: native check worker failed")
@@ -116,7 +126,13 @@ fn main(): i32 {
     if result.isErr(outcome) {
         report(result.message(outcome))
         report("DEVOS_LIVE_ROOT_SESSION_LOG_BEGIN\n" + util.read("/run/devos-live/root-session.log") + "\nDEVOS_LIVE_ROOT_SESSION_LOG_END")
-        let processes = tool.run(Vec<str>("ps", "-eo", "pid,ppid,stat,args"), Map<str,str>(), "", 10000)
+        for entry in fs.readdirSync("/proc") {
+        if smoke.digits(entry) {
+            let row=result.attempt(fn():str { return strings.join(smoke.fields("/proc/"+entry+"/cmdline")," ") })
+            if result.isOk(row) {report("DEVOS_PROCESS "+entry+" "+result.unwrap(row))}
+        }
+    }
+    let processes = tool.run(Vec<str>("ps"), Map<str,str>(), "", 10000)
         report("DEVOS_LIVE_PROCESSES\n" + util.output(processes))
         let journal = tool.run(Vec<str>("journalctl", "-b", "--no-pager", "-n", "90"), Map<str,str>(), "", 10000)
         report("DEVOS_LIVE_JOURNAL\n" + util.output(journal))

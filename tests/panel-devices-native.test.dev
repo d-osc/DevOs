@@ -49,4 +49,15 @@ test.case("offline, WSL and unavailable hardware keep distinct presentation",fn(
         let windows=devices.snapshot(dir,dir,true,true,missing,no);t.equal(json.string(json.get(windows,"network")),"Connected through Windows")
     })
 })
+test.case("firmware-display machines expose the software brightness level",fn() {
+    tool.scope("panel-devices-software-",fn(dir:str) {
+        fs.mkdirSync(dir+"/proc",true)
+        tool.write(dir+"/proc/cmdline","BOOT_IMAGE=/boot/Image root=LABEL=devos module_blacklist=panel_samsung_atna33xc20,msm,dispcc_glymur quiet\n")
+        t.equal(json.stringify(devices.softwareBrightness(dir+"/proc",json.parse("{\"screenBrightness\":60}"))),"60")
+        t.equal(json.stringify(devices.softwareBrightness(dir+"/proc",json.parse("{}"))),"100")
+        t.equal(json.stringify(devices.softwareBrightness(dir+"/proc",json.parse("{\"screenBrightness\":400}"))),"100")
+        tool.write(dir+"/proc/cmdline","BOOT_IMAGE=/boot/Image root=LABEL=devos quiet\n")
+        test.expect(json.is_null(devices.softwareBrightness(dir+"/proc",json.parse("{\"screenBrightness\":60}"))),"kernel-driver machines keep no brightness")
+    })
+})
 return t.finish()

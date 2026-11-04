@@ -157,7 +157,8 @@ fn shellCommand(command:str):str {
     for a in Vec<str>("terminal","files","editor","lock","session.quit","settings") { if strings.equal(a,command) { ok = true } }
     if !ok { return kit.failure("Unsupported command") }
     if testing() { return "V\t" }
-    let sent = shell.remote(Vec<str>(command),hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),"/")
+    let folder = strings.equal(command,"terminal") ? hw.envOr("HOME","/") : "/"
+    let sent = shell.remote(Vec<str>(command),hw.env("XDG_RUNTIME_DIR"),hw.env("WAYLAND_DISPLAY"),folder)
     return sent == 0 ? "V\t" : kit.failure("Could not " + command + ".")
 }
 fn handle(line:str):str {
